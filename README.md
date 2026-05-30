@@ -76,6 +76,24 @@ docker compose logs orchestrator
 cat logs/app.log
 ```
 
+## Architecture & Design Decisions
+
+The platform is built around modular data services rather than a single
+notebook or dashboard script. Collectors, processors, storage, API routes, and
+views are separated so data sources can be added, removed, or repaired without
+rewriting the whole system.
+
+PostgreSQL with TimescaleDB is used because the core workload is time-series
+data: prices, macro series, economic events, collection timestamps, and
+dashboard history. The database schema keeps raw inputs, derived views, and
+system logs distinct so research output can be traced back to source data.
+
+LLM briefings are deliberately informational. They are meant to help a trader
+understand macro conditions, event context, and what may deserve attention
+during the trading day. They do not produce trade calls, entry prices, or
+execution instructions; the trader remains responsible for interpretation and
+decision-making.
+
 ## Project Structure
 
 ```
