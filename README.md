@@ -1,6 +1,11 @@
 # Trading Data Platform
 
-A modular data infrastructure platform for collecting, normalising, and analysing macroeconomic data to produce structured opinions and daily briefings for discretionary trading and investment research.
+A modular data platform for collecting, normalising, and analysing market and
+macroeconomic data for trading research workflows.
+
+This public snapshot includes the dashboard, API, database schema, collectors,
+and orchestration layer. It excludes local credentials, generated logs, private
+databases, and proprietary research output.
 
 ## Prerequisites
 
@@ -73,9 +78,6 @@ cat logs/app.log
 
 ## Project Structure
 
-For current implementation notes and handoff context for future agents, see
-[`docs/agent-handoff.md`](docs/agent-handoff.md).
-
 ```
 trading-data-platform/
 ├── docker-compose.yml          # Services: postgres + orchestrator
@@ -107,3 +109,14 @@ trading-data-platform/
 │       └── base.py             # Processor Protocol interface (stub)
 └── README.md
 ```
+
+## Public Boundary
+
+This repository is intended to show the platform architecture and runnable data
+workflow. It does not include private strategy research, local database dumps,
+API credentials, generated briefings, run logs, or trading decisions.
+
+## Suggested Repository Topics
+
+`trading`, `market-data`, `timescaledb`, `fastapi`, `dashboard`,
+`data-pipeline`
