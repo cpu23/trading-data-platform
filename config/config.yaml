@@ -1,0 +1,232 @@
+database:
+  host: postgres
+  port: 5432
+  name: trading_data
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+
+llm:
+  provider: openrouter
+  api_key: ${OPENROUTER_API_KEY}
+  default_model: "qwen/qwen3.6-plus"
+  models:
+    macro_regime: "qwen/qwen3.6-plus"
+    briefing: "qwen/qwen3.6-plus"
+  temperature: 0.2
+  max_retries: 3
+
+timezone:
+  primary:
+    name: Europe/London
+    label: London
+  secondary:
+    name: America/New_York
+    label: NY
+
+logging:
+  level: DEBUG
+  format: structured_json
+  output:
+    - stdout
+    - file: /var/log/trading-data/app.log
+  rotate:
+    max_size_mb: 100
+    keep_files: 30
+
+collectors:
+  fred:
+    enabled: true
+    api_key: ${FRED_API_KEY}
+    schedule: "0 6 * * *"
+    backfill_years_daily: 2
+    backfill_years_monthly: 5
+    backfill_years_quarterly: 10
+    series:
+      # GDP and growth
+      - id: GDP
+        frequency: quarterly
+      - id: GDPC1
+        frequency: quarterly
+      # Inflation
+      - id: CPIAUCSL
+        frequency: monthly
+      - id: PCEPILFE
+        frequency: monthly
+      - id: T5YIE
+        frequency: daily
+      - id: T10YIE
+        frequency: daily
+      # Employment
+      - id: UNRATE
+        frequency: monthly
+      - id: PAYEMS
+        frequency: monthly
+      - id: ICSA
+        frequency: weekly
+      # Interest rates and yield curve
+      - id: FEDFUNDS
+        frequency: monthly
+      - id: DGS2
+        frequency: daily
+      - id: DGS10
+        frequency: daily
+      - id: T10Y2Y
+        frequency: daily
+      - id: T10Y3M
+        frequency: daily
+      # Financial conditions
+      - id: BAMLH0A0HYM2
+        frequency: daily
+      - id: VIXCLS
+        frequency: daily
+      # Money supply
+      - id: M2SL
+        frequency: monthly
+      # USD strength
+      - id: DTWEXBGS
+        frequency: daily
+
+  forex_factory:
+    enabled: true
+    schedule: "0 20 * * 0"  # Sunday 20:00 UTC
+    source_url: "https://www.forexfactory.com/calendar"
+    weekly_export_base_url: "https://nfs.faireconomy.media"
+    currencies: ["USD", "EUR", "GBP", "JPY", "AUD", "CNY"]
+    min_impact: "medium"
+    user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    request_delay_seconds: 2
+
+  oanda:
+    enabled: true
+    api_key: ${OANDA_API_KEY}
+    environment: practice
+    schedule: "0 6,12,18 * * 1-5"
+    snapshot_timeframe: PRICE
+    instruments:
+      - symbol: EURUSD
+        oanda_instrument: EUR_USD
+        enabled: true
+      - symbol: AUDJPY
+        oanda_instrument: AUD_JPY
+        enabled: true
+      - symbol: USDJPY
+        oanda_instrument: USD_JPY
+        enabled: true
+      - symbol: SP500
+        oanda_instrument: SPX500_USD
+        enabled: true
+      - symbol: XAUUSD
+        oanda_instrument: XAU_USD
+        enabled: true
+      - symbol: XPTUSD
+        oanda_instrument: XPT_USD
+        enabled: true
+      - symbol: GER40
+        oanda_instrument: DE30_EUR
+        enabled: true
+      - symbol: UK100
+        oanda_instrument: UK100_GBP
+        enabled: true
+
+processors:
+  macro_regime:
+    enabled: true
+    depends_on: [fred]
+    prompt_template: prompts/macro_regime_v1.txt
+    schedule: after_dependency
+    thresholds:
+      yield_curve:
+        deep_inversion: -0.5
+        inverted: 0
+        flat: 0.5
+        normal: 1.5
+      vix:
+        very_low: 12
+        low: 16
+        moderate: 20
+        elevated: 25
+        high: 30
+      credit_spread:
+        tight: 3.0
+        normal: 4.0
+        widening: 5.0
+
+  event_impact:
+    enabled: false
+    depends_on: [forex_factory]
+    prompt_template: prompts/event_impact_v1.txt
+    schedule: after_dependency
+
+  briefing:
+    enabled: true
+    depends_on: [macro_regime]
+    prompt_template: prompts/briefing_v3.txt
+    schedule: "0 7 * * *"
+
+watchlist:
+  trading:
+    - symbol: EURUSD
+      type: forex
+    - symbol: DXY
+      type: index
+    - symbol: AUDJPY
+      type: forex
+    - symbol: USDJPY
+      type: forex
+    - symbol: SP500
+      type: index
+    - symbol: XAUUSD
+      type: metal
+    - symbol: XPTUSD
+      type: metal
+    - symbol: GER40
+      type: index
+    - symbol: UK100
+      type: index
+
+  investing:
+    watchlists:
+      - name: index_funds
+        symbols: [SPY, QQQ, VTI, VXUS]
+      - name: sectors
+        symbols: []
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  basic_auth:
+    username: ${DASHBOARD_USER}
+    password: ${DASHBOARD_PASSWORD}
+
+dashboard:
+  stale_thresholds:
+    briefing_hours: 18
+    regime_hours: 18
+    macro_hours: 30
+    events_hours: 8
+  indicators:
+    - series_id: T10Y2Y
+      label: "10Y-2Y spread"
+      precision: 2
+      category: yield_curve
+    - series_id: VIXCLS
+      label: "VIX"
+      precision: 1
+      category: volatility
+    - series_id: DTWEXBGS
+      label: "USD index (broad)"
+      precision: 2
+      category: usd
+      note: "Trade-weighted; not the same as DXY"
+    - series_id: BAMLH0A0HYM2
+      label: "HY spread"
+      precision: 2
+      category: credit
+    - series_id: DGS10
+      label: "10Y yield"
+      precision: 2
+      category: rates
+    - series_id: T5YIE
+      label: "5Y breakeven"
+      precision: 2
+      category: inflation

@@ -1,0 +1,28 @@
+<section class="section regime-section" id="regime-section"
+         hx-get="/partials/regime"
+         hx-trigger="cycleComplete from:body"
+         hx-swap="outerHTML">
+  {% if regime is mapping and regime.get('error') %}
+    <div class="error-block">{{ regime.error }}</div>
+  {% elif not regime.regime %}
+    <div class="empty-state">No regime classification available.</div>
+  {% else %}
+    <div class="regime-line">
+      {{ regime.regime | title }}
+      <span class="dim-sep">·</span>
+      {{ regime.sub_regime | replace('_', '-') if regime.sub_regime else '—' }}
+      <span class="dim-sep">·</span>
+      <span class="bias-{{ (regime.direction or 'neutral') | lower }}">{{ regime.direction or '—' }}</span>
+      <span class="dim-sep">·</span>
+      <span class="muted">{{ regime.confidence or '—' }}</span>
+    </div>
+    {% if regime.summary %}
+      <p class="regime-summary">{{ regime.summary }}</p>
+    {% endif %}
+    {% if regime.caution_flags %}
+      <p class="regime-caution">
+        <span class="dim">Caution</span>&nbsp;&nbsp;{{ regime.caution_flags | join(' · ') }}
+      </p>
+    {% endif %}
+  {% endif %}
+</section>

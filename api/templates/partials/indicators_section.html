@@ -1,0 +1,32 @@
+<section class="section indicators-section" id="indicators-section"
+         hx-get="/partials/indicators"
+         hx-trigger="cycleComplete from:body"
+         hx-swap="outerHTML">
+  {% if not indicators %}
+    <div class="empty-state">No indicator data available.</div>
+  {% else %}
+    <div class="indicators-strip">
+      {% for ind in indicators %}
+        <div class="indicator"
+             data-series-id="{{ ind.series_id }}"
+             data-label="{{ ind.label }}">
+          <div class="indicator-label">{{ ind.label }}</div>
+          <div class="indicator-row">
+            <span class="indicator-value tabular">
+              {% if ind.latest_value is not none %}{{ '%.2f' | format(ind.latest_value) }}{% else %}—{% endif %}
+            </span>
+            {% if ind.change_abs is not none %}
+              {% if ind.change_abs > 0 %}
+                <span class="indicator-change up tabular">+{{ '%.2f' | format(ind.change_abs) }}</span>
+              {% elif ind.change_abs < 0 %}
+                <span class="indicator-change down tabular">{{ '%.2f' | format(ind.change_abs) }}</span>
+              {% else %}
+                <span class="indicator-change flat tabular">±0.00</span>
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>

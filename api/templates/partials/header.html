@@ -1,0 +1,20 @@
+<header class="page-header" id="header">
+  <div class="page-header-left">
+    <span class="page-header-title">Trading intelligence</span>
+    <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M UTC') }}</span>
+  </div>
+  <div class="page-header-right">
+    <div class="freshness">
+      <span class="freshness-dot {% if any_stale %}freshness-stale{% endif %}"></span>
+      <span class="freshness-label tabular">{{ last_cycle_text }}</span>
+    </div>
+    <button id="run-cycle-btn" class="btn"
+            hx-post="/api/cycle"
+            hx-confirm="Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."
+            hx-indicator="#cycle-spinner"
+            hx-swap="none">
+      Run cycle
+      <span id="cycle-spinner" class="spinner htmx-indicator" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>

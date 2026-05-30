@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Logs — Trading data{% endblock %}
+
+{% block content %}
+  <header class="page-header" style="margin-bottom: 16px;">
+    <div class="page-header-left">
+      <span class="page-header-title">System logs</span>
+    </div>
+  </header>
+
+  <form class="logs-filter-bar"
+        hx-get="/partials/logs"
+        hx-target="#logs-table-body"
+        hx-swap="innerHTML"
+        hx-trigger="change">
+    <select name="component">
+      <option value="">All components</option>
+      {% for comp in components %}
+        <option value="{{ comp }}" {% if selected_component == comp %}selected{% endif %}>{{ comp }}</option>
+      {% endfor %}
+    </select>
+
+    <select name="status">
+      <option value="">All statuses</option>
+      <option value="success" {% if selected_status == 'success' %}selected{% endif %}>Success</option>
+      <option value="partial" {% if selected_status == 'partial' %}selected{% endif %}>Partial</option>
+      <option value="failed" {% if selected_status == 'failed' %}selected{% endif %}>Failed</option>
+    </select>
+
+    <select name="range">
+      <option value="" {% if selected_range == '' %}selected{% endif %}>All time</option>
+      <option value="24h" {% if selected_range == '24h' %}selected{% endif %}>Last 24h</option>
+      <option value="7d" {% if selected_range == '7d' %}selected{% endif %}>Last 7d</option>
+    </select>
+  </form>
+
+  <table class="logs-table">
+    <thead>
+      <tr>
+        <th>Component</th>
+        <th>Kind</th>
+        <th>Started</th>
+        <th>Duration</th>
+        <th>Status</th>
+        <th>Records / Tokens</th>
+        <th>Cost</th>
+      </tr>
+    </thead>
+    <tbody id="logs-table-body">
+      {% include "partials/log_rows.html" %}
+    </tbody>
+  </table>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block content %}
+  {% include "partials/header.html" %}
+  {% include "partials/regime_section.html" %}
+  {% include "partials/events_section.html" %}
+  {% include "partials/indicators_section.html" %}
+  {% include "partials/cards_section.html" %}
+  {% include "partials/expansion_panel.html" %}
+  {% if briefing and briefing.sections %}
+    {% include "partials/briefing_prose.html" %}
+  {% endif %}
+{% endblock %}

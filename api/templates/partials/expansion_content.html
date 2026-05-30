@@ -1,0 +1,20 @@
+<div id="expansion-panel" class="expansion-panel expanded" data-symbol="{{ note.symbol }}">
+  <div class="expansion-header">
+    <div class="expansion-header-left">
+      <span class="instrument-symbol tabular">{{ note.symbol }}</span>
+      {% if price %}
+        <span class="expansion-price tabular">{{ "%.5g"|format(price.price) }}</span>
+      {% endif %}
+      <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
+      <span class="expansion-meta">{{ note.confidence or '—' }} confidence</span>
+    </div>
+    <button class="expansion-close"
+            hx-get="/partials/cards/clear"
+            hx-target="#expansion-panel"
+            hx-swap="outerHTML"
+            aria-label="Close">close ✕</button>
+  </div>
+  {% if note.note %}
+    <p class="expansion-prose">{{ note.note }}</p>
+  {% endif %}
+</div>

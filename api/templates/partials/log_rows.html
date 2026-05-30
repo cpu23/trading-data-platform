@@ -1,0 +1,53 @@
+{% for log in logs %}
+  <tr data-log-id="{{ loop.index }}">
+    <td>
+      <span class="status-dot {% if log.status == 'success' %}status-success{% elif log.status == 'partial' %}status-partial{% else %}status-failed{% endif %}"></span>
+      {{ log.component }}
+    </td>
+    <td>{{ log.log_type }}</td>
+    <td class="tabular">{{ log.started_at }}</td>
+    <td class="tabular">{% if log.duration_ms is not none %}{{ log.duration_ms }} ms{% else %}—{% endif %}</td>
+    <td>{{ log.status }}</td>
+    <td class="tabular">
+      {% if log.log_type == 'collection' %}
+        {{ log.records_fetched or '—' }} / {{ log.records_written or '—' }}
+      {% else %}
+        {{ log.tokens_input or '—' }} / {{ log.tokens_output or '—' }}
+      {% endif %}
+    </td>
+    <td class="tabular">
+      {% if log.get('cost_usd') is not none %}
+        ${{ '%.4f' | format(log.get('cost_usd')) }}
+      {% else %}
+        —
+      {% endif %}
+    </td>
+  </tr>
+  <tr class="log-detail-row" data-detail-for="{{ loop.index }}">
+    <td colspan="7">
+      <div class="log-detail">
+        {% if log.log_type == 'collection' %}
+          {% if log.get('error_traceback') %}
+            <strong>Error traceback:</strong><br>{{ log.get('error_traceback') }}
+          {% elif log.error_message %}
+            <strong>Error:</strong> {{ log.error_message }}
+          {% else %}
+            No additional details.
+          {% endif %}
+        {% else %}
+          <strong>Model:</strong> {{ log.model_used or '—' }}<br>
+          <strong>Tokens:</strong> {{ log.tokens_input or '—' }} in / {{ log.tokens_output or '—' }} out<br>
+          <strong>Cost:</strong> ${{ '%.4f' | format(log.get('cost_usd')) if log.get('cost_usd') is not none else '—' }}<br>
+          <hr style="border: none; border-top: 1px solid var(--hairline); margin: 8px 0;">
+          {% if log.get('prompt_text') %}<strong>Prompt:</strong><br><pre style="white-space: pre-wrap; margin: 4px 0;">{{ log.get('prompt_text') }}</pre><br>{% endif %}
+          {% if log.get('raw_response') %}<strong>Response:</strong><br><pre style="white-space: pre-wrap; margin: 4px 0;">{{ log.get('raw_response') }}</pre><br>{% endif %}
+          {% if log.error_message %}<strong>Error:</strong><br>{{ log.error_message }}{% endif %}
+        {% endif %}
+      </div>
+    </td>
+  </tr>
+{% else %}
+  <tr>
+    <td colspan="7" class="empty-state" style="text-align: center;">No log entries match the selected filters.</td>
+  </tr>
+{% endfor %}

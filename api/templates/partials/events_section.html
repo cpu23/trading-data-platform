@@ -1,0 +1,25 @@
+<section class="section events-section" id="events-section"
+         hx-get="/partials/events"
+         hx-trigger="cycleComplete from:body"
+         hx-swap="outerHTML">
+  <div class="label">Calendar · today and this week</div>
+
+  {% if not filtered_events %}
+    <div class="empty-state">No high- or medium-impact events through Friday.</div>
+  {% else %}
+    {% for day_key in grouped | sort %}
+      <div class="events-day">
+        <div class="events-day-label">{{ day_label_for(day_key) }}</div>
+        {% for ev in grouped[day_key] %}
+          <div class="event-row">
+            <span class="event-time tabular">{{ ev.time_display }}</span>
+            <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+            <span class="event-name">{{ ev.event_name }}</span>
+            <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
+            <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  {% endif %}
+</section>

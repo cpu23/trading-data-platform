@@ -1,0 +1,39 @@
+<section class="section cards-section" id="cards-section"
+         hx-get="/partials/cards"
+         hx-trigger="cycleComplete from:body"
+         hx-swap="outerHTML">
+  {% if not briefing or not briefing.sections %}
+    <div class="empty-state">No briefing has been generated yet. Run cycle to create one.</div>
+  {% else %}
+    {% set notes = briefing.sections.get('watchlist_notes', []) %}
+    {% if notes is not iterable or notes is string %}
+      <div class="empty-state">Watchlist data unavailable.</div>
+    {% elif notes | length == 0 %}
+      <div class="empty-state">No watchlist instruments configured.</div>
+    {% else %}
+      <div class="instruments-grid">
+        {% for note in notes %}
+          {% set price = price_map.get(note.symbol) if price_map else none %}
+          <div class="instrument-card"
+               data-symbol="{{ note.symbol }}"
+               data-card-index="{{ loop.index0 }}">
+            <div class="instrument-header">
+              <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
+              <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
+            </div>
+            <div class="instrument-price tabular">
+              {% if price %}
+                {{ "%.5g"|format(price.price) }}
+              {% else %}
+                —
+              {% endif %}
+            </div>
+            {% if note.summary %}
+              <div class="instrument-summary">{{ note.summary }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+</section>

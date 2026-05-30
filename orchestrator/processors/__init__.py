@@ -1,0 +1,19 @@
+from processors.macro_regime import MacroRegimeProcessor
+from processors.event_impact import EventImpactProcessor
+from processors.briefing import DailyBriefingProcessor
+
+PROCESSORS: dict[str, type] = {
+    "macro_regime": MacroRegimeProcessor,
+    "event_impact": EventImpactProcessor,
+    "briefing": DailyBriefingProcessor,
+}
+
+
+def get_processor(processor_id: str):
+    if processor_id not in PROCESSORS:
+        raise ValueError(f"Unknown processor: {processor_id}")
+    return PROCESSORS[processor_id]()
+
+
+def get_all_processors() -> dict:
+    return {pid: cls() for pid, cls in PROCESSORS.items()}

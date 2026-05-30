@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Trading data{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script src="/static/vendor/chart.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="container">
+    {% block content %}{% endblock %}
+
+    <footer class="page-footer">
+      <a href="/logs">View logs</a>
+    </footer>
+  </div>
+
+  <!-- Indicator modal -->
+  <div id="indicator-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <div id="modal-title" class="modal-title"></div>
+        <button class="modal-close" aria-label="Close modal">&times;</button>
+      </div>
+      <div id="modal-chart-container" style="height: 400px;">
+        <canvas id="modal-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
