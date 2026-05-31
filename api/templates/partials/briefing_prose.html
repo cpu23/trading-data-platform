@@ -2,56 +2,23 @@
          hx-get="/partials/briefing"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  {% if briefing and briefing.sections %}
+  {% if briefing_bullets %}
+    <div class="section-heading">
+      <span class="label">Briefing</span>
+      {% set d = dot if dot is defined else dots.briefing %}
+      {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
+    </div>
     <div class="briefing-prose">
-      {%- macro render_prose(text) -%}
-        {%- if text is string -%}
-          {%- set normalized = text | replace("\r\n", "\n") -%}
-          {%- set paragraphs = normalized.split("\n\n") -%}
-          {%- for paragraph in paragraphs -%}
-            {%- set trimmed = paragraph.strip() -%}
-            {%- if trimmed -%}
-              <p>{{ trimmed }}</p>
-            {%- endif -%}
-          {%- endfor -%}
-        {%- endif -%}
-      {%- endmacro -%}
-
-      {% set macro_trend = briefing.sections.get('macro_trend') or briefing.sections.get('macro_summary') %}
-      {% if macro_trend %}
+      {% for section in briefing_bullets %}
         <div class="briefing-block">
-          <div class="briefing-label">Macro trend</div>
-          {{ render_prose(macro_trend) }}
+          <div class="briefing-label">{{ section.label }}</div>
+          <ul class="compact-list">
+            {% for bullet in section.bullets %}
+              <li>{{ bullet }}</li>
+            {% endfor %}
+          </ul>
         </div>
-      {% endif %}
-
-      {% if briefing.sections.get('today') %}
-        <div class="briefing-block">
-          <div class="briefing-label">Today</div>
-          {{ render_prose(briefing.sections.get('today')) }}
-        </div>
-      {% endif %}
-
-      {% if briefing.sections.get('this_week') %}
-        <div class="briefing-block">
-          <div class="briefing-label">This week</div>
-          {{ render_prose(briefing.sections.get('this_week')) }}
-        </div>
-      {% endif %}
-
-      {% set notes = briefing.sections.get('watchlist_notes', []) %}
-      {% if notes is iterable and notes is not string and notes | length > 0 %}
-        <div class="briefing-block briefing-watchlist">
-          <div class="briefing-label">Watchlist</div>
-          {% for note in notes %}
-            <div class="briefing-watchlist-row">
-              <span class="briefing-watchlist-symbol tabular">{{ note.symbol }}</span>
-              <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
-              <span>{{ note.note or note.summary }}</span>
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
+      {% endfor %}
     </div>
   {% endif %}
 </section>

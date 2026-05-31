@@ -2,6 +2,11 @@
          hx-get="/partials/regime"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
+  <div class="section-heading">
+    <span class="label">Regime</span>
+    {% set d = dot if dot is defined else dots.regime %}
+    {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
+  </div>
   {% if regime is mapping and regime.get('error') %}
     <div class="error-block">{{ regime.error }}</div>
   {% elif not regime.regime %}
@@ -23,6 +28,13 @@
       <p class="regime-caution">
         <span class="dim">Caution</span>&nbsp;&nbsp;{{ regime.caution_flags | join(' · ') }}
       </p>
+    {% endif %}
+    {% if regime.key_factors %}
+      <div class="key-factors">
+        {% for factor in regime.key_factors[:4] %}
+          <span>{{ factor }}</span>
+        {% endfor %}
+      </div>
     {% endif %}
   {% endif %}
 </section>

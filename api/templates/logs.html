@@ -9,7 +9,8 @@
     </div>
   </header>
 
-  <form class="logs-filter-bar"
+  <form id="logs-filter-form"
+        class="logs-filter-bar"
         hx-get="/partials/logs"
         hx-target="#logs-table-body"
         hx-swap="innerHTML"
@@ -47,7 +48,11 @@
         <th>Cost</th>
       </tr>
     </thead>
-    <tbody id="logs-table-body">
+    <tbody id="logs-table-body"
+           hx-get="/partials/logs"
+           hx-include="#logs-filter-form"
+           hx-trigger="every 3s, cycleComplete from:body"
+           hx-swap="innerHTML">
       {% include "partials/log_rows.html" %}
     </tbody>
   </table>

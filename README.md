@@ -30,6 +30,30 @@ databases, and proprietary research output.
 
 ## Usage
 
+### Open the dashboard
+
+Once the services are running, open the FastAPI dashboard exposed by your
+Docker Compose configuration. The dashboard is designed as a trader-facing
+morning context view, not a signal engine.
+
+The current layout puts the key decision-support surfaces first:
+
+- Header with last cycle, run-cycle control, and daily LLM cost/token usage
+- Health strip with source status and subtle freshness dots
+- Regime summary and key macro indicators
+- Asset watchlist cards with expandable thesis, drivers, and matched catalysts
+- Upcoming high-impact catalysts, with the full calendar behind an expandable control
+- Concise briefing bullets
+
+Freshness is shown with small dots instead of warning banners: amber means
+stale, red means failed. Hovering a dot shows the source/status details when
+available.
+
+Asset-card catalyst matching is a display helper only. It reuses calendar data
+to surface relevant HIGH and MEDIUM impact events for each asset exposure, then
+sorts them chronologically. It does not mutate stored calendar data, briefing
+records, or trading logic.
+
 ### Run the FRED collector on demand
 
 ```bash
@@ -93,6 +117,11 @@ understand macro conditions, event context, and what may deserve attention
 during the trading day. They do not produce trade calls, entry prices, or
 execution instructions; the trader remains responsible for interpretation and
 decision-making.
+
+The dashboard follows the same principle. The main catalyst ribbon highlights
+upcoming HIGH impact events only, while the full calendar remains available for
+medium-impact detail. Expanded asset cards can show both HIGH and MEDIUM
+matched catalysts because those are context annotations, not trade triggers.
 
 ## Project Structure
 

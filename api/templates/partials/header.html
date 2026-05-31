@@ -1,4 +1,8 @@
-<header class="page-header" id="header">
+<header class="page-header" id="header"
+        hx-get="/partials/header"
+        hx-trigger="cycleComplete from:body"
+        hx-swap="outerHTML">
+  {% set health = system_health or {} %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M UTC') }}</span>
@@ -8,13 +12,19 @@
       <span class="freshness-dot {% if any_stale %}freshness-stale{% endif %}"></span>
       <span class="freshness-label tabular">{{ last_cycle_text }}</span>
     </div>
+    <div class="header-usage tabular">
+      ${{ '%.4f' | format(health.get('today_llm_cost_usd', 0) or 0) }}
+      <span class="dim">today</span>
+      <span class="dim-sep">·</span>
+      {{ health.get('today_token_count', 0) or 0 }} tokens
+    </div>
     <button id="run-cycle-btn" class="btn"
+            data-original-label="Run cycle"
             hx-post="/api/cycle"
             hx-confirm="Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."
-            hx-indicator="#cycle-spinner"
             hx-swap="none">
-      Run cycle
-      <span id="cycle-spinner" class="spinner htmx-indicator" aria-hidden="true"></span>
+      <span id="cycle-spinner" class="braille-spinner" aria-hidden="true"></span>
+      <span class="btn-label">Run cycle</span>
     </button>
   </div>
 </header>

@@ -586,6 +586,31 @@ Synthesises all current analysis into a single morning briefing. Structured sect
 }
 ```
 
+The dashboard renders these sections as concise bullets where possible. If a
+section only contains long prose, the view conservatively splits it into a small
+number of sentence-level bullets for readability. Briefing output remains
+informational context only; it is not rendered as trade instructions or entry
+signals.
+
+### Dashboard Presentation Layer
+
+The dashboard is a thin presentation layer over stored macro, calendar,
+briefing, price, and health data. It intentionally keeps display helpers
+separate from stored records:
+
+- The main catalyst ribbon shows HIGH impact events only, sorted
+  chronologically, with weekday plus London/NY time.
+- The expandable full calendar retains HIGH and MEDIUM event detail grouped by
+  day.
+- Expanded asset cards can show matched HIGH and MEDIUM catalysts based on a
+  simple exposure map, such as EUR+USD for EURUSD or GBP/UK/BoE for UK100.
+- Asset-event matching is non-authoritative and display-only. It does not
+  mutate `econ_events`, daily briefings, structured opinions, or strategy logic.
+- Source freshness is shown with subtle section dots and hover details rather
+  than prominent warning banners.
+- Logs poll every few seconds while the page is open, and the header refreshes
+  after a cycle finishes so cost/token usage stays current.
+
 ### 4.4 Orchestrator
 
 The orchestrator is a simple Python script that:

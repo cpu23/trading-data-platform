@@ -406,23 +406,25 @@ Single page at `/`. Top-to-bottom order:
 ```
 ┌───────────────────────────────────────────────────────────┐
 │  Header                                                   │
-│    "Trading data" · last cycle: 26 Apr 06:30 UTC          │
-│    [Run cycle] (with hx-confirm)                          │
+│    title · last cycle · daily cost/tokens · [Run cycle]   │
 ├───────────────────────────────────────────────────────────┤
-│  1. Macro regime                                          │
+│  Health strip                                             │
+│    source status + freshness dots                         │
+├───────────────────────────────────────────────────────────┤
+│  1. Regime summary                                        │
 │     Headline + summary + caution flags                    │
 ├───────────────────────────────────────────────────────────┤
-│  2. Upcoming events                                       │
-│     Next 48h, high+medium impact, grouped by day          │
+│  2. Key macro indicators                                  │
+│     Configurable indicator strip                          │
 ├───────────────────────────────────────────────────────────┤
-│  3. Per-instrument cards                                  │
+│  3. Asset cards                                           │
 │     Card grid, click-to-expand                            │
 ├───────────────────────────────────────────────────────────┤
-│  4. Key indicators                                        │
-│     Configurable indicator strip with sparklines          │
+│  4. Upcoming high-impact catalysts                        │
+│     Compact chronological ribbon + expandable calendar    │
 ├───────────────────────────────────────────────────────────┤
 │  5. Daily briefing prose                                  │
-│     macro_summary, regime_assessment, action_items        │
+│     concise bullet summaries                              │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -433,29 +435,32 @@ No left navigation, no tabs. The page is a vertical scroll. There is one seconda
 #### 6.2.1 Header
 
 - Compact strip across the top, ~48px tall.
-- Left: page title "Trading data" in regular weight, plus secondary text showing the last full cycle's timestamp.
-- Right: a single button "Run cycle" wired to `POST /api/cycle` via HTMX. `hx-confirm` attribute set to `"Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."`. Button shows a spinner state via `hx-indicator` while the request is in flight.
+- Left: page title and current timestamp.
+- Right: last full cycle timestamp, daily LLM cost/token usage, and a single button "Run cycle" wired to `POST /api/cycle` via HTMX.
+- The run button uses a braille spinner while the cycle is active.
+- The header refreshes on the shared `cycleComplete` event after successful, failed, or timed-out cycles so last-cycle and usage metadata update without a full page reload.
+- Source health is rendered directly below the header as a minimal strip. Component names/statuses stay neutral; amber and red dots indicate stale or failed sources.
 
 #### 6.2.2 Macro regime
 
-- Section header: "Macro regime" in 11px uppercase letter-spaced caption style (matching the aesthetic established in the card variants).
+- Section header: "Regime" with an optional freshness dot.
 - Below: two-line headline displaying regime + sub_regime + direction + confidence in a single composed sentence — e.g. "Trending, risk-on · bullish · high confidence".
 - Below that: the `summary` field as 14px body text.
 - Below that: `key_factors` as a small bulleted list, three to five items.
 - Below that: `caution_flags` as a list with subtle warning colour (amber accent), only rendered if non-empty.
-- If stale: a 24px-tall warning strip appears at the top of the section: "Macro data is X hours old." No button.
+- If stale or failed: show only the section-level dot with hover/title details. Do not render warning banners.
 
 #### 6.2.3 Upcoming events
 
-- Section header: "Upcoming · next 48h".
-- Events filtered to high + medium impact, grouped under day headers ("Today", "Tomorrow", weekday names beyond that).
-- Each event row: `HH:MM UTC` (tabular numerals) · country flag or 2-letter code · event name · consensus · previous · impact dot.
-- Row hover: subtle background lift to indicate interactivity (rows are not clickable yet — reserved for Phase 3+).
-- If empty: a single muted line "No high-impact events in the next 48 hours."
+- Section header: "Upcoming high-impact catalysts".
+- The compact ribbon shows HIGH impact events only, sorted chronologically.
+- Each compact row shows weekday plus London/NY time, impact/currency, and event name.
+- The full calendar remains available below the ribbon behind a lightweight expandable `<details>` control and may include both HIGH and MEDIUM impact events grouped by day.
+- If no high-impact events are available: render a single muted line, "No high-impact events through Friday."
 
 #### 6.2.4 Per-instrument cards
 
-The centrepiece. Render the watchlist (in config order) as a card grid using the **A — hairline border, transparent fill** treatment.
+The centrepiece. Render the watchlist (in config order) as a card grid using the **A — hairline border, transparent fill** treatment. The separate watchlist prose section is not shown; asset cards are the primary watchlist surface.
 
 **Collapsed card:**
 - Symbol (medium weight, 13px) + asset class (small caps, muted, 10px)
@@ -465,8 +470,15 @@ The centrepiece. Render the watchlist (in config order) as a card grid using the
 **Expanded card (click to toggle, expanded card spans full grid row):**
 - Everything from collapsed view, plus
 - Full `note` paragraph below.
+- Key drivers when present in the briefing structure.
+- Matched catalysts for the asset, using the economic calendar as a display-only helper.
 
-Nothing else expands. No upcoming-events filter, no macro context, no watch levels — those were considered and dropped from this phase.
+Matched catalysts include HIGH and MEDIUM impact events that match the asset's
+configured exposure map. They are collected before capping, sorted by scheduled
+time first, and use impact only as a same-time tie breaker. Dual-exposure
+assets such as EURUSD, USDJPY, and AUDJPY should retain both sides of the pair
+when eligible events exist. This matching must not alter source calendar data,
+stored briefing data, or trading logic.
 
 **Grid behaviour:**
 - `grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))` with `gap: 10px`.

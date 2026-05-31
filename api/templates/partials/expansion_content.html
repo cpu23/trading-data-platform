@@ -17,4 +17,33 @@
   {% if note.note %}
     <p class="expansion-prose">{{ note.note }}</p>
   {% endif %}
+  {% if drivers %}
+    <div class="expansion-subsection">
+      <div class="expansion-label">Key drivers</div>
+      <ul class="compact-list">
+        {% for driver in drivers %}
+          <li>{{ driver }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+  <div class="expansion-subsection">
+    <div class="expansion-label">Matched catalysts</div>
+    {% if matched_events %}
+      <div class="matched-events">
+        {% for ev in matched_events %}
+          <div class="matched-event">
+            <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
+            <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+            <span class="event-name">{{ ev.event_name }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state">No major matched catalysts.</div>
+    {% endif %}
+  </div>
+  {% if price and price.timestamp %}
+    <div class="expansion-footnote tabular">Price snapshot: {{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
+  {% endif %}
 </div>

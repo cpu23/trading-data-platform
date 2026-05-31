@@ -2,6 +2,9 @@
          hx-get="/partials/cards"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
+  <div class="section-heading">
+    <span class="label">Watchlist</span>
+  </div>
   {% if not briefing or not briefing.sections %}
     <div class="empty-state">No briefing has been generated yet. Run cycle to create one.</div>
   {% else %}
@@ -15,6 +18,8 @@
         {% for note in notes %}
           {% set price = price_map.get(note.symbol) if price_map else none %}
           <div class="instrument-card"
+               role="button"
+               tabindex="0"
                data-symbol="{{ note.symbol }}"
                data-card-index="{{ loop.index0 }}">
             <div class="instrument-header">
@@ -28,6 +33,9 @@
                 —
               {% endif %}
             </div>
+            {% if price and price.timestamp %}
+              <div class="instrument-meta tabular">{{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
+            {% endif %}
             {% if note.summary %}
               <div class="instrument-summary">{{ note.summary }}</div>
             {% endif %}

@@ -2,24 +2,44 @@
          hx-get="/partials/events"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  <div class="label">Calendar · today and this week</div>
+  <div class="section-heading">
+    <span class="label">Upcoming high-impact catalysts</span>
+    {% set d = dot if dot is defined else dots.events %}
+    {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
+  </div>
 
-  {% if not filtered_events %}
-    <div class="empty-state">No high- or medium-impact events through Friday.</div>
+  {% if not catalysts %}
+    <div class="empty-state">No high-impact events through Friday.</div>
   {% else %}
-    {% for day_key in grouped | sort %}
-      <div class="events-day">
-        <div class="events-day-label">{{ day_label_for(day_key) }}</div>
-        {% for ev in grouped[day_key] %}
-          <div class="event-row">
-            <span class="event-time tabular">{{ ev.time_display }}</span>
-            <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-            <span class="event-name">{{ ev.event_name }}</span>
-            <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
-            <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
-          </div>
-        {% endfor %}
-      </div>
-    {% endfor %}
+    <div class="catalyst-ribbon">
+      {% for ev in catalysts %}
+        <div class="catalyst-item">
+          <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
+          <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+          <span class="event-name">{{ ev.event_name }}</span>
+        </div>
+      {% endfor %}
+    </div>
+
+    <details class="calendar-details">
+      <summary><span class="calendar-summary-text">Full calendar</span></summary>
+      {% for day_key in grouped | sort %}
+        <div class="events-day">
+          <div class="events-day-label">{{ day_label_for(day_key) }}</div>
+          {% for ev in grouped[day_key] %}
+            <div class="event-row">
+              <span class="event-time tabular">{{ ev.time_display }}</span>
+              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+              <span class="event-name">{{ ev.event_name }}</span>
+              <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
+              <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
+              {% if ev.actual %}
+                <span class="event-actual tabular">actual {{ ev.actual }}</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </details>
   {% endif %}
 </section>
