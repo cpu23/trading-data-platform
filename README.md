@@ -7,6 +7,12 @@ This public snapshot includes the dashboard, API, database schema, collectors,
 and orchestration layer. It excludes local credentials, generated logs, private
 databases, and proprietary research output.
 
+## Screenshots
+
+![Trading dashboard showcase](docs/assets/dashboard-showcase.png)
+
+![System logs view](docs/assets/system-logs.png)
+
 ## Prerequisites
 
 - Docker and Docker Compose v2
