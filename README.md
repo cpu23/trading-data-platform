@@ -9,14 +9,15 @@ databases, and proprietary research output.
 
 ## Screenshots
 
-![Trading dashboard showcase](docs/assets/dashboard-showcase.png)
+![Trading dashboard showcase](docs/assets/dashboard-full-page.png)
 
-![System logs view](docs/assets/system-logs.png)
+![System logs view](docs/assets/system-logs-full-page.png)
 
 ## Prerequisites
 
 - Docker and Docker Compose v2
 - A FRED API key (free — register at https://fred.stlouisfed.org/docs/api/api_key.html)
+- An LLM API key via OpenRouter for macro/regime analysis and daily briefings
 - Optional: an OANDA personal access token for cycle-based watchlist prices
 
 ## Setup
@@ -24,7 +25,8 @@ databases, and proprietary research output.
 1. Copy the environment template and fill in your credentials:
    ```bash
    cp .env.example .env
-   # Edit .env and add your FRED_API_KEY, optional OANDA_API_KEY, and a strong DB_PASSWORD
+   # Edit .env and add your FRED_API_KEY, OPENROUTER_API_KEY, optional OANDA_API_KEY,
+   # and a strong DB_PASSWORD
    ```
 
 2. Start the platform:
