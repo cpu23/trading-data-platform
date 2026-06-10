@@ -24,7 +24,7 @@ def call_llm(
 
     llm_config = config["llm"]
     api_key = llm_config["api_key"]
-    effective_model = model or llm_config["default_model"]
+    effective_model = resolve_model(config, model=model)
     effective_temperature = temperature if temperature is not None else llm_config.get("temperature", 0.2)
 
     request_body = {
@@ -83,9 +83,9 @@ def call_llm(
 
     model_used = data.get("model", effective_model)
 
-    cost_usd = 0.0
-    if tokens_input and tokens_output:
-        cost_usd = _estimate_cost(model_used, tokens_input, tokens_output)
+    cost_usd = usage.get("cost")
+    if cost_usd is not None:
+        cost_usd = float(cost_usd)
 
     result = {
         "content": content,
@@ -111,16 +111,13 @@ def call_llm(
     return result
 
 
-def _estimate_cost(model: str, tokens_input: int, tokens_output: int) -> float:
-    pricing = {
-        "claude-sonnet-4": (3.0 / 1_000_000, 15.0 / 1_000_000),
-        "claude-3.5-sonnet": (3.0 / 1_000_000, 15.0 / 1_000_000),
-        "gpt-4o": (2.5 / 1_000_000, 10.0 / 1_000_000),
-        "gpt-4o-mini": (0.15 / 1_000_000, 0.6 / 1_000_000),
-    }
-
-    for key, (input_price, output_price) in pricing.items():
-        if key in model.lower():
-            return tokens_input * input_price + tokens_output * output_price
-
-    return tokens_input * (1.0 / 1_000_000) + tokens_output * (5.0 / 1_000_000)
+def resolve_model(config: dict, processor_id: str | None = None, model: str | None = None) -> str:
+    """Resolve an OpenRouter model without coupling processors to a provider model."""
+    if model:
+        return model
+    llm_config = config.get("llm", {})
+    if processor_id:
+        override = llm_config.get("models", {}).get(processor_id)
+        if override:
+            return override
+    return llm_config.get("default_model", "deepseek/deepseek-v4-flash")

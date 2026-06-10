@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from db import get_session
-from llm_client import call_llm
+from llm_client import call_llm, resolve_model
 from logging_config import get_logger
 from sqlalchemy import text
 
@@ -91,16 +91,7 @@ class MacroRegimeProcessor:
             cross_indicators=cross_indicators,
         )
 
-        model = (
-            config.get("llm", {})
-            .get("models", {})
-            .get(
-                "macro_regime",
-                config.get("llm", {}).get(
-                    "default_model", "qwen/qwen3-5-plus-2026-02-15"
-                ),
-            )
-        )
+        model = resolve_model(config, processor_id=self.processor_id)
 
         llm_result = call_llm(
             prompt=prompt_text,

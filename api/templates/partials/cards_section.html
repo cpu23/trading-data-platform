@@ -26,7 +26,7 @@
               <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
               <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
             </div>
-            <div class="instrument-price tabular">
+            <div class="instrument-price tabular" data-live-price="{{ note.symbol }}">
               {% if price %}
                 {{ "%.5g"|format(price.price) }}
               {% else %}
@@ -34,7 +34,7 @@
               {% endif %}
             </div>
             {% if price and price.timestamp %}
-              <div class="instrument-meta tabular">{{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
+              <div class="instrument-meta tabular" data-live-time="{{ note.symbol }}">{{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
             {% endif %}
             {% if note.summary %}
               <div class="instrument-summary">{{ note.summary }}</div>

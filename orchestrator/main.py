@@ -7,7 +7,9 @@ from sqlalchemy import text
 from config_loader import load_config
 from db import check_connection, get_session
 from logging_config import get_logger, setup_logging
-from orchestrator import run_full_cycle, run_collector, run_processor
+from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor
+from price_stream import quote_stream
+from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
 app = FastAPI(title="Trading Data Orchestrator")
 logger = get_logger("orchestrator.api")
@@ -30,12 +32,25 @@ def on_startup():
 
     if not check_connection(config):
         raise RuntimeError("Database connection failed")
+    start_scheduler(config)
+    quote_stream.start(config)
     logger.info("orchestrator_http_started", action="startup")
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    quote_stream.stop()
+    stop_scheduler()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "scheduler": scheduler_status(), "stream": quote_stream.state}
+
+
+@app.get("/quotes")
+def quotes():
+    return quote_stream.snapshot()
 
 
 def _correlation_id_from_body(body: dict | None) -> str:
@@ -50,37 +65,25 @@ def _correlation_id_from_body(body: dict | None) -> str:
     return str(uuid4())
 
 
-def _write_cycle_run(correlation_id: str, status: str, error_message: str | None = None):
+def _write_cycle_run(
+    correlation_id: str,
+    status: str,
+    error_message: str | None = None,
+    result_status: str | None = None,
+    summary: dict | None = None,
+):
     config = _get_config()
-    now = datetime.now(timezone.utc)
     try:
-        with get_session(config) as session:
-            if status == "running":
-                session.execute(
-                    text(
-                        "INSERT INTO cycle_runs (correlation_id, status, started_at, triggered_by) "
-                        "VALUES (:cid, :status, :started_at, :triggered_by)"
-                    ),
-                    {
-                        "cid": correlation_id,
-                        "status": status,
-                        "started_at": now,
-                        "triggered_by": "api",
-                    },
-                )
-            else:
-                session.execute(
-                    text(
-                        "UPDATE cycle_runs SET status = :status, completed_at = :completed_at, "
-                        "error_message = :error_message WHERE correlation_id = :cid"
-                    ),
-                    {
-                        "cid": correlation_id,
-                        "status": status,
-                        "completed_at": now,
-                        "error_message": error_message,
-                    },
-                )
+        if status == "running":
+            ensure_run(correlation_id, config, triggered_by="api")
+        else:
+            finish_run(
+                correlation_id,
+                result_status or ("failed" if status == "failed" else "success"),
+                summary or {},
+                config,
+                error_message,
+            )
     except Exception as exc:
         logger.error("cycle_run_write_failed", correlation_id=correlation_id, status=status, error=str(exc))
 
@@ -92,7 +95,12 @@ def _run_cycle_task(correlation_id: str):
         config = _get_config()
         result = run_full_cycle(config=config, correlation_id=correlation_id)
         logger.info("cycle_completed", correlation_id=correlation_id, result=result)
-        _write_cycle_run(correlation_id, "completed")
+        _write_cycle_run(
+            correlation_id,
+            "completed",
+            result_status=result["status"],
+            summary=result,
+        )
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
         _write_cycle_run(correlation_id, "failed", error_message=str(exc))
@@ -141,6 +149,7 @@ def _run_collector_task(source_id: str, correlation_id: str):
     try:
         config = _get_config()
         result = run_collector(source_id, config=config, correlation_id=correlation_id)
+        finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
@@ -164,6 +173,7 @@ def _run_processor_task(processor_id: str, correlation_id: str):
     try:
         config = _get_config()
         result = run_processor(processor_id, config=config, correlation_id=correlation_id)
+        finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))

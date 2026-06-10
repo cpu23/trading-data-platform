@@ -8,10 +8,8 @@ database:
 llm:
   provider: openrouter
   api_key: ${OPENROUTER_API_KEY}
-  default_model: "qwen/qwen3.6-plus"
-  models:
-    macro_regime: "qwen/qwen3.6-plus"
-    briefing: "qwen/qwen3.6-plus"
+  default_model: "deepseek/deepseek-v4-flash"
+  models: {}
   temperature: 0.2
   max_retries: 3
 
@@ -98,6 +96,7 @@ collectors:
 
   oanda:
     enabled: true
+    stream_enabled: true
     api_key: ${OANDA_API_KEY}
     environment: practice
     schedule: "0 6,12,18 * * 1-5"

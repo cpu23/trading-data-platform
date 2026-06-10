@@ -6,7 +6,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from db import get_session
-from llm_client import call_llm
+from llm_client import call_llm, resolve_model
 from logging_config import get_logger
 from processors._validators import validate_briefing_sections, coerce_briefing_fields
 from sqlalchemy import text
@@ -48,14 +48,7 @@ class DailyBriefingProcessor:
             watchlist=watchlist_str,
         )
 
-        model = (
-            config.get("llm", {})
-            .get("models", {})
-            .get(
-                "briefing",
-                config.get("llm", {}).get("default_model", "qwen/qwen3.6-plus"),
-            )
-        )
+        model = resolve_model(config, processor_id=self.processor_id)
 
         llm_result = call_llm(
             prompt=prompt_text,

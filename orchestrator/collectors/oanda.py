@@ -30,6 +30,9 @@ class OandaCollector:
         ]
 
         account_id = self._get_account_id(base_url, api_key, oanda_config, correlation_id)
+        instruments = self._filter_supported_instruments(
+            base_url, api_key, account_id, instruments, correlation_id
+        )
         records = self._collect_prices(
             base_url=base_url,
             api_key=api_key,
@@ -69,6 +72,7 @@ class OandaCollector:
             timeout=15.0,
             max_retries=1,
             correlation_id=correlation_id,
+            follow_redirects=True,
         )
         response.raise_for_status()
         accounts = response.json().get("accounts", [])
@@ -78,6 +82,45 @@ class OandaCollector:
         if not account_id:
             raise RuntimeError("OANDA account response did not include an account id")
         return account_id
+
+    def _filter_supported_instruments(
+        self,
+        base_url: str,
+        api_key: str,
+        account_id: str,
+        instruments: list[dict],
+        correlation_id: str,
+    ) -> list[dict]:
+        if not instruments:
+            return []
+        response = make_request(
+            method="GET",
+            url=f"{base_url.rstrip('/')}/v3/accounts/{account_id}/instruments",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+            max_retries=1,
+            correlation_id=correlation_id,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        supported = {
+            item.get("name") for item in response.json().get("instruments", [])
+            if item.get("name")
+        }
+        filtered = [
+            item for item in instruments if item.get("oanda_instrument") in supported
+        ]
+        skipped = [
+            item.get("oanda_instrument") for item in instruments
+            if item.get("oanda_instrument") not in supported
+        ]
+        if skipped:
+            logger.warning(
+                "oanda_unsupported_instruments_skipped",
+                instruments=skipped,
+                correlation_id=correlation_id,
+            )
+        return filtered
 
     def _collect_prices(
         self,
@@ -108,6 +151,7 @@ class OandaCollector:
             timeout=15.0,
             max_retries=1,
             correlation_id=correlation_id,
+            follow_redirects=True,
         )
         response.raise_for_status()
 
@@ -228,6 +272,7 @@ class OandaCollector:
                 timeout=15.0,
                 max_retries=1,
                 correlation_id="health-check",
+                follow_redirects=True,
             )
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             if response.status_code == 200:

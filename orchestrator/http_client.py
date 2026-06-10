@@ -26,8 +26,9 @@ def _do_request(
     headers: dict | None,
     json_body: dict | None,
     timeout: float,
+    follow_redirects: bool,
 ) -> httpx.Response:
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
         response = client.request(
             method=method.upper(),
             url=url,
@@ -47,11 +48,14 @@ def make_request(
     timeout: float = 30.0,
     max_retries: int = 3,
     correlation_id: str | None = None,
+    follow_redirects: bool = False,
 ) -> httpx.Response:
     start_ms = time.monotonic() * 1000
 
     try:
-        response = _do_request(method, url, params, headers, json_body, timeout)
+        response = _do_request(
+            method, url, params, headers, json_body, timeout, follow_redirects
+        )
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         duration_ms = int(time.monotonic() * 1000 - start_ms)
         logger.error(
