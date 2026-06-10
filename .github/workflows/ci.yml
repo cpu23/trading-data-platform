@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Compile Python sources
+        run: python -m compileall -q -x '/\.venv/' api orchestrator
+
+      - name: Install locked orchestrator environment
+        working-directory: orchestrator
+        run: uv sync --frozen
+
+      - name: Run orchestrator unit tests
+        working-directory: orchestrator
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Install locked API environment
+        working-directory: api
+        run: uv sync --frozen
+
+      - name: Verify API imports
+        working-directory: api
+        env:
+          CONFIG_DIR: ../config
+          DB_USER: ci
+          DB_PASSWORD: ci
+          FRED_API_KEY: ci
+          OPENROUTER_API_KEY: ci
+          OANDA_API_KEY: ci
+          DASHBOARD_USER: ci
+          DASHBOARD_PASSWORD: ci
+        run: uv run python -c "import main; assert main.app.title == 'Trading Data API'"
+
+  compose:
+    name: Docker Compose validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create CI environment file
+        run: cp .env.example .env
+
+      - name: Validate Compose configuration
+        env:
+          DB_USER: ci
+          DB_PASSWORD: ci
+          FRED_API_KEY: ci
+          OPENROUTER_API_KEY: ci
+          OANDA_API_KEY: ci
+          DASHBOARD_USER: ci
+          DASHBOARD_PASSWORD: ci
+        run: docker compose config --quiet
+
+  secrets:
+    name: Tracked-file secret scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan tracked files
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
