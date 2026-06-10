@@ -8,8 +8,11 @@ database:
 llm:
   provider: openrouter
   api_key: ${OPENROUTER_API_KEY}
-  default_model: "deepseek/deepseek-v4-flash"
-  models: {}
+  default_model: ${OPENROUTER_MODEL}
+  models:
+    macro_regime: ${OPENROUTER_MODEL}
+    event_impact: ${OPENROUTER_MODEL}
+    briefing: ${OPENROUTER_MODEL}
   temperature: 0.2
   max_retries: 3
 
