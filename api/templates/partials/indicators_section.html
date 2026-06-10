@@ -4,8 +4,6 @@
          hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label">Key macro indicators</span>
-    {% set d = dot if dot is defined else dots.indicators %}
-    {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
   </div>
   {% if not indicators %}
     <div class="empty-state">No indicator data available.</div>

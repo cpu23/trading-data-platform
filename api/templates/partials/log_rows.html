@@ -1,5 +1,5 @@
 {% for log in logs %}
-  <tr data-log-id="{{ loop.index }}">
+  <tr data-log-id="{{ log.log_id }}" data-correlation-id="{{ log.correlation_id or '' }}">
     <td>
       <span class="status-dot {% if log.status == 'success' %}status-success{% elif log.status == 'partial' %}status-partial{% else %}status-failed{% endif %}"></span>
       {{ log.component }}
@@ -23,7 +23,7 @@
       {% endif %}
     </td>
   </tr>
-  <tr class="log-detail-row" data-detail-for="{{ loop.index }}">
+  <tr class="log-detail-row" data-detail-for="{{ log.log_id }}">
     <td colspan="7">
       <div class="log-detail">
         {% if log.log_type == 'collection' %}

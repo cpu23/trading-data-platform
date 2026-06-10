@@ -5,9 +5,27 @@
 {% block content %}
   <header class="page-header" style="margin-bottom: 16px;">
     <div class="page-header-left">
+      <a class="quiet-link" href="/">Dashboard</a>
       <span class="page-header-title">System logs</span>
     </div>
   </header>
+
+  <section class="runs-inspector" aria-label="Recent runs">
+    <div class="section-heading"><span class="label">Recent runs</span></div>
+    <div class="runs-list">
+      {% for run in runs %}
+        <button class="run-chip{% if selected_correlation_id == run.correlation_id %} selected{% endif %}"
+                type="button" data-run-id="{{ run.correlation_id }}">
+          <span class="status-dot status-{{ 'success' if run.result_status == 'success' else 'partial' if run.result_status == 'partial' or run.status == 'running' else 'failed' }}"></span>
+          <span>{{ run.requested_component or run.run_kind }}</span>
+          <span class="dim tabular">{{ run.started_at[:16] | replace('T', ' ') if run.started_at else 'unknown' }}</span>
+        </button>
+      {% else %}
+        <span class="empty-state">No linked runs yet.</span>
+      {% endfor %}
+    </div>
+    <div id="run-inspector-detail" class="run-inspector-detail" hidden></div>
+  </section>
 
   <form id="logs-filter-form"
         class="logs-filter-bar"
@@ -15,6 +33,7 @@
         hx-target="#logs-table-body"
         hx-swap="innerHTML"
         hx-trigger="change">
+    <input type="hidden" name="correlation_id" id="logs-correlation-id" value="{{ selected_correlation_id }}">
     <select name="component">
       <option value="">All components</option>
       {% for comp in components %}

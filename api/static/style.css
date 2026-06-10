@@ -136,9 +136,124 @@ body {
 }
 
 .health-component {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--fg-muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.quiet-link {
+  color: var(--fg-dim);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.runs-inspector {
+  margin-bottom: 24px;
+}
+
+.runs-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.run-chip,
+.run-stage {
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 6px;
+  padding: 7px 9px;
+  white-space: nowrap;
+}
+
+.run-chip.selected,
+.run-chip:hover,
+.run-stage:hover {
+  border-color: var(--hairline-strong);
+  color: var(--fg);
+}
+
+.run-inspector-detail {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--hairline-faint);
+}
+
+.run-detail-heading {
+  width: 100%;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.run-stage {
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+.logs-table tr.highlight td {
+  background: var(--surface-faint);
+  color: var(--fg);
+}
+
+.provenance-details {
+  margin-top: 18px;
+  color: var(--fg-muted);
+}
+
+.provenance-details summary {
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.regime-timeline {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.timeline-point {
+  min-width: 44px;
+  padding: 5px 7px;
+  border-left: 2px solid currentColor;
+  color: var(--fg-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.evidence-view {
+  margin-top: 12px;
+  border-top: 1px solid var(--hairline-faint);
+  padding-top: 10px;
+}
+
+.evidence-meta,
+.evidence-record {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.evidence-group {
+  margin-top: 10px;
 }
 
 .health-component-status {

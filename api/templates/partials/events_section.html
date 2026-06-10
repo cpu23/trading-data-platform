@@ -4,8 +4,6 @@
          hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label">Upcoming high-impact catalysts</span>
-    {% set d = dot if dot is defined else dots.events %}
-    {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
   </div>
 
   {% if not catalysts %}

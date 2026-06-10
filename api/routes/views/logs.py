@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Query, Request
 
 from config import load_config
-from routes.json.system import get_system_logs
+from routes.json.system import get_system_logs, get_system_runs
 
 router = APIRouter()
 
@@ -26,7 +26,7 @@ def _fmt_ts(value) -> str:
     return str(value)
 
 
-def _fetch_logs(component: str = "", status: str = "", range_val: str = "", limit: int = 50):
+def _fetch_logs(component: str = "", status: str = "", range_val: str = "", correlation_id: str = "", limit: int = 50):
     from_date = None
     if range_val == "24h":
         from_date = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -39,6 +39,7 @@ def _fetch_logs(component: str = "", status: str = "", range_val: str = "", limi
         limit=limit,
         include_detail=True,
         from_date=from_date,
+        correlation_id=correlation_id,
     )
 
     logs = []
@@ -73,10 +74,11 @@ def logs_page(
     component: str = Query(default=""),
     status: str = Query(default=""),
     range: str = Query(default=""),
+    correlation_id: str = Query(default=""),
 ):
     config = load_config()
     templates = _get_templates(request)
-    logs = _fetch_logs(component=component, status=status, range_val=range)
+    logs = _fetch_logs(component=component, status=status, range_val=range, correlation_id=correlation_id)
     components = _distinct_components(config)
 
     return templates.TemplateResponse(request, "logs.html", {
@@ -86,6 +88,8 @@ def logs_page(
         "selected_component": component,
         "selected_status": status,
         "selected_range": range,
+        "selected_correlation_id": correlation_id,
+        "runs": get_system_runs(limit=12).get("runs", []),
     })
 
 
@@ -95,9 +99,10 @@ def partial_logs(
     component: str = Query(default=""),
     status: str = Query(default=""),
     range: str = Query(default=""),
+    correlation_id: str = Query(default=""),
 ):
     templates = _get_templates(request)
-    logs = _fetch_logs(component=component, status=status, range_val=range)
+    logs = _fetch_logs(component=component, status=status, range_val=range, correlation_id=correlation_id)
     return templates.TemplateResponse(request, "partials/log_rows.html", {
         "request": request,
         "logs": logs,

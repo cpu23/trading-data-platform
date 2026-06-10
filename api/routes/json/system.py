@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query
+import httpx
+from fastapi import APIRouter, HTTPException, Query
 
 from config import load_config
 from db import query_many, query_one
@@ -53,6 +54,24 @@ def get_system_health():
         today_tokens = int(cost_rows[0].get("total_tokens", 0) or 0)
 
     components = []
+    schedule_map = {}
+    try:
+        orchestration = httpx.get("http://orchestrator:8000/health", timeout=2.0).json()
+        schedule_map = {
+            job["id"].split(":", 1)[-1]: job.get("next_due_at")
+            for job in orchestration.get("scheduler", {}).get("jobs", [])
+        }
+        stream = orchestration.get("stream", {})
+        components.append({
+            "name": "live_prices",
+            "kind": "stream",
+            "last_run_at": stream.get("last_heartbeat"),
+            "last_status": stream.get("status", "stopped"),
+            "next_due_at": None,
+            "stale": stream.get("status") not in ("connected", "simulated"),
+        })
+    except Exception:
+        pass
 
     enabled_collectors = config.get("collectors", {})
     collector_map = {r["collector"]: r for r in collector_rows}
@@ -71,7 +90,7 @@ def get_system_health():
                 "kind": "collector",
                 "last_run_at": _fmt(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
-                "next_due_at": None,
+                "next_due_at": schedule_map.get(source_id),
                 "stale": stale,
             })
         else:
@@ -80,7 +99,7 @@ def get_system_health():
                 "kind": "collector",
                 "last_run_at": None,
                 "last_status": "never_run",
-                "next_due_at": None,
+                "next_due_at": schedule_map.get(source_id),
                 "stale": True,
             })
 
@@ -101,7 +120,7 @@ def get_system_health():
                 "kind": "processor",
                 "last_run_at": _fmt(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
-                "next_due_at": None,
+                "next_due_at": schedule_map.get(proc_id),
                 "stale": stale,
             })
         else:
@@ -110,11 +129,11 @@ def get_system_health():
                 "kind": "processor",
                 "last_run_at": None,
                 "last_status": "never_run",
-                "next_due_at": None,
+                "next_due_at": schedule_map.get(proc_id),
                 "stale": True,
             })
 
-    all_ok = all(c["last_status"] in ("success", "partial") for c in components)
+    all_ok = all(c["last_status"] in ("success", "partial", "connected", "simulated") for c in components)
     overall = "healthy" if all_ok else "degraded"
 
     return {
@@ -132,13 +151,14 @@ def get_system_logs(
     limit: int = Query(default=50, ge=1, le=500),
     include_detail: bool = Query(default=False),
     from_date: datetime | None = Query(default=None, alias="from"),
+    correlation_id: str = Query(default=""),
 ):
     config = load_config()
 
     params: dict = {"limit": limit}
 
     collector_sql = """
-        SELECT 'collection' as log_type, collector as component, started_at,
+        SELECT log_id, correlation_id, 'collection' as log_type, collector as component, started_at,
                completed_at, status, records_fetched, records_written,
                duration_ms, error_message, error_traceback,
                NULL as model_used, NULL as tokens_input, NULL as tokens_output,
@@ -146,7 +166,7 @@ def get_system_logs(
         FROM collection_log
     """
     processor_sql = """
-        SELECT 'processing' as log_type, processor as component, started_at,
+        SELECT log_id, correlation_id, 'processing' as log_type, processor as component, started_at,
                completed_at, status, NULL as records_fetched, NULL as records_written,
                duration_ms, error_message, NULL as error_traceback,
                model_used, tokens_input, tokens_output, cost_usd,
@@ -172,6 +192,11 @@ def get_system_logs(
         where_clauses_processor.append("started_at >= :from_date")
         params["from_date"] = from_date
 
+    if correlation_id:
+        where_clauses_collector.append("correlation_id = :correlation_id")
+        where_clauses_processor.append("correlation_id = :correlation_id")
+        params["correlation_id"] = correlation_id
+
     collector_where = (" WHERE " + " AND ".join(where_clauses_collector)) if where_clauses_collector else ""
     processor_where = (" WHERE " + " AND ".join(where_clauses_processor)) if where_clauses_processor else ""
 
@@ -190,6 +215,8 @@ def get_system_logs(
     logs = []
     for row in rows:
         entry = {
+            "log_id": str(row["log_id"]),
+            "correlation_id": str(row["correlation_id"]) if row.get("correlation_id") else None,
             "log_type": row["log_type"],
             "component": row["component"],
             "started_at": _fmt(row.get("started_at")),
@@ -216,6 +243,82 @@ def get_system_logs(
     return {"logs": logs, "limit": limit}
 
 
+def _run_payload(row: dict) -> dict:
+    summary = row.get("summary") or {}
+    if isinstance(summary, str):
+        import json
+        try:
+            summary = json.loads(summary)
+        except (TypeError, ValueError):
+            summary = {}
+    return {
+        "correlation_id": str(row["correlation_id"]),
+        "status": row["status"],
+        "result_status": row.get("result_status"),
+        "run_kind": row.get("run_kind", "cycle"),
+        "requested_component": row.get("requested_component"),
+        "triggered_by": row.get("triggered_by"),
+        "started_at": _fmt(row.get("started_at")),
+        "completed_at": _fmt(row.get("completed_at")),
+        "error_message": row.get("error_message"),
+        "summary": summary,
+    }
+
+
+@router.get("/system/runs")
+def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
+    rows = query_many(
+        "SELECT * FROM cycle_runs ORDER BY started_at DESC LIMIT :limit",
+        {"limit": limit},
+        config=load_config(),
+    )
+    return {"runs": [_run_payload(row) for row in rows], "limit": limit}
+
+
+@router.get("/system/runs/{correlation_id}")
+def get_system_run(correlation_id: str):
+    config = load_config()
+    row = query_one(
+        "SELECT * FROM cycle_runs WHERE correlation_id = :cid",
+        {"cid": correlation_id},
+        config=config,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    stages = query_many(
+        """
+        SELECT log_id, correlation_id, 'collector' AS kind, collector AS component,
+               started_at, completed_at, status, duration_ms, records_fetched,
+               records_written, NULL::INTEGER AS tokens_input,
+               NULL::INTEGER AS tokens_output, NULL::DOUBLE PRECISION AS cost_usd,
+               error_message
+        FROM collection_log WHERE correlation_id = :cid
+        UNION ALL
+        SELECT log_id, correlation_id, 'processor' AS kind, processor AS component,
+               started_at, completed_at, status, duration_ms, NULL, NULL,
+               tokens_input, tokens_output, cost_usd, error_message
+        FROM processing_log WHERE correlation_id = :cid
+        ORDER BY started_at
+        """,
+        {"cid": correlation_id},
+        config=config,
+    )
+    payload = _run_payload(row)
+    payload["stages"] = [
+        {
+            **stage,
+            "log_id": str(stage["log_id"]),
+            "correlation_id": str(stage["correlation_id"]),
+            "started_at": _fmt(stage.get("started_at")),
+            "completed_at": _fmt(stage.get("completed_at")),
+            "cost_usd": float(stage["cost_usd"]) if stage.get("cost_usd") is not None else None,
+        }
+        for stage in stages
+    ]
+    return payload
+
+
 @router.get("/system/cycle-status")
 def get_cycle_status(correlation_id: str = Query(...)):
     config = load_config()
@@ -230,7 +333,7 @@ def get_cycle_status(correlation_id: str = Query(...)):
         return {"status": "unknown", "correlation_id": correlation_id}
 
     return {
-        "status": row["status"],
+        "status": row.get("result_status") or row["status"],
         "correlation_id": correlation_id,
         "started_at": _fmt(row.get("started_at")),
         "completed_at": _fmt(row.get("completed_at")),
