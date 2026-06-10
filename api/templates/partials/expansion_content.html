@@ -46,4 +46,10 @@
   {% if price and price.timestamp %}
     <div class="expansion-footnote tabular">Price snapshot: {{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
   {% endif %}
+  {% if opinion_id %}
+    <details class="provenance-details" data-opinion-id="{{ opinion_id }}">
+      <summary>Analysis evidence</summary>
+      <div class="evidence-view" data-evidence-target></div>
+    </details>
+  {% endif %}
 </div>

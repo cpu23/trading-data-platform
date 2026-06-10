@@ -8,6 +8,7 @@ from routes.json.macro import router as macro_router
 from routes.json.watchlist import router as watchlist_router
 from routes.json.system import router as system_router
 from routes.json.triggers import router as triggers_router
+from routes.json.evidence import router as evidence_router
 
 router = APIRouter(prefix="/api")
 
@@ -19,3 +20,4 @@ router.include_router(macro_router)
 router.include_router(watchlist_router)
 router.include_router(system_router)
 router.include_router(triggers_router)
+router.include_router(evidence_router)

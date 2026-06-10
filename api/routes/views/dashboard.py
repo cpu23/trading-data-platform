@@ -48,6 +48,16 @@ def _last_cycle_text(config: dict) -> str:
     return "No cycle run yet"
 
 
+def _latest_cycle_status(config: dict) -> str:
+    row = query_one(
+        "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
+        config=config,
+    )
+    if not row:
+        return "unknown"
+    return row.get("result_status") or row.get("status") or "unknown"
+
+
 def _parse_iso(value) -> datetime | None:
     if value is None:
         return None
@@ -408,6 +418,7 @@ def dashboard(request: Request):
     context = {
         "request": request,
         "last_cycle_text": _last_cycle_text(config),
+        "last_cycle_status": _latest_cycle_status(config),
         "system_health": _get_dashboard_health(),
         "regime": regime,
         "briefing": briefing,
@@ -476,6 +487,7 @@ def partial_header(request: Request):
     return templates.TemplateResponse(request, "partials/header.html", {
         "request": request,
         "last_cycle_text": _last_cycle_text(config),
+        "last_cycle_status": _latest_cycle_status(config),
         "current_time": now,
         "any_stale": any_stale,
         "system_health": _get_dashboard_health(),
@@ -567,6 +579,7 @@ def partial_cards_symbol(request: Request, symbol: str):
             "price": _get_latest_prices(config).get(symbol),
             "drivers": _asset_drivers(note),
             "matched_events": _matched_asset_events(symbol, events),
+            "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
         })
 
     # Symbol not found: return empty panel

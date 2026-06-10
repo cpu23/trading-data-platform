@@ -4,8 +4,6 @@
          hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label">Regime</span>
-    {% set d = dot if dot is defined else dots.regime %}
-    {% if d.state %}<span class="section-dot dot-{{ d.state }}" title="{{ d.title }}" aria-label="{{ d.state }}"></span>{% endif %}
   </div>
   {% if regime is mapping and regime.get('error') %}
     <div class="error-block">{{ regime.error }}</div>
@@ -36,5 +34,10 @@
         {% endfor %}
       </div>
     {% endif %}
+    <details class="provenance-details" data-history-days="90" data-opinion-id="{{ regime.opinion_id or '' }}">
+      <summary>History and evidence</summary>
+      <div class="regime-timeline" data-history-target></div>
+      <div class="evidence-view" data-evidence-target></div>
+    </details>
   {% endif %}
 </section>

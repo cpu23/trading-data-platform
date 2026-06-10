@@ -87,7 +87,7 @@ def get_regime_history(days: int = Query(default=30, ge=1, le=365)):
     sql = """
         SELECT rc.classification_id, rc.created_at, rc.scope, rc.regime,
                rc.sub_regime, rc.confidence,
-               so.direction, so.summary
+               so.direction, so.summary, so.opinion_id
         FROM regime_classifications rc
         JOIN structured_opinions so ON rc.opinion_id = so.opinion_id
         WHERE rc.created_at >= :cutoff
@@ -106,6 +106,7 @@ def get_regime_history(days: int = Query(default=30, ge=1, le=365)):
             "confidence": row.get("confidence"),
             "direction": row.get("direction"),
             "summary": row.get("summary"),
+            "opinion_id": str(row["opinion_id"]) if row.get("opinion_id") else None,
         })
 
     return {"regimes": results, "days": days}
