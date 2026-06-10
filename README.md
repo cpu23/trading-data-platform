@@ -154,6 +154,16 @@ The database keeps responsibilities explicit:
 
 ## Quick Start
 
+For a populated, credential-free portfolio demo:
+
+```bash
+docker compose -f docker-compose.demo.yml up --build
+# Open http://127.0.0.1:8001 and sign in with demo / demo
+```
+
+The demo seeds deterministic fictional analysis, linked operational runs, and
+an in-memory simulated quote stream. It makes no external or paid API calls.
+
 ### Prerequisites
 
 - Docker and Docker Compose v2

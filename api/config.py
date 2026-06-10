@@ -53,6 +53,8 @@ def load_config(config_path: str | None = None) -> dict:
         raw_config = yaml.safe_load(f)
 
     config = _substitute_recursive(raw_config)
+    if os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"):
+        config["demo"] = {"enabled": True}
     _config_cache = config
     _config_cache_path = config_path
     _config_cache_mtime_ns = stat.st_mtime_ns

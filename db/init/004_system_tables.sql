@@ -10,7 +10,8 @@ CREATE TABLE collection_log (
     error_traceback TEXT,
     duration_ms INTEGER,
     api_calls_made INTEGER,
-    config_snapshot JSONB
+    config_snapshot JSONB,
+    correlation_id UUID
 );
 
 
@@ -29,5 +30,6 @@ CREATE TABLE processing_log (
     tokens_output INTEGER,
     cost_usd DOUBLE PRECISION,
     duration_ms INTEGER,
-    error_message TEXT
+    error_message TEXT,
+    correlation_id UUID
 );

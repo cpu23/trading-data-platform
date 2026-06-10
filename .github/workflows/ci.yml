@@ -79,6 +79,9 @@ jobs:
           DASHBOARD_PASSWORD: ci
         run: docker compose config --quiet
 
+      - name: Validate demo Compose configuration
+        run: docker compose -f docker-compose.demo.yml config --quiet
+
   secrets:
     name: Tracked-file secret scan
     runs-on: ubuntu-latest

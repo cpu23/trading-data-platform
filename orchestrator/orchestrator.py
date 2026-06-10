@@ -13,6 +13,57 @@ from sqlalchemy import text
 logger = get_logger("orchestrator")
 
 
+def ensure_run(
+    correlation_id: str,
+    config: dict,
+    run_kind: str = "cycle",
+    requested_component: str | None = None,
+    triggered_by: str = "internal",
+) -> None:
+    with get_session(config) as session:
+        session.execute(
+            text(
+                "INSERT INTO cycle_runs "
+                "(correlation_id, status, started_at, triggered_by, run_kind, requested_component) "
+                "VALUES (:cid, 'running', :started_at, :triggered_by, :run_kind, :component) "
+                "ON CONFLICT (correlation_id) DO NOTHING"
+            ),
+            {
+                "cid": correlation_id,
+                "started_at": datetime.now(timezone.utc),
+                "triggered_by": triggered_by,
+                "run_kind": run_kind,
+                "component": requested_component,
+            },
+        )
+
+
+def finish_run(
+    correlation_id: str,
+    result_status: str,
+    summary: dict,
+    config: dict,
+    error_message: str | None = None,
+) -> None:
+    lifecycle_status = "failed" if result_status == "failed" else "completed"
+    with get_session(config) as session:
+        session.execute(
+            text(
+                "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
+                "summary = CAST(:summary AS JSONB), completed_at = :completed_at, "
+                "error_message = :error_message WHERE correlation_id = :cid"
+            ),
+            {
+                "cid": correlation_id,
+                "status": lifecycle_status,
+                "result_status": result_status,
+                "summary": json.dumps(summary),
+                "completed_at": datetime.now(timezone.utc),
+                "error_message": error_message,
+            },
+        )
+
+
 def run_collector(
     source_id: str, config: dict | None = None, correlation_id: str | None = None
 ) -> dict:
@@ -21,8 +72,15 @@ def run_collector(
 
         config = load_config()
 
-    if correlation_id is None:
+    standalone = correlation_id is None
+    if standalone:
         correlation_id = str(uuid4())
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="collector",
+        requested_component=source_id,
+    )
 
     import structlog.contextvars
 
@@ -110,6 +168,9 @@ def run_collector(
         **result,
     )
 
+    if standalone:
+        finish_run(correlation_id, status, result, config, error_message)
+
     return result
 
 
@@ -123,6 +184,7 @@ def run_full_cycle(
 
     if correlation_id is None:
         correlation_id = str(uuid4())
+    ensure_run(correlation_id, config, run_kind="cycle")
 
     logger.info(
         "full_cycle_started",
@@ -178,6 +240,7 @@ def run_full_cycle(
         correlation_id=correlation_id,
     )
 
+    finish_run(correlation_id, overall_status, cycle_result, config)
     return cycle_result
 
 
@@ -295,6 +358,7 @@ def _write_collection_log(
         "duration_ms": duration_ms,
         "api_calls_made": api_calls_made,
         "config_snapshot": json.dumps(config_snapshot),
+        "correlation_id": correlation_id,
     }
 
     try:
@@ -342,8 +406,15 @@ def run_processor(
 
         config = load_config()
 
-    if correlation_id is None:
+    standalone = correlation_id is None
+    if standalone:
         correlation_id = str(uuid4())
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="processor",
+        requested_component=processor_id,
+    )
 
     import structlog.contextvars
 
@@ -473,6 +544,8 @@ def run_processor(
     }
 
     logger.info("processor_completed", action="run_processor", **result)
+    if standalone:
+        finish_run(correlation_id, status, result, config, error_message)
     return result
 
 
@@ -509,6 +582,7 @@ def _write_processing_log(
         "cost_usd": cost_usd,
         "duration_ms": duration_ms,
         "error_message": error_message,
+        "correlation_id": correlation_id,
     }
 
     try:

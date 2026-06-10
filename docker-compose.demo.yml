@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: trading_data
+    volumes:
+      - demo_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/demo/900_demo_seed.sql:/docker-entrypoint-initdb.d/900_demo_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d trading_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  orchestrator:
+    build: ./orchestrator
+    environment: &demo_environment
+      DB_USER: demo
+      DB_PASSWORD: demo
+      FRED_API_KEY: demo-disabled
+      OPENROUTER_API_KEY: demo-disabled
+      OANDA_API_KEY: demo-disabled
+      DASHBOARD_USER: demo
+      DASHBOARD_PASSWORD: demo
+      DEMO_MODE: "true"
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./api
+    environment: *demo_environment
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./api/static:/app/static:ro
+      - ./api/templates:/app/templates:ro
+      - ./api/routes:/app/routes:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      orchestrator:
+        condition: service_started
+
+volumes:
+  demo_pgdata:
