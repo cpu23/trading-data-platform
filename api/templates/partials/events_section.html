@@ -2,25 +2,33 @@
          hx-get="/partials/events"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  <div class="section-heading">
-    <span class="label">Upcoming high-impact catalysts</span>
-  </div>
+  <details class="calendar-details">
+    <summary class="section-heading">
+      <span class="label calendar-title calendar-title-compact">Upcoming high-impact catalysts</span>
+      <span class="label calendar-title calendar-title-full">Full economic calendar</span>
+      <span class="calendar-toggle-icon" aria-hidden="true"></span>
+    </summary>
 
-  {% if not catalysts %}
-    <div class="empty-state">No high-impact events through Friday.</div>
-  {% else %}
-    <div class="catalyst-ribbon">
-      {% for ev in catalysts %}
-        <div class="catalyst-item">
-          <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
-          <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-          <span class="event-name">{{ ev.event_name }}</span>
+    <div class="calendar-compact">
+      {% if not catalysts %}
+        <div class="empty-state">No high-impact events through Friday.</div>
+      {% else %}
+        <div class="catalyst-ribbon">
+          {% for ev in catalysts %}
+            <div class="catalyst-item">
+              <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
+              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+              <span class="event-name">{{ ev.event_name }}</span>
+            </div>
+          {% endfor %}
         </div>
-      {% endfor %}
+      {% endif %}
     </div>
 
-    <details class="calendar-details">
-      <summary><span class="calendar-summary-text">Full calendar</span></summary>
+    <div class="calendar-full">
+      {% if not filtered_events %}
+        <div class="empty-state">No configured-currency events through Friday.</div>
+      {% else %}
       {% for day_key in grouped | sort %}
         <div class="events-day">
           <div class="events-day-label">{{ day_label_for(day_key) }}</div>
@@ -38,6 +46,7 @@
           {% endfor %}
         </div>
       {% endfor %}
-    </details>
-  {% endif %}
+      {% endif %}
+    </div>
+  </details>
 </section>

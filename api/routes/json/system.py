@@ -133,7 +133,11 @@ def get_system_health():
                 "stale": True,
             })
 
-    all_ok = all(c["last_status"] in ("success", "partial", "connected", "simulated") for c in components)
+    all_ok = all(
+        not c.get("stale")
+        and c["last_status"] in ("success", "connected", "simulated")
+        for c in components
+    )
     overall = "healthy" if all_ok else "degraded"
 
     return {

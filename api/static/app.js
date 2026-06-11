@@ -227,9 +227,24 @@
             historyTarget.replaceChildren();
             (data.regimes || []).slice().reverse().forEach(function (regime) {
               var point = document.createElement('div');
-              point.className = 'timeline-point bias-' + (regime.direction || 'neutral').toLowerCase();
+              var createdAt = new Date(regime.created_at);
+              var direction = (regime.direction || 'neutral').toLowerCase();
+              point.className = 'timeline-point bias-' + direction;
               point.title = regime.created_at + ' · ' + regime.regime + ' · ' + (regime.summary || '');
-              point.textContent = regime.regime;
+              var timestamp = document.createElement('span');
+              timestamp.className = 'timeline-time tabular';
+              timestamp.textContent = isNaN(createdAt.getTime())
+                ? regime.created_at
+                : createdAt.toLocaleString([], {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'});
+              var regimeName = document.createElement('span');
+              regimeName.className = 'timeline-regime';
+              regimeName.textContent = regime.regime || 'unknown';
+              var meta = document.createElement('span');
+              meta.className = 'timeline-meta';
+              meta.textContent = direction + ' · ' + (regime.confidence || 'unknown') + ' confidence';
+              point.appendChild(timestamp);
+              point.appendChild(regimeName);
+              point.appendChild(meta);
               historyTarget.appendChild(point);
             });
           });
@@ -284,9 +299,21 @@
       var runId = chip.dataset.runId;
       var detail = document.getElementById('run-inspector-detail');
       var correlationInput = document.getElementById('logs-correlation-id');
+      var isSelected = chip.classList.contains('selected');
       document.querySelectorAll('.run-chip').forEach(function (item) {
-        item.classList.toggle('selected', item === chip);
+        item.classList.toggle('selected', !isSelected && item === chip);
       });
+      if (isSelected) {
+        if (correlationInput) {
+          correlationInput.value = '';
+          htmx.trigger(document.getElementById('logs-filter-form'), 'change');
+        }
+        if (detail) {
+          detail.replaceChildren();
+          detail.hidden = true;
+        }
+        return;
+      }
       if (correlationInput) {
         correlationInput.value = runId;
         htmx.trigger(document.getElementById('logs-filter-form'), 'change');

@@ -19,7 +19,11 @@
                 title="{{ component.kind | title }} · {{ component.last_status | replace('_', ' ') }}{% if component.last_run_at %} · {{ component.last_run_at }}{% endif %}">
             <span class="status-dot status-{{ 'failed' if component.last_status in ['failed', 'error'] else 'partial' if component.stale or component.last_status == 'partial' else 'success' }}"></span>
             {{ component.name | replace('_', ' ') }}
-            <span class="health-component-status">{{ component.last_status | replace('_', ' ') }}</span>
+            {% if component.stale %}
+              <span class="health-component-status">stale</span>
+            {% elif component.last_status not in ['success', 'connected', 'simulated'] %}
+              <span class="health-component-status">{{ component.last_status | replace('_', ' ') }}</span>
+            {% endif %}
           </span>
         {% endfor %}
       </div>

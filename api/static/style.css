@@ -130,7 +130,7 @@ body {
 
 .health-components {
   display: flex;
-  gap: 8px;
+  gap: 16px;
   flex-wrap: wrap;
   min-width: 0;
 }
@@ -138,7 +138,7 @@ body {
 .health-component {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
   color: var(--fg-muted);
   font-size: 11px;
   white-space: nowrap;
@@ -232,12 +232,21 @@ body {
 }
 
 .timeline-point {
-  min-width: 44px;
-  padding: 5px 7px;
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  padding: 7px 9px;
   border-left: 2px solid currentColor;
-  color: var(--fg-dim);
   font-size: 10px;
   white-space: nowrap;
+}
+.timeline-time,
+.timeline-meta {
+  color: var(--fg-dim);
+}
+.timeline-regime {
+  color: var(--fg);
+  font-size: 11px;
 }
 
 .evidence-view {
@@ -259,6 +268,14 @@ body {
 .health-component-status {
   color: var(--fg-dim);
   margin-left: 4px;
+}
+
+.health-strip .status-dot {
+  width: 5px;
+  height: 5px;
+  margin-right: 1px;
+  vertical-align: middle;
+  flex: 0 0 5px;
 }
 
 .header-usage,
@@ -407,6 +424,12 @@ body {
   margin: 0 0 12px 0;
 }
 
+.regime-scope {
+  color: var(--fg-dim);
+  font-size: 11px;
+  margin: -8px 0 14px;
+}
+
 .regime-caution {
   font-size: 13px;
   color: var(--fg-muted);
@@ -447,42 +470,34 @@ body {
   align-items: baseline;
   font-variant-numeric: tabular-nums;
 }
-.calendar-details {
-  margin-top: 16px;
-}
+.calendar-details { margin: 0; }
 .calendar-details summary {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   color: var(--fg-dim);
   cursor: pointer;
-  font-size: 12px;
   list-style: none;
+  width: fit-content;
 }
 
 .calendar-details summary::-webkit-details-marker {
   display: none;
 }
 
-.calendar-details summary::before {
-  content: "▸";
-  color: var(--fg-dim);
-}
-
-.calendar-details[open] summary::before {
-  content: "▾";
-}
-
-.calendar-details[open] .calendar-summary-text::before {
-  content: "Hide ";
-}
-
-.calendar-details:not([open]) .calendar-summary-text::before {
-  content: "Show ";
-}
 .calendar-details summary:hover {
   color: var(--fg-muted);
 }
+.calendar-details > summary .label { margin-bottom: 0; }
+.calendar-toggle-icon::before { content: "▸"; }
+.calendar-details[open] .calendar-toggle-icon::before { content: "▾"; }
+.calendar-title-full,
+.calendar-full { display: none; }
+.calendar-details:not([open]) .calendar-compact { display: block; }
+.calendar-details[open] .calendar-title-compact,
+.calendar-details[open] .calendar-compact { display: none; }
+.calendar-details[open] .calendar-title-full { display: inline; }
+.calendar-details[open] .calendar-full { display: block; }
 .events-day { margin-bottom: 12px; }
 .events-day-label {
   font-size: 12px;

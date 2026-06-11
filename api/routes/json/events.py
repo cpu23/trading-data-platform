@@ -106,7 +106,7 @@ def get_events_upcoming(days: int = Query(default=14, ge=1, le=90)):
         FROM econ_events
         WHERE scheduled_at >= :start
           AND scheduled_at <= :end
-          AND lower(COALESCE(impact_level, '')) IN ('high', 'medium')
+          AND lower(COALESCE(impact_level, '')) IN ('high', 'medium', 'low')
           AND (
               country IN ('US', 'EU', 'GB', 'JP', 'AU', 'CN')
               OR metadata ->> 'currency' IN ('USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CNY')

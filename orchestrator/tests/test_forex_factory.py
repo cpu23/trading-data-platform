@@ -17,7 +17,7 @@ CONFIG = {
             "source_url": "https://www.forexfactory.com/calendar",
             "weekly_export_base_url": "https://nfs.faireconomy.media",
             "currencies": ["USD", "EUR", "GBP", "JPY", "AUD", "CNY"],
-            "min_impact": "medium",
+            "min_impact": "low",
             "user_agent": "test-agent",
         }
     },
@@ -134,6 +134,26 @@ class ForexFactoryCollectorTests(unittest.TestCase):
             [r["event_name"] for r in records],
             ["Non-Farm Employment Change", "ECB President Lagarde Speaks"],
         )
+
+    def test_low_impact_events_are_kept_when_configured(self):
+        collector = ForexFactoryCollector()
+        payload = SAMPLE_PAYLOAD + [{
+            "title": "Low Impact Item",
+            "country": "USD",
+            "date": "2026-05-08T10:00:00-04:00",
+            "impact": "Low",
+        }]
+
+        records = collector._parse_export_payload(
+            payload=payload,
+            target_week=target_week(),
+            min_impact="low",
+            currencies={"USD", "EUR", "GBP", "JPY", "AUD", "CNY"},
+            payload_source="test",
+            correlation_id="corr",
+        )
+
+        self.assertEqual([r["impact_level"] for r in records], ["high", "medium", "low"])
 
 
 if __name__ == "__main__":

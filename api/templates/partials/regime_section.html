@@ -3,7 +3,7 @@
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="section-heading">
-    <span class="label">Regime</span>
+    <span class="label">Global macro regime</span>
   </div>
   {% if regime is mapping and regime.get('error') %}
     <div class="error-block">{{ regime.error }}</div>
@@ -19,6 +19,7 @@
       <span class="dim-sep">·</span>
       <span class="muted">{{ regime.confidence or '—' }}</span>
     </div>
+    <div class="regime-scope">Scope: global cross-market macro conditions</div>
     {% if regime.summary %}
       <p class="regime-summary">{{ regime.summary }}</p>
     {% endif %}
