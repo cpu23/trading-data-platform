@@ -38,15 +38,23 @@
     {% if not catalysts %}
       <div class="empty-state">No high-impact events through Friday.</div>
     {% else %}
-      <div class="catalyst-ribbon">
-        {% for ev in catalysts %}
-          <div class="catalyst-item">
-            <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
-            <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-            <span class="event-name">{{ ev.event_name }}</span>
-          </div>
-        {% endfor %}
-      </div>
+      {% for day_key in high_impact_grouped | sort %}
+        <div class="events-day">
+          <div class="events-day-label">{{ day_label_for(day_key) }}</div>
+          {% for ev in high_impact_grouped[day_key] %}
+            <div class="event-row">
+              <span class="event-time tabular">{{ ev.time_display }}</span>
+              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+              <span class="event-name">{{ ev.event_name }}</span>
+              <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
+              <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
+              {% if ev.actual %}
+                <span class="event-actual tabular">actual {{ ev.actual }}</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endfor %}
     {% endif %}
   </div>
 </section>

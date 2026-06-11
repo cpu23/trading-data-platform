@@ -126,6 +126,15 @@ def _primary_timezone(config: dict) -> ZoneInfo:
 def _event_template_context(events_data: dict, config: dict) -> dict:
     grouped = events_data.get("grouped", {}) if isinstance(events_data, dict) else {}
     filtered_events = events_data.get("events", []) if isinstance(events_data, dict) else []
+    high_impact_grouped = {}
+    for day_key, events in grouped.items():
+        high_impact_events = [
+            event
+            for event in events
+            if str(event.get("impact_level") or "").lower() == "high"
+        ]
+        if high_impact_events:
+            high_impact_grouped[day_key] = high_impact_events
     london = _primary_timezone(config)
     today_str = datetime.now(london).strftime("%Y-%m-%d")
 
@@ -142,6 +151,7 @@ def _event_template_context(events_data: dict, config: dict) -> dict:
         "filtered_events": filtered_events,
         "grouped": grouped,
         "catalysts": _top_catalysts(filtered_events),
+        "high_impact_grouped": high_impact_grouped,
         "today_str": today_str,
         "day_label_for": day_label_for,
     }
