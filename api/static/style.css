@@ -493,11 +493,10 @@ body {
 .calendar-details[open] .calendar-toggle-icon::before { content: "▾"; }
 .calendar-title-full,
 .calendar-full { display: none; }
-.calendar-details:not([open]) .calendar-compact { display: block; }
-.calendar-details[open] .calendar-title-compact,
-.calendar-details[open] .calendar-compact { display: none; }
+.calendar-details[open] .calendar-title-compact { display: none; }
 .calendar-details[open] .calendar-title-full { display: inline; }
 .calendar-details[open] .calendar-full { display: block; }
+.calendar-details[open] + .calendar-compact { display: none; }
 .events-day { margin-bottom: 12px; }
 .events-day-label {
   font-size: 12px;

@@ -9,22 +9,6 @@
       <span class="calendar-toggle-icon" aria-hidden="true"></span>
     </summary>
 
-    <div class="calendar-compact">
-      {% if not catalysts %}
-        <div class="empty-state">No high-impact events through Friday.</div>
-      {% else %}
-        <div class="catalyst-ribbon">
-          {% for ev in catalysts %}
-            <div class="catalyst-item">
-              <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
-              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-              <span class="event-name">{{ ev.event_name }}</span>
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    </div>
-
     <div class="calendar-full">
       {% if not filtered_events %}
         <div class="empty-state">No configured-currency events through Friday.</div>
@@ -49,4 +33,20 @@
       {% endif %}
     </div>
   </details>
+
+  <div class="calendar-compact">
+    {% if not catalysts %}
+      <div class="empty-state">No high-impact events through Friday.</div>
+    {% else %}
+      <div class="catalyst-ribbon">
+        {% for ev in catalysts %}
+          <div class="catalyst-item">
+            <span class="event-time tabular">{{ ev.day_time_display or ev.time_display }}</span>
+            <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
+            <span class="event-name">{{ ev.event_name }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
 </section>
