@@ -52,6 +52,7 @@ jobs:
           DB_PASSWORD: ci
           FRED_API_KEY: ci
           OPENROUTER_API_KEY: ci
+          OPENROUTER_MODEL: deepseek/deepseek-v4-flash
           OANDA_API_KEY: ci
           DASHBOARD_USER: ci
           DASHBOARD_PASSWORD: ci
@@ -74,6 +75,7 @@ jobs:
           DB_PASSWORD: ci
           FRED_API_KEY: ci
           OPENROUTER_API_KEY: ci
+          OPENROUTER_MODEL: deepseek/deepseek-v4-flash
           OANDA_API_KEY: ci
           DASHBOARD_USER: ci
           DASHBOARD_PASSWORD: ci
