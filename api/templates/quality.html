@@ -19,36 +19,36 @@
   {% if overall is not none %}
     <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 10px;">
       <span class="label">Overall status:</span>
-      <span class="status-dot {{ 'status-success' if overall else 'status-warn' }}"></span>
-      <span class="muted">{{ 'Healthy' if overall else 'Warning' }}</span>
+      <span class="status-dot {{ 'status-success' if overall == 'healthy' else 'status-warn' }}"></span>
+      <span class="muted">{{ 'Healthy' if overall == 'healthy' else 'Degraded' }}</span>
     </div>
   {% endif %}
 
-  <table class="logs-table">
-    <thead>
-      <tr>
-        <th>Check</th>
-        <th>Status</th>
-        <th>Detail</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if checks %}
+  {% if checks %}
+    <table class="logs-table">
+      <thead>
+        <tr>
+          <th>Check</th>
+          <th>Status</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
         {% for check in checks %}
           <tr>
-            <td>{{ check.name or check.check or '—' }}</td>
+            <td>{{ check.name or '—' }}</td>
             <td>
               <span class="status-dot {{ 'status-success' if check.healthy else 'status-warn' }}"></span>
               <span class="muted">{{ 'OK' if check.healthy else 'Warn' }}</span>
             </td>
-            <td class="muted">{{ check.detail or check.message or '—' }}</td>
+            <td class="muted">{{ check.detail or '—' }}</td>
           </tr>
         {% endfor %}
-      {% else %}
-        <tr>
-          <td colspan="3"><span class="empty-state">No quality checks available.</span></td>
-        </tr>
-      {% endif %}
-    </tbody>
-  </table>
+      </tbody>
+    </table>
+  {% elif not error %}
+    <div class="empty-state" style="padding: 40px 0; text-align: center; color: var(--fg-dim);">
+      No quality checks configured. Add checks in orchestrator/data_quality.py.
+    </div>
+  {% endif %}
 {% endblock %}

@@ -4,6 +4,25 @@
         hx-swap="outerHTML">
   {% set health = system_health or {} %}
   {% set budget = budget or {} %}
+  {% set today_cost = budget.get('today_cost_usd', 0) or 0 %}
+  {% set cap = budget.get('budget_cap_usd', 0) or 0 %}
+  {% set unlimited = budget.get('unlimited', False) %}
+  {% if today_cost < 0.01 %}
+    {% set cost_str = '%.6f' | format(today_cost) %}
+  {% elif today_cost < 1 %}
+    {% set cost_str = '%.4f' | format(today_cost) %}
+  {% else %}
+    {% set cost_str = '%.2f' | format(today_cost) %}
+  {% endif %}
+  {% if unlimited %}
+    {% set cap_str = '∞' %}
+  {% elif cap < 0.01 %}
+    {% set cap_str = '%.6f' | format(cap) %}
+  {% elif cap < 1 %}
+    {% set cap_str = '%.4f' | format(cap) %}
+  {% else %}
+    {% set cap_str = '%.2f' | format(cap) %}
+  {% endif %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M UTC') }}</span>
@@ -13,7 +32,7 @@
       <span class="freshness-label tabular">{{ last_cycle_text }}</span>
     </div>
     <div class="header-usage tabular{% if budget.warning %} budget-warn{% endif %}">
-      ${{ '%.2f' | format(budget.get('today_cost_usd', 0) or 0) }}/${{ '%.2f' | format(budget.get('budget_cap_usd', 0) or 0) }}
+      ${{ cost_str }}/${{ cap_str }}
       <span class="dim">today</span>
       {% if budget.exceeded %}
       <span class="dim-sep">·</span>
@@ -24,7 +43,7 @@
             data-original-label="Run cycle"
             hx-post="/api/cycle"
             {% if budget.warning %}
-            hx-confirm="LLM spend at ${{ '%.2f' | format(budget.get('today_cost_usd', 0) or 0) }}/${{ '%.2f' | format(budget.get('budget_cap_usd', 0) or 0) }} today. Run cycle anyway?"
+            hx-confirm="LLM spend at ${{ cost_str }}/${{ cap_str }} today. Run cycle anyway?"
             {% else %}
             hx-confirm="Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."
             {% endif %}

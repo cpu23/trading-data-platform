@@ -201,6 +201,7 @@ def trigger_processor(
 @app.get("/quality")
 def quality():
     config = _get_config()
+    logger.info("quality_endpoint_called")
     results: dict[str, dict] = {}
     for check_id, check_fn in DATA_QUALITY_CHECKS.items():
         try:
@@ -210,4 +211,5 @@ def quality():
             results[check_id] = {"healthy": False, "detail": f"check failed: {str(exc)}"}
     any_unhealthy = any(not r.get("healthy", True) for r in results.values())
     overall = "degraded" if any_unhealthy else "healthy"
+    logger.info("quality_check_complete", overall=overall, check_count=len(results))
     return {"overall": overall, "checks": results}

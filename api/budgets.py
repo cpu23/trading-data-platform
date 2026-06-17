@@ -2,6 +2,9 @@ from datetime import datetime, timezone
 
 from config import load_config
 from db import query_one
+from logging_config import get_logger
+
+logger = get_logger("budgets")
 
 
 def get_budget_config(config: dict | None = None) -> dict:
@@ -53,14 +56,23 @@ def get_budget_status(config: dict | None = None) -> dict:
 
     today_cost, today_tokens = get_today_spend(config)
 
-    usage_pct = round((today_cost / daily_cap) * 100, 2) if daily_cap > 0 else 0.0
-    exceeded = today_cost > daily_cap
-    warning = not exceeded and usage_pct >= warn_pct
+    unlimited = daily_cap <= 0
+    if unlimited:
+        usage_pct = 0.0
+        warning = False
+        exceeded = False
+    else:
+        usage_pct = round((today_cost / daily_cap) * 100, 2)
+        exceeded = today_cost > daily_cap
+        warning = not exceeded and usage_pct >= warn_pct
+
+    logger.debug("budget_status", today_cost_usd=round(today_cost, 6), usage_pct=usage_pct, warning=warning, exceeded=exceeded, unlimited=unlimited)
 
     return {
-        "today_cost_usd": round(today_cost, 4),
+        "today_cost_usd": round(today_cost, 6),
         "today_tokens": today_tokens,
         "budget_cap_usd": daily_cap,
+        "unlimited": unlimited,
         "warn_at_pct": warn_pct,
         "usage_pct": usage_pct,
         "warning": warning,

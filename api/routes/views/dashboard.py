@@ -330,7 +330,7 @@ def _get_latest_prices(config: dict) -> dict:
         SELECT DISTINCT ON (symbol)
             symbol, close AS price, timestamp
         FROM market_data
-        WHERE source = 'oanda' AND timeframe = 'PRICE'
+        WHERE source IN ('oanda', 'demo') AND timeframe = 'PRICE'
         ORDER BY symbol, timestamp DESC
     """
     rows = query_many(sql, config=config)

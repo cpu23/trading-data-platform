@@ -253,7 +253,7 @@ body {
   margin-top: 18px;
   border-top: 1px solid var(--hairline-faint);
   padding-top: 14px;
-  min-height: 200px;
+  display: none;
 }
 
 .evidence-view {

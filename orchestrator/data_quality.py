@@ -35,6 +35,7 @@ def check_freshness(
         ``healthy``, ``detail``, ``latest_at`` (ISO str | None),
         ``age_hours`` (float | None).
     """
+    logger.info("check_freshness_running", source_id=source_id, table=table, max_age_hours=max_age_hours)
     sql = text(
         f"SELECT MAX({timestamp_column}) FROM {table} WHERE source = :source_id"
     )
@@ -63,6 +64,7 @@ def check_freshness(
     age_hours = age.total_seconds() / 3600.0
 
     if age_hours > max_age_hours:
+        logger.warning("check_freshness_unhealthy", source_id=source_id, age_hours=round(age_hours, 2), max_age_hours=max_age_hours)
         return {
             "healthy": False,
             "detail": f"stale ({age_hours:.1f}h old, max {max_age_hours}h)",
@@ -96,6 +98,7 @@ def check_gaps(
     dict
         ``healthy``, ``detail``, ``gaps`` (list of gap descriptions).
     """
+    logger.info("check_gaps_running", source_id=source_id, table=table)
     now = datetime.now(timezone.utc).date()
     cutoff = now - timedelta(days=14)
 
@@ -142,6 +145,7 @@ def check_gaps(
 
     # Report all gaps found
     if gaps:
+        logger.warning("check_gaps_unhealthy", source_id=source_id, gap_count=len(gaps))
         return {
             "healthy": False,
             "detail": f"gap(s) found: {len(gaps)} missing period(s)",
@@ -170,6 +174,7 @@ def check_duplicates(
         ``duplicate_count``.
     """
     distinct_expr = ", ".join(unique_columns)
+    logger.info("check_duplicates_running", source_id=source_id, table=table)
     sql = text(
         f"SELECT COUNT(*) AS total, COUNT(DISTINCT ({distinct_expr})) AS distinct_count "
         f"FROM {table} WHERE source = :source_id"
@@ -192,6 +197,7 @@ def check_duplicates(
     dupes = total - distinct
 
     if dupes > 0:
+        logger.warning("check_duplicates_unhealthy", source_id=source_id, duplicate_count=dupes)
         return {
             "healthy": False,
             "detail": f"{dupes} duplicate row(s) detected",
@@ -230,6 +236,7 @@ def check_anomalies(
     """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=30)
+    logger.info("check_anomalies_running", source_id=source_id, table=table, z_threshold=z_threshold)
 
     sql = text(
         f"SELECT {value_column} FROM {table} "
@@ -274,6 +281,7 @@ def check_anomalies(
             )
 
     if anomalies:
+        logger.warning("check_anomalies_unhealthy", source_id=source_id, anomaly_count=len(anomalies))
         return {
             "healthy": False,
             "detail": f"{len(anomalies)} anomaly(s) detected",

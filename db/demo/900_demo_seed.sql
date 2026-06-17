@@ -8,8 +8,14 @@ INSERT INTO macro_series (series_id, observed_at, value, source) VALUES
 ('T5YIE', NOW() - INTERVAL '1 hour', 2.31, 'demo');
 
 INSERT INTO econ_events (event_id, event_name, country, scheduled_at, impact_level, consensus, previous, source, metadata) VALUES
-('demo-us-cpi', 'US CPI', 'US', NOW() + INTERVAL '1 day', 'high', '0.2%', '0.3%', 'demo', '{"currency":"USD"}'),
-('demo-ecb', 'ECB Rate Decision', 'EU', NOW() + INTERVAL '3 days', 'high', '2.15%', '2.15%', 'demo', '{"currency":"EUR"}');
+('demo-us-cpi', 'US CPI (MoM)', 'US', NOW() + INTERVAL '1 day', 'high', '0.2%', '0.3%', 'demo', '{"currency":"USD"}'),
+('demo-ecb', 'ECB Rate Decision', 'EU', NOW() + INTERVAL '3 days', 'high', '2.15%', '2.15%', 'demo', '{"currency":"EUR"}'),
+('demo-us-retail', 'US Retail Sales', 'US', NOW() + INTERVAL '4 days', 'medium', '0.3%', '0.1%', 'demo', '{"currency":"USD"}'),
+('demo-boJ', 'BoJ Rate Decision', 'JP', NOW() + INTERVAL '6 days', 'high', '0.25%', '0.25%', 'demo', '{"currency":"JPY"}'),
+('demo-au-employment', 'AU Employment Change', 'AU', NOW() + INTERVAL '8 days', 'medium', '25.0K', '38.5K', 'demo', '{"currency":"AUD"}'),
+('demo-uk-cpi', 'UK CPI (YoY)', 'GB', NOW() + INTERVAL '10 days', 'high', '2.4%', '2.3%', 'demo', '{"currency":"GBP"}'),
+('demo-us-ppi', 'US PPI (MoM)', 'US', NOW() + INTERVAL '12 days', 'medium', '0.2%', '0.1%', 'demo', '{"currency":"USD"}'),
+('demo-de-ifo', 'DE Ifo Business Climate', 'DE', NOW() + INTERVAL '14 days', 'medium', '87.2', '86.5', 'demo', '{"currency":"EUR"}');
 
 INSERT INTO market_data (symbol, timeframe, timestamp, open, high, low, close, source)
 SELECT symbol, 'PRICE', NOW() - INTERVAL '5 minutes', price, price, price, price, 'demo'
@@ -42,7 +48,7 @@ INSERT INTO cycle_runs (correlation_id, status, started_at, completed_at, trigge
 
 INSERT INTO collection_log (started_at, completed_at, collector, status, records_fetched, records_written, duration_ms, api_calls_made, correlation_id) VALUES
 (NOW() - INTERVAL '35 minutes', NOW() - INTERVAL '34 minutes', 'fred', 'success', 18, 18, 842, 0, '77777777-7777-4777-8777-777777777777'),
-(NOW() - INTERVAL '34 minutes', NOW() - INTERVAL '33 minutes', 'forex_factory', 'success', 2, 2, 514, 0, '77777777-7777-4777-8777-777777777777'),
+(NOW() - INTERVAL '34 minutes', NOW() - INTERVAL '33 minutes', 'forex_factory', 'success', 8, 8, 514, 0, '77777777-7777-4777-8777-777777777777'),
 (NOW() - INTERVAL '33 minutes', NOW() - INTERVAL '32 minutes', 'oanda', 'success', 8, 8, 620, 0, '77777777-7777-4777-8777-777777777777');
 
 INSERT INTO processing_log (started_at, completed_at, processor, status, output_id, model_used, tokens_input, tokens_output, cost_usd, duration_ms, correlation_id) VALUES

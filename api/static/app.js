@@ -323,6 +323,8 @@
               }
             }
           });
+          var compareContainer = ctx.canvas.parentElement;
+          if (compareContainer) compareContainer.style.display = 'block';
         });
       }
     }, true);
