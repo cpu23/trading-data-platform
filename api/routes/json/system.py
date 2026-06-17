@@ -328,7 +328,8 @@ def get_cycle_status(correlation_id: str = Query(...)):
     config = load_config()
 
     row = query_one(
-        "SELECT status, started_at, completed_at, error_message FROM cycle_runs WHERE correlation_id = :cid",
+        "SELECT status, result_status, started_at, completed_at, error_message, summary "
+        "FROM cycle_runs WHERE correlation_id = :cid",
         {"cid": correlation_id},
         config=config,
     )
@@ -336,10 +337,15 @@ def get_cycle_status(correlation_id: str = Query(...)):
     if not row:
         return {"status": "unknown", "correlation_id": correlation_id}
 
+    run = get_system_run(correlation_id)
     return {
         "status": row.get("result_status") or row["status"],
+        "lifecycle_status": row["status"],
+        "result_status": row.get("result_status"),
         "correlation_id": correlation_id,
         "started_at": _fmt(row.get("started_at")),
         "completed_at": _fmt(row.get("completed_at")),
         "error_message": row.get("error_message"),
+        "progress": run.get("summary", {}).get("progress", {}),
+        "stages": run.get("stages", []),
     }

@@ -325,6 +325,7 @@ body {
 /* Header */
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 56px;
@@ -392,6 +393,42 @@ body {
 
 .braille-spinner.active {
   display: inline-block;
+}
+
+.cycle-progress {
+  flex-basis: 100%;
+  padding: 12px 0;
+  border-top: 0.5px solid var(--hairline-faint);
+}
+
+.cycle-progress[hidden] {
+  display: none;
+}
+
+.cycle-progress-summary,
+.cycle-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cycle-progress-summary {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.cycle-stage-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.cycle-stage {
+  font-size: 11px;
+}
+
+.cycle-stage-pending {
+  opacity: 0.55;
 }
 
 /* Regime section */

@@ -421,6 +421,83 @@
     });
   }
 
+  function stageDetail(stage) {
+    var detail = [];
+    if (stage.records_fetched !== null && stage.records_fetched !== undefined) {
+      detail.push(stage.records_fetched + ' fetched');
+    }
+    if (stage.records_written !== null && stage.records_written !== undefined) {
+      detail.push(stage.records_written + ' written');
+    }
+    if (stage.tokens_input || stage.tokens_output) {
+      detail.push(((stage.tokens_input || 0) + (stage.tokens_output || 0)) + ' tokens');
+    }
+    if (stage.cost_usd !== null && stage.cost_usd !== undefined) {
+      detail.push('$' + Number(stage.cost_usd).toFixed(4));
+    }
+    if (stage.duration_ms) detail.push((stage.duration_ms / 1000).toFixed(1) + 's');
+    if (stage.error || stage.error_message) detail.push(stage.error || stage.error_message);
+    return detail.join(' · ');
+  }
+
+  function renderCycleProgress(data) {
+    var panel = document.getElementById('cycle-progress');
+    var headline = document.getElementById('cycle-progress-headline');
+    var count = document.getElementById('cycle-progress-count');
+    var list = document.getElementById('cycle-stage-list');
+    if (!panel || !headline || !count || !list) return;
+
+    var progress = data.progress || {};
+    var snapshotStages = progress.stages || [];
+    var loggedByComponent = {};
+    (data.stages || []).forEach(function (stage) {
+      loggedByComponent[stage.component] = stage;
+    });
+    var stages = snapshotStages.length
+      ? snapshotStages.map(function (stage) {
+          return Object.assign({}, stage, loggedByComponent[stage.component] || {});
+        })
+      : (data.stages || []);
+
+    panel.hidden = false;
+    var current = progress.current_stage;
+    var terminal = ['success', 'partial', 'completed', 'failed'].includes(data.status);
+    headline.textContent = terminal
+      ? 'Cycle finished: ' + data.status
+      : current
+        ? 'Running ' + (progress.current_kind || 'stage') + ': ' + current.replaceAll('_', ' ')
+        : 'Cycle running...';
+    var completedCount = progress.completed_stages !== undefined
+      ? progress.completed_stages
+      : stages.filter(function (stage) {
+          return !['pending', 'running'].includes(stage.status);
+        }).length;
+    count.textContent = completedCount + ' / ' +
+      (progress.total_stages || stages.length) + ' stages';
+    list.replaceChildren();
+
+    stages.forEach(function (stage) {
+      var item = document.createElement('div');
+      var status = stage.status || 'pending';
+      item.className = 'cycle-stage cycle-stage-' + status;
+      var dot = document.createElement('span');
+      dot.className = 'status-dot status-' + (
+        status === 'success' ? 'success' :
+        status === 'failed' ? 'failed' : 'partial'
+      );
+      var name = document.createElement('span');
+      name.textContent = stage.component.replaceAll('_', ' ');
+      var state = document.createElement('span');
+      state.className = 'dim';
+      state.textContent = status;
+      var detail = document.createElement('span');
+      detail.className = 'dim tabular';
+      detail.textContent = stageDetail(stage);
+      item.append(dot, name, state, detail);
+      list.appendChild(item);
+    });
+  }
+
   function pollCycleCompletion(correlationId, btn, labelEl, originalLabel, dispatchCycleRefresh) {
     var maxAttempts = 100; // ~5 minutes at 3s intervals
     var attempts = 0;
@@ -428,10 +505,9 @@
     if (labelEl) labelEl.textContent = 'Running cycle...';
     if (btn) btn.disabled = true;
 
-    var interval = setInterval(function () {
+    function poll() {
       attempts++;
       if (attempts > maxAttempts) {
-        clearInterval(interval);
         if (labelEl) labelEl.textContent = 'Cycle taking longer than expected — check logs';
         stopBrailleSpinner();
         if (btn) btn.disabled = false;
@@ -439,26 +515,33 @@
         return;
       }
       fetch('/api/system/cycle-status?correlation_id=' + encodeURIComponent(correlationId))
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (!r.ok) throw new Error('Cycle status unavailable');
+          return r.json();
+        })
         .then(function (data) {
-          if (data.status === 'completed') {
-            clearInterval(interval);
+          renderCycleProgress(data);
+          if (['success', 'partial', 'completed'].includes(data.status)) {
             if (labelEl) labelEl.textContent = originalLabel;
             stopBrailleSpinner();
             if (btn) btn.disabled = false;
             dispatchCycleRefresh();
           } else if (data.status === 'failed') {
-            clearInterval(interval);
             if (labelEl) labelEl.textContent = 'Cycle failed — check logs';
             stopBrailleSpinner();
             if (btn) btn.disabled = false;
             dispatchCycleRefresh();
+          } else {
+            setTimeout(poll, 2000);
           }
         })
         .catch(function (err) {
           console.error('Cycle status poll error', err);
+          setTimeout(poll, 3000);
         });
-    }, 3000);
+    }
+
+    poll();
   }
 
   /* Boot --------------------------------------------------------------------- */

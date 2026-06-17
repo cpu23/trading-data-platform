@@ -64,6 +64,28 @@ def finish_run(
         )
 
 
+def update_run_progress(correlation_id: str, progress: dict, config: dict) -> None:
+    try:
+        with get_session(config) as session:
+            session.execute(
+                text(
+                    "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
+                    "WHERE correlation_id = :cid AND status = 'running'"
+                ),
+                {
+                    "cid": correlation_id,
+                    "summary": json.dumps({"progress": progress}),
+                },
+            )
+    except Exception as exc:
+        logger.error(
+            "cycle_progress_write_failed",
+            action="update_run_progress",
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
+
+
 def run_collector(
     source_id: str, config: dict | None = None, correlation_id: str | None = None
 ) -> dict:
@@ -202,10 +224,72 @@ def run_full_cycle(
 
     collector_results = {}
     successful_collectors = set()
+    enabled_processors = [
+        processor_id
+        for processor_id in get_all_processors()
+        if config.get("processors", {}).get(processor_id, {}).get("enabled", False)
+    ]
+    progress = {
+        "current_stage": None,
+        "current_kind": None,
+        "completed_stages": 0,
+        "total_stages": len(enabled_collectors) + len(enabled_processors),
+        "stages": [
+            {"component": component, "kind": "collector", "status": "pending"}
+            for component in enabled_collectors
+        ]
+        + [
+            {"component": component, "kind": "processor", "status": "pending"}
+            for component in enabled_processors
+        ],
+    }
+
+    def record_progress(
+        component: str,
+        kind: str,
+        status: str,
+        result: dict | None = None,
+    ) -> None:
+        stage = next(
+            item
+            for item in progress["stages"]
+            if item["component"] == component and item["kind"] == kind
+        )
+        stage["status"] = status
+        if status == "running":
+            stage["started_at"] = datetime.now(timezone.utc).isoformat()
+            progress["current_stage"] = component
+            progress["current_kind"] = kind
+        else:
+            if result:
+                stage.update(
+                    {
+                        key: value
+                        for key, value in result.items()
+                        if key
+                        in (
+                            "duration_ms",
+                            "records_fetched",
+                            "records_written",
+                            "error",
+                        )
+                    }
+                )
+            progress["completed_stages"] = sum(
+                item["status"] not in ("pending", "running")
+                for item in progress["stages"]
+            )
+            progress["current_stage"] = None
+            progress["current_kind"] = None
+        update_run_progress(correlation_id, progress, config)
+
+    update_run_progress(correlation_id, progress, config)
 
     for source_id in enabled_collectors:
+        record_progress(source_id, "collector", "running")
         result = run_collector(source_id, config=config, correlation_id=correlation_id)
         collector_results[source_id] = result
+        record_progress(source_id, "collector", result["status"], result)
         if result["status"] in ("success", "partial"):
             successful_collectors.add(source_id)
 
@@ -213,6 +297,7 @@ def run_full_cycle(
         config=config,
         correlation_id=correlation_id,
         successful_collectors=successful_collectors,
+        progress_callback=record_progress,
     )
 
     overall_status = "success"
@@ -260,6 +345,7 @@ def _resolve_and_run_processors(
     config: dict,
     correlation_id: str,
     successful_collectors: set[str],
+    progress_callback=None,
 ) -> dict:
     all_processors = get_all_processors()
     processor_results = {}
@@ -299,14 +385,25 @@ def _resolve_and_run_processors(
                     successful_processors=list(successful_processors),
                     correlation_id=correlation_id,
                 )
+                if progress_callback:
+                    progress_callback(
+                        pid,
+                        "processor",
+                        "skipped",
+                        {"error": f"Dependencies not met: {', '.join(depends_on)}"},
+                    )
             break
 
         for pid in this_pass:
             del remaining[pid]
 
         for pid in this_pass:
+            if progress_callback:
+                progress_callback(pid, "processor", "running")
             result = run_processor(pid, config=config, correlation_id=correlation_id)
             processor_results[pid] = result
+            if progress_callback:
+                progress_callback(pid, "processor", result["status"], result)
             if result["status"] in ("success", "partial"):
                 successful_processors.add(pid)
 

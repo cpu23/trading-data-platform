@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.oanda import OandaCollector
 from llm_client import resolve_model
+from orchestrator import update_run_progress
 from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
 
@@ -80,6 +81,21 @@ class RuntimeFeatureTests(unittest.TestCase):
         self.assertIn("Fictional deterministic fixtures", seed)
         self.assertIn("77777777-7777-4777-8777-777777777777", seed)
         self.assertNotIn("OPENROUTER_API_KEY", seed)
+
+    @patch("orchestrator.get_session")
+    def test_cycle_progress_is_persisted_while_run_is_active(self, get_session):
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        update_run_progress(
+            "run-id",
+            {"current_stage": "fred", "completed_stages": 0, "total_stages": 3},
+            {},
+        )
+
+        params = session.execute.call_args.args[1]
+        self.assertEqual(params["cid"], "run-id")
+        self.assertIn('"current_stage": "fred"', params["summary"])
 
 
 if __name__ == "__main__":
