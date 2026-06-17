@@ -3,6 +3,7 @@
         hx-trigger="cycleComplete from:body"
         hx-swap="outerHTML">
   {% set health = system_health or {} %}
+  {% set budget = budget or {} %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M UTC') }}</span>
@@ -11,16 +12,22 @@
     <div class="freshness">
       <span class="freshness-label tabular">{{ last_cycle_text }}</span>
     </div>
-    <div class="header-usage tabular">
-      ${{ '%.4f' | format(health.get('today_llm_cost_usd', 0) or 0) }}
+    <div class="header-usage tabular{% if budget.warning %} budget-warn{% endif %}">
+      ${{ '%.2f' | format(budget.get('today_cost_usd', 0) or 0) }}/${{ '%.2f' | format(budget.get('budget_cap_usd', 0) or 0) }}
       <span class="dim">today</span>
+      {% if budget.exceeded %}
       <span class="dim-sep">·</span>
-      {{ health.get('today_token_count', 0) or 0 }} tokens
+      over budget
+      {% endif %}
     </div>
     <button id="run-cycle-btn" class="btn"
             data-original-label="Run cycle"
             hx-post="/api/cycle"
+            {% if budget.warning %}
+            hx-confirm="LLM spend at ${{ '%.2f' | format(budget.get('today_cost_usd', 0) or 0) }}/${{ '%.2f' | format(budget.get('budget_cap_usd', 0) or 0) }} today. Run cycle anyway?"
+            {% else %}
             hx-confirm="Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."
+            {% endif %}
             hx-swap="none">
       <span id="cycle-spinner" class="braille-spinner" aria-hidden="true"></span>
       <span class="btn-label">Run cycle</span>

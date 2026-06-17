@@ -383,6 +383,10 @@ body {
   white-space: nowrap;
 }
 
+.budget-warn {
+  color: #C9A227;   /* static amber, consistent with status-warn */
+}
+
 .braille-spinner {
   display: none;
   width: 12px;

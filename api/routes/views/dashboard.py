@@ -11,6 +11,7 @@ from routes.json.events import get_events_upcoming
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.system import get_system_health
+from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
@@ -442,6 +443,7 @@ def dashboard(request: Request):
         "dots": _section_dots(regime, events_data, briefing, indicators_stale, indicators_stale_reason),
         "briefing_bullets": _briefing_bullets(briefing),
         "price_map": price_map,
+        "budget": get_budget_status(),
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -501,6 +503,7 @@ def partial_header(request: Request):
         "current_time": now,
         "any_stale": any_stale,
         "system_health": _get_dashboard_health(),
+        "budget": get_budget_status(),
     })
 
 
