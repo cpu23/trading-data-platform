@@ -6,6 +6,11 @@ from sqlalchemy import text
 
 from config_loader import load_config
 from db import check_connection, get_session
+
+try:
+    from data_quality import DATA_QUALITY_CHECKS
+except ImportError:
+    DATA_QUALITY_CHECKS = {}
 from logging_config import get_logger, setup_logging
 from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor
 from price_stream import quote_stream
@@ -191,3 +196,18 @@ def trigger_processor(
         "job_id": correlation_id,
         "accepted_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/quality")
+def quality():
+    config = _get_config()
+    results: dict[str, dict] = {}
+    for check_id, check_fn in DATA_QUALITY_CHECKS.items():
+        try:
+            results[check_id] = check_fn(config)
+        except Exception as exc:
+            logger.error("quality_check_failed", check_id=check_id, error=str(exc))
+            results[check_id] = {"healthy": False, "detail": f"check failed: {str(exc)}"}
+    any_unhealthy = any(not r.get("healthy", True) for r in results.values())
+    overall = "degraded" if any_unhealthy else "healthy"
+    return {"overall": overall, "checks": results}

@@ -954,6 +954,10 @@ body {
   background: var(--bull);
 }
 
+.status-warn {
+  background: #C9A227;
+}
+
 .status-partial {
   background: var(--fg-dim);
 }

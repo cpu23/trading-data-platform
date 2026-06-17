@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Data quality — Trading data{% endblock %}
+
+{% block content %}
+  <header class="page-header" style="margin-bottom: 16px;">
+    <div class="page-header-left">
+      <a class="quiet-link" href="/">Dashboard</a>
+      <span class="page-header-title">Data quality</span>
+    </div>
+  </header>
+
+  {% if error %}
+    <div class="error-block" style="margin-bottom: 24px;">
+      Unable to fetch quality checks: {{ error }}
+    </div>
+  {% endif %}
+
+  {% if overall is not none %}
+    <div style="margin-bottom: 24px; display: flex; align-items: center; gap: 10px;">
+      <span class="label">Overall status:</span>
+      <span class="status-dot {{ 'status-success' if overall else 'status-warn' }}"></span>
+      <span class="muted">{{ 'Healthy' if overall else 'Warning' }}</span>
+    </div>
+  {% endif %}
+
+  <table class="logs-table">
+    <thead>
+      <tr>
+        <th>Check</th>
+        <th>Status</th>
+        <th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if checks %}
+        {% for check in checks %}
+          <tr>
+            <td>{{ check.name or check.check or '—' }}</td>
+            <td>
+              <span class="status-dot {{ 'status-success' if check.healthy else 'status-warn' }}"></span>
+              <span class="muted">{{ 'OK' if check.healthy else 'Warn' }}</span>
+            </td>
+            <td class="muted">{{ check.detail or check.message or '—' }}</td>
+          </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="3"><span class="empty-state">No quality checks available.</span></td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endblock %}

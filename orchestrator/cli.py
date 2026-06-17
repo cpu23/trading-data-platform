@@ -5,6 +5,7 @@ from db import check_connection, check_tables_exist, get_session, query_latest
 from logging_config import setup_logging
 from collectors import get_all_collectors
 from processors import get_all_processors
+from migrate import run_migrations
 from orchestrator import (
     run_collector,
     run_full_cycle,
@@ -403,6 +404,17 @@ def db_check():
     if missing:
         click.echo(f"\nMissing tables: {', '.join(missing)}")
         raise SystemExit(1)
+
+
+@cli.command()
+def migrate():
+    """Apply pending database migrations."""
+    config = load_config()
+    applied = run_migrations(config)
+    if applied:
+        click.echo(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
+    else:
+        click.echo("No pending migrations.")
 
 
 def _status_symbol(status: str) -> str:
