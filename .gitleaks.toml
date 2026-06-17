@@ -1,0 +1,8 @@
+# Gitleaks configuration — public-safe repository.
+# demo:demo is the documented public demo credential. The smoke test script
+# exercises it against localhost. This is not a secret.
+[allowlist]
+  description = "Public demo credentials and test patterns"
+  paths = [
+    '''scripts/smoke_test.sh''',
+  ]
