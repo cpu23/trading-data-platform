@@ -232,3 +232,7 @@ dashboard:
       label: "5Y breakeven"
       precision: 2
       category: inflation
+
+budgets:
+  daily_llm_usd: 2.00
+  warn_at_pct: 80

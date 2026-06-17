@@ -17,7 +17,8 @@
         {% for component in components[:6] %}
           <span class="health-component"
                 title="{{ component.kind | title }} · {{ component.last_status | replace('_', ' ') }}{% if component.last_run_at %} · {{ component.last_run_at }}{% endif %}">
-            <span class="status-dot status-{{ 'failed' if component.last_status in ['failed', 'error'] else 'partial' if component.stale or component.last_status == 'partial' else 'success' }}"></span>
+            <span class="status-dot status-{{ 'failed' if component.last_status in ['failed', 'error'] else 'partial' if component.stale or component.last_status == 'partial' else 'warn' if component.quality_warn and component.last_status == 'success' else 'success' }}"
+                  {% if component.quality_warn %}title="Quality issues detected"{% endif %}></span>
             {{ component.name | replace('_', ' ') }}
             {% if component.stale %}
               <span class="health-component-status">stale</span>

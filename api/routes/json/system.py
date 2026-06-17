@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from config import load_config
 from db import query_many, query_one
+from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
@@ -69,7 +70,19 @@ def get_system_health():
             "last_status": stream.get("status", "stopped"),
             "next_due_at": None,
             "stale": stream.get("status") not in ("connected", "simulated"),
+            "quality_warn": quality_warn_map.get("live_prices", False),
         })
+    except Exception:
+        pass
+
+    quality = {}
+    quality_warn_map = {}
+    try:
+        quality = httpx.get("http://orchestrator:8000/quality", timeout=5.0).json()
+        for check in quality.get("checks", []):
+            source_id = check.get("source_id", "")
+            if source_id and not check.get("healthy", True):
+                quality_warn_map[source_id] = True
     except Exception:
         pass
 
@@ -92,6 +105,7 @@ def get_system_health():
                 "last_status": row.get("status", "unknown"),
                 "next_due_at": schedule_map.get(source_id),
                 "stale": stale,
+                "quality_warn": quality_warn_map.get(source_id, False),
             })
         else:
             components.append({
@@ -101,6 +115,7 @@ def get_system_health():
                 "last_status": "never_run",
                 "next_due_at": schedule_map.get(source_id),
                 "stale": True,
+                "quality_warn": quality_warn_map.get(source_id, False),
             })
 
     enabled_processors = config.get("processors", {})
@@ -122,6 +137,7 @@ def get_system_health():
                 "last_status": row.get("status", "unknown"),
                 "next_due_at": schedule_map.get(proc_id),
                 "stale": stale,
+                "quality_warn": quality_warn_map.get(proc_id, False),
             })
         else:
             components.append({
@@ -131,6 +147,7 @@ def get_system_health():
                 "last_status": "never_run",
                 "next_due_at": schedule_map.get(proc_id),
                 "stale": True,
+                "quality_warn": quality_warn_map.get(proc_id, False),
             })
 
     all_ok = all(
@@ -145,7 +162,13 @@ def get_system_health():
         "components": components,
         "today_llm_cost_usd": round(today_cost, 4),
         "today_token_count": today_tokens,
+        "quality": quality,
     }
+
+
+@router.get("/system/budget")
+def get_budget():
+    return get_budget_status()
 
 
 @router.get("/system/logs")
