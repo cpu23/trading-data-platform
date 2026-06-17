@@ -1,5 +1,8 @@
 import unittest
 from datetime import timezone
+from unittest.mock import Mock, patch
+
+import httpx
 
 from collectors.oanda import OandaCollector
 
@@ -30,6 +33,53 @@ class OandaCollectorTests(unittest.TestCase):
         })
 
         self.assertAlmostEqual(price, 1.1002)
+
+    @patch("collectors.oanda.make_request")
+    def test_handles_network_timeout(self, make_request):
+        """health_check returns unhealthy on httpx.TimeoutException."""
+        collector = OandaCollector()
+
+        make_request.side_effect = httpx.TimeoutException("Connection timed out")
+
+        config = {
+            "collectors": {
+                "oanda": {
+                    "api_key": "test-key",
+                    "environment": "practice",
+                }
+            }
+        }
+
+        result = collector.health_check(config)
+
+        self.assertFalse(result["healthy"])
+        self.assertIn("unreachable", result["message"].lower())
+        self.assertGreaterEqual(result["latency_ms"], 0)
+
+    @patch("collectors.oanda.make_request")
+    def test_handles_malformed_api_response(self, make_request):
+        """health_check handles non-200 or malformed responses gracefully."""
+        collector = OandaCollector()
+
+        response = Mock()
+        response.status_code = 500
+        response.text = "Internal Server Error"
+        make_request.return_value = response
+
+        config = {
+            "collectors": {
+                "oanda": {
+                    "api_key": "test-key",
+                    "environment": "practice",
+                }
+            }
+        }
+
+        result = collector.health_check(config)
+
+        self.assertFalse(result["healthy"])
+        self.assertIn("500", result["message"])
+        self.assertGreaterEqual(result["latency_ms"], 0)
 
 
 if __name__ == "__main__":

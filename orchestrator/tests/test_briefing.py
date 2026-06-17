@@ -1,12 +1,18 @@
+import json
 import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from processors._validators import validate_briefing_sections
+from processors._validators import (
+    validate_briefing_sections,
+    coerce_briefing_fields,
+    ALLOWED_BIAS,
+)
 from processors.briefing import DailyBriefingProcessor
 
 
@@ -97,6 +103,122 @@ class BriefingTests(unittest.TestCase):
         )
         self.assertFalse(valid)
         self.assertTrue(any("UK100" in warning for warning in warnings))
+
+    def test_empty_watchlist_handled_gracefully(self):
+        """validate_briefing_sections handles empty watchlist_notes without crashing."""
+        valid, warnings = validate_briefing_sections(
+            {"watchlist_notes": []}, WATCHLIST
+        )
+
+        self.assertFalse(valid)
+        # Should report all configured symbols as missing
+        missing_warnings = [w for w in warnings if "missing" in w.lower()]
+        self.assertGreater(len(missing_warnings), 0)
+        for item in WATCHLIST:
+            self.assertTrue(
+                any(item["symbol"] in w for w in warnings),
+                f"{item['symbol']} should be flagged as missing",
+            )
+
+    def test_missing_bias_field_gets_coerced(self):
+        """coerce_briefing_fields defaults invalid bias values gracefully."""
+        sections = {
+            "watchlist_notes": [
+                {
+                    "symbol": "EURUSD",
+                    "asset_class": "forex",
+                    "bias": "sideways",  # invalid bias
+                    "confidence": "moderate",
+                    "summary": "test summary",
+                    "note": "test note",
+                },
+                {
+                    "symbol": "DXY",
+                    "asset_class": "index",
+                    # bias key intentionally missing
+                    "confidence": "high",
+                    "summary": "test summary",
+                    "note": "test note",
+                },
+            ]
+        }
+
+        warnings = coerce_briefing_fields(sections)
+
+        # "sideways" coerces to "neutral" via BIAS_COERCIONS
+        self.assertEqual(sections["watchlist_notes"][0]["bias"], "neutral")
+        # Missing bias is skipped gracefully (no crash, stays absent)
+        self.assertNotIn("bias", sections["watchlist_notes"][1])
+        # Should have logged a coercion warning for the invalid bias
+        self.assertTrue(
+            any("sideways" in w for w in warnings),
+            "Should warn about coerced bias value",
+        )
+
+    @patch("processors.briefing.call_llm")
+    def test_empty_llm_response_triggers_retry(self, call_llm):
+        """When validation fails, _validate_and_fix_sections retries the LLM call."""
+        processor = DailyBriefingProcessor()
+
+        valid_json = json.dumps(
+            {
+                "macro_trend": "trend",
+                "today": "today",
+                "this_week": "week",
+                "regime_assessment": "regime",
+                "watchlist_notes": [
+                    {
+                        "symbol": w["symbol"],
+                        "asset_class": w["type"],
+                        "bias": "neutral",
+                        "confidence": "moderate",
+                        "summary": "s",
+                        "note": "n",
+                    }
+                    for w in WATCHLIST
+                ],
+            }
+        )
+
+        # Retry LLM call returns valid data
+        call_llm.return_value = {
+            "content": valid_json,
+            "model": "test-model",
+            "tokens_input": 10,
+            "tokens_output": 5,
+            "cost_usd": 0.0,
+        }
+
+        # Sections with empty watchlist_notes will fail validation
+        sections = {
+            "macro_trend": "",
+            "today": "",
+            "this_week": "",
+            "regime_assessment": "",
+            "watchlist_notes": [],
+        }
+
+        result = processor._validate_and_fix_sections(
+            sections=sections,
+            watchlist_config=WATCHLIST,
+            prompt_text="test prompt",
+            raw_response="test",
+            llm_result={"content": "test", "model": "test"},
+            model="test-model",
+            config={
+                "llm": {
+                    "default_model": "test",
+                    "api_key": "test-key",
+                }
+            },
+            correlation_id="test-corr",
+        )
+
+        # call_llm should have been invoked for the retry
+        call_llm.assert_called_once()
+        # Retry should have produced valid watchlist_notes
+        self.assertIn("watchlist_notes", result)
+        self.assertGreater(len(result["watchlist_notes"]), 0)
 
 
 if __name__ == "__main__":
