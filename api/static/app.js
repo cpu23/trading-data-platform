@@ -199,6 +199,17 @@
               processing.model_used || evidence.opinion.model_used,
               processing.correlation_id ? 'run ' + processing.correlation_id.slice(0, 8) : null
             ].filter(Boolean).join(' · ');
+            var lineage = document.createElement('div');
+            lineage.className = 'lineage-breadcrumb';
+            var parts = [];
+            if (evidence.records && evidence.records.macro_series) parts.push('macro_series');
+            if (evidence.records && evidence.records.econ_events) parts.push('econ_events');
+            if (evidence.processing && evidence.processing.processor) parts.push(evidence.processing.processor);
+            if (evidence.opinion && evidence.opinion.opinion_type) parts.push(evidence.opinion.opinion_type);
+            if (parts.length) {
+              lineage.textContent = parts.join(' \u2192 ');
+              evidenceTarget.insertBefore(lineage, evidenceTarget.firstChild);
+            }
             evidenceTarget.appendChild(meta);
             Object.keys(evidence.records || {}).forEach(function (source) {
               var group = document.createElement('div');
@@ -225,7 +236,13 @@
           .then(function (r) { return r.json(); })
           .then(function (data) {
             historyTarget.replaceChildren();
-            (data.regimes || []).slice().reverse().forEach(function (regime) {
+            if (!data.regimes || !data.regimes.length) {
+              var emptyState = document.createElement('div');
+              emptyState.className = 'empty-state';
+              emptyState.textContent = 'No history available';
+              historyTarget.appendChild(emptyState);
+            } else {
+              (data.regimes || []).slice().reverse().forEach(function (regime) {
               var point = document.createElement('div');
               var createdAt = new Date(regime.created_at);
               var direction = (regime.direction || 'neutral').toLowerCase();
@@ -235,7 +252,7 @@
               timestamp.className = 'timeline-time tabular';
               timestamp.textContent = isNaN(createdAt.getTime())
                 ? regime.created_at
-                : createdAt.toLocaleString([], {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'});
+                : createdAt.toLocaleDateString('en-US', {month:'short', day:'numeric'});
               var regimeName = document.createElement('span');
               regimeName.className = 'timeline-regime';
               regimeName.textContent = regime.regime || 'unknown';
@@ -247,7 +264,66 @@
               point.appendChild(meta);
               historyTarget.appendChild(point);
             });
+            }
           });
+      }
+
+      var compareTarget = details.querySelector('[data-compare-target]');
+      if (compareTarget && !compareTarget.dataset.loaded) {
+        compareTarget.dataset.loaded = 'true';
+        var indicators = ['T10Y2Y', 'VIXCLS', 'DTWEXBGS', 'BAMLH0A0HYM2', 'DGS10', 'T5YIE'];
+        var colors = ['#DCDCD4', '#4FA86E', '#C44545', '#C9A227', '#6B6B66', '#999992'];
+        var days = details.dataset.historyDays || '90';
+        var fetchPromises = indicators.map(function(id) {
+          return fetch(window.location.origin + '/api/macro/' + encodeURIComponent(id) + '?days=' + days)
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .catch(function() { return null; });
+        });
+        Promise.all(fetchPromises).then(function(results) {
+          var datasets = [];
+          results.forEach(function(data, i) {
+            if (!data || !data.observations || !data.observations.length) return;
+            datasets.push({
+              label: indicators[i],
+              data: data.observations.map(function(o) { return {x: o.observed_at, y: o.value}; }),
+              borderColor: colors[i],
+              borderWidth: 1,
+              pointRadius: 0,
+              tension: 0.1,
+              fill: false
+            });
+          });
+          if (!datasets.length) return;
+          var canvas = document.getElementById('regime-compare-chart');
+          if (!canvas) return;
+          var ctx = canvas.getContext('2d');
+          new Chart(ctx, {
+            type: 'line',
+            data: { datasets: datasets },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                x: {
+                  type: 'time',
+                  time: { tooltipFormat: 'MMM dd' },
+                  grid: { color: 'rgba(220,220,212,0.06)' },
+                  ticks: { color: '#6B6B66', font: { size: 10 } }
+                },
+                y: {
+                  grid: { color: 'rgba(220,220,212,0.06)' },
+                  ticks: { color: '#6B6B66', font: { size: 10 } }
+                }
+              },
+              plugins: {
+                legend: {
+                  display: true,
+                  labels: { color: '#999992', font: { size: 11 }, usePointStyle: true }
+                }
+              }
+            }
+          });
+        });
       }
     }, true);
   }

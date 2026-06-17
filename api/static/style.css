@@ -249,6 +249,13 @@ body {
   font-size: 11px;
 }
 
+.regime-compare {
+  margin-top: 18px;
+  border-top: 1px solid var(--hairline-faint);
+  padding-top: 14px;
+  min-height: 200px;
+}
+
 .evidence-view {
   margin-top: 12px;
   border-top: 1px solid var(--hairline-faint);
@@ -259,6 +266,15 @@ body {
 .evidence-record {
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+.lineage-breadcrumb {
+  color: var(--fg-dim);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--hairline-faint);
 }
 
 .evidence-group {

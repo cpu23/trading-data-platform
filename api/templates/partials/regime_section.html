@@ -38,6 +38,9 @@
     <details class="provenance-details" data-history-days="90" data-opinion-id="{{ regime.opinion_id or '' }}">
       <summary>History and evidence</summary>
       <div class="regime-timeline" data-history-target></div>
+      <div class="regime-compare" data-compare-target>
+        <canvas id="regime-compare-chart" height="200"></canvas>
+      </div>
       <div class="evidence-view" data-evidence-target></div>
     </details>
   {% endif %}
