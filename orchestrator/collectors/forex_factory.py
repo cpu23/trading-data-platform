@@ -113,6 +113,10 @@ class ForexFactoryCollector:
                 "no_events_parsed",
                 action="collect",
                 message="Zero relevant high/medium events parsed from ForexFactory export",
+                currencies=sorted(currencies),
+                min_impact=min_impact,
+                target_week=target_week["week_key"],
+                payload_source=payload_source,
                 correlation_id=correlation_id,
             )
 
@@ -196,6 +200,12 @@ class ForexFactoryCollector:
         correlation_id: str,
     ) -> str:
         page_url = f"{source_url}?week={displayed_week}"
+        logger.info(
+            "scraping_weekly_export_page",
+            action="find_weekly_export_url",
+            page_url=page_url,
+            correlation_id=correlation_id,
+        )
         headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -211,7 +221,15 @@ class ForexFactoryCollector:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "lxml")
 
-        for link in soup.find_all("a", href=True):
+        all_links = soup.find_all("a", href=True)
+        logger.info(
+            "scraped_page_links",
+            action="find_weekly_export_url",
+            link_count=len(all_links),
+            correlation_id=correlation_id,
+        )
+
+        for link in all_links:
             href = link["href"]
             href_lower = href.lower()
             text_value = link.get_text(" ", strip=True).lower()
@@ -221,13 +239,16 @@ class ForexFactoryCollector:
                 return urljoin(page_url, href)
 
         suffix = "nextweek" if displayed_week == "next" else "thisweek"
+        fallback_url = f"{export_base_url.rstrip('/')}/ff_calendar_{suffix}.json"
         logger.warning(
             "weekly_export_link_not_found_using_fallback",
             action="find_weekly_export_url",
             displayed_week=displayed_week,
+            links_searched=len(all_links),
+            fallback_url=fallback_url,
             correlation_id=correlation_id,
         )
-        return f"{export_base_url.rstrip('/')}/ff_calendar_{suffix}.json"
+        return fallback_url
 
     def _load_cached_payload(
         self,

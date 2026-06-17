@@ -106,6 +106,7 @@ def get_system_health():
                 "next_due_at": schedule_map.get(source_id),
                 "stale": stale,
                 "quality_warn": quality_warn_map.get(source_id, False),
+                "error_message": row.get("error_message") if row.get("status") in ("failed", "partial") else None,
             })
         else:
             components.append({

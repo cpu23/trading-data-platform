@@ -12,7 +12,7 @@ try:
 except ImportError:
     DATA_QUALITY_CHECKS = {}
 from logging_config import get_logger, setup_logging
-from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor
+from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor, get_last_collection_runs
 from price_stream import quote_stream
 from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
@@ -50,7 +50,24 @@ def on_shutdown():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "scheduler": scheduler_status(), "stream": quote_stream.state}
+    config = _get_config()
+    last_runs = get_last_collection_runs(config)
+    collectors_status = {}
+    for run in last_runs:
+        started = run.get("started_at")
+        collectors_status[run.get("collector")] = {
+            "last_status": run.get("status"),
+            "last_run_at": started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None,
+            "records_fetched": run.get("records_fetched"),
+            "records_written": run.get("records_written"),
+            "error_message": run.get("error_message"),
+        }
+    return {
+        "status": "ok",
+        "scheduler": scheduler_status(),
+        "stream": quote_stream.state,
+        "collectors": collectors_status,
+    }
 
 
 @app.get("/quotes")

@@ -451,6 +451,10 @@ body {
   opacity: 0.55;
 }
 
+.cycle-stage-failed {
+  color: var(--bear);
+}
+
 /* Regime section */
 .regime-section {
   margin-bottom: 56px;
