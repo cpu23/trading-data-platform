@@ -15,14 +15,21 @@ def setup_page(request: Request):
 def settings_page(request: Request):
     config = load_config()
     secrets_path = STATE_DIR / "secrets.env"
-    has_llm_key = False
+    saved_secrets = set()
     if secrets_path.exists():
-        has_llm_key = any(
-            line.startswith("LLM_API_KEY=") and line.partition("=")[2]
+        saved_secrets = {
+            line.partition("=")[0]
             for line in secrets_path.read_text().splitlines()
-        )
+            if "=" in line and line.partition("=")[2]
+        }
     return request.app.state.templates.TemplateResponse(
         request,
         "settings.html",
-        {"request": request, "config": config, "has_llm_key": has_llm_key},
+        {
+            "request": request,
+            "config": config,
+            "has_llm_key": "LLM_API_KEY" in saved_secrets,
+            "has_fred_key": "FRED_API_KEY" in saved_secrets,
+            "has_oanda_key": "OANDA_API_KEY" in saved_secrets,
+        },
     )
