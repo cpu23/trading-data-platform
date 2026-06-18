@@ -1101,3 +1101,10 @@ body {
 .setup-step { padding:28px 0; border-bottom:.5px solid var(--border); }
 .setup-step h1 { font-size:36px; line-height:1.15; max-width:600px; }
 .setup-step input, .setup-step select { width:100%; box-sizing:border-box; margin:6px 0; padding:12px; color:var(--fg); background:transparent; border:.5px solid var(--border); border-radius:7px; }
+.coverage-list { margin-top:14px; }
+.coverage-list label { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:14px 0; border-top:.5px solid var(--border); cursor:pointer; }
+.coverage-list label span { display:grid; gap:3px; }
+.coverage-list small { color:var(--fg-muted); font-size:12px; }
+.coverage-list input[type="checkbox"] { width:18px; height:18px; margin:0; flex:0 0 auto; accent-color:var(--fg); }
+.coverage-detail { margin-top:10px; }
+.coverage-detail > summary { cursor:pointer; color:var(--fg-muted); padding:10px 0; }

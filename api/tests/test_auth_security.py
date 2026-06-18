@@ -27,6 +27,23 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "Password must contain at least 12 characters")
 
+    def test_coverage_selection_maps_only_supported_collectors(self):
+        config = setup._coverage_config({
+            "fred": True,
+            "cftc": False,
+            "oecd": True,
+            "unknown": True,
+        })
+        self.assertEqual(set(config), set(setup.COVERAGE_SOURCES))
+        self.assertTrue(config["fred"]["enabled"])
+        self.assertTrue(config["oecd"]["enabled"])
+        self.assertFalse(config["cftc"]["enabled"])
+        self.assertNotIn("unknown", config)
+
+    def test_missing_coverage_disables_all_optional_sources(self):
+        config = setup._coverage_config(None)
+        self.assertTrue(all(not value["enabled"] for value in config.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

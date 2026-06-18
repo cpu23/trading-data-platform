@@ -7,6 +7,26 @@ from config import reload_config
 
 router = APIRouter()
 
+COVERAGE_SOURCES = (
+    "fred",
+    "forex_factory",
+    "cftc",
+    "oecd",
+    "central_banks",
+    "ecb",
+    "boe",
+    "eia",
+)
+
+
+def _coverage_config(selection: dict | None) -> dict:
+    selection = selection or {}
+    return {
+        source_id: {"enabled": bool(selection.get(source_id, False))}
+        for source_id in COVERAGE_SOURCES
+    }
+
+
 @router.get("/setup/status")
 def status():
     return {"setup_complete": setup_complete(), "demo_available": True}
@@ -19,6 +39,7 @@ def activate(body: dict, request: Request):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     profile = body.get("profile") or {}
+    profile["collectors"] = _coverage_config(body.get("coverage"))
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = STATE_DIR / "operator.yaml"
     path.write_text(yaml.safe_dump(profile, sort_keys=False))
