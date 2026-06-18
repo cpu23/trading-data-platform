@@ -30,8 +30,15 @@
 </main>
 <script>
 document.getElementById('activate-setup').onclick = async function () {
+  const password = document.getElementById('setup-password');
+  const result = document.getElementById('setup-result');
+  if (!password.checkValidity()) {
+    result.textContent = 'Use at least 12 characters for the administrator password.';
+    password.reportValidity();
+    return;
+  }
   const body = {
-    password: document.getElementById('setup-password').value,
+    password: password.value,
     profile: {llm: {
       base_url: document.getElementById('llm-base-url').value,
       default_model: document.getElementById('llm-model').value,
@@ -40,7 +47,12 @@ document.getElementById('activate-setup').onclick = async function () {
     secrets: {LLM_API_KEY: document.getElementById('llm-key').value}
   };
   const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  document.getElementById('setup-result').textContent = response.ok ? 'Ready. Opening dashboard…' : (await response.text());
+  let message = 'Ready. Opening dashboard…';
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    message = payload?.detail || 'Setup could not be activated.';
+  }
+  result.textContent = message;
   if (response.ok) setTimeout(() => location.href='/', 600);
 };
 </script>

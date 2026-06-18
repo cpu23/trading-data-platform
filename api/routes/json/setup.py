@@ -14,7 +14,10 @@ def status():
 @router.post("/setup/activate")
 def activate(body: dict, request: Request):
     if setup_complete(): raise HTTPException(409, "Setup is locked")
-    create_admin(str(body.get("password", "")))
+    try:
+        create_admin(str(body.get("password", "")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     profile = body.get("profile") or {}
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = STATE_DIR / "operator.yaml"
