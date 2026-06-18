@@ -44,6 +44,23 @@ class AuthSecurityTests(unittest.TestCase):
         config = setup._coverage_config(None)
         self.assertTrue(all(not value["enabled"] for value in config.values()))
 
+    def test_secret_update_preserves_existing_key_when_blank(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            with patch.object(setup, "STATE_DIR", state):
+                setup._write_secrets({"LLM_API_KEY": "existing"})
+                setup._write_secrets({"LLM_API_KEY": ""})
+                self.assertEqual(setup._read_secrets()["LLM_API_KEY"], "existing")
+
+    def test_profile_merge_preserves_unedited_sections(self):
+        merged = setup._merge_profile(
+            {"llm": {"default_model": "old", "timeout_seconds": 90}, "watchlist": {"trading": []}},
+            {"llm": {"default_model": "new"}},
+        )
+        self.assertEqual(merged["llm"]["default_model"], "new")
+        self.assertEqual(merged["llm"]["timeout_seconds"], 90)
+        self.assertIn("watchlist", merged)
+
 
 if __name__ == "__main__":
     unittest.main()

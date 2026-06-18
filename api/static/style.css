@@ -1108,3 +1108,13 @@ body {
 .coverage-list input[type="checkbox"] { width:18px; height:18px; margin:0; flex:0 0 auto; accent-color:var(--fg); }
 .coverage-detail { margin-top:10px; }
 .coverage-detail > summary { cursor:pointer; color:var(--fg-muted); padding:10px 0; }
+.settings-page > details { padding:22px 0; border-bottom:.5px solid var(--border); }
+.settings-page > details > summary { cursor:pointer; font-weight:600; }
+.settings-page label { display:block; margin:16px 0; color:var(--fg-muted); font-size:12px; }
+.settings-page label input, .settings-page label select { display:block; width:100%; box-sizing:border-box; margin-top:6px; padding:12px; color:var(--fg); background:transparent; border:.5px solid var(--border); border-radius:7px; font-size:14px; }
+.settings-page .coverage-list label { display:flex; margin:0; }
+.status-pill { float:right; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:500; }
+.status-pill.connected { color:#79b88a; background:rgba(70,140,88,.12); }
+.status-pill.not-connected { color:var(--fg-muted); background:rgba(128,128,128,.12); }
+.settings-actions, .settings-save { display:flex; align-items:center; gap:14px; margin-top:18px; }
+.settings-save { padding:26px 0 70px; }

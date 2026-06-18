@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from auth import setup_complete
+from auth import setup_complete, STATE_DIR
 from config import load_config
 
 router = APIRouter()
@@ -13,6 +13,16 @@ def setup_page(request: Request):
 
 @router.get("/settings")
 def settings_page(request: Request):
+    config = load_config()
+    secrets_path = STATE_DIR / "secrets.env"
+    has_llm_key = False
+    if secrets_path.exists():
+        has_llm_key = any(
+            line.startswith("LLM_API_KEY=") and line.partition("=")[2]
+            for line in secrets_path.read_text().splitlines()
+        )
     return request.app.state.templates.TemplateResponse(
-        request, "settings.html", {"request": request, "config": load_config()}
+        request,
+        "settings.html",
+        {"request": request, "config": config, "has_llm_key": has_llm_key},
     )

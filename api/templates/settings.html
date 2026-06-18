@@ -2,12 +2,76 @@
 {% block title %}Settings{% endblock %}
 {% block content %}
 <header class="page-header"><a href="/">← Dashboard</a><h1>Settings</h1></header>
-<main class="asset-page">
-  <details open><summary>Connections</summary><p class="dim">OpenAI-compatible endpoint and data-source credentials are stored privately. Existing secrets are never displayed.</p></details>
-  <details><summary>Sources</summary><p>Core macro, positioning, central banks, regional detail and energy fundamentals.</p></details>
-  <details><summary>Watchlist</summary><p>{{ config.watchlist.trading | length }} configured markets.</p></details>
-  <details><summary>Models &amp; budget</summary><p>{{ config.llm.default_model }} · ${{ config.budgets.daily_llm_usd }} daily hard cap.</p></details>
-  <details><summary>Schedule</summary><p>Schedules remain configuration-driven and reload without changing the dashboard layout.</p></details>
-  <details><summary>Security &amp; retention</summary><p>Session authentication, same-origin mutation protection, private state files, and 90-day raw AI payload retention.</p></details>
+<main class="asset-page settings-page">
+  <details open>
+    <summary>Intelligence connection <span class="status-pill {{ 'connected' if has_llm_key else 'not-connected' }}">{{ 'Key saved' if has_llm_key else 'Not connected' }}</span></summary>
+    <p class="dim">OpenAI-compatible provider. Saved credentials are never displayed.</p>
+    <label>Endpoint<input id="settings-base-url" value="{{ config.llm.base_url }}"></label>
+    <label>Model<input id="settings-model" value="{{ config.llm.default_model }}"></label>
+    <label>API key<input id="settings-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_llm_key else 'API key' }}"></label>
+    <label>Reasoning effort
+      <select id="settings-reasoning">
+        {% for effort in ['low', 'medium', 'high'] %}<option value="{{ effort }}" {{ 'selected' if config.llm.reasoning_effort == effort }}>{{ effort | capitalize }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="settings-actions"><button class="btn" id="test-connection" type="button">Test connection</button><span id="connection-result" class="dim"></span></div>
+  </details>
+
+  <details>
+    <summary>Data coverage <span class="status-pill connected">{{ config.collectors.values() | selectattr('enabled') | list | length }} enabled</span></summary>
+    <div class="coverage-list">
+      {% for id, label, description in [
+        ('fred','US macroeconomics','FRED growth, inflation, rates and stress'),
+        ('forex_factory','Economic calendar','Scheduled global economic releases'),
+        ('cftc','Positioning','CFTC Commitments of Traders'),
+        ('oecd','Global cycle','OECD regional growth indicators'),
+        ('central_banks','Central-bank communications','Decisions, minutes and speeches'),
+        ('ecb','Euro area','ECB rates, credit and expectations'),
+        ('boe','United Kingdom','BoE rates, money and lending'),
+        ('eia','Energy','EIA inventories and fundamentals')
+      ] %}
+      <label><span><strong>{{ label }}</strong><small>{{ description }}</small></span><input data-settings-coverage="{{ id }}" type="checkbox" {{ 'checked' if config.collectors.get(id, {}).get('enabled') }}></label>
+      {% endfor %}
+    </div>
+  </details>
+
+  <details><summary>Models &amp; budget</summary><p class="dim">${{ config.budgets.daily_llm_usd }} daily hard cap. Model overrides remain configuration-driven.</p></details>
+  <details><summary>Security &amp; retention</summary><p class="dim">Private state files, session authentication, same-origin mutation protection, and 90-day AI payload retention.</p></details>
+
+  <div class="settings-save"><button class="btn" id="save-settings">Save changes</button><span id="settings-result" class="dim"></span></div>
 </main>
+<script>
+const settingsPayload = () => ({
+  profile: {llm: {
+    base_url: document.getElementById('settings-base-url').value.trim(),
+    default_model: document.getElementById('settings-model').value.trim(),
+    reasoning_effort: document.getElementById('settings-reasoning').value
+  }},
+  coverage: Object.fromEntries([...document.querySelectorAll('[data-settings-coverage]')].map(input => [input.dataset.settingsCoverage, input.checked])),
+  secrets: {LLM_API_KEY: document.getElementById('settings-key').value}
+});
+
+document.getElementById('test-connection').onclick = async () => {
+  const result = document.getElementById('connection-result');
+  result.textContent = 'Checking…';
+  const payload = settingsPayload();
+  const response = await fetch('/api/setup/test-connection', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({base_url:payload.profile.llm.base_url, api_key:payload.secrets.LLM_API_KEY})
+  });
+  const data = await response.json().catch(() => ({}));
+  result.textContent = response.ok ? 'Connected' : (data.detail || 'Connection failed');
+};
+
+document.getElementById('save-settings').onclick = async () => {
+  const result = document.getElementById('settings-result');
+  result.textContent = 'Saving…';
+  const response = await fetch('/api/setup/profile', {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(settingsPayload())
+  });
+  const data = await response.json().catch(() => ({}));
+  result.textContent = response.ok ? 'Saved' : (data.detail || 'Could not save settings');
+  if (response.ok) setTimeout(() => location.reload(), 500);
+};
+</script>
 {% endblock %}
