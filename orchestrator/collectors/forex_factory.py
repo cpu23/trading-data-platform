@@ -65,6 +65,40 @@ class ForexFactoryCollector:
 
         payload = self._load_cached_payload(config, target_week, correlation_id)
         payload_source = "cache"
+        tried_live = False
+
+        def _parse_and_check(p: list[dict], source: str) -> list[dict]:
+            return self._parse_export_payload(
+                payload=p,
+                target_week=target_week,
+                min_impact=min_impact,
+                currencies=currencies,
+                payload_source=source,
+                correlation_id=correlation_id,
+            )
+
+        # Try cache first
+        if payload is not None:
+            records = _parse_and_check(payload, "cache")
+            if records:
+                logger.info(
+                    "weekly_export_parsed",
+                    action="collect",
+                    week=target_week["week_key"],
+                    payload_source="cache",
+                    events_found=len(records),
+                    correlation_id=correlation_id,
+                )
+                return records
+            # Cache exists but produced 0 matching events — try live fetch
+            logger.warning(
+                "cached_payload_yielded_zero_events_retrying_live",
+                action="collect",
+                week=target_week["week_key"],
+                correlation_id=correlation_id,
+            )
+            tried_live = True
+            payload = None  # force live fetch below
 
         if payload is None:
             try:
@@ -99,14 +133,7 @@ class ForexFactoryCollector:
                 )
                 payload_source = "stale_cache"
 
-        records = self._parse_export_payload(
-            payload=payload,
-            target_week=target_week,
-            min_impact=min_impact,
-            currencies=currencies,
-            payload_source=payload_source,
-            correlation_id=correlation_id,
-        )
+        records = _parse_and_check(payload, payload_source)
 
         if not records:
             logger.warning(
