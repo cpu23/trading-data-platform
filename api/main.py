@@ -58,7 +58,7 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def protect_state_changes(request: Request, call_next):
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith(("/login", "/api/setup")):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith(("/login", "/api/login", "/api/setup")):
             origin = request.headers.get("origin")
             if origin and request.url.hostname not in origin:
                 from fastapi.responses import JSONResponse

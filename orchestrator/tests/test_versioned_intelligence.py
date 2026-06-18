@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from db import _prepare_record, insert_records_in_session
 from orchestrator import run_processor
 
 
@@ -61,6 +62,25 @@ class VersionedIntelligenceTests(unittest.TestCase):
         self.assertIn("publication_status", migration)
         self.assertIn("output_ids", migration)
         self.assertIn("retention_days INTEGER DEFAULT 90", migration)
+
+    def test_processing_output_ids_remain_native_array(self):
+        output_ids = ["26a71a75-52b5-40bb-96a1-e8f08d3249e6"]
+        prepared = _prepare_record(
+            {"output_ids": output_ids, "input_summary": {"ok": True}},
+            "processing_log",
+        )
+        self.assertEqual(prepared["output_ids"], output_ids)
+        self.assertEqual(prepared["input_summary"], '{"ok": true}')
+
+    def test_processing_log_insert_casts_output_ids_to_uuid_array(self):
+        session = Mock()
+        insert_records_in_session(
+            session,
+            "processing_log",
+            [{"processor": "macro_regime", "output_ids": ["26a71a75-52b5-40bb-96a1-e8f08d3249e6"]}],
+        )
+        statement = str(session.execute.call_args.args[0])
+        self.assertIn("CAST(:output_ids AS UUID[])", statement)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import auth
 from routes.json import setup
+from types import SimpleNamespace
 
 
 class AuthSecurityTests(unittest.TestCase):
@@ -60,6 +61,14 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(merged["llm"]["default_model"], "new")
         self.assertEqual(merged["llm"]["timeout_seconds"], 90)
         self.assertIn("watchlist", merged)
+
+    def test_api_login_is_allowed_before_authentication(self):
+        request = SimpleNamespace(
+            url=SimpleNamespace(path="/api/login"),
+            session={},
+            cookies={},
+        )
+        self.assertEqual(auth.verify_credentials(request, None), "bootstrap")
 
 
 if __name__ == "__main__":

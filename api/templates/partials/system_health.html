@@ -8,6 +8,11 @@
     <div class="health-summary">
       <span class="status-dot status-{{ 'success' if health.get('overall') == 'healthy' else 'partial' if health.get('overall') in ['degraded', 'unavailable'] else 'failed' }}"></span>
       <span>{{ health.get('overall', 'unknown') | replace('_', ' ') | title }}</span>
+      {% set ns = namespace(problem=none) %}
+      {% for component in components %}
+        {% if ns.problem is none and component.last_status in ['failed', 'error', 'partial'] %}{% set ns.problem = component %}{% endif %}
+      {% endfor %}
+      {% if ns.problem %}<span class="health-summary-detail">· {{ ns.problem.name | replace('_', ' ') }} {{ ns.problem.last_status | replace('_', ' ') }}</span>{% endif %}
     </div>
 
     {% if health.get('error') %}
@@ -20,9 +25,7 @@
             <span class="status-dot status-{{ 'failed' if component.last_status in ['failed', 'error'] else 'partial' if component.stale or component.last_status == 'partial' else 'warn' if component.quality_warn and component.last_status == 'success' else 'success' }}"
                   {% if component.quality_warn %}title="Quality issues detected"{% endif %}></span>
             {{ component.name | replace('_', ' ') }}
-            {% if component.stale %}
-              <span class="health-component-status">stale</span>
-            {% elif component.last_status not in ['success', 'connected', 'simulated'] %}
+            {% if component.last_status not in ['success', 'connected', 'simulated'] and component.last_status != 'stale' %}
               <span class="health-component-status">{{ component.last_status | replace('_', ' ') }}</span>
             {% endif %}
           </span>

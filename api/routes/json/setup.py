@@ -17,6 +17,7 @@ COVERAGE_SOURCES = (
     "ecb",
     "boe",
     "eia",
+    "oanda",
 )
 DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_LLM_MODEL = "deepseek/deepseek-v4-flash"

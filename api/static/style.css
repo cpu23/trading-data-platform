@@ -372,6 +372,11 @@ body {
   align-items: center;
   gap: 20px;
 }
+.quiet-nav { display:flex; align-items:center; gap:8px; color:var(--fg-dim); font-size:12px; white-space:nowrap; }
+.quiet-nav a { color:var(--fg-dim); text-decoration:none; }
+.quiet-nav a:hover { color:var(--fg); }
+.quiet-nav span { color:var(--hairline-strong); }
+.health-summary-detail { margin-left:4px; color:var(--bear); }
 
 .freshness {
   display: flex;

@@ -34,7 +34,8 @@ def get_system_health():
 
     processor_sql = """
         SELECT DISTINCT ON (processor)
-            processor, started_at, status, model_used, cost_usd, duration_ms
+            processor, started_at, status, model_used, cost_usd, duration_ms,
+            error_message
         FROM processing_log
         ORDER BY processor, started_at DESC
     """
@@ -56,6 +57,7 @@ def get_system_health():
 
     components = []
     schedule_map = {}
+    quality_warn_map = {}
     try:
         orchestration = httpx.get("http://orchestrator:8000/health", timeout=2.0).json()
         schedule_map = {
@@ -76,10 +78,11 @@ def get_system_health():
         pass
 
     quality = {}
-    quality_warn_map = {}
     try:
         quality = httpx.get("http://orchestrator:8000/quality", timeout=5.0).json()
-        for check in quality.get("checks", []):
+        raw_checks = quality.get("checks", [])
+        checks = raw_checks.values() if isinstance(raw_checks, dict) else raw_checks
+        for check in checks:
             source_id = check.get("source_id", "")
             if source_id and not check.get("healthy", True):
                 quality_warn_map[source_id] = True
@@ -139,6 +142,7 @@ def get_system_health():
                 "next_due_at": schedule_map.get(proc_id),
                 "stale": stale,
                 "quality_warn": quality_warn_map.get(proc_id, False),
+                "error_message": row.get("error_message") if row.get("status") in ("failed", "partial") else None,
             })
         else:
             components.append({
@@ -157,6 +161,13 @@ def get_system_health():
         for c in components
     )
     overall = "healthy" if all_ok else "degraded"
+    components.sort(
+        key=lambda component: (
+            component["last_status"] not in ("failed", "error", "partial"),
+            not component.get("stale", False),
+            component["name"],
+        )
+    )
 
     return {
         "overall": overall,

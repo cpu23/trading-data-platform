@@ -232,9 +232,13 @@ def insert_records(
     return written
 
 
-def _prepare_record(record: dict) -> dict:
+def _prepare_record(record: dict, table_name: str = "") -> dict:
     return {
-        key: json.dumps(value) if isinstance(value, (dict, list)) else value
+        key: (
+            value
+            if table_name == "processing_log" and key == "output_ids"
+            else json.dumps(value) if isinstance(value, (dict, list)) else value
+        )
         for key, value in record.items()
     }
 
@@ -244,14 +248,20 @@ def insert_records_in_session(session, table_name: str, records: list[dict]) -> 
     if not records:
         return 0
     columns = list(records[0])
+    placeholders = [
+        f"CAST(:{column} AS UUID[])"
+        if table_name == "processing_log" and column == "output_ids"
+        else f":{column}"
+        for column in columns
+    ]
     statement = text(
         f"INSERT INTO {table_name} ({', '.join(columns)}) "
-        f"VALUES ({', '.join(f':{column}' for column in columns)})"
+        f"VALUES ({', '.join(placeholders)})"
     )
     for record in records:
         if list(record) != columns:
             raise ValueError(f"Inconsistent columns for {table_name}")
-        session.execute(statement, _prepare_record(record))
+        session.execute(statement, _prepare_record(record, table_name))
     return len(records)
 
 

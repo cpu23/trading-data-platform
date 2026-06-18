@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block content %}
-<header class="page-header"><a href="/">← Dashboard</a><h1>Settings</h1></header>
+<header class="page-header" style="margin-bottom:16px">
+  <div class="page-header-left"><a class="quiet-link" href="/">Dashboard</a><span class="page-header-title">Settings</span></div>
+  <nav class="quiet-nav"><a href="/logs">View logs</a><span>·</span><a href="/quality">Data quality</a></nav>
+</header>
 <main class="asset-page settings-page">
   <details open>
     <summary>Intelligence connection <span class="status-pill {{ 'connected' if has_llm_key else 'not-connected' }}">{{ 'Key saved' if has_llm_key else 'Not connected' }}</span></summary>
@@ -23,8 +26,8 @@
   <details>
     <summary>Data coverage <span class="status-pill connected">{{ config.collectors.values() | selectattr('enabled') | list | length }} enabled</span></summary>
     <div class="source-credentials">
-      <label>FRED API key <span class="credential-state">{{ 'Saved' if has_fred_key else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_fred_key else 'FRED API key' }}"></label>
-      <label>OANDA API key <span class="credential-state">{{ 'Saved' if has_oanda_key else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_oanda_key else 'OANDA practice API key' }}"></label>
+      <label>FRED API key <span class="credential-state">{{ 'Saved in setup' if fred_key_source == 'setup' else 'Provided by environment' if fred_key_source == 'environment' else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Enter a new key to replace the current one' if fred_key_source else 'FRED API key' }}"></label>
+      <label>OANDA API key <span class="credential-state">{{ 'Saved in setup' if oanda_key_source == 'setup' else 'Provided by environment' if oanda_key_source == 'environment' else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Enter a new key to replace the current one' if oanda_key_source else 'OANDA practice API key' }}"></label>
     </div>
     <div class="coverage-list">
       {% for id, label, description in [
@@ -36,6 +39,7 @@
         ('ecb','Euro area','ECB rates, credit and expectations'),
         ('boe','United Kingdom','BoE rates, money and lending'),
         ('eia','Energy','EIA inventories and fundamentals')
+        ,('oanda','Market prices','OANDA practice pricing and snapshots')
       ] %}
       <label><span><strong>{{ label }}</strong><small>{{ description }}</small></span><input data-settings-coverage="{{ id }}" type="checkbox" {{ 'checked' if config.collectors.get(id, {}).get('enabled') }}></label>
       {% endfor %}

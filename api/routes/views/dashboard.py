@@ -38,7 +38,7 @@ def _get_templates(request: Request):
 def _last_cycle_text(config: dict) -> str:
     sql = """
         SELECT started_at, completed_at FROM cycle_runs
-        WHERE status = 'completed'
+        WHERE status = 'completed' AND run_kind = 'cycle'
         ORDER BY completed_at DESC, started_at DESC
         LIMIT 1
     """
@@ -53,12 +53,83 @@ def _last_cycle_text(config: dict) -> str:
 
 def _latest_cycle_status(config: dict) -> str:
     row = query_one(
-        "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
+        "SELECT status, result_status FROM cycle_runs "
+        "WHERE run_kind = 'cycle' ORDER BY started_at DESC LIMIT 1",
         config=config,
     )
     if not row:
         return "unknown"
     return row.get("result_status") or row.get("status") or "unknown"
+
+
+def _latest_cycle_issue(config: dict) -> dict | None:
+    row = query_one(
+        "SELECT correlation_id, status, result_status, error_message "
+        "FROM cycle_runs WHERE run_kind = 'cycle' ORDER BY started_at DESC LIMIT 1",
+        config=config,
+    )
+    if not row:
+        return None
+    result_status = row.get("result_status") or row.get("status")
+    if result_status == "success":
+        return None
+    stage = query_one(
+        """
+        SELECT component, status, error_message FROM (
+          SELECT collector AS component, status, error_message, started_at
+          FROM collection_log WHERE correlation_id = :cid
+          UNION ALL
+          SELECT processor AS component, status, error_message, started_at
+          FROM processing_log WHERE correlation_id = :cid
+        ) stages
+        WHERE status IN ('failed', 'partial', 'budget_denied')
+        ORDER BY started_at DESC LIMIT 1
+        """,
+        {"cid": row["correlation_id"]},
+        config=config,
+    )
+    component = stage.get("component") if stage else None
+    return {
+        "status": result_status,
+        "component": component,
+        "error": (stage or {}).get("error_message") or row.get("error_message"),
+        "headline": (
+            f"Latest cycle failed in {component.replace('_', ' ')}; the previous published assessment remains visible."
+            if result_status == "failed" and component
+            else "Latest cycle failed; the previous published assessment remains visible."
+            if result_status == "failed"
+            else f"Latest cycle completed with an issue in {component.replace('_', ' ')}."
+            if component
+            else "Latest cycle completed with errors."
+        ),
+    }
+
+
+def _assessment_update_notice(config: dict) -> dict | None:
+    row = query_one(
+        """
+        SELECT
+          (SELECT MAX(published_at) FROM structured_opinions
+           WHERE lifecycle_status = 'published' AND opinion_type <> 'cycle_delta') AS assessment_at,
+          (SELECT MAX(published_at) FROM structured_opinions
+           WHERE lifecycle_status = 'published' AND opinion_type = 'cycle_delta') AS delta_at
+        """,
+        config=config,
+    )
+    if not row:
+        return None
+    assessment_at = _parse_iso(row.get("assessment_at"))
+    delta_at = _parse_iso(row.get("delta_at"))
+    if assessment_at and (not delta_at or assessment_at > delta_at):
+        return {
+            "status": "updated",
+            "headline": "Assessment updated; cross-asset change comparison awaits the next full cycle.",
+        }
+    return None
+
+
+def _change_notice(config: dict) -> dict | None:
+    return _latest_cycle_issue(config) or _assessment_update_notice(config)
 
 
 def _parse_iso(value) -> datetime | None:
@@ -450,6 +521,7 @@ def dashboard(request: Request):
         "price_map": price_map,
         "budget": get_budget_status(),
         "changes": get_latest_changes(),
+        "cycle_issue": _change_notice(config),
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -457,10 +529,15 @@ def dashboard(request: Request):
 
 @router.get("/partials/changes")
 def partial_changes(request: Request):
+    config = load_config()
     return _get_templates(request).TemplateResponse(
         request,
         "partials/changes_section.html",
-        {"request": request, "changes": get_latest_changes()},
+        {
+            "request": request,
+            "changes": get_latest_changes(),
+            "cycle_issue": _change_notice(config),
+        },
     )
 
 

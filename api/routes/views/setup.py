@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Request
 from auth import setup_complete, STATE_DIR
 from config import load_config
@@ -31,5 +33,15 @@ def settings_page(request: Request):
             "has_llm_key": "LLM_API_KEY" in saved_secrets,
             "has_fred_key": "FRED_API_KEY" in saved_secrets,
             "has_oanda_key": "OANDA_API_KEY" in saved_secrets,
+            "fred_key_source": (
+                "setup" if "FRED_API_KEY" in saved_secrets
+                else "environment" if os.environ.get("FRED_API_KEY")
+                else None
+            ),
+            "oanda_key_source": (
+                "setup" if "OANDA_API_KEY" in saved_secrets
+                else "environment" if os.environ.get("OANDA_API_KEY")
+                else None
+            ),
         },
     )

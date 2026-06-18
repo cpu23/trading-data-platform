@@ -1,6 +1,10 @@
 <section class="changes-strip" id="changes-section"
          hx-get="/partials/changes" hx-trigger="cycleComplete from:body" hx-swap="outerHTML">
-  {% if changes %}
+  {% if cycle_issue %}
+    <span class="status-dot {{ 'status-failed' if cycle_issue.status in ['failed', 'partial'] else 'status-partial' }}"></span>
+    <span>{{ cycle_issue.headline }}</span>
+    {% if cycle_issue.error %}<details><summary>View error</summary><p class="dim">{{ cycle_issue.error }}</p></details>{% endif %}
+  {% elif changes %}
     {% if changes.material_change %}
       <span class="label">Since last cycle</span>
       <span>{{ changes.headline }}</span>

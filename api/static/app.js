@@ -371,6 +371,11 @@
       });
     });
 
+    document.body.addEventListener('htmx:beforeRequest', function (evt) {
+      if (!evt.detail.elt || evt.detail.elt.id !== 'logs-table-body') return;
+      if (expandedLogIds.size > 0) evt.preventDefault();
+    });
+
     document.body.addEventListener('click', function (e) {
       var chip = e.target.closest('.run-chip');
       if (!chip) return;

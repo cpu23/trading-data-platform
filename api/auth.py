@@ -43,7 +43,7 @@ def verify_credentials(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
 ) -> str:
-    if request.url.path.startswith(("/setup", "/api/setup", "/login", "/static/")):
+    if request.url.path.startswith(("/setup", "/api/setup", "/login", "/api/login", "/static/")):
         return "bootstrap"
     if request.url.path == "/" and not setup_complete():
         return "bootstrap"
