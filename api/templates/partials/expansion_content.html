@@ -29,6 +29,18 @@
       </ul>
     </div>
   {% endif %}
+  {% if asset_intelligence and asset_intelligence.contradictions %}
+    <div class="expansion-subsection">
+      <div class="expansion-label">Contradictions</div>
+      <ul class="compact-list">{% for item in asset_intelligence.contradictions %}<li>{{ item }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  {% if asset_intelligence and asset_intelligence.invalidation_conditions %}
+    <details>
+      <summary>What would change the view</summary>
+      <ul class="compact-list">{% for item in asset_intelligence.invalidation_conditions %}<li>{{ item }}</li>{% endfor %}</ul>
+    </details>
+  {% endif %}
   <div class="expansion-subsection">
     <div class="expansion-label">Matched catalysts</div>
     {% if matched_events %}
@@ -51,4 +63,5 @@
       <div class="evidence-view" data-evidence-target></div>
     </details>
   {% endif %}
+  <a class="asset-history-link" href="/assets/{{ note.symbol }}">View economic history →</a>
 </div>

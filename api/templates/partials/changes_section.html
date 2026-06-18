@@ -1,0 +1,16 @@
+<section class="changes-strip" id="changes-section"
+         hx-get="/partials/changes" hx-trigger="cycleComplete from:body" hx-swap="outerHTML">
+  {% if changes %}
+    {% if changes.material_change %}
+      <span class="label">Since last cycle</span>
+      <span>{{ changes.headline }}</span>
+      {% if changes.changed %}
+      <details><summary>View changes</summary>
+        <ul class="compact-list">{% for item in changes.changed %}<li>{{ item }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    {% else %}
+      <span class="status-dot"></span><span class="dim">No material change since the previous cycle.</span>
+    {% endif %}
+  {% endif %}
+</section>

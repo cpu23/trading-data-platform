@@ -6,14 +6,18 @@ database:
   password: ${DB_PASSWORD}
 
 llm:
-  provider: openrouter
-  api_key: ${OPENROUTER_API_KEY}
-  default_model: ${OPENROUTER_MODEL}
+  provider: ${LLM_PROVIDER}
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  default_model: ${LLM_MODEL}
   models:
-    macro_regime: ${OPENROUTER_MODEL}
-    event_impact: ${OPENROUTER_MODEL}
-    briefing: ${OPENROUTER_MODEL}
+    macro_regime: ${LLM_MODEL_MACRO_REGIME}
+    event_impact: ${LLM_MODEL_EVENT_IMPACT}
+    briefing: ${LLM_MODEL_BRIEFING}
   temperature: 0.2
+  reasoning_effort:
+  capability_fallback: auto
+  timeout_seconds: 120
   max_retries: 3
 
 timezone:
@@ -35,6 +39,41 @@ logging:
     keep_files: 30
 
 collectors:
+  cftc:
+    enabled: false
+    schedule: "0 22 * * 5"
+    url: "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
+    limit: 5000
+    categories:
+      - [dealer, dealer_positions_long_all, dealer_positions_short_all]
+      - [asset_manager, asset_mgr_positions_long, asset_mgr_positions_short]
+      - [leveraged_funds, lev_money_positions_long, lev_money_positions_short]
+
+  central_banks:
+    enabled: false
+    schedule: "0 */6 * * *"
+    feeds: []
+
+  oecd:
+    enabled: false
+    schedule: "30 6 * * *"
+    series: []
+
+  ecb:
+    enabled: false
+    schedule: "40 6 * * *"
+    series: []
+
+  boe:
+    enabled: false
+    schedule: "50 6 * * *"
+    series: []
+
+  eia:
+    enabled: false
+    schedule: "10 7 * * *"
+    series: []
+
   fred:
     enabled: true
     api_key: ${FRED_API_KEY}
@@ -131,6 +170,11 @@ collectors:
         enabled: true
 
 processors:
+  market_intelligence:
+    enabled: true
+    depends_on: [macro_regime]
+    schedule: after_dependency
+
   macro_regime:
     enabled: true
     depends_on: [fred]

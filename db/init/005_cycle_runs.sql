@@ -8,7 +8,12 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
   run_kind TEXT NOT NULL DEFAULT 'cycle',
   requested_component TEXT,
   result_status TEXT,
-  summary JSONB DEFAULT '{}'
+  summary JSONB DEFAULT '{}',
+  publication_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (publication_status IN ('pending', 'published', 'failed')),
+  published_at TIMESTAMPTZ,
+  baseline_correlation_id UUID REFERENCES cycle_runs(correlation_id),
+  config_fingerprint TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_cycle_runs_started_at ON cycle_runs (started_at DESC);

@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -229,6 +230,59 @@ def insert_records(
     )
 
     return written
+
+
+def _prepare_record(record: dict) -> dict:
+    return {
+        key: json.dumps(value) if isinstance(value, (dict, list)) else value
+        for key, value in record.items()
+    }
+
+
+def insert_records_in_session(session, table_name: str, records: list[dict]) -> int:
+    """Insert records using the caller's transaction."""
+    if not records:
+        return 0
+    columns = list(records[0])
+    statement = text(
+        f"INSERT INTO {table_name} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f':{column}' for column in columns)})"
+    )
+    for record in records:
+        if list(record) != columns:
+            raise ValueError(f"Inconsistent columns for {table_name}")
+        session.execute(statement, _prepare_record(record))
+    return len(records)
+
+
+def upsert_records_in_session(
+    session,
+    table_name: str,
+    records: list[dict],
+    conflict_columns: list[str],
+) -> int:
+    """Upsert records using the caller's transaction."""
+    if not records:
+        return 0
+    columns = list(records[0])
+    updates = [column for column in columns if column not in conflict_columns]
+    conflict = ", ".join(conflict_columns)
+    update_sql = (
+        "DO UPDATE SET "
+        + ", ".join(f"{column} = EXCLUDED.{column}" for column in updates)
+        if updates
+        else "DO NOTHING"
+    )
+    statement = text(
+        f"INSERT INTO {table_name} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f':{column}' for column in columns)}) "
+        f"ON CONFLICT ({conflict}) {update_sql}"
+    )
+    for record in records:
+        if list(record) != columns:
+            raise ValueError(f"Inconsistent columns for {table_name}")
+        session.execute(statement, _prepare_record(record))
+    return len(records)
 
 
 def _now_ms() -> float:

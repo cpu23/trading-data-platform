@@ -11,8 +11,10 @@ from routes.json.events import get_events_upcoming
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.system import get_system_health
+from routes.json.assets import get_latest_changes, get_asset
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
+from auth import setup_complete
 
 router = APIRouter()
 
@@ -362,6 +364,9 @@ def _get_dashboard_health() -> dict:
 @router.get("/")
 def dashboard(request: Request):
     config = load_config()
+    if not setup_complete() and not config.get("demo", {}).get("enabled"):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/setup")
     templates = _get_templates(request)
 
     # Fetch data with graceful error handling per section
@@ -444,9 +449,19 @@ def dashboard(request: Request):
         "briefing_bullets": _briefing_bullets(briefing),
         "price_map": price_map,
         "budget": get_budget_status(),
+        "changes": get_latest_changes(),
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
+
+
+@router.get("/partials/changes")
+def partial_changes(request: Request):
+    return _get_templates(request).TemplateResponse(
+        request,
+        "partials/changes_section.html",
+        {"request": request, "changes": get_latest_changes()},
+    )
 
 
 @router.get("/partials/system-health")
@@ -586,6 +601,11 @@ def partial_cards_symbol(request: Request, symbol: str):
                 ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
         except Exception:
             events = []
+        asset_intelligence = {}
+        try:
+            asset_intelligence = get_asset(symbol).get("panel", {}).get("payload", {})
+        except Exception:
+            pass
         return templates.TemplateResponse(request, "partials/expansion_content.html", {
             "request": request,
             "note": note,
@@ -593,6 +613,7 @@ def partial_cards_symbol(request: Request, symbol: str):
             "drivers": _asset_drivers(note),
             "matched_events": _matched_asset_events(symbol, events),
             "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
+            "asset_intelligence": asset_intelligence,
         })
 
     # Symbol not found: return empty panel

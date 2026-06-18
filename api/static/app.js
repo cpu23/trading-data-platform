@@ -623,6 +623,10 @@
   }
 
   /* Boot --------------------------------------------------------------------- */
+  document.body.addEventListener('htmx:configRequest', function (event) {
+    var token = document.querySelector('meta[name="csrf-token"]');
+    if (token) event.detail.headers['X-CSRF-Token'] = token.content;
+  });
   document.addEventListener('DOMContentLoaded', function () {
     initModal();
     initCards();

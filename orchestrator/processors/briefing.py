@@ -8,13 +8,15 @@ from zoneinfo import ZoneInfo
 from db import get_session
 from llm_client import call_llm, resolve_model
 from logging_config import get_logger
-from processors._validators import validate_briefing_sections, coerce_briefing_fields
+from processors._validators import (
+    OutputPolicyError,
+    coerce_briefing_fields,
+    repair_prompt,
+    validate_briefing_sections,
+)
 from sqlalchemy import text
 
 logger = get_logger("processor.briefing")
-
-MAX_RETRIES = 1
-
 
 class DailyBriefingProcessor:
     processor_id = "briefing"
@@ -58,15 +60,11 @@ class DailyBriefingProcessor:
         )
 
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
-
-        sections = {
-            "macro_trend": parsed.get("macro_trend", parsed.get("macro_summary", "")),
-            "today": parsed.get("today", ""),
-            "this_week": parsed.get("this_week", parsed.get("upcoming_events", "")),
-            "regime_assessment": parsed.get("regime_assessment", ""),
-            "watchlist_notes": parsed.get("watchlist_notes", []),
-        }
+        try:
+            parsed = self._parse_llm_response(raw_response)
+            sections = self._sections_from_parsed(parsed)
+        except ValueError:
+            sections = None
 
         sections = self._validate_and_fix_sections(
             sections=sections,
@@ -78,6 +76,7 @@ class DailyBriefingProcessor:
             config=config,
             correlation_id=correlation_id,
         )
+        raw_response = llm_result["content"]
 
         opinion_id = str(uuid4())
         briefing_id = str(uuid4())
@@ -164,7 +163,7 @@ class DailyBriefingProcessor:
 
     def _validate_and_fix_sections(
         self,
-        sections: dict,
+        sections: dict | None,
         watchlist_config: list[dict],
         prompt_text: str,
         raw_response: str,
@@ -173,97 +172,123 @@ class DailyBriefingProcessor:
         config: dict,
         correlation_id: str,
     ) -> dict:
-        is_valid, warnings = validate_briefing_sections(sections, watchlist_config)
+        issues = []
+        if sections is None:
+            issues = ["invalid JSON response"]
+        else:
+            coercion_warnings = coerce_briefing_fields(sections)
+            for warning in coercion_warnings:
+                logger.info(
+                    "briefing_coercion",
+                    action="coerce_briefing",
+                    warning=warning,
+                    correlation_id=correlation_id,
+                )
+            is_valid, issues = validate_briefing_sections(
+                sections, watchlist_config
+            )
+            if is_valid:
+                return sections
 
-        for warning in warnings:
-            logger.warning(
-                "briefing_validation_warning",
-                action="validate_briefing",
-                warning=warning,
+        logger.warning(
+            "briefing_validation_failed_retrying",
+            action="validate_briefing",
+            warnings=issues,
+            correlation_id=correlation_id,
+        )
+        try:
+            retry_result = call_llm(
+                prompt=repair_prompt(prompt_text, issues),
+                model=model,
+                correlation_id=correlation_id,
+                config=config,
+            )
+        except Exception as exc:
+            repair_issues = [f"repair call failed: {exc}"]
+            logger.error(
+                "briefing_output_quarantined",
+                action="repair_briefing",
+                warnings=repair_issues,
                 correlation_id=correlation_id,
             )
+            raise OutputPolicyError(self.processor_id, repair_issues) from exc
 
-        coercion_warnings = coerce_briefing_fields(sections)
-        for warning in coercion_warnings:
+        try:
+            retry_sections = self._sections_from_parsed(
+                self._parse_llm_response(retry_result.get("content"))
+            )
+            retry_coercions = coerce_briefing_fields(retry_sections)
+            retry_valid, retry_issues = validate_briefing_sections(
+                retry_sections, watchlist_config
+            )
+        except (TypeError, ValueError) as exc:
+            retry_sections = None
+            retry_coercions = []
+            retry_valid = False
+            retry_issues = [f"invalid JSON response: {exc}"]
+
+        for warning in retry_coercions:
             logger.info(
-                "briefing_coercion",
-                action="coerce_briefing",
+                "briefing_retry_coercion",
+                action="coerce_briefing_retry",
                 warning=warning,
                 correlation_id=correlation_id,
             )
 
-        if not is_valid:
-            logger.warning(
-                "briefing_validation_failed_retrying",
-                action="validate_briefing",
-                warnings=warnings,
+        if not retry_valid:
+            logger.error(
+                "briefing_output_quarantined",
+                action="validate_briefing_retry",
+                warnings=retry_issues,
                 correlation_id=correlation_id,
             )
+            raise OutputPolicyError(self.processor_id, retry_issues)
 
-            expected_symbols = ", ".join(
-                w.get("symbol", "") for w in watchlist_config if w.get("symbol")
-            )
-            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: Your previous response had format issues: " + "; ".join(warnings) + ". Please respond again with the correct JSON format, ensuring watchlist_notes is an array of objects, each with symbol, asset_class, bias, confidence, summary, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
+        self._adopt_repair_result(llm_result, retry_result)
+        logger.info(
+            "briefing_retry_succeeded",
+            action="validate_briefing_retry",
+            correlation_id=correlation_id,
+        )
+        return retry_sections
 
-            try:
-                retry_result = call_llm(
-                    prompt=retry_prompt,
-                    model=model,
-                    correlation_id=correlation_id,
-                    config=config,
-                )
-                retry_parsed = self._parse_llm_response(retry_result["content"])
-
-                retry_sections = {
-                    "macro_trend": retry_parsed.get("macro_trend", sections.get("macro_trend", "")),
-                    "today": retry_parsed.get("today", sections.get("today", "")),
-                    "this_week": retry_parsed.get("this_week", sections.get("this_week", "")),
-                    "regime_assessment": retry_parsed.get("regime_assessment", sections.get("regime_assessment", "")),
-                    "watchlist_notes": retry_parsed.get("watchlist_notes", sections.get("watchlist_notes", [])),
+    @staticmethod
+    def _sections_from_parsed(parsed: dict) -> dict:
+        if not isinstance(parsed, dict):
+            raise ValueError("top-level JSON value must be an object")
+        return {
+            "macro_trend": parsed.get("macro_trend"),
+            "today": parsed.get("today"),
+            "this_week": parsed.get("this_week"),
+            "regime_assessment": parsed.get("regime_assessment"),
+            "watchlist_notes": parsed.get("watchlist_notes"),
+            **{
+                key: value
+                for key, value in parsed.items()
+                if key
+                not in {
+                    "macro_trend",
+                    "today",
+                    "this_week",
+                    "regime_assessment",
+                    "watchlist_notes",
                 }
+            },
+        }
 
-                retry_valid, retry_warnings = validate_briefing_sections(
-                    retry_sections, watchlist_config
-                )
-                retry_coercion = coerce_briefing_fields(retry_sections)
-
-                for w in retry_warnings:
-                    logger.warning(
-                        "briefing_retry_validation_warning",
-                        action="validate_briefing_retry",
-                        warning=w,
-                        correlation_id=correlation_id,
-                    )
-                for w in retry_coercion:
-                    logger.info(
-                        "briefing_retry_coercion",
-                        action="coerce_briefing_retry",
-                        warning=w,
-                        correlation_id=correlation_id,
-                    )
-
-                if retry_valid:
-                    logger.info(
-                        "briefing_retry_succeeded",
-                        action="validate_briefing",
-                        correlation_id=correlation_id,
-                    )
-                    return retry_sections
-
-                logger.warning(
-                    "briefing_retry_still_invalid_using_original",
-                    action="validate_briefing",
-                    correlation_id=correlation_id,
-                )
-            except Exception as exc:
-                logger.error(
-                    "briefing_retry_failed",
-                    action="validate_briefing",
-                    error=str(exc),
-                    correlation_id=correlation_id,
-                )
-
-        return sections
+    @staticmethod
+    def _adopt_repair_result(initial: dict, repair: dict) -> None:
+        initial["content"] = repair["content"]
+        initial["model"] = repair.get("model", initial.get("model"))
+        initial["tokens_input"] = initial.get("tokens_input", 0) + repair.get(
+            "tokens_input", 0
+        )
+        initial["tokens_output"] = initial.get("tokens_output", 0) + repair.get(
+            "tokens_output", 0
+        )
+        initial["cost_usd"] = initial.get("cost_usd", 0.0) + repair.get(
+            "cost_usd", 0.0
+        )
 
     def _get_regime_summary(self, config: dict) -> str | None:
         sql = text("""
@@ -299,7 +324,10 @@ class DailyBriefingProcessor:
                 except (json.JSONDecodeError, TypeError):
                     supporting = {}
 
-            momentum = supporting.get("momentum_implications", "")
+            market_implications = supporting.get(
+                "market_implications",
+                supporting.get("momentum_implications", ""),
+            )
             caution = supporting.get("caution_flags", [])
             key_indicators = supporting.get("key_indicators", {})
 
@@ -308,8 +336,8 @@ class DailyBriefingProcessor:
                 lines.append(f"\nSummary: {summary}")
             if reasoning:
                 lines.append(f"\nReasoning: {reasoning}")
-            if momentum:
-                lines.append(f"\nMomentum Implications: {momentum}")
+            if market_implications:
+                lines.append(f"\nMarket Implications: {market_implications}")
             if caution:
                 lines.append(f"\nCaution Flags: {', '.join(caution)}")
             if key_indicators:
@@ -617,6 +645,8 @@ class DailyBriefingProcessor:
 
     @staticmethod
     def _parse_llm_response(response_text: str) -> dict:
+        if not isinstance(response_text, str):
+            raise ValueError("LLM response content must be a string")
         text = response_text.strip()
 
         try:

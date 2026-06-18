@@ -1,0 +1,19 @@
+features:
+  growth.us: [FRED:GDPC1, FRED:PAYEMS]
+  growth.global: [OECD:CLI_US, OECD:CLI_EA, OECD:CLI_GB, OECD:CLI_JP]
+  inflation.us: [FRED:CPIAUCSL, FRED:PCEPILFE, EIA:BRENT]
+  policy.us: [FRED:FEDFUNDS]
+  policy.eu: [ECB:DEPOSIT_RATE, ECB:ESTR]
+  policy.uk: [BOE:BANK_RATE, BOE:SONIA]
+  stress.global: [FRED:VIXCLS, FRED:BAMLH0A0HYM2, ECB:CISS]
+  energy.global: [EIA:BRENT, EIA:WTI, EIA:CRUDE_STOCKS, EIA:NATGAS_STORAGE]
+
+assets:
+  EURUSD: [growth.us, growth.global, inflation.us, policy.us, policy.eu]
+  AUDJPY: [growth.global, energy.global, stress.global]
+  USDJPY: [growth.us, growth.global, policy.us, stress.global]
+  SP500: [growth.us, inflation.us, policy.us, stress.global]
+  XAUUSD: [inflation.us, policy.us, stress.global]
+  XPTUSD: [growth.global, energy.global, stress.global]
+  GER40: [growth.global, policy.eu, energy.global]
+  UK100: [growth.global, policy.uk, energy.global]

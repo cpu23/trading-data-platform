@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
-from db import get_session, insert_records, upsert_records
+from db import (
+    get_session,
+    insert_records,
+    insert_records_in_session,
+    upsert_records,
+    upsert_records_in_session,
+)
 from logging_config import get_logger
 from processors import get_all_processors, get_processor
 from sqlalchemy import text
@@ -26,7 +32,12 @@ def ensure_run(
                 "INSERT INTO cycle_runs "
                 "(correlation_id, status, started_at, triggered_by, run_kind, requested_component) "
                 "VALUES (:cid, 'running', :started_at, :triggered_by, :run_kind, :component) "
-                "ON CONFLICT (correlation_id) DO NOTHING"
+                "ON CONFLICT (correlation_id) DO UPDATE SET "
+                "status = 'running', triggered_by = CASE "
+                "WHEN cycle_runs.triggered_by = 'api_manual_override' "
+                "THEN cycle_runs.triggered_by ELSE EXCLUDED.triggered_by END, "
+                "run_kind = EXCLUDED.run_kind, "
+                "requested_component = EXCLUDED.requested_component"
             ),
             {
                 "cid": correlation_id,
@@ -51,7 +62,11 @@ def finish_run(
             text(
                 "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
                 "summary = CAST(:summary AS JSONB), completed_at = :completed_at, "
-                "error_message = :error_message WHERE correlation_id = :cid"
+                "error_message = :error_message, "
+                "publication_status = :publication_status, "
+                "published_at = CASE WHEN :publication_status = 'published' "
+                "THEN :completed_at ELSE published_at END "
+                "WHERE correlation_id = :cid"
             ),
             {
                 "cid": correlation_id,
@@ -60,8 +75,30 @@ def finish_run(
                 "summary": json.dumps(summary),
                 "completed_at": datetime.now(timezone.utc),
                 "error_message": error_message,
+                "publication_status": (
+                    "published"
+                    if result_status in ("success", "partial")
+                    else "failed"
+                ),
             },
         )
+        if result_status in ("success", "partial"):
+            session.execute(
+                text(
+                    "UPDATE structured_opinions SET lifecycle_status = 'published', "
+                    "published_at = :published_at "
+                    "WHERE correlation_id = :cid AND lifecycle_status = 'validated'"
+                ),
+                {"cid": correlation_id, "published_at": datetime.now(timezone.utc)},
+            )
+            session.execute(
+                text(
+                    "UPDATE daily_briefings SET lifecycle_status = 'published', "
+                    "published_at = :published_at "
+                    "WHERE correlation_id = :cid AND lifecycle_status = 'validated'"
+                ),
+                {"cid": correlation_id, "published_at": datetime.now(timezone.utc)},
+            )
 
 
 def update_run_progress(correlation_id: str, progress: dict, config: dict) -> None:
@@ -69,7 +106,8 @@ def update_run_progress(correlation_id: str, progress: dict, config: dict) -> No
         with get_session(config) as session:
             session.execute(
                 text(
-                    "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
+                    "UPDATE cycle_runs SET summary = "
+                    "COALESCE(summary, '{}'::jsonb) || CAST(:summary AS JSONB) "
                     "WHERE correlation_id = :cid AND status = 'running'"
                 ),
                 {
@@ -207,6 +245,7 @@ def run_full_cycle(
     if correlation_id is None:
         correlation_id = str(uuid4())
     ensure_run(correlation_id, config, run_kind="cycle")
+    budget_override = _consume_budget_override(correlation_id, config)
 
     logger.info(
         "full_cycle_started",
@@ -298,11 +337,15 @@ def run_full_cycle(
         correlation_id=correlation_id,
         successful_collectors=successful_collectors,
         progress_callback=record_progress,
+        budget_override=budget_override,
     )
 
     overall_status = "success"
     all_results = {**collector_results, **processor_results}
-    if any(r["status"] == "failed" for r in all_results.values()):
+    if any(
+        r["status"] in ("failed", "budget_denied")
+        for r in all_results.values()
+    ):
         overall_status = (
             "partial"
             if any(r["status"] in ("success", "partial") for r in all_results.values())
@@ -314,6 +357,7 @@ def run_full_cycle(
         "collectors": collector_results,
         "processors": processor_results,
         "correlation_id": correlation_id,
+        "budget_override": budget_override,
     }
 
     logger.info(
@@ -346,6 +390,7 @@ def _resolve_and_run_processors(
     correlation_id: str,
     successful_collectors: set[str],
     progress_callback=None,
+    budget_override: dict | None = None,
 ) -> dict:
     all_processors = get_all_processors()
     processor_results = {}
@@ -400,7 +445,12 @@ def _resolve_and_run_processors(
         for pid in this_pass:
             if progress_callback:
                 progress_callback(pid, "processor", "running")
-            result = run_processor(pid, config=config, correlation_id=correlation_id)
+            result = run_processor(
+                pid,
+                config=config,
+                correlation_id=correlation_id,
+                budget_override=budget_override,
+            )
             processor_results[pid] = result
             if progress_callback:
                 progress_callback(pid, "processor", result["status"], result)
@@ -496,7 +546,10 @@ def get_last_collection_runs(config: dict | None = None) -> list[dict]:
 
 
 def run_processor(
-    processor_id: str, config: dict | None = None, correlation_id: str | None = None
+    processor_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    budget_override: dict | None = None,
 ) -> dict:
     if config is None:
         from config_loader import load_config
@@ -517,6 +570,63 @@ def run_processor(
 
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+
+    if budget_override is None:
+        budget_override = _consume_budget_override(correlation_id, config)
+    budget = _get_budget_status(config)
+
+    if not budget["paid_calls_allowed"] and budget_override is None:
+        started_at = datetime.now(timezone.utc)
+        error_message = (
+            "Daily LLM budget reached "
+            f"({budget['today_cost_usd']:.6f} / "
+            f"{budget['budget_cap_usd']:.6f} USD)"
+        )
+        _write_processing_log(
+            processor_id=processor_id,
+            started_at=started_at,
+            completed_at=started_at,
+            status="budget_denied",
+            input_summary={"budget": budget, "budget_override": None},
+            output_id=None,
+            prompt_text=None,
+            raw_response=None,
+            model_used=None,
+            tokens_input=None,
+            tokens_output=None,
+            cost_usd=None,
+            duration_ms=0,
+            error_message=error_message,
+            config=config,
+            correlation_id=correlation_id,
+        )
+        result = {
+            "processor": processor_id,
+            "status": "budget_denied",
+            "duration_ms": 0,
+            "error": error_message,
+            "correlation_id": correlation_id,
+            "opinion_id": None,
+            "budget": budget,
+            "budget_override": None,
+        }
+        logger.warning(
+            "processor_budget_denied",
+            action="run_processor",
+            processor=processor_id,
+            correlation_id=correlation_id,
+            today_cost_usd=budget["today_cost_usd"],
+            budget_cap_usd=budget["budget_cap_usd"],
+        )
+        if standalone:
+            finish_run(
+                correlation_id,
+                "budget_denied",
+                result,
+                config,
+                error_message,
+            )
+        return result
 
     processor = get_processor(processor_id)
 
@@ -550,56 +660,16 @@ def run_processor(
     completed_at = datetime.now(timezone.utc)
     duration_ms = int(time.monotonic() * 1000 - start_ms)
 
-    if status == "success" and result_payload:
-        try:
-            opinion = result_payload["opinion"]
-            opinion_written = insert_records(
-                table_name="structured_opinions",
-                records=[opinion],
-                config=config,
-            )
-
-            extra_records = result_payload.get("extra_records", {})
-            extra_written = {}
-            for table_name, records in extra_records.items():
-                if table_name == "daily_briefings":
-                    count = upsert_records(
-                        table_name=table_name,
-                        records=records,
-                        conflict_columns=["briefing_date"],
-                        config=config,
-                    )
-                else:
-                    count = insert_records(
-                        table_name=table_name,
-                        records=records,
-                        config=config,
-                    )
-                extra_written[table_name] = count
-
-            logger.info(
-                "processor_records_written",
-                action="run_processor",
-                processor=processor_id,
-                opinion_written=opinion_written,
-                extra_written=extra_written,
-                correlation_id=correlation_id,
-            )
-        except Exception as exc:
-            status = "partial"
-            error_message = f"DB write failed: {exc}"
-            logger.error(
-                "processor_db_write_failed",
-                action="run_processor",
-                processor=processor_id,
-                error=str(exc),
-                correlation_id=correlation_id,
-            )
-
     processing_log = None
     if status == "success" and result_payload:
         processing_log = result_payload.get("processing_log")
     processing_log = processing_log or {}
+    input_summary = processing_log.get("input_summary") or {}
+    if not isinstance(input_summary, dict):
+        input_summary = {"processor_input_summary": input_summary}
+    input_summary["budget"] = budget
+    input_summary["budget_override"] = budget_override
+    processing_log["input_summary"] = input_summary
 
     processing_log.setdefault("processor", processor_id)
     processing_log.setdefault("status", status)
@@ -610,24 +680,99 @@ def run_processor(
     if error_message:
         processing_log["error_message"] = error_message
 
-    _write_processing_log(
-        processor_id=processor_id,
-        started_at=started_at,
-        completed_at=completed_at,
-        status=processing_log.get("status", status),
-        input_summary=processing_log.get("input_summary"),
-        output_id=processing_log.get("output_id"),
-        prompt_text=processing_log.get("prompt_text"),
-        raw_response=processing_log.get("raw_response"),
-        model_used=processing_log.get("model_used"),
-        tokens_input=processing_log.get("tokens_input"),
-        tokens_output=processing_log.get("tokens_output"),
-        cost_usd=processing_log.get("cost_usd"),
-        duration_ms=duration_ms,
-        error_message=error_message,
-        config=config,
-        correlation_id=correlation_id,
-    )
+    opinions = []
+    if result_payload:
+        opinions = result_payload.get("opinions") or []
+        if result_payload.get("opinion"):
+            opinions = [result_payload["opinion"], *opinions]
+    for opinion in opinions:
+        opinion.setdefault("correlation_id", correlation_id)
+        opinion.setdefault("schema_version", "1")
+        opinion.setdefault("payload", {})
+        opinion.setdefault(
+            "lifecycle_status", "published" if standalone else "validated"
+        )
+        if opinion["lifecycle_status"] == "published":
+            opinion.setdefault("published_at", completed_at)
+        inputs = opinion.get("data_inputs") or {}
+        if isinstance(inputs, dict):
+            inputs.pop("opinion_id", None)
+            inputs.pop("output_id", None)
+            opinion["data_inputs"] = inputs
+
+    extra_records = result_payload.get("extra_records", {}) if result_payload else {}
+    for briefing in extra_records.get("daily_briefings", []):
+        briefing.setdefault("correlation_id", correlation_id)
+        briefing.setdefault(
+            "lifecycle_status", "published" if standalone else "validated"
+        )
+        if briefing["lifecycle_status"] == "published":
+            briefing.setdefault("published_at", completed_at)
+
+    output_ids = [opinion["opinion_id"] for opinion in opinions]
+    processing_log["output_ids"] = output_ids
+    processing_log.setdefault("output_id", output_ids[0] if output_ids else None)
+
+    if status == "success" and result_payload:
+        try:
+            _persist_processor_result(
+                opinions=opinions,
+                extra_records=extra_records,
+                processing_log=processing_log,
+                processor_id=processor_id,
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                correlation_id=correlation_id,
+                config=config,
+            )
+        except Exception as exc:
+            status = "failed"
+            error_message = f"Atomic DB write failed: {exc}"
+            logger.error(
+                "processor_db_write_failed",
+                action="run_processor",
+                processor=processor_id,
+                error=str(exc),
+                correlation_id=correlation_id,
+            )
+            _write_processing_log(
+                processor_id=processor_id,
+                started_at=started_at,
+                completed_at=completed_at,
+                status=status,
+                input_summary=processing_log.get("input_summary"),
+                output_id=None,
+                prompt_text=processing_log.get("prompt_text"),
+                raw_response=processing_log.get("raw_response"),
+                model_used=processing_log.get("model_used"),
+                tokens_input=processing_log.get("tokens_input"),
+                tokens_output=processing_log.get("tokens_output"),
+                cost_usd=processing_log.get("cost_usd"),
+                duration_ms=duration_ms,
+                error_message=error_message,
+                config=config,
+                correlation_id=correlation_id,
+            )
+    else:
+        _write_processing_log(
+            processor_id=processor_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            status=processing_log.get("status", status),
+            input_summary=processing_log.get("input_summary"),
+            output_id=processing_log.get("output_id"),
+            prompt_text=processing_log.get("prompt_text"),
+            raw_response=processing_log.get("raw_response"),
+            model_used=processing_log.get("model_used"),
+            tokens_input=processing_log.get("tokens_input"),
+            tokens_output=processing_log.get("tokens_output"),
+            cost_usd=processing_log.get("cost_usd"),
+            duration_ms=duration_ms,
+            error_message=error_message,
+            config=config,
+            correlation_id=correlation_id,
+        )
 
     result = {
         "processor": processor_id,
@@ -635,15 +780,166 @@ def run_processor(
         "duration_ms": duration_ms,
         "error": error_message,
         "correlation_id": correlation_id,
-        "opinion_id": result_payload["opinion"]["opinion_id"]
-        if result_payload and status == "success"
-        else None,
+        "opinion_id": output_ids[0] if status == "success" and output_ids else None,
+        "opinion_ids": output_ids if status == "success" else [],
+        "budget": budget,
+        "budget_override": budget_override,
     }
 
     logger.info("processor_completed", action="run_processor", **result)
     if standalone:
         finish_run(correlation_id, status, result, config, error_message)
     return result
+
+
+def _get_budget_status(config: dict) -> dict:
+    budget_cfg = config.get(
+        "budgets",
+        {"daily_llm_usd": 2.00, "warn_at_pct": 80},
+    )
+    daily_cap = float(budget_cfg.get("daily_llm_usd", 2.00))
+    warn_pct = int(budget_cfg.get("warn_at_pct", 80))
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS total_cost, "
+                "COALESCE(SUM(tokens_input + tokens_output), 0) AS total_tokens "
+                "FROM processing_log WHERE started_at >= :today_start"
+            ),
+            {"today_start": today_start},
+        ).fetchone()
+
+    total_cost = float(row._mapping.get("total_cost", 0) or 0) if row else 0.0
+    total_tokens = int(row._mapping.get("total_tokens", 0) or 0) if row else 0
+    unlimited = daily_cap <= 0
+    usage_pct = 0.0 if unlimited else round((total_cost / daily_cap) * 100, 2)
+    exceeded = False if unlimited else total_cost >= daily_cap
+    warning = False if unlimited or exceeded else usage_pct >= warn_pct
+
+    return {
+        "today_cost_usd": round(total_cost, 6),
+        "today_tokens": total_tokens,
+        "budget_cap_usd": daily_cap,
+        "unlimited": unlimited,
+        "warn_at_pct": warn_pct,
+        "usage_pct": usage_pct,
+        "warning": warning,
+        "exceeded": exceeded,
+        "hard_limit_reached": exceeded,
+        "paid_calls_allowed": unlimited or not exceeded,
+        "remaining_usd": (
+            None
+            if unlimited
+            else round(max(daily_cap - total_cost, 0.0), 6)
+        ),
+    }
+
+
+def _consume_budget_override(
+    correlation_id: str,
+    config: dict,
+) -> dict | None:
+    """Atomically consume an API-recorded override for this run."""
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT summary FROM cycle_runs "
+                "WHERE correlation_id = :cid FOR UPDATE"
+            ),
+            {"cid": correlation_id},
+        ).fetchone()
+        if not row:
+            return None
+
+        summary = row._mapping.get("summary") or {}
+        if isinstance(summary, str):
+            summary = json.loads(summary)
+        override = summary.get("budget_override")
+        if not isinstance(override, dict) or not override.get("requested"):
+            return None
+        if override.get("consumed_at"):
+            if override.get("consumed_by") == correlation_id:
+                return override
+            return None
+
+        override = {
+            **override,
+            "consumed_at": datetime.now(timezone.utc).isoformat(),
+            "consumed_by": correlation_id,
+        }
+        summary["budget_override"] = override
+        session.execute(
+            text(
+                "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
+                "WHERE correlation_id = :cid"
+            ),
+            {"cid": correlation_id, "summary": json.dumps(summary)},
+        )
+
+    logger.warning(
+        "budget_override_consumed",
+        correlation_id=correlation_id,
+        reason=override.get("reason"),
+        requested_by=override.get("requested_by"),
+    )
+    return override
+
+
+def _persist_processor_result(
+    opinions: list[dict],
+    extra_records: dict[str, list[dict]],
+    processing_log: dict,
+    processor_id: str,
+    started_at: datetime,
+    completed_at: datetime,
+    duration_ms: int,
+    correlation_id: str,
+    config: dict,
+) -> None:
+    """Persist one processor result as a single transaction."""
+    with get_session(config) as session:
+        insert_records_in_session(session, "structured_opinions", opinions)
+        for table_name, records in extra_records.items():
+            if table_name == "daily_briefings":
+                upsert_records_in_session(
+                    session, table_name, records, ["briefing_date", "correlation_id"]
+                )
+            else:
+                insert_records_in_session(session, table_name, records)
+
+        log_record = {
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "processor": processor_id,
+            "status": "success",
+            "input_summary": processing_log.get("input_summary"),
+            "output_id": processing_log.get("output_id"),
+            "output_ids": processing_log.get("output_ids", []),
+            "prompt_text": processing_log.get("prompt_text"),
+            "raw_response": processing_log.get("raw_response"),
+            "model_used": processing_log.get("model_used"),
+            "tokens_input": processing_log.get("tokens_input"),
+            "tokens_output": processing_log.get("tokens_output"),
+            "cost_usd": processing_log.get("cost_usd"),
+            "duration_ms": duration_ms,
+            "error_message": None,
+            "request_metadata": processing_log.get("request_metadata"),
+            "correlation_id": correlation_id,
+        }
+        insert_records_in_session(session, "processing_log", [log_record])
+
+    logger.info(
+        "processor_records_written",
+        action="run_processor",
+        processor=processor_id,
+        opinion_count=len(opinions),
+        extra_tables=list(extra_records),
+        correlation_id=correlation_id,
+    )
 
 
 def _write_processing_log(

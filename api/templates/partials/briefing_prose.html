@@ -3,9 +3,8 @@
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
   {% if briefing_bullets %}
-    <div class="section-heading">
-      <span class="label">Briefing</span>
-    </div>
+    <details class="briefing-disclosure">
+    <summary class="label">Full daily brief</summary>
     <div class="briefing-prose">
       {% for section in briefing_bullets %}
         <div class="briefing-block">
@@ -18,6 +17,7 @@
         </div>
       {% endfor %}
     </div>
+    </details>
     {% if briefing.opinion_ids %}
       <details class="provenance-details" data-opinion-id="{{ briefing.opinion_ids[-1] }}">
         <summary>Briefing sources</summary>

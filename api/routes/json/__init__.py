@@ -9,6 +9,8 @@ from routes.json.watchlist import router as watchlist_router
 from routes.json.system import router as system_router
 from routes.json.triggers import router as triggers_router
 from routes.json.evidence import router as evidence_router
+from routes.json.assets import router as assets_router
+from routes.json.setup import router as setup_router
 
 router = APIRouter(prefix="/api")
 
@@ -21,3 +23,5 @@ router.include_router(watchlist_router)
 router.include_router(system_router)
 router.include_router(triggers_router)
 router.include_router(evidence_router)
+router.include_router(assets_router)
+router.include_router(setup_router)

@@ -23,6 +23,7 @@ CREATE TABLE processing_log (
     status TEXT NOT NULL,
     input_summary JSONB,
     output_id UUID,
+    output_ids UUID[],
     prompt_text TEXT,
     raw_response TEXT,
     model_used TEXT,
@@ -31,5 +32,6 @@ CREATE TABLE processing_log (
     cost_usd DOUBLE PRECISION,
     duration_ms INTEGER,
     error_message TEXT,
+    request_metadata JSONB,
     correlation_id UUID
 );

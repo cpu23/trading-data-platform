@@ -9,6 +9,25 @@ _config_cache_mtime_ns: int | None = None
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
+def _load_private_environment():
+    path = os.environ.get("SECRETS_FILE", "/app/state/secrets.env")
+    if not os.path.exists(path):
+        return
+    with open(path) as secrets_file:
+        for line in secrets_file:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ[key] = value
+
+def _merge(base, override):
+    if isinstance(base, dict) and isinstance(override, dict):
+        result = dict(base)
+        for key, value in override.items():
+            result[key] = _merge(result.get(key), value)
+        return result
+    return override
+
 
 def _substitute_env_vars(value: str) -> str:
     def _replace(match: re.Match) -> str:
@@ -34,6 +53,7 @@ def _substitute_recursive(obj: object) -> object:
 
 
 def load_config(config_path: str = "/app/config/config.yaml") -> dict:
+    _load_private_environment()
     global _config_cache, _config_cache_path, _config_cache_mtime_ns
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -48,6 +68,10 @@ def load_config(config_path: str = "/app/config/config.yaml") -> dict:
 
     with open(config_path) as f:
         raw_config = yaml.safe_load(f)
+    operator_path = os.environ.get("OPERATOR_CONFIG", "/app/state/operator.yaml")
+    if os.path.exists(operator_path):
+        with open(operator_path) as operator_file:
+            raw_config = _merge(raw_config, yaml.safe_load(operator_file) or {})
 
     config = _substitute_recursive(raw_config)
     if os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"):

@@ -92,14 +92,20 @@ class BriefingTests(unittest.TestCase):
             }
             for item in WATCHLIST
         ]
-        valid, warnings = validate_briefing_sections(
-            {"watchlist_notes": notes}, WATCHLIST
-        )
+        sections = {
+            "macro_trend": "Growth is slowing while inflation remains sticky.",
+            "today": "No major scheduled catalysts.",
+            "this_week": "Policy speakers remain the main scheduled catalysts.",
+            "regime_assessment": "Financial conditions are moderately restrictive.",
+            "watchlist_notes": notes,
+        }
+        valid, warnings = validate_briefing_sections(sections, WATCHLIST)
         self.assertTrue(valid, warnings)
 
         invalid_notes = notes[:-1]
+        sections["watchlist_notes"] = invalid_notes
         valid, warnings = validate_briefing_sections(
-            {"watchlist_notes": invalid_notes}, WATCHLIST
+            sections, WATCHLIST
         )
         self.assertFalse(valid)
         self.assertTrue(any("UK100" in warning for warning in warnings))

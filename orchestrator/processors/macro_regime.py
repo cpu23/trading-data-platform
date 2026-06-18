@@ -1,14 +1,17 @@
 import json
 import os
 import re
-import time
-import traceback
-from datetime import datetime, timezone
 from uuid import uuid4
 
 from db import get_session
 from llm_client import call_llm, resolve_model
 from logging_config import get_logger
+from processors._validators import (
+    OutputPolicyError,
+    coerce_common_enums,
+    repair_prompt,
+    validate_macro_regime_output,
+)
 from sqlalchemy import text
 
 logger = get_logger("processor.macro_regime")
@@ -101,7 +104,15 @@ class MacroRegimeProcessor:
         )
 
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
+        parsed = self._validate_and_repair_output(
+            raw_response=raw_response,
+            prompt_text=prompt_text,
+            llm_result=llm_result,
+            model=model,
+            config=config,
+            correlation_id=correlation_id,
+        )
+        raw_response = llm_result["content"]
 
         opinion_id = str(uuid4())
         classification_id = str(uuid4())
@@ -153,11 +164,12 @@ class MacroRegimeProcessor:
         classification = {
             "classification_id": classification_id,
             "scope": "global",
-            "regime": parsed.get("regime", "quiet"),
+            "regime": parsed.get("regime", "transition"),
             "sub_regime": parsed.get("sub_regime"),
             "confidence": parsed.get("confidence", "low"),
             "supporting_data": {
-                "momentum_implications": parsed.get("momentum_implications", ""),
+                "market_implications": parsed.get("market_implications", ""),
+                "momentum_implications": parsed.get("market_implications", ""),
                 "caution_flags": parsed.get("caution_flags", []),
                 "key_indicators": key_indicators,
             },
@@ -196,16 +208,19 @@ class MacroRegimeProcessor:
 
     def _fetch_macro_data(self, config: dict) -> dict:
         sql = text("""
-            SELECT series_id, observed_at, value
-            FROM macro_series
-            WHERE series_id = ANY(:ids)
+            SELECT series_id, observed_at, value FROM (
+                SELECT series_id, observed_at, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY series_id ORDER BY observed_at DESC
+                       ) AS observation_rank
+                FROM macro_series
+            ) ranked
+            WHERE observation_rank <= 2
             ORDER BY series_id, observed_at DESC
         """)
 
-        series_ids = list(set(SERIES_USED) | set(CROSS_INDICATOR_SERIES.values()))
-
         with get_session(config) as session:
-            result = session.execute(sql, {"ids": series_ids})
+            result = session.execute(sql)
             rows = [dict(row._mapping) for row in result]
 
         grouped: dict[str, list] = {}
@@ -370,14 +385,14 @@ class MacroRegimeProcessor:
         if value < thresholds.get("very_low", 12):
             return "very low — complacency, strong risk-on"
         if value < thresholds.get("low", 16):
-            return "low — calm conditions, favourable for trend-following"
+            return "low — calm financial conditions"
         if value < thresholds.get("moderate", 20):
             return "moderate — normal range"
         if value < thresholds.get("elevated", 25):
             return "elevated — increased uncertainty"
         if value < thresholds.get("high", 30):
-            return "high — fear rising, potential trend disruption"
-        return "very high — stress/panic, momentum strategies at risk"
+            return "high — fear rising and financial conditions tightening"
+        return "very high — severe market stress and risk aversion"
 
     @staticmethod
     def _interpret_credit_spread(value: float | None, thresholds: dict) -> str:
@@ -445,8 +460,87 @@ class MacroRegimeProcessor:
 
         return result
 
+    def _validate_and_repair_output(
+        self,
+        raw_response: str,
+        prompt_text: str,
+        llm_result: dict,
+        model: str,
+        config: dict,
+        correlation_id: str,
+    ) -> dict:
+        parsed, issues = self._parse_coerce_validate(raw_response)
+        if not issues:
+            return parsed
+
+        logger.warning(
+            "macro_regime_validation_failed_retrying",
+            action="validate_macro_regime",
+            warnings=issues,
+            correlation_id=correlation_id,
+        )
+        try:
+            retry_result = call_llm(
+                prompt=repair_prompt(prompt_text, issues),
+                model=model,
+                correlation_id=correlation_id,
+                config=config,
+            )
+        except Exception as exc:
+            repair_issues = [f"repair call failed: {exc}"]
+            logger.error(
+                "macro_regime_output_quarantined",
+                action="repair_macro_regime",
+                warnings=repair_issues,
+                correlation_id=correlation_id,
+            )
+            raise OutputPolicyError(self.processor_id, repair_issues) from exc
+        repaired, repair_issues = self._parse_coerce_validate(
+            retry_result.get("content")
+        )
+        if repair_issues:
+            logger.error(
+                "macro_regime_output_quarantined",
+                action="validate_macro_regime_retry",
+                warnings=repair_issues,
+                correlation_id=correlation_id,
+            )
+            raise OutputPolicyError(self.processor_id, repair_issues)
+
+        self._adopt_repair_result(llm_result, retry_result)
+        return repaired
+
+    def _parse_coerce_validate(
+        self, raw_response: str
+    ) -> tuple[dict | None, list[str]]:
+        try:
+            parsed = self._parse_llm_response(raw_response)
+        except ValueError as exc:
+            return None, [f"invalid JSON response: {exc}"]
+        if not isinstance(parsed, dict):
+            return None, ["top-level JSON value must be an object"]
+        coerce_common_enums(parsed)
+        valid, issues = validate_macro_regime_output(parsed)
+        return parsed, [] if valid else issues
+
+    @staticmethod
+    def _adopt_repair_result(initial: dict, repair: dict) -> None:
+        initial["content"] = repair["content"]
+        initial["model"] = repair.get("model", initial.get("model"))
+        initial["tokens_input"] = initial.get("tokens_input", 0) + repair.get(
+            "tokens_input", 0
+        )
+        initial["tokens_output"] = initial.get("tokens_output", 0) + repair.get(
+            "tokens_output", 0
+        )
+        initial["cost_usd"] = initial.get("cost_usd", 0.0) + repair.get(
+            "cost_usd", 0.0
+        )
+
     @staticmethod
     def _parse_llm_response(response_text: str) -> dict:
+        if not isinstance(response_text, str):
+            raise ValueError("LLM response content must be a string")
         text = response_text.strip()
 
         try:

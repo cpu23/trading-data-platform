@@ -1,24 +1,14 @@
 import time
 
 import httpx
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 
 from logging_config import get_logger
 
 logger = get_logger("http_client")
 
+_RETRYABLE_EXCEPTIONS = (httpx.ConnectError, httpx.TimeoutException)
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    retry=retry_if_exception_type((httpx.ConnectError, httpx.TimeoutException)),
-    reraise=True,
-)
+
 def _do_request(
     method: str,
     url: str,
@@ -29,14 +19,13 @@ def _do_request(
     follow_redirects: bool,
 ) -> httpx.Response:
     with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
-        response = client.request(
+        return client.request(
             method=method.upper(),
             url=url,
             params=params,
             headers=headers,
             json=json_body,
         )
-    return response
 
 
 def make_request(
@@ -50,27 +39,73 @@ def make_request(
     correlation_id: str | None = None,
     follow_redirects: bool = False,
 ) -> httpx.Response:
-    start_ms = time.monotonic() * 1000
+    """Make an HTTP request with a configurable maximum number of attempts.
 
-    try:
-        response = _do_request(
-            method, url, params, headers, json_body, timeout, follow_redirects
-        )
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        duration_ms = int(time.monotonic() * 1000 - start_ms)
-        logger.error(
-            "http_request_failed",
-            action="http_request",
-            method=method.upper(),
-            url=url,
-            error=str(exc),
-            duration_ms=duration_ms,
-            correlation_id=correlation_id or "none",
-        )
-        raise
+    ``max_retries`` historically represented total attempts in this project.
+    Keep that behavior so callers passing ``1`` still get one request, while
+    ensuring the argument is no longer ignored by a fixed retry decorator.
+    """
+    max_attempts = max(1, int(max_retries))
+    start = time.monotonic()
+    attempts = 0
 
-    duration_ms = int(time.monotonic() * 1000 - start_ms)
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            response = _do_request(
+                method,
+                url,
+                params,
+                headers,
+                json_body,
+                timeout,
+                follow_redirects,
+            )
+            break
+        except _RETRYABLE_EXCEPTIONS as exc:
+            if attempts >= max_attempts:
+                duration_ms = int((time.monotonic() - start) * 1000)
+                metadata = {
+                    "attempts": attempts,
+                    "retries": attempts - 1,
+                    "duration_ms": duration_ms,
+                    "max_attempts": max_attempts,
+                }
+                setattr(exc, "request_metadata", metadata)
+                logger.error(
+                    "http_request_failed",
+                    action="http_request",
+                    method=method.upper(),
+                    url=url,
+                    error=str(exc),
+                    attempts=attempts,
+                    duration_ms=duration_ms,
+                    correlation_id=correlation_id or "none",
+                )
+                raise
+
+            wait_seconds = min(2 ** (attempts - 1), 10)
+            logger.warning(
+                "http_request_retrying",
+                action="http_request",
+                method=method.upper(),
+                url=url,
+                error=str(exc),
+                attempt=attempts,
+                max_attempts=max_attempts,
+                wait_seconds=wait_seconds,
+                correlation_id=correlation_id or "none",
+            )
+            time.sleep(wait_seconds)
+
+    duration_ms = int((time.monotonic() - start) * 1000)
     response_size = len(response.content) if response.content else 0
+    response.extensions["request_metadata"] = {
+        "attempts": attempts,
+        "retries": attempts - 1,
+        "duration_ms": duration_ms,
+        "max_attempts": max_attempts,
+    }
 
     logger.info(
         "http_request_completed",
@@ -78,6 +113,7 @@ def make_request(
         method=method.upper(),
         url=url,
         status_code=response.status_code,
+        attempts=attempts,
         duration_ms=duration_ms,
         response_size=response_size,
         correlation_id=correlation_id or "none",

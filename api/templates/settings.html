@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<header class="page-header"><a href="/">← Dashboard</a><h1>Settings</h1></header>
+<main class="asset-page">
+  <details open><summary>Connections</summary><p class="dim">OpenAI-compatible endpoint and data-source credentials are stored privately. Existing secrets are never displayed.</p></details>
+  <details><summary>Sources</summary><p>Core macro, positioning, central banks, regional detail and energy fundamentals.</p></details>
+  <details><summary>Watchlist</summary><p>{{ config.watchlist.trading | length }} configured markets.</p></details>
+  <details><summary>Models &amp; budget</summary><p>{{ config.llm.default_model }} · ${{ config.budgets.daily_llm_usd }} daily hard cap.</p></details>
+  <details><summary>Schedule</summary><p>Schedules remain configuration-driven and reload without changing the dashboard layout.</p></details>
+  <details><summary>Security &amp; retention</summary><p>Session authentication, same-origin mutation protection, private state files, and 90-day raw AI payload retention.</p></details>
+</main>
+{% endblock %}

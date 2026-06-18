@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Set up market intelligence{% endblock %}
+{% block content %}
+<main class="setup-shell">
+  <section class="setup-step">
+    <span class="label">Market intelligence</span>
+    <h1>Your economic context, kept on this computer.</h1>
+    <p class="dim">The platform assesses economics, policy, positioning and market context. It never tells you what, when or how to trade.</p>
+  </section>
+  <section class="setup-step">
+    <h2>Secure this dashboard</h2>
+    <input id="setup-password" type="password" minlength="12" placeholder="Administrator password">
+  </section>
+  <section class="setup-step">
+    <h2>Connect intelligence</h2>
+    <input id="llm-base-url" value="https://openrouter.ai/api/v1" placeholder="OpenAI-compatible base URL">
+    <input id="llm-model" value="deepseek/deepseek-chat" placeholder="Model identifier">
+    <input id="llm-key" type="password" placeholder="API key">
+    <details><summary>Advanced</summary>
+      <label>Reasoning effort <select id="reasoning"><option value="">Provider default</option><option>low</option><option>medium</option><option selected>high</option></select></label>
+    </details>
+  </section>
+  <section class="setup-step">
+    <h2>Recommended coverage</h2>
+    <p>FRED · Economic calendar · CFTC positioning · OECD global cycle</p>
+    <details><summary>Add regional detail</summary><p>ECB · Bank of England · Central-bank communications · EIA energy fundamentals</p></details>
+  </section>
+  <button class="btn" id="activate-setup">Activate platform</button>
+  <p id="setup-result" class="dim"></p>
+</main>
+<script>
+document.getElementById('activate-setup').onclick = async function () {
+  const body = {
+    password: document.getElementById('setup-password').value,
+    profile: {llm: {
+      base_url: document.getElementById('llm-base-url').value,
+      default_model: document.getElementById('llm-model').value,
+      reasoning_effort: document.getElementById('reasoning').value || null
+    }},
+    secrets: {LLM_API_KEY: document.getElementById('llm-key').value}
+  };
+  const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  document.getElementById('setup-result').textContent = response.ok ? 'Ready. Opening dashboard…' : (await response.text());
+  if (response.ok) setTimeout(() => location.href='/', 600);
+};
+</script>
+{% endblock %}

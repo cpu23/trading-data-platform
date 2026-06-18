@@ -1,13 +1,17 @@
 import json
 import os
 import re
-import time
-from datetime import datetime, timezone
 from uuid import uuid4
 
 from db import get_session
 from llm_client import call_llm, resolve_model
 from logging_config import get_logger
+from processors._validators import (
+    OutputPolicyError,
+    coerce_common_enums,
+    repair_prompt,
+    validate_event_impact_output,
+)
 from sqlalchemy import text
 
 logger = get_logger("processor.event_impact")
@@ -23,6 +27,7 @@ class EventImpactProcessor:
         )
 
         events = self._fetch_upcoming_events(config)
+        watchlist_config = config.get("watchlist", {}).get("trading", [])
         watchlist = self._format_watchlist(config)
         current_regime = self._get_current_regime(config)
 
@@ -48,7 +53,17 @@ class EventImpactProcessor:
         )
 
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
+        parsed = self._validate_and_repair_output(
+            raw_response=raw_response,
+            prompt_text=prompt_text,
+            llm_result=llm_result,
+            expected_events=events,
+            watchlist_config=watchlist_config,
+            model=model,
+            config=config,
+            correlation_id=correlation_id,
+        )
+        raw_response = llm_result["content"]
 
         opinion_id = str(uuid4())
 
@@ -70,7 +85,10 @@ class EventImpactProcessor:
             "timeframe": "short_term",
             "summary": self._build_summary(parsed),
             "key_factors": event_names,
-            "reasoning": f"{parsed.get('overall_volatility_outlook', '')} {parsed.get('risk_management_note', '')}",
+            "reasoning": (
+                f"{parsed['overall_volatility_outlook']} "
+                f"{parsed['catalyst_summary']}"
+            ),
             "data_inputs": {
                 "table": "econ_events",
                 "event_count": len(events),
@@ -200,9 +218,14 @@ class EventImpactProcessor:
         ]
 
         for e in events:
-            name = e.get("event_name", "Unknown")[:26]
+            name = e.get("event_name", "Unknown")
             country = e.get("country", "?")
-            scheduled = str(e.get("scheduled_at", ""))[:19]
+            scheduled_at = e.get("scheduled_at", "")
+            scheduled = (
+                scheduled_at.isoformat()
+                if hasattr(scheduled_at, "isoformat")
+                else str(scheduled_at)
+            )
             consensus = str(e.get("consensus", "N/A"))
             previous = str(e.get("previous", "N/A"))
 
@@ -238,7 +261,6 @@ class EventImpactProcessor:
 
     def _static_no_events_result(self, correlation_id: str) -> dict:
         opinion_id = str(uuid4())
-        now = datetime.now(timezone.utc).isoformat()
 
         opinion = {
             "opinion_id": opinion_id,
@@ -247,9 +269,13 @@ class EventImpactProcessor:
             "direction": "neutral",
             "confidence": "high",
             "timeframe": "short_term",
-            "summary": "No high-impact economic events scheduled in the next 48 hours. Trading conditions should be driven by technical factors and existing macro regime rather than scheduled catalysts.",
+            "summary": "No high-impact economic events are scheduled in the next 48 hours.",
             "key_factors": ["No upcoming high-impact events"],
-            "reasoning": "The economic calendar is clear for the next 48 hours with no high-impact releases. This provides a clean environment for trend-following strategies without scheduled catalyst risk. Focus on technical setups and existing macro regime positioning.",
+            "reasoning": (
+                "The scheduled catalyst calendar is clear for the next 48 hours. "
+                "Market direction is therefore more likely to reflect existing macro "
+                "fundamentals, policy expectations, and positioning."
+            ),
             "data_inputs": {
                 "table": "econ_events",
                 "event_count": 0,
@@ -296,15 +322,15 @@ class EventImpactProcessor:
             for scenario_key in ["consensus_met_scenario", "upside_surprise_scenario", "downside_surprise_scenario"]:
                 scenario = e.get(scenario_key, {})
                 direction = scenario.get("direction", "")
-                if "bullish_usd" in direction:
+                if direction in {"bullish", "bullish_usd"}:
                     usd_bullish += 1
-                elif "bearish_usd" in direction:
+                elif direction in {"bearish", "bearish_usd"}:
                     usd_bearish += 1
 
         if usd_bullish > usd_bearish:
-            return "bullish_usd"
+            return "bullish"
         elif usd_bearish > usd_bullish:
-            return "bearish_usd"
+            return "bearish"
         return "mixed"
 
     def _build_summary(self, parsed: dict) -> str:
@@ -314,18 +340,106 @@ class EventImpactProcessor:
 
         event_names = [e.get("event_name", "Unknown") for e in events]
         outlook = parsed.get("overall_volatility_outlook", "")
-        risk_note = parsed.get("risk_management_note", "")
+        catalyst_summary = parsed.get("catalyst_summary", "")
 
         summary = f"{len(events)} high-impact event(s) in next 48h: {', '.join(event_names)}. "
         if outlook:
             summary += outlook
-        if risk_note:
-            summary += f" {risk_note}"
+        if catalyst_summary:
+            summary += f" {catalyst_summary}"
 
         return summary
 
+    def _validate_and_repair_output(
+        self,
+        raw_response: str,
+        prompt_text: str,
+        llm_result: dict,
+        expected_events: list[dict],
+        watchlist_config: list[dict],
+        model: str,
+        config: dict,
+        correlation_id: str,
+    ) -> dict:
+        parsed, issues = self._parse_coerce_validate(
+            raw_response, expected_events, watchlist_config
+        )
+        if not issues:
+            return parsed
+
+        logger.warning(
+            "event_impact_validation_failed_retrying",
+            action="validate_event_impact",
+            warnings=issues,
+            correlation_id=correlation_id,
+        )
+        try:
+            retry_result = call_llm(
+                prompt=repair_prompt(prompt_text, issues),
+                model=model,
+                correlation_id=correlation_id,
+                config=config,
+            )
+        except Exception as exc:
+            repair_issues = [f"repair call failed: {exc}"]
+            logger.error(
+                "event_impact_output_quarantined",
+                action="repair_event_impact",
+                warnings=repair_issues,
+                correlation_id=correlation_id,
+            )
+            raise OutputPolicyError(self.processor_id, repair_issues) from exc
+        repaired, repair_issues = self._parse_coerce_validate(
+            retry_result.get("content"), expected_events, watchlist_config
+        )
+        if repair_issues:
+            logger.error(
+                "event_impact_output_quarantined",
+                action="validate_event_impact_retry",
+                warnings=repair_issues,
+                correlation_id=correlation_id,
+            )
+            raise OutputPolicyError(self.processor_id, repair_issues)
+
+        self._adopt_repair_result(llm_result, retry_result)
+        return repaired
+
+    def _parse_coerce_validate(
+        self,
+        raw_response: str,
+        expected_events: list[dict],
+        watchlist_config: list[dict],
+    ) -> tuple[dict | None, list[str]]:
+        try:
+            parsed = self._parse_llm_response(raw_response)
+        except ValueError as exc:
+            return None, [f"invalid JSON response: {exc}"]
+        if not isinstance(parsed, dict):
+            return None, ["top-level JSON value must be an object"]
+        coerce_common_enums(parsed)
+        valid, issues = validate_event_impact_output(
+            parsed, expected_events, watchlist_config
+        )
+        return parsed, [] if valid else issues
+
+    @staticmethod
+    def _adopt_repair_result(initial: dict, repair: dict) -> None:
+        initial["content"] = repair["content"]
+        initial["model"] = repair.get("model", initial.get("model"))
+        initial["tokens_input"] = initial.get("tokens_input", 0) + repair.get(
+            "tokens_input", 0
+        )
+        initial["tokens_output"] = initial.get("tokens_output", 0) + repair.get(
+            "tokens_output", 0
+        )
+        initial["cost_usd"] = initial.get("cost_usd", 0.0) + repair.get(
+            "cost_usd", 0.0
+        )
+
     @staticmethod
     def _parse_llm_response(response_text: str) -> dict:
+        if not isinstance(response_text, str):
+            raise ValueError("LLM response content must be a string")
         text = response_text.strip()
 
         try:
