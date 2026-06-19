@@ -9,6 +9,7 @@ _config_cache_mtime_ns: int | None = None
 _operator_cache_mtime_ns: int | None = None
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_OPTIONAL_SECRET_VARS = {"LLM_API_KEY", "FRED_API_KEY", "OANDA_API_KEY", "EIA_API_KEY"}
 
 def _load_private_environment():
     path = os.environ.get("SECRETS_FILE", "/app/state/secrets.env")
@@ -35,6 +36,8 @@ def _substitute_env_vars(value: str) -> str:
         var_name = match.group(1)
         env_value = os.environ.get(var_name)
         if env_value is None:
+            if var_name in _OPTIONAL_SECRET_VARS:
+                return ""
             raise ValueError(
                 f"Environment variable '{var_name}' referenced in config but not set"
             )

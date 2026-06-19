@@ -1,6 +1,24 @@
 from typing import Protocol
 
 
+class CollectorStateError(RuntimeError):
+    """Expected collector state that must not be reported as a healthy success."""
+
+    state = "failed"
+
+    def __init__(self, message: str, **metadata):
+        super().__init__(f"{self.state}: {message}")
+        self.metadata = {"state": self.state, **metadata}
+
+
+class CollectorSetupRequired(CollectorStateError):
+    state = "setup_required"
+
+
+class CollectorNoData(CollectorStateError):
+    state = "no_data"
+
+
 class Collector(Protocol):
     source_id: str
 

@@ -5,9 +5,26 @@ from unittest.mock import Mock, patch
 import httpx
 
 from collectors.oanda import OandaCollector
+from collectors import get_all_collectors
+from price_stream import QuoteStream
 
 
 class OandaCollectorTests(unittest.TestCase):
+    def test_oanda_snapshot_collector_is_not_registered_for_cycles(self):
+        self.assertNotIn("oanda", get_all_collectors())
+
+    def test_production_without_stream_does_not_simulate_prices(self):
+        stream = QuoteStream()
+
+        stream.start({
+            "demo": {"enabled": False},
+            "collectors": {"oanda": {"stream_enabled": False}},
+        })
+
+        self.assertEqual(stream.state["status"], "disabled")
+        self.assertEqual(stream.quotes, {})
+        self.assertIsNone(stream._thread)
+
     def test_parse_oanda_nanosecond_timestamp_as_utc(self):
         collector = OandaCollector()
 

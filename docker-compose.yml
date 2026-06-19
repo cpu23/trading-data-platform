@@ -9,7 +9,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_BIND_PORT:-5432}:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d trading_data"]
@@ -17,17 +17,31 @@ services:
       timeout: 5s
       retries: 5
 
+  state-init:
+    build: ./api
+    environment:
+      STATE_DIR: /app/state
+      LEGACY_STATE_DIR: /app/legacy-state
+    volumes:
+      - platform_state:/app/state
+      - ./state:/app/legacy-state:ro
+    command: ["python", "-c", "from auth import migrate_legacy_state; migrate_legacy_state()"]
+    restart: "no"
+
   orchestrator:
     build: ./orchestrator
     env_file: .env
     volumes:
       - ./config:/app/config:ro
-      - ./state:/app/state
+      - platform_state:/app/state
       - ./prompts:/app/prompts:ro
       - ./logs:/var/log/trading-data
+      - ./db/migrations:/db/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy
+      state-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")'"]
@@ -40,15 +54,23 @@ services:
     build: ./api
     env_file: .env
     ports:
-      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:${API_BIND_PORT:-8001}:8000"
     volumes:
       - ./config:/app/config:ro
-      - ./state:/app/state
+      - platform_state:/app/state
+      - ./state:/app/legacy-state:ro
       - ./prompts:/app/prompts:ro
       - ./logs:/var/log/trading-data
       - ./api/static:/app/static:ro
       - ./api/templates:/app/templates:ro
       - ./api/routes:/app/routes:ro
+    environment:
+      STATE_DIR: /app/state
+      LEGACY_STATE_DIR: /app/legacy-state
+      REQUIRE_PERSISTENT_STATE: "1"
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-local}
+      BUILD_COMMIT: ${BUILD_COMMIT:-development}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,3 +80,4 @@ services:
 
 volumes:
   pgdata:
+  platform_state:

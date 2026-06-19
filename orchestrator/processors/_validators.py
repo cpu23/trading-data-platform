@@ -93,7 +93,7 @@ class OutputPolicyError(ValueError):
         self.processor_id = processor_id
         self.issues = issues
         super().__init__(
-            f"{processor_id} output quarantined after failed repair: "
+            f"{processor_id} output validation_failed after failed repair: "
             + "; ".join(issues)
         )
 
@@ -103,6 +103,11 @@ PROHIBITED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "trading_instruction",
         re.compile(
             r"\b(?:buy|sell)\s+(?:the|this|at|near|above|below|on|after|before|when|if)\b|"
+            r"\b(?:should|could|consider|recommend(?:ed)?)\s+"
+            r"(?:buy|sell|go(?:ing)?\s+(?:long|short))\b|"
+            r"\b(?:buy|sell)\s+(?:(?-i:[A-Z]{6})|"
+            r"(?:(?:eur|usd|gbp|jpy|aud|cad|nzd|chf){2})|"
+            r"gold|silver|oil|equities|stocks|bonds)\b|"
             r"\b(?:enter|exit)\s+(?:the|this|at|near|above|below|on|after|before|when|if)\b|"
             r"\b(?:go|be|stay)\s+(?:long|short)\b|"
             r"\b(?:open|close|add to|reduce)\s+(?:a\s+|the\s+)?position\b|"
@@ -133,6 +138,10 @@ PROHIBITED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"\bposition\s+sizing\b|\bsize\s+(?:the|a|your)\s+position\b|"
             r"\bportfolio\s+allocation\b|"
+            r"\b(?:increase|decrease|reduce|add|raise|lower)\s+"
+            r"(?:your\s+|portfolio\s+)?exposure\b|"
+            r"\b(?:overweight|underweight)\s+(?:the\s+)?"
+            r"(?:asset|market|instrument|currency|index|metal|equities|stocks|bonds)\b|"
             r"\ballocate\s+(?:capital|funds|portfolio|money)\b|"
             r"\ballocat(?:e|ing)\s+(?:capital|funds|portfolio|money)\s+"
             r"(?:to|into)\b|"

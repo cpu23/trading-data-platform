@@ -2,7 +2,9 @@
          hx-get="/partials/briefing"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  {% if briefing_bullets %}
+  {% if briefing and briefing.error %}
+    <div class="error-block">Daily brief unavailable: {{ briefing.error }}</div>
+  {% elif briefing_bullets %}
     <details class="briefing-disclosure">
     <summary class="label">Full daily brief</summary>
     <div class="briefing-prose">
@@ -24,5 +26,7 @@
         <div class="evidence-view" data-evidence-target></div>
       </details>
     {% endif %}
+  {% else %}
+    <div class="empty-state">No daily brief has been published yet.</div>
   {% endif %}
 </section>

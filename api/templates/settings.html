@@ -3,7 +3,7 @@
 {% block content %}
 <header class="page-header" style="margin-bottom:16px">
   <div class="page-header-left"><a class="quiet-link" href="/">Dashboard</a><span class="page-header-title">Settings</span></div>
-  <nav class="quiet-nav"><a href="/logs">View logs</a><span>·</span><a href="/quality">Data quality</a></nav>
+  <nav class="quiet-nav"><a href="/logs">View logs</a><span>·</span><a href="/quality">Data quality</a><span>·</span><button class="quiet-link" id="logout" type="button">Log out</button></nav>
 </header>
 <main class="asset-page settings-page">
   <details open>
@@ -28,6 +28,7 @@
     <div class="source-credentials">
       <label>FRED API key <span class="credential-state">{{ 'Saved in setup' if fred_key_source == 'setup' else 'Provided by environment' if fred_key_source == 'environment' else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Enter a new key to replace the current one' if fred_key_source else 'FRED API key' }}"></label>
       <label>OANDA API key <span class="credential-state">{{ 'Saved in setup' if oanda_key_source == 'setup' else 'Provided by environment' if oanda_key_source == 'environment' else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Enter a new key to replace the current one' if oanda_key_source else 'OANDA practice API key' }}"></label>
+      <label>EIA API key <span class="credential-state">{{ 'Saved in setup' if eia_key_source == 'setup' else 'Provided by environment' if eia_key_source == 'environment' else 'Not added' }}</span><input id="settings-eia-key" type="password" placeholder="{{ 'Enter a new key to replace the current one' if eia_key_source else 'EIA API key' }}"></label>
     </div>
     <div class="coverage-list">
       {% for id, label, description in [
@@ -39,7 +40,7 @@
         ('ecb','Euro area','ECB rates, credit and expectations'),
         ('boe','United Kingdom','BoE rates, money and lending'),
         ('eia','Energy','EIA inventories and fundamentals')
-        ,('oanda','Market prices','OANDA practice pricing and snapshots')
+        ,('oanda','Market prices','OANDA live pricing stream')
       ] %}
       <label><span><strong>{{ label }}</strong><small>{{ description }}</small></span><input data-settings-coverage="{{ id }}" type="checkbox" {{ 'checked' if config.collectors.get(id, {}).get('enabled') }}></label>
       {% endfor %}
@@ -51,6 +52,12 @@
   <div class="settings-save"><button class="btn" id="save-settings">Save changes</button><span id="settings-result" class="dim"></span></div>
 </main>
 <script>
+document.getElementById('logout').onclick = async () => {
+  const token = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  const response = await fetch('/api/logout', {method:'POST', headers:{'X-CSRF-Token': token}});
+  if (response.ok) location.href = '/login';
+};
+
 const settingsPayload = () => ({
   profile: {llm: {
     base_url: document.getElementById('settings-base-url').value.trim(),
@@ -63,7 +70,8 @@ const settingsPayload = () => ({
   secrets: {
     LLM_API_KEY: document.getElementById('settings-key').value,
     FRED_API_KEY: document.getElementById('settings-fred-key').value,
-    OANDA_API_KEY: document.getElementById('settings-oanda-key').value
+    OANDA_API_KEY: document.getElementById('settings-oanda-key').value,
+    EIA_API_KEY: document.getElementById('settings-eia-key').value
   }
 });
 
@@ -72,7 +80,10 @@ document.getElementById('test-connection').onclick = async () => {
   result.textContent = 'Checking…';
   const payload = settingsPayload();
   const response = await fetch('/api/setup/test-connection', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:{
+      'Content-Type':'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    },
     body:JSON.stringify({base_url:payload.profile.llm.base_url, api_key:payload.secrets.LLM_API_KEY})
   });
   const data = await response.json().catch(() => ({}));
@@ -83,7 +94,10 @@ document.getElementById('save-settings').onclick = async () => {
   const result = document.getElementById('settings-result');
   result.textContent = 'Saving…';
   const response = await fetch('/api/setup/profile', {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(settingsPayload())
+    method:'PUT', headers:{
+      'Content-Type':'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    }, body:JSON.stringify(settingsPayload())
   });
   const data = await response.json().catch(() => ({}));
   result.textContent = response.ok ? 'Saved' : (data.detail || 'Could not save settings');

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Data quality — Trading data{% endblock %}
+{% block title %}Data quality — Market intelligence{% endblock %}
 
 {% block content %}
   <header class="page-header" style="margin-bottom: 16px;">
@@ -26,7 +26,7 @@
   {% endif %}
 
   {% if checks %}
-    <table class="logs-table">
+    <div class="table-scroll" tabindex="0" aria-label="Data quality checks"><table class="logs-table">
       <thead>
         <tr>
           <th>Check</th>
@@ -46,7 +46,7 @@
           </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
   {% elif not error %}
     <div class="empty-state" style="padding: 40px 0; text-align: center; color: var(--fg-dim);">
       No quality checks configured. Add checks in orchestrator/data_quality.py.

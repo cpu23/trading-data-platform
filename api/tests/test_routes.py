@@ -11,6 +11,7 @@ from unittest.mock import patch
 # ── Environment (auth) ──────────────────────────────────────────────────────
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
+os.environ["LEGACY_BASIC_AUTH"] = "true"
 
 # ── Minimal config that every route handler can consume ─────────────────────
 MOCK_CONFIG = {
@@ -67,14 +68,15 @@ AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}  # test:test
 class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.system.query_many", return_value=[])
-    def test_health_returns_200(self, _mock_qm):
+    def test_health_returns_200(self, _mock_qm, _mock_config):
         """GET /api/system/health with empty DB should return 200 + 'overall' key."""
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("overall", data)
-        self.assertEqual(data["overall"], "healthy")  # no collectors → all ok
+        self.assertEqual(data["overall"], "healthy")
         self.assertIn("components", data)
         self.assertIsInstance(data["components"], list)
 
@@ -83,8 +85,9 @@ class TestSystemRoutes(unittest.TestCase):
         resp = client.get("/api/system/health")
         self.assertEqual(resp.status_code, 401)
 
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.system.query_many", return_value=[])
-    def test_logs_returns_list(self, _mock_qm):
+    def test_logs_returns_list(self, _mock_qm, _mock_config):
         """GET /api/system/logs returns a JSON object with 'logs' list."""
         resp = client.get("/api/system/logs", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -97,8 +100,9 @@ class TestSystemRoutes(unittest.TestCase):
 class TestRegimeRoutes(unittest.TestCase):
     """Integration tests for /api/regime/* endpoints."""
 
+    @patch("routes.json.regime.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.regime.query_one", return_value=None)
-    def test_current_returns_stale_when_no_data(self, _mock_qo):
+    def test_current_returns_stale_when_no_data(self, _mock_qo, _mock_config):
         """When no regime classification exists, the endpoint returns stale=True."""
         resp = client.get("/api/regime/current", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -106,8 +110,9 @@ class TestRegimeRoutes(unittest.TestCase):
         self.assertTrue(data["stale"])
         self.assertEqual(data["stale_reason"], "No regime classification available")
 
+    @patch("routes.json.regime.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.regime.query_many", return_value=[])
-    def test_history_returns_list(self, _mock_qm):
+    def test_history_returns_list(self, _mock_qm, _mock_config):
         """GET /api/regime/history returns a 'regimes' list (empty when no data)."""
         resp = client.get("/api/regime/history", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -120,9 +125,10 @@ class TestRegimeRoutes(unittest.TestCase):
 class TestMacroRoutes(unittest.TestCase):
     """Integration tests for /api/macro/* endpoints."""
 
+    @patch("routes.json.macro.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.macro.query_one", return_value=None)
     @patch("routes.json.macro.query_many", return_value=[])
-    def test_dashboard_returns_indicators(self, _mock_qm, _mock_qo):
+    def test_dashboard_returns_indicators(self, _mock_qm, _mock_qo, _mock_config):
         """GET /api/macro/dashboard returns 'indicators' key even with no DB rows."""
         resp = client.get("/api/macro/dashboard", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -137,8 +143,9 @@ class TestMacroRoutes(unittest.TestCase):
 class TestEvidenceRoutes(unittest.TestCase):
     """Integration tests for /api/evidence/* endpoints."""
 
+    @patch("routes.json.evidence.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.evidence.query_one", return_value=None)
-    def test_missing_opinion_returns_404(self, _mock_qo):
+    def test_missing_opinion_returns_404(self, _mock_qo, _mock_config):
         """Requesting evidence for a non-existent opinion returns 404."""
         resp = client.get("/api/evidence/nonexistent-id", headers=AUTH)
         self.assertEqual(resp.status_code, 404)
@@ -148,8 +155,9 @@ class TestEvidenceRoutes(unittest.TestCase):
 class TestBudgetRoute(unittest.TestCase):
     """Integration tests for /api/system/budget."""
 
+    @patch("budgets.load_config", return_value=MOCK_CONFIG)
     @patch("budgets.query_one", return_value=None)
-    def test_budget_returns_status(self, _mock_qo):
+    def test_budget_returns_status(self, _mock_qo, _mock_config):
         """GET /api/system/budget returns a budget status dict."""
         resp = client.get("/api/system/budget", headers=AUTH)
         self.assertEqual(resp.status_code, 200)

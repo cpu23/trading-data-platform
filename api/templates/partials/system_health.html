@@ -3,34 +3,39 @@
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
   {% set health = system_health or {} %}
-  {% set components = health.get('components', []) %}
-  <div class="health-strip">
-    <div class="health-summary">
-      <span class="status-dot status-{{ 'success' if health.get('overall') == 'healthy' else 'partial' if health.get('overall') in ['degraded', 'unavailable'] else 'failed' }}"></span>
-      <span>{{ health.get('overall', 'unknown') | replace('_', ' ') | title }}</span>
-      {% set ns = namespace(problem=none) %}
-      {% for component in components %}
-        {% if ns.problem is none and component.last_status in ['failed', 'error', 'partial'] %}{% set ns.problem = component %}{% endif %}
-      {% endfor %}
-      {% if ns.problem %}<span class="health-summary-detail">· {{ ns.problem.name | replace('_', ' ') }} {{ ns.problem.last_status | replace('_', ' ') }}</span>{% endif %}
-    </div>
-
-    {% if health.get('error') %}
-      <div class="health-error">{{ health.error }}</div>
-    {% else %}
-      <div class="health-components">
-        {% for component in components[:6] %}
-          <span class="health-component"
-                title="{{ component.kind | title }} · {{ component.last_status | replace('_', ' ') }}{% if component.last_run_at %} · {{ component.last_run_at }}{% endif %}{% if component.error_message %} · ERROR: {{ component.error_message }}{% endif %}">
-            <span class="status-dot status-{{ 'failed' if component.last_status in ['failed', 'error'] else 'partial' if component.stale or component.last_status == 'partial' else 'warn' if component.quality_warn and component.last_status == 'success' else 'success' }}"
-                  {% if component.quality_warn %}title="Quality issues detected"{% endif %}></span>
-            {{ component.name | replace('_', ' ') }}
-            {% if component.last_status not in ['success', 'connected', 'simulated'] and component.last_status != 'stale' %}
-              <span class="health-component-status">{{ component.last_status | replace('_', ' ') }}</span>
-            {% endif %}
-          </span>
-        {% endfor %}
+  {% if health.get('error') %}
+    <div class="health-error error-block">System status unavailable: {{ health.error }}</div>
+  {% else %}
+    {% for title, components in [('Data', health.get('data_sources', [])), ('Intelligence', health.get('intelligence', []))] %}
+      <div class="health-row">
+        <span class="health-row-label">{{ title }}</span>
+        <div class="health-components">
+          {% for component in components %}
+            {% set failed = component.last_status in ['failed', 'error', 'validation_failed', 'budget_denied'] %}
+            {% set partial = component.last_status in ['partial', 'degraded_cache', 'skipped', 'setup_required', 'no_data', 'never_run'] or component.stale or component.quality_warn %}
+            <details class="health-component">
+              <summary title="{{ component.label or component.name }} · {{ component.last_status | replace('_', ' ') }}">
+                <span class="status-dot status-{{ 'failed' if failed else 'partial' if partial else 'success' }}"></span>
+                <span>{{ component.label or component.name | replace('_', ' ') }}</span>
+              </summary>
+              <div class="health-popover">
+                <div>{{ component.last_status | replace('_', ' ') | title }}</div>
+                {% if component.acquisition_mode %}
+                  <div>Mode: {{ 'Live weekly fetch' if component.acquisition_mode == 'live' else 'Weekly cache' if component.acquisition_mode == 'cache' else 'Fallback cache' if component.acquisition_mode == 'stale_cache' else component.acquisition_mode | replace('_', ' ') }}</div>
+                {% endif %}
+                {% if component.target_week %}<div>Coverage: {{ component.target_week }}</div>{% endif %}
+                {% if component.source_fetched_at %}<div class="tabular">Source fetched: {{ component.source_fetched_at }}</div>{% endif %}
+                {% if component.cache_age_hours is not none %}<div class="tabular">Cache age: {{ component.cache_age_hours }}h</div>{% endif %}
+                {% if component.last_run_at %}<div class="tabular">Updated: {{ component.last_run_at }}</div>{% endif %}
+                {% if component.get('records_fetched') is not none %}<div class="tabular">{{ component.records_fetched }} fetched · {{ component.get('records_written') or 0 }} written</div>{% endif %}
+                {% if component.error_message %}<div class="health-component-error">{{ component.error_message }}</div>{% endif %}
+              </div>
+            </details>
+          {% else %}
+            <span class="dim">None configured</span>
+          {% endfor %}
+        </div>
       </div>
-    {% endif %}
-  </div>
+    {% endfor %}
+  {% endif %}
 </section>

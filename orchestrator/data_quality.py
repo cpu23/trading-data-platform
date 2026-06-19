@@ -7,6 +7,7 @@ mock ``config`` dict.
 """
 
 import statistics
+import re
 from datetime import datetime, timedelta, timezone
 
 from db import get_session
@@ -24,7 +25,7 @@ def check_freshness(
     source_id: str,
     table: str,
     timestamp_column: str,
-    max_age_hours: float,
+    max_age_hours: float | None,
     config: dict,
 ) -> dict:
     """Verify the most recent row for *source_id* is not too old.
@@ -35,6 +36,7 @@ def check_freshness(
         ``healthy``, ``detail``, ``latest_at`` (ISO str | None),
         ``age_hours`` (float | None).
     """
+    max_age_hours = max_age_hours or _freshness_sla_hours(source_id, config)
     logger.info("check_freshness_running", source_id=source_id, table=table, max_age_hours=max_age_hours)
     sql = text(
         f"SELECT MAX({timestamp_column}) FROM {table} WHERE source = :source_id"
@@ -46,6 +48,8 @@ def check_freshness(
     if row is None or row[0] is None:
         return {
             "healthy": False,
+            "state": "no_data",
+            "source_id": source_id,
             "detail": "no data",
             "latest_at": None,
             "age_hours": None,
@@ -67,6 +71,8 @@ def check_freshness(
         logger.warning("check_freshness_unhealthy", source_id=source_id, age_hours=round(age_hours, 2), max_age_hours=max_age_hours)
         return {
             "healthy": False,
+            "state": "stale",
+            "source_id": source_id,
             "detail": f"stale ({age_hours:.1f}h old, max {max_age_hours}h)",
             "latest_at": latest_at.isoformat(),
             "age_hours": round(age_hours, 2),
@@ -74,10 +80,58 @@ def check_freshness(
 
     return {
         "healthy": True,
+        "state": "healthy",
+        "source_id": source_id,
         "detail": "fresh",
         "latest_at": latest_at.isoformat(),
         "age_hours": round(age_hours, 2),
     }
+
+
+def _freshness_sla_hours(source_id: str, config: dict) -> float:
+    source = config.get("collectors", {}).get(source_id, {})
+    if source.get("freshness_hours"):
+        return float(source["freshness_hours"])
+    schedule = source.get("schedule", "")
+    # Conservative schedule-aware defaults: weekly jobs receive eight days,
+    # daily jobs 36 hours, and intraday jobs three expected intervals.
+    if re.match(r"^\S+\s+\S+\s+\S+\s+\S+\s+[0-6]$", schedule):
+        return 8 * 24
+    if schedule:
+        hour_field = schedule.split()[1] if len(schedule.split()) >= 2 else ""
+        if "/" in hour_field:
+            try:
+                interval = int(hour_field.rsplit("/", 1)[1])
+                return max(3.0, interval * 3.0)
+            except ValueError:
+                pass
+        return 36.0
+    return 36.0
+
+
+def check_source_freshness(
+    source_id: str,
+    table: str,
+    timestamp_column: str,
+    config: dict,
+) -> dict:
+    source_config = config.get("collectors", {}).get(source_id, {})
+    if not source_config.get("enabled", True):
+        return {
+            "healthy": True,
+            "state": "disabled",
+            "source_id": source_id,
+            "detail": "disabled",
+            "latest_at": None,
+            "age_hours": None,
+        }
+    return check_freshness(
+        source_id=source_id,
+        table=table,
+        timestamp_column=timestamp_column,
+        max_age_hours=None,
+        config=config,
+    )
 
 
 def check_gaps(
@@ -121,11 +175,24 @@ def check_gaps(
             d = d.date()
         present_dates.add(d)
 
-    # Walk the 14-day window and find gaps.
+    # Walk the window according to the declared frequency. Daily series skip
+    # weekends; weekly/monthly series compare at their natural cadence.
     gaps = []
     expected = set()
-    for i in range(15):  # inclusive of today
-        expected.add(now - timedelta(days=i))
+    interval = expected_interval.strip().lower()
+    if "week" in interval:
+        expected = {now - timedelta(days=7 * i) for i in range(3)}
+    elif "month" in interval:
+        expected = {
+            (now.replace(day=1) - timedelta(days=32 * i)).replace(day=1)
+            for i in range(3)
+        }
+    else:
+        expected = {
+            now - timedelta(days=i)
+            for i in range(15)
+            if (now - timedelta(days=i)).weekday() < 5
+        }
 
     missing = sorted(expected - present_dates)
     # Group consecutive missing days into gap descriptions.
@@ -133,14 +200,14 @@ def check_gaps(
         start = missing[0]
         prev = missing[0]
         for d in missing[1:]:
-            if (prev - d).days == 1:
+            if (d - prev).days <= max_gap_days:
                 prev = d
             else:
-                days = (start - prev).days + 1
+                days = (prev - start).days + 1
                 gaps.append(f"{start.isoformat()} → {prev.isoformat()} ({days} day" + ("s" if days != 1 else "") + ")")
                 start = d
                 prev = d
-        days = (start - prev).days + 1
+        days = (prev - start).days + 1
         gaps.append(f"{start.isoformat()} → {prev.isoformat()} ({days} day" + ("s" if days != 1 else "") + ")")
 
     # Report all gaps found
@@ -148,14 +215,92 @@ def check_gaps(
         logger.warning("check_gaps_unhealthy", source_id=source_id, gap_count=len(gaps))
         return {
             "healthy": False,
+            "state": "gaps",
+            "source_id": source_id,
             "detail": f"gap(s) found: {len(gaps)} missing period(s)",
             "gaps": gaps,
         }
 
     return {
         "healthy": True,
+        "state": "healthy",
+        "source_id": source_id,
         "detail": "no gaps",
         "gaps": [],
+    }
+
+
+def check_macro_series_gaps(source_id: str, config: dict) -> dict:
+    """Check each macro series at its declared frequency."""
+    if not config.get("collectors", {}).get(source_id, {}).get("enabled", True):
+        return {
+            "healthy": True,
+            "state": "disabled",
+            "source_id": source_id,
+            "detail": "disabled",
+            "gaps": [],
+        }
+    cutoff = datetime.now(timezone.utc) - timedelta(days=730)
+    sql = text(
+        "SELECT series_id, observed_at::date, "
+        "COALESCE(metadata->>'frequency', 'daily') "
+        "FROM macro_series WHERE source = :source_id "
+        "AND observed_at >= :cutoff ORDER BY series_id, observed_at"
+    )
+    with get_session(config) as session:
+        rows = session.execute(
+            sql, {"source_id": source_id, "cutoff": cutoff}
+        ).fetchall()
+
+    by_series: dict[str, dict] = {}
+    for series_id, observed_at, frequency in rows:
+        if isinstance(observed_at, str):
+            observed_at = datetime.fromisoformat(observed_at).date()
+        elif isinstance(observed_at, datetime):
+            observed_at = observed_at.date()
+        entry = by_series.setdefault(
+            series_id, {"frequency": str(frequency).lower(), "dates": []}
+        )
+        entry["dates"].append(observed_at)
+
+    allowed_days = {
+        "daily": 4,
+        "weekly": 14,
+        "monthly": 62,
+        "quarterly": 185,
+        "annual": 550,
+    }
+    gaps = []
+    for series_id, entry in by_series.items():
+        dates = sorted(set(entry["dates"]))
+        threshold = allowed_days.get(entry["frequency"], 62)
+        for previous, current in zip(dates, dates[1:]):
+            interval_days = (current - previous).days
+            if interval_days > threshold:
+                gaps.append(
+                    {
+                        "series_id": series_id,
+                        "frequency": entry["frequency"],
+                        "from": previous.isoformat(),
+                        "to": current.isoformat(),
+                        "days": interval_days,
+                    }
+                )
+
+    if not rows:
+        return {
+            "healthy": False,
+            "state": "no_data",
+            "source_id": source_id,
+            "detail": "no data",
+            "gaps": [],
+        }
+    return {
+        "healthy": not gaps,
+        "state": "healthy" if not gaps else "gaps",
+        "source_id": source_id,
+        "detail": "no gaps" if not gaps else f"{len(gaps)} frequency-aware gap(s)",
+        "gaps": gaps,
     }
 
 
@@ -186,6 +331,8 @@ def check_duplicates(
     if row is None:
         return {
             "healthy": True,
+            "state": "no_data",
+            "source_id": source_id,
             "detail": "no data",
             "total_count": 0,
             "distinct_count": 0,
@@ -200,6 +347,8 @@ def check_duplicates(
         logger.warning("check_duplicates_unhealthy", source_id=source_id, duplicate_count=dupes)
         return {
             "healthy": False,
+            "state": "duplicates",
+            "source_id": source_id,
             "detail": f"{dupes} duplicate row(s) detected",
             "total_count": total,
             "distinct_count": distinct,
@@ -208,6 +357,8 @@ def check_duplicates(
 
     return {
         "healthy": True,
+        "state": "healthy",
+        "source_id": source_id,
         "detail": "no duplicates",
         "total_count": total,
         "distinct_count": distinct,
@@ -252,6 +403,8 @@ def check_anomalies(
     if len(values) < 5:
         return {
             "healthy": True,
+            "state": "insufficient_data",
+            "source_id": source_id,
             "detail": f"insufficient data ({len(values)} values, need >=5)",
             "anomalies": [],
             "mean": None,
@@ -264,6 +417,8 @@ def check_anomalies(
     if stdev == 0.0:
         return {
             "healthy": True,
+            "state": "healthy",
+            "source_id": source_id,
             "detail": "no variance — all values equal",
             "anomalies": [],
             "mean": round(mean, 4),
@@ -284,6 +439,8 @@ def check_anomalies(
         logger.warning("check_anomalies_unhealthy", source_id=source_id, anomaly_count=len(anomalies))
         return {
             "healthy": False,
+            "state": "anomalies",
+            "source_id": source_id,
             "detail": f"{len(anomalies)} anomaly(s) detected",
             "anomalies": anomalies,
             "mean": round(mean, 4),
@@ -292,6 +449,8 @@ def check_anomalies(
 
     return {
         "healthy": True,
+        "state": "healthy",
+        "source_id": source_id,
         "detail": "no anomalies",
         "anomalies": [],
         "mean": round(mean, 4),
@@ -304,18 +463,14 @@ def check_anomalies(
 # ---------------------------------------------------------------------------
 
 DATA_QUALITY_CHECKS = {
-    "fred_freshness": lambda config=None: check_freshness(
+    "fred_freshness": lambda config=None: check_source_freshness(
         source_id="fred",
         table="macro_series",
-        timestamp_column="observed_at",
-        max_age_hours=30,
+        timestamp_column="acquired_at",
         config=config or {},
     ),
-    "fred_gaps": lambda config=None: check_gaps(
+    "fred_gaps": lambda config=None: check_macro_series_gaps(
         source_id="fred",
-        table="macro_series",
-        date_column="observed_at",
-        expected_interval="1 day",
         config=config or {},
     ),
     "fred_anomalies": lambda config=None: check_anomalies(
@@ -325,11 +480,10 @@ DATA_QUALITY_CHECKS = {
         timestamp_column="observed_at",
         config=config or {},
     ),
-    "forex_factory_freshness": lambda config=None: check_freshness(
+    "forex_factory_freshness": lambda config=None: check_source_freshness(
         source_id="forex_factory",
         table="econ_events",
-        timestamp_column="scheduled_at",
-        max_age_hours=14 * 24,  # 14 days
+        timestamp_column="acquired_at",
         config=config or {},
     ),
     "forex_factory_dupes": lambda config=None: check_duplicates(
@@ -338,11 +492,22 @@ DATA_QUALITY_CHECKS = {
         unique_columns=["event_id"],
         config=config or {},
     ),
-    "oanda_freshness": lambda config=None: check_freshness(
-        source_id="oanda",
-        table="market_data",
-        timestamp_column="timestamp",
-        max_age_hours=12,
-        config=config or {},
-    ),
+    **{
+        f"{source_id}_freshness": (
+            lambda config=None, source_id=source_id, table=table: check_source_freshness(
+                source_id=source_id,
+                table=table,
+                timestamp_column="acquired_at",
+                config=config or {},
+            )
+        )
+        for source_id, table in {
+            "cftc": "positioning_reports",
+            "central_banks": "source_documents",
+            "oecd": "macro_series",
+            "ecb": "macro_series",
+            "boe": "macro_series",
+            "eia": "macro_series",
+        }.items()
+    },
 }

@@ -52,6 +52,17 @@ SAMPLE_PAYLOAD = [
 
 
 class ForexFactoryCollectorTests(unittest.TestCase):
+    def test_health_reports_current_week_cache_without_network(self):
+        collector = ForexFactoryCollector()
+        collector._determine_target_week = Mock(return_value=target_week())
+        collector._load_cached_payload = Mock(return_value=SAMPLE_PAYLOAD)
+
+        result = collector.health_check(CONFIG)
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["payload_source"], "cache")
+        self.assertEqual(result["target_week"], "2026-W19")
+
     def test_cache_hit_avoids_network_call(self):
         collector = ForexFactoryCollector()
         collector._determine_target_week = Mock(return_value=target_week())
@@ -62,6 +73,25 @@ class ForexFactoryCollectorTests(unittest.TestCase):
 
         self.assertEqual(len(records), 2)
         collector._fetch_export_payload.assert_not_called()
+        self.assertEqual(collector.last_result_metadata["payload_source"], "cache")
+        self.assertEqual(collector.last_result_metadata["target_week"], "2026-W19")
+
+    def test_current_week_cache_is_immutable_even_when_filter_yields_zero(self):
+        collector = ForexFactoryCollector()
+        collector._determine_target_week = Mock(return_value=target_week())
+        collector._load_cached_payload = Mock(return_value=[{
+            "title": "Bank Holiday",
+            "country": "USD",
+            "date": "2026-05-08T08:30:00-04:00",
+            "impact": "Holiday",
+        }])
+        collector._fetch_export_payload = Mock()
+
+        records = collector.collect(CONFIG, "corr")
+
+        self.assertEqual(records, [])
+        collector._fetch_export_payload.assert_not_called()
+        self.assertEqual(collector.last_result_metadata["payload_source"], "cache")
 
     def test_missing_week_fetches_and_stores_payload(self):
         collector = ForexFactoryCollector()
@@ -75,6 +105,19 @@ class ForexFactoryCollectorTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         collector._fetch_export_payload.assert_called_once()
         collector._store_cached_payload.assert_called_once()
+        self.assertEqual(collector.last_result_metadata["payload_source"], "live")
+
+    def test_live_payload_is_not_published_when_immutable_cache_write_fails(self):
+        collector = ForexFactoryCollector()
+        collector._determine_target_week = Mock(return_value=target_week())
+        collector._load_cached_payload = Mock(return_value=None)
+        collector._fetch_export_payload = Mock(return_value=SAMPLE_PAYLOAD)
+        collector._store_cached_payload = Mock(
+            side_effect=RuntimeError("cache unavailable")
+        )
+
+        with self.assertRaises(RuntimeError):
+            collector.collect(CONFIG, "corr")
 
     def test_failed_fetch_uses_existing_cache(self):
         collector = ForexFactoryCollector()
@@ -86,6 +129,8 @@ class ForexFactoryCollectorTests(unittest.TestCase):
 
         self.assertEqual(len(records), 2)
         self.assertEqual(collector._load_cached_payload.call_count, 2)
+        self.assertEqual(collector.last_result_metadata["payload_source"], "stale_cache")
+        self.assertEqual(collector.last_result_metadata["state"], "degraded_cache")
 
     def test_weekend_selects_coming_monday_friday_week(self):
         collector = ForexFactoryCollector()

@@ -1,16 +1,18 @@
 <section class="changes-strip" id="changes-section"
          hx-get="/partials/changes" hx-trigger="cycleComplete from:body" hx-swap="outerHTML">
   {% if cycle_issue %}
-    <span class="status-dot {{ 'status-failed' if cycle_issue.status in ['failed', 'partial'] else 'status-partial' }}"></span>
+    <span class="status-dot {{ 'status-failed' if cycle_issue.status in ['failed', 'validation_failed'] else 'status-partial' }}"></span>
     <span>{{ cycle_issue.headline }}</span>
     {% if cycle_issue.error %}<details><summary>View error</summary><p class="dim">{{ cycle_issue.error }}</p></details>{% endif %}
-  {% elif changes %}
+  {% elif changes and changes.opinion_id %}
     {% if changes.material_change %}
       <span class="label">Since last cycle</span>
       <span>{{ changes.headline }}</span>
       {% if changes.changed %}
       <details><summary>View changes</summary>
-        <ul class="compact-list">{% for item in changes.changed %}<li>{{ item }}</li>{% endfor %}</ul>
+        <ul class="compact-list">{% for item in changes.changed %}
+          <li>{% if item is mapping and item.symbol %}{{ item.symbol }}: {{ item.get('from') or 'pending' }} → {{ item.get('to') or 'pending' }}{% else %}{{ item }}{% endif %}</li>
+        {% endfor %}</ul>
       </details>
       {% endif %}
     {% else %}

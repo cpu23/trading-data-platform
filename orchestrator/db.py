@@ -13,6 +13,10 @@ _engine = None
 _SessionFactory = None
 
 
+class RecordWriteError(RuntimeError):
+    """Raised when a collector batch cannot be persisted completely."""
+
+
 def get_engine(config: dict | None = None):
     global _engine
     if _engine is not None:
@@ -89,28 +93,30 @@ def upsert_records(
 
     stmt = text(sql)
 
-    with get_session(config) as session:
-        for record in records:
-            try:
+    try:
+        with get_session(config) as session:
+            for record in records:
                 prepared = {}
                 for k, v in record.items():
                     if isinstance(v, (dict, list)):
                         prepared[k] = _json.dumps(v)
                     else:
                         prepared[k] = v
-                nested = session.begin_nested()
                 session.execute(stmt, prepared)
-                nested.commit()
                 written += 1
-            except Exception as exc:
-                nested.rollback()
-                logger.error(
-                    "upsert_record_failed",
-                    action="upsert_record",
-                    table=table_name,
-                    error=str(exc),
-                    record_keys=list(record.keys()),
-                )
+    except Exception as exc:
+        logger.error(
+            "upsert_batch_failed",
+            action="upsert",
+            table=table_name,
+            error=str(exc),
+            records_total=len(records),
+            records_attempted=written + 1,
+        )
+        raise RecordWriteError(
+            f"Failed to persist complete {table_name} batch "
+            f"({written}/{len(records)} rows attempted successfully)"
+        ) from exc
 
     duration_ms = int(_now_ms() - start_ms)
     logger.info(
@@ -196,28 +202,30 @@ def insert_records(
     sql = f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})"
     stmt = text(sql)
 
-    with get_session(config) as session:
-        for record in records:
-            try:
+    try:
+        with get_session(config) as session:
+            for record in records:
                 prepared = {}
                 for k, v in record.items():
                     if isinstance(v, (dict, list)):
                         prepared[k] = _json.dumps(v)
                     else:
                         prepared[k] = v
-                nested = session.begin_nested()
                 session.execute(stmt, prepared)
-                nested.commit()
                 written += 1
-            except Exception as exc:
-                nested.rollback()
-                logger.error(
-                    "insert_record_failed",
-                    action="insert_record",
-                    table=table_name,
-                    error=str(exc),
-                    record_keys=list(record.keys()),
-                )
+    except Exception as exc:
+        logger.error(
+            "insert_batch_failed",
+            action="insert",
+            table=table_name,
+            error=str(exc),
+            records_total=len(records),
+            records_attempted=written + 1,
+        )
+        raise RecordWriteError(
+            f"Failed to persist complete {table_name} batch "
+            f"({written}/{len(records)} rows attempted successfully)"
+        ) from exc
 
     duration_ms = int(_now_ms() - start_ms)
     logger.info(
@@ -297,3 +305,34 @@ def upsert_records_in_session(
 
 def _now_ms() -> float:
     return __import__("time").monotonic() * 1000
+
+
+@contextmanager
+def advisory_lock(
+    lock_name: str,
+    config: dict | None = None,
+):
+    """Hold a PostgreSQL session advisory lock for one runtime operation."""
+    with get_session(config) as session:
+        acquired = bool(
+            session.execute(
+                text(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtextextended(:lock_name, 0)"
+                    ")"
+                ),
+                {"lock_name": lock_name},
+            ).scalar()
+        )
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                session.execute(
+                    text(
+                        "SELECT pg_advisory_unlock("
+                        "hashtextextended(:lock_name, 0)"
+                        ")"
+                    ),
+                    {"lock_name": lock_name},
+                )

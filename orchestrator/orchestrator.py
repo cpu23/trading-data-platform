@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
 from db import (
+    advisory_lock,
     get_session,
     insert_records,
     insert_records_in_session,
@@ -14,9 +15,15 @@ from db import (
 )
 from logging_config import get_logger
 from processors import get_all_processors, get_processor
+from processors._validators import OutputPolicyError
 from sqlalchemy import text
 
 logger = get_logger("orchestrator")
+
+RUNTIME_LOCK_NAME = "trading-data-platform:runtime"
+DEPENDENCY_READY_STATES = {"success", "partial", "degraded_cache"}
+COMPLETE_STAGE_STATES = {"success"}
+FAILED_STAGE_STATES = {"failed", "validation_failed"}
 
 
 def ensure_run(
@@ -32,12 +39,7 @@ def ensure_run(
                 "INSERT INTO cycle_runs "
                 "(correlation_id, status, started_at, triggered_by, run_kind, requested_component) "
                 "VALUES (:cid, 'running', :started_at, :triggered_by, :run_kind, :component) "
-                "ON CONFLICT (correlation_id) DO UPDATE SET "
-                "status = 'running', triggered_by = CASE "
-                "WHEN cycle_runs.triggered_by = 'api_manual_override' "
-                "THEN cycle_runs.triggered_by ELSE EXCLUDED.triggered_by END, "
-                "run_kind = EXCLUDED.run_kind, "
-                "requested_component = EXCLUDED.requested_component"
+                "ON CONFLICT (correlation_id) DO NOTHING"
             ),
             {
                 "cid": correlation_id,
@@ -56,7 +58,16 @@ def finish_run(
     config: dict,
     error_message: str | None = None,
 ) -> None:
-    lifecycle_status = "failed" if result_status == "failed" else "completed"
+    lifecycle_status = (
+        "failed" if result_status in FAILED_STAGE_STATES else "completed"
+    )
+    publish_complete_snapshot = result_status == "success"
+    publication_status = (
+        "published"
+        if publish_complete_snapshot
+        else "failed"
+    )
+    completed_at = datetime.now(timezone.utc)
     with get_session(config) as session:
         session.execute(
             text(
@@ -73,23 +84,19 @@ def finish_run(
                 "status": lifecycle_status,
                 "result_status": result_status,
                 "summary": json.dumps(summary),
-                "completed_at": datetime.now(timezone.utc),
+                "completed_at": completed_at,
                 "error_message": error_message,
-                "publication_status": (
-                    "published"
-                    if result_status in ("success", "partial")
-                    else "failed"
-                ),
+                "publication_status": publication_status,
             },
         )
-        if result_status in ("success", "partial"):
+        if publish_complete_snapshot:
             session.execute(
                 text(
                     "UPDATE structured_opinions SET lifecycle_status = 'published', "
                     "published_at = :published_at "
                     "WHERE correlation_id = :cid AND lifecycle_status = 'validated'"
                 ),
-                {"cid": correlation_id, "published_at": datetime.now(timezone.utc)},
+                {"cid": correlation_id, "published_at": completed_at},
             )
             session.execute(
                 text(
@@ -97,8 +104,44 @@ def finish_run(
                     "published_at = :published_at "
                     "WHERE correlation_id = :cid AND lifecycle_status = 'validated'"
                 ),
-                {"cid": correlation_id, "published_at": datetime.now(timezone.utc)},
+                {"cid": correlation_id, "published_at": completed_at},
             )
+
+
+def _aggregate_stage_status(results: dict[str, dict]) -> str:
+    if not results:
+        return "failed"
+    statuses = [result.get("status", "failed") for result in results.values()]
+    if all(status in COMPLETE_STAGE_STATES for status in statuses):
+        return "success"
+    if all(status in FAILED_STAGE_STATES | {"skipped", "budget_denied"} for status in statuses):
+        if "validation_failed" in statuses:
+            return "validation_failed"
+        if "budget_denied" in statuses and not any(
+            status in FAILED_STAGE_STATES for status in statuses
+        ):
+            return "budget_denied"
+        return "failed"
+    return "partial"
+
+
+def _lock_skipped_result(
+    component_key: str,
+    correlation_id: str,
+) -> dict:
+    return {
+        "component": component_key,
+        "status": "skipped",
+        "duration_ms": 0,
+        "error": "Another cycle or component run is already active",
+        "correlation_id": correlation_id,
+    }
+
+
+def _runtime_lock_context(config: dict, acquire: bool):
+    if not acquire or not config.get("database"):
+        return __import__("contextlib").nullcontext(True)
+    return advisory_lock(RUNTIME_LOCK_NAME, config)
 
 
 def update_run_progress(correlation_id: str, progress: dict, config: dict) -> None:
@@ -125,7 +168,11 @@ def update_run_progress(correlation_id: str, progress: dict, config: dict) -> No
 
 
 def run_collector(
-    source_id: str, config: dict | None = None, correlation_id: str | None = None
+    source_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    *,
+    acquire_runtime_lock: bool = True,
 ) -> dict:
     if config is None:
         from config_loader import load_config
@@ -142,96 +189,113 @@ def run_collector(
         requested_component=source_id,
     )
 
-    import structlog.contextvars
+    lock_context = _runtime_lock_context(config, acquire_runtime_lock)
+    with lock_context as acquired:
+        if not acquired:
+            result = {
+                **_lock_skipped_result(f"collector:{source_id}", correlation_id),
+                "collector": source_id,
+                "records_fetched": 0,
+                "records_written": 0,
+            }
+            if standalone:
+                finish_run(
+                    correlation_id, "skipped", result, config, result["error"]
+                )
+            return result
 
-    structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+        import structlog.contextvars
 
-    collector = get_collector(source_id)
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
-    started_at = datetime.now(timezone.utc)
-    start_ms = time.monotonic() * 1000
+        started_at = datetime.now(timezone.utc)
+        start_ms = time.monotonic() * 1000
+        records_fetched = 0
+        records_written = 0
+        api_calls_made = 0
+        status = "success"
+        error_message = None
+        error_traceback = None
 
-    logger.info(
-        "collector_started",
-        action="run_collector",
-        collector=source_id,
-        correlation_id=correlation_id,
-    )
-
-    records_fetched = 0
-    records_written = 0
-    api_calls_made = 0
-    status = "success"
-    error_message = None
-    error_traceback = None
-
-    try:
-        records = collector.collect(config, correlation_id)
-        records_fetched = len(records)
-
-        if records:
-            table_name = collector.get_target_table()
-            conflict_columns = collector.get_conflict_columns()
-            records_written = upsert_records(
-                table_name=table_name,
-                records=records,
-                conflict_columns=conflict_columns,
-                config=config,
-            )
-
-        api_calls_made = _estimate_api_calls(source_id, records_fetched, config)
-
-    except Exception as exc:
-        status = "failed"
-        error_message = str(exc)
-        error_traceback = traceback.format_exc()
-        logger.error(
-            "collector_failed",
+        logger.info(
+            "collector_started",
             action="run_collector",
             collector=source_id,
-            error=str(exc),
             correlation_id=correlation_id,
         )
 
-    completed_at = datetime.now(timezone.utc)
-    duration_ms = int(time.monotonic() * 1000 - start_ms)
+        try:
+            collector = get_collector(source_id)
+            records = collector.collect(config, correlation_id)
+            raw_metadata = getattr(collector, "last_result_metadata", {})
+            result_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            records_fetched = len(records)
 
-    _write_collection_log(
-        collector_id=source_id,
-        started_at=started_at,
-        completed_at=completed_at,
-        status=status,
-        records_fetched=records_fetched,
-        records_written=records_written,
-        error_message=error_message,
-        error_traceback=error_traceback,
-        duration_ms=duration_ms,
-        api_calls_made=api_calls_made,
-        config=config,
-        correlation_id=correlation_id,
-    )
+            if records:
+                records_written = upsert_records(
+                    table_name=collector.get_target_table(),
+                    records=records,
+                    conflict_columns=collector.get_conflict_columns(),
+                    config=config,
+                )
+                if records_written != records_fetched:
+                    raise RuntimeError(
+                        f"Incomplete persistence: wrote {records_written} "
+                        f"of {records_fetched} records"
+                    )
 
-    result = {
-        "collector": source_id,
-        "status": status,
-        "records_fetched": records_fetched,
-        "records_written": records_written,
-        "duration_ms": duration_ms,
-        "error": error_message,
-        "correlation_id": correlation_id,
-    }
+            api_calls_made = _estimate_api_calls(
+                source_id, records_fetched, config
+            )
+        except Exception as exc:
+            raw_metadata = getattr(
+                locals().get("collector"), "last_result_metadata", {}
+            )
+            result_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            status = "failed"
+            error_message = str(exc)
+            error_traceback = traceback.format_exc()
+            logger.error(
+                "collector_failed",
+                action="run_collector",
+                collector=source_id,
+                error=str(exc),
+                correlation_id=correlation_id,
+            )
 
-    logger.info(
-        "collector_completed",
-        action="run_collector",
-        **result,
-    )
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = int(time.monotonic() * 1000 - start_ms)
+        _write_collection_log(
+            collector_id=source_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            status=status,
+            records_fetched=records_fetched,
+            records_written=records_written,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            duration_ms=duration_ms,
+            api_calls_made=api_calls_made,
+            config=config,
+            correlation_id=correlation_id,
+            result_metadata=result_metadata,
+        )
 
-    if standalone:
-        finish_run(correlation_id, status, result, config, error_message)
-
-    return result
+        result = {
+            "collector": source_id,
+            "status": status,
+            "records_fetched": records_fetched,
+            "records_written": records_written,
+            "duration_ms": duration_ms,
+            "error": error_message,
+            "correlation_id": correlation_id,
+            "metadata": result_metadata,
+        }
+        logger.info("collector_completed", action="run_collector", **result)
+        if standalone:
+            finish_run(correlation_id, status, result, config, error_message)
+        return result
 
 
 def run_full_cycle(
@@ -245,6 +309,46 @@ def run_full_cycle(
     if correlation_id is None:
         correlation_id = str(uuid4())
     ensure_run(correlation_id, config, run_kind="cycle")
+    with _runtime_lock_context(config, True) as acquired:
+        if not acquired:
+            result = {
+                **_lock_skipped_result("cycle", correlation_id),
+                "collectors": {},
+                "processors": {},
+            }
+            finish_run(
+                correlation_id, "skipped", result, config, result["error"]
+            )
+            return result
+        try:
+            result = _run_full_cycle_unlocked(config, correlation_id)
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "collectors": {},
+                "processors": {},
+                "correlation_id": correlation_id,
+                "error": str(exc),
+            }
+            finish_run(correlation_id, "failed", result, config, str(exc))
+            logger.exception(
+                "full_cycle_failed",
+                action="run_full_cycle",
+                correlation_id=correlation_id,
+            )
+            return result
+
+        finish_run(
+            correlation_id,
+            result["status"],
+            result,
+            config,
+            result.get("error"),
+        )
+        return result
+
+
+def _run_full_cycle_unlocked(config: dict, correlation_id: str) -> dict:
     budget_override = _consume_budget_override(correlation_id, config)
 
     logger.info(
@@ -326,7 +430,12 @@ def run_full_cycle(
 
     for source_id in enabled_collectors:
         record_progress(source_id, "collector", "running")
-        result = run_collector(source_id, config=config, correlation_id=correlation_id)
+        result = run_collector(
+            source_id,
+            config=config,
+            correlation_id=correlation_id,
+            acquire_runtime_lock=False,
+        )
         collector_results[source_id] = result
         record_progress(source_id, "collector", result["status"], result)
         if result["status"] in ("success", "partial"):
@@ -340,17 +449,8 @@ def run_full_cycle(
         budget_override=budget_override,
     )
 
-    overall_status = "success"
     all_results = {**collector_results, **processor_results}
-    if any(
-        r["status"] in ("failed", "budget_denied")
-        for r in all_results.values()
-    ):
-        overall_status = (
-            "partial"
-            if any(r["status"] in ("success", "partial") for r in all_results.values())
-            else "failed"
-        )
+    overall_status = _aggregate_stage_status(all_results)
 
     cycle_result = {
         "status": overall_status,
@@ -369,7 +469,6 @@ def run_full_cycle(
         correlation_id=correlation_id,
     )
 
-    finish_run(correlation_id, overall_status, cycle_result, config)
     return cycle_result
 
 
@@ -391,6 +490,7 @@ def _resolve_and_run_processors(
     successful_collectors: set[str],
     progress_callback=None,
     budget_override: dict | None = None,
+    processor_ids: set[str] | None = None,
 ) -> dict:
     all_processors = get_all_processors()
     processor_results = {}
@@ -400,6 +500,8 @@ def _resolve_and_run_processors(
     for processor_id, processor in all_processors.items():
         processor_config = config.get("processors", {}).get(processor_id, {})
         if not processor_config.get("enabled", False):
+            continue
+        if processor_ids is not None and processor_id not in processor_ids:
             continue
         remaining[processor_id] = processor
 
@@ -437,6 +539,15 @@ def _resolve_and_run_processors(
                         "skipped",
                         {"error": f"Dependencies not met: {', '.join(depends_on)}"},
                     )
+                processor_results[pid] = {
+                    "processor": pid,
+                    "status": "skipped",
+                    "duration_ms": 0,
+                    "error": f"Dependencies not met: {', '.join(depends_on)}",
+                    "correlation_id": correlation_id,
+                    "opinion_id": None,
+                    "opinion_ids": [],
+                }
             break
 
         for pid in this_pass:
@@ -450,6 +561,7 @@ def _resolve_and_run_processors(
                 config=config,
                 correlation_id=correlation_id,
                 budget_override=budget_override,
+                acquire_runtime_lock=False,
             )
             processor_results[pid] = result
             if progress_callback:
@@ -458,6 +570,34 @@ def _resolve_and_run_processors(
                 successful_processors.add(pid)
 
     return processor_results
+
+
+def get_transitive_dependents(
+    upstream_component: str,
+    config: dict,
+) -> set[str]:
+    """Return enabled processors reachable from one collector/processor."""
+    processors = get_all_processors()
+    enabled = {
+        processor_id: processor
+        for processor_id, processor in processors.items()
+        if config.get("processors", {})
+        .get(processor_id, {})
+        .get("enabled", False)
+    }
+    reachable = {upstream_component}
+    dependents: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for processor_id, processor in enabled.items():
+            if processor_id in dependents:
+                continue
+            if any(dep in reachable for dep in processor.get_depends_on()):
+                dependents.add(processor_id)
+                reachable.add(processor_id)
+                changed = True
+    return dependents
 
 
 def _write_collection_log(
@@ -473,6 +613,7 @@ def _write_collection_log(
     api_calls_made: int,
     config: dict,
     correlation_id: str,
+    result_metadata: dict | None = None,
 ):
     config_snapshot = {}
     collector_config = config.get("collectors", {}).get(collector_id, {})
@@ -492,6 +633,8 @@ def _write_collection_log(
         )
     if "snapshot_timeframe" in collector_config:
         config_snapshot["snapshot_timeframe"] = collector_config["snapshot_timeframe"]
+    if result_metadata:
+        config_snapshot["acquisition"] = result_metadata
 
     log_record = {
         "started_at": started_at,
@@ -550,6 +693,8 @@ def run_processor(
     config: dict | None = None,
     correlation_id: str | None = None,
     budget_override: dict | None = None,
+    *,
+    acquire_runtime_lock: bool = True,
 ) -> dict:
     if config is None:
         from config_loader import load_config
@@ -565,6 +710,60 @@ def run_processor(
         run_kind="processor",
         requested_component=processor_id,
     )
+    lock_context = _runtime_lock_context(config, acquire_runtime_lock)
+    with lock_context as acquired:
+        if not acquired:
+            result = {
+                **_lock_skipped_result(
+                    f"processor:{processor_id}", correlation_id
+                ),
+                "processor": processor_id,
+                "opinion_id": None,
+                "opinion_ids": [],
+            }
+        else:
+            try:
+                result = _run_processor_unlocked(
+                    processor_id=processor_id,
+                    config=config,
+                    correlation_id=correlation_id,
+                    budget_override=budget_override,
+                    publish_immediately=standalone,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "processor_runtime_failed",
+                    action="run_processor",
+                    processor=processor_id,
+                    correlation_id=correlation_id,
+                )
+                result = {
+                    "processor": processor_id,
+                    "status": "failed",
+                    "duration_ms": 0,
+                    "error": str(exc),
+                    "correlation_id": correlation_id,
+                    "opinion_id": None,
+                    "opinion_ids": [],
+                }
+        if standalone:
+            finish_run(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+            )
+        return result
+
+
+def _run_processor_unlocked(
+    processor_id: str,
+    config: dict,
+    correlation_id: str,
+    budget_override: dict | None,
+    publish_immediately: bool,
+) -> dict:
 
     import structlog.contextvars
 
@@ -618,14 +817,6 @@ def run_processor(
             today_cost_usd=budget["today_cost_usd"],
             budget_cap_usd=budget["budget_cap_usd"],
         )
-        if standalone:
-            finish_run(
-                correlation_id,
-                "budget_denied",
-                result,
-                config,
-                error_message,
-            )
         return result
 
     processor = get_processor(processor_id)
@@ -646,6 +837,16 @@ def run_processor(
 
     try:
         result_payload = processor.process(config, correlation_id)
+    except OutputPolicyError as exc:
+        status = "validation_failed"
+        error_message = str(exc)
+        logger.warning(
+            "processor_validation_failed",
+            action="run_processor",
+            processor=processor_id,
+            error=str(exc),
+            correlation_id=correlation_id,
+        )
     except Exception as exc:
         status = "failed"
         error_message = str(exc)
@@ -690,7 +891,8 @@ def run_processor(
         opinion.setdefault("schema_version", "1")
         opinion.setdefault("payload", {})
         opinion.setdefault(
-            "lifecycle_status", "published" if standalone else "validated"
+            "lifecycle_status",
+            "published" if publish_immediately else "validated",
         )
         if opinion["lifecycle_status"] == "published":
             opinion.setdefault("published_at", completed_at)
@@ -704,7 +906,8 @@ def run_processor(
     for briefing in extra_records.get("daily_briefings", []):
         briefing.setdefault("correlation_id", correlation_id)
         briefing.setdefault(
-            "lifecycle_status", "published" if standalone else "validated"
+            "lifecycle_status",
+            "published" if publish_immediately else "validated",
         )
         if briefing["lifecycle_status"] == "published":
             briefing.setdefault("published_at", completed_at)
@@ -787,8 +990,6 @@ def run_processor(
     }
 
     logger.info("processor_completed", action="run_processor", **result)
-    if standalone:
-        finish_run(correlation_id, status, result, config, error_message)
     return result
 
 

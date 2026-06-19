@@ -1,30 +1,329 @@
+import hashlib
+import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from processors._validators import OutputPolicyError, scan_prohibited_language
 from processors.intelligence import MarketIntelligenceProcessor
 
 
-class IntelligenceTests(unittest.TestCase):
-    def test_delta_retains_disagreement_as_change(self):
-        processor = MarketIntelligenceProcessor()
-        previous = {"payload": {"assets": [{"symbol": "EURUSD", "bias": "bearish"}]}}
-        edited = {"global": {"drivers": []}, "assets": [{"symbol": "EURUSD", "bias": "bullish"}]}
-        delta = processor._delta(previous, edited)
-        self.assertTrue(delta["material_change"])
-        self.assertEqual(delta["changed"][0]["from"], "bearish")
+EVIDENCE_ID = "opinion:11111111-1111-1111-1111-111111111111"
+SYMBOLS = ["EURUSD"]
 
-    def test_no_change_uses_no_paid_calls(self):
+
+def claim(claim_id, text_value="Restrictive policy supports the dollar."):
+    return {
+        "claim_id": claim_id,
+        "text": text_value,
+        "evidence_ids": [EVIDENCE_ID],
+    }
+
+
+def valid_role(role):
+    return {
+        "global": {
+            "bias": "mixed",
+            "confidence": "moderate",
+            "claims": [claim(f"{role}.global.1")],
+            "contradictions": [],
+        },
+        "assets": [
+            {
+                "symbol": "EURUSD",
+                "bias": "bearish",
+                "confidence": "moderate",
+                "claims": [claim(f"{role}.asset.EURUSD.1")],
+                "contradictions": [],
+            }
+        ],
+    }
+
+
+def narrative(source_claim_id, text_value="Relative policy expectations favor the dollar."):
+    return {
+        "text": text_value,
+        "source_claim_ids": [source_claim_id],
+        "evidence_ids": [EVIDENCE_ID],
+    }
+
+
+def valid_editor():
+    return {
+        "global": {
+            "bias": "mixed",
+            "confidence": "moderate",
+            "summary": narrative("analyst.global.1", "Growth and policy signals are mixed."),
+            "drivers": [narrative("analyst.global.1")],
+            "contradictions": [],
+            "invalidation_conditions": [],
+        },
+        "assets": [
+            {
+                "symbol": "EURUSD",
+                "bias": "bearish",
+                "confidence": "moderate",
+                "summary": narrative("analyst.asset.EURUSD.1"),
+                "drivers": [narrative("analyst.asset.EURUSD.1")],
+                "contradictions": [],
+                "invalidation_conditions": [],
+                "disagreements": [],
+            }
+        ],
+    }
+
+
+def llm_result(value, tokens_input=1, tokens_output=2, cost=0.001):
+    return {
+        "content": json.dumps(value),
+        "model": "test-model",
+        "tokens_input": tokens_input,
+        "tokens_output": tokens_output,
+        "cost_usd": cost,
+        "duration_ms": 10,
+        "request_metadata": {},
+    }
+
+
+class IntelligenceSchemaTests(unittest.TestCase):
+    def setUp(self):
+        self.processor = MarketIntelligenceProcessor()
+
+    def test_role_schema_rejects_extra_keys_bad_enums_and_unknown_evidence(self):
+        value = valid_role("analyst")
+        value["global"]["extra"] = True
+        value["global"]["bias"] = "strongly bullish"
+        value["assets"][0]["claims"][0]["evidence_ids"] = ["invented:1"]
+        issues = self.processor._validate_role(
+            value, SYMBOLS, "analyst", {EVIDENCE_ID}
+        )
+        self.assertTrue(any("unexpected keys" in issue for issue in issues))
+        self.assertTrue(any("invalid value" in issue for issue in issues))
+        self.assertTrue(any("unsupported id" in issue for issue in issues))
+
+    def test_editor_rejects_claims_not_supported_by_roles(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["global"]["drivers"][0]["source_claim_ids"] = ["invented.claim"]
+        issues = self.processor._validate_editor(value, SYMBOLS, roles)
+        self.assertTrue(any("unsupported id 'invented.claim'" in issue for issue in issues))
+
+    def test_editor_rejects_evidence_not_shared_by_cited_claims(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["global"]["drivers"][0]["evidence_ids"] = ["event:invented"]
+        issues = self.processor._validate_editor(value, SYMBOLS, roles)
+        self.assertTrue(any("unsupported id 'event:invented'" in issue for issue in issues))
+
+    def test_editor_summary_is_evidence_bounded_and_normalized(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        self.assertEqual(self.processor._validate_editor(value, SYMBOLS, roles), [])
+        normalized = self.processor._normalize_editor(value)
+        self.assertEqual(normalized["global"]["summary"], "Growth and policy signals are mixed.")
+        self.assertEqual(
+            normalized["global"]["summary_evidence"]["evidence_ids"],
+            [EVIDENCE_ID],
+        )
+        self.assertEqual(
+            normalized["global"]["drivers"],
+            ["Relative policy expectations favor the dollar."],
+        )
+        self.assertEqual(
+            normalized["global"]["drivers_evidence"][0]["evidence_ids"],
+            [EVIDENCE_ID],
+        )
+
+    def test_prompts_delimit_untrusted_data_and_align_policy_vocabulary(self):
+        context = {
+            "symbols": SYMBOLS,
+            "evidence": [{"evidence_id": EVIDENCE_ID, "value": {}}],
+        }
+        prompt = self.processor._role_prompt(
+            "analyst", "Assess economic evidence.", context
+        ).lower()
+        self.assertIn("<untrusted_evidence>", prompt)
+        self.assertIn("price action", prompt)
+        self.assertIn("technical analysis", prompt)
+        self.assertIn("position sizing", prompt)
+        self.assertIn("portfolio allocation", prompt)
+
+
+class IntelligenceRepairTests(unittest.TestCase):
+    @patch.object(MarketIntelligenceProcessor, "_record_attempt")
+    @patch("processors.intelligence.call_llm")
+    def test_repairs_once_and_accounts_for_both_attempts(
+        self, call_llm, record_attempt
+    ):
         processor = MarketIntelligenceProcessor()
-        context = {"symbols": ["EURUSD"], "regime": {}, "events": [], "positioning": []}
-        import hashlib, json
-        fingerprint = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
-        previous = {"payload": {"input_fingerprint": fingerprint, "assets": []}}
-        with patch.object(processor, "_context", return_value=context), \
-             patch.object(processor, "_previous", return_value=previous), \
-             patch("processors.intelligence.call_llm") as llm:
-            result = processor.process({"llm": {}, "watchlist": {"trading": []}}, "corr")
+        invalid = valid_role("analyst")
+        invalid["global"]["claims"][0]["text"] = "Price action confirms a breakout."
+        repaired = valid_role("analyst")
+        call_llm.side_effect = [llm_result(invalid), llm_result(repaired, 3, 4, 0.002)]
+
+        parsed, attempts = processor._generate_validated(
+            "analyst",
+            "prompt",
+            lambda value: processor._validate_role(
+                value, SYMBOLS, "analyst", {EVIDENCE_ID}
+            ),
+            "test-model",
+            {},
+            "11111111-1111-1111-1111-111111111111",
+        )
+
+        self.assertEqual(parsed, repaired)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(call_llm.call_count, 2)
+        self.assertEqual(record_attempt.call_count, 2)
+
+    @patch.object(MarketIntelligenceProcessor, "_record_attempt")
+    @patch("processors.intelligence.call_llm")
+    def test_failed_repair_raises_validation_failed_not_quarantine(
+        self, call_llm, record_attempt
+    ):
+        invalid = valid_role("analyst")
+        invalid["global"]["claims"][0]["text"] = "Use price action to buy EURUSD."
+        call_llm.return_value = llm_result(invalid)
+        processor = MarketIntelligenceProcessor()
+        with self.assertRaises(OutputPolicyError) as raised:
+            processor._generate_validated(
+                "analyst",
+                "prompt",
+                lambda value: processor._validate_role(
+                    value, SYMBOLS, "analyst", {EVIDENCE_ID}
+                ),
+                "test-model",
+                {},
+                "11111111-1111-1111-1111-111111111111",
+            )
+        self.assertIn("validation_failed", str(raised.exception))
+        self.assertNotIn("quarantined", str(raised.exception))
+        self.assertEqual(call_llm.call_count, 2)
+        self.assertEqual(record_attempt.call_count, 2)
+
+
+class IntelligenceDeltaTests(unittest.TestCase):
+    def setUp(self):
+        self.processor = MarketIntelligenceProcessor()
+
+    def test_delta_covers_global_and_asset_narrative_fields(self):
+        previous = {
+            "payload": {
+                "bias": "neutral",
+                "confidence": "low",
+                "summary": "Old summary.",
+                "drivers": [narrative("analyst.global.1", "Old driver.")],
+                "contradictions": [],
+                "invalidation_conditions": [],
+                "assets": [
+                    {
+                        "symbol": "EURUSD",
+                        "bias": "neutral",
+                        "confidence": "low",
+                        "summary": "Old asset summary.",
+                        "drivers": [],
+                        "contradictions": [],
+                        "invalidation_conditions": [],
+                    }
+                ],
+            }
+        }
+        edited = self.processor._normalize_editor(valid_editor())
+        delta = self.processor._delta(previous, edited)
+        self.assertTrue(delta["material_change"])
+        self.assertIn("bias", delta["global_delta"])
+        self.assertIn("confidence", delta["global_delta"])
+        self.assertIn("drivers", delta["global_delta"])
+        self.assertEqual(delta["asset_deltas"][0]["symbol"], "EURUSD")
+
+    def test_exact_same_assessment_is_no_material_change(self):
+        edited = self.processor._normalize_editor(valid_editor())
+        previous = {"payload": json.loads(json.dumps(edited))}
+        delta = self.processor._delta(previous, edited)
+        self.assertFalse(delta["material_change"])
+        self.assertEqual(delta["changed"], [])
+
+    def test_no_change_uses_no_paid_calls_and_keeps_baseline(self):
+        context = {
+            "symbols": SYMBOLS,
+            "evidence": [{"evidence_id": EVIDENCE_ID, "value": {}}],
+            "evidence_ids": [EVIDENCE_ID],
+            "opinion_ids": [EVIDENCE_ID.split(":", 1)[1]],
+            "event_ids": [],
+            "positioning_ids": [],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"symbols": SYMBOLS, "evidence": context["evidence"]},
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        previous = {
+            "opinion_id": "22222222-2222-2222-2222-222222222222",
+            "payload": {
+                "input_fingerprint": fingerprint,
+                "bias": "mixed",
+                "confidence": "moderate",
+                "assets": [],
+            },
+        }
+        with patch.object(self.processor, "_context", return_value=context), patch.object(
+            self.processor, "_previous", return_value=previous
+        ), patch("processors.intelligence.call_llm") as llm:
+            result = self.processor.process(
+                {"llm": {}, "watchlist": {"trading": []}}, "corr"
+            )
         llm.assert_not_called()
         self.assertEqual(result["processing_log"]["cost_usd"], 0.0)
+        self.assertTrue(
+            result["processing_log"]["request_metadata"]["paid_inference_skipped"]
+        )
+        self.assertEqual(
+            result["opinions"][0]["baseline_opinion_id"],
+            previous["opinion_id"],
+        )
+
+
+class IntelligencePolicyTests(unittest.TestCase):
+    def test_scanner_and_prompt_share_price_action_boundary(self):
+        findings = scan_prohibited_language(
+            {"summary": "Price action suggests a bullish economic bias."}
+        )
+        self.assertTrue(any("technical_analysis" in item for item in findings))
+
+    def test_scanner_rejects_direct_and_indirect_advice_language(self):
+        examples = [
+            "Buy EURUSD now.",
+            "You should sell gold.",
+            "Consider going long after the release.",
+            "Increase your exposure to equities.",
+            "Overweight bonds.",
+        ]
+        for example in examples:
+            with self.subTest(example=example):
+                self.assertTrue(scan_prohibited_language(example))
+
+    def test_scanner_allows_economic_exposure_and_allocation_context(self):
+        examples = [
+            "Banks reduced credit exposure during the slowdown.",
+            "Corporate capital allocation favored productive investment.",
+            "Exporters sell dollars received through normal operations.",
+        ]
+        for example in examples:
+            with self.subTest(example=example):
+                self.assertEqual(scan_prohibited_language(example), [])
+
+    def test_generation_attempt_migration_is_durable_and_retained_90_days(self):
+        migration = (
+            Path(__file__).resolve().parents[2]
+            / "db"
+            / "migrations"
+            / "011_generation_attempts.sql"
+        ).read_text()
+        self.assertIn("CREATE TABLE IF NOT EXISTS generation_attempts", migration)
+        self.assertIn("'validation_failed'", migration)
+        self.assertIn("retention_days INTEGER DEFAULT 90", migration)
 
 
 if __name__ == "__main__":

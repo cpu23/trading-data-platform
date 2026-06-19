@@ -3,7 +3,11 @@ import io
 import time
 from datetime import datetime, timezone
 
+from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
+from logging_config import get_logger
+
+logger = get_logger("collector.official_macro")
 
 
 class ConfiguredMacroCollector:
@@ -11,34 +15,98 @@ class ConfiguredMacroCollector:
 
     source_id = ""
 
+    def __init__(self):
+        self.last_result_metadata: dict = {}
+
     def collect(self, config: dict, correlation_id: str) -> list[dict]:
         source = config["collectors"][self.source_id]
-        records = []
-        for series in source.get("series", []):
-            response = make_request(
-                "GET",
-                series["url"],
-                params=series.get("params"),
-                headers=source.get("headers"),
-                correlation_id=correlation_id,
+        series_list = source.get("series", [])
+        if not series_list:
+            raise CollectorSetupRequired(
+                f"No {self.source_id.upper()} series configured",
+                source_id=self.source_id,
             )
-            response.raise_for_status()
-            records.extend(self._parse(response, series))
+        if source.get("requires_api_key") and not source.get("api_key"):
+            raise CollectorSetupRequired(
+                f"{self.source_id.upper()} API key is not configured",
+                source_id=self.source_id,
+                credential=source.get("credential_name", f"{self.source_id.upper()}_API_KEY"),
+            )
+
+        acquired_at = datetime.now(timezone.utc)
+        records = []
+        failures = []
+        empty_series = []
+        for series in series_list:
+            try:
+                params = dict(series.get("params") or {})
+                if source.get("api_key"):
+                    params.setdefault(
+                        source.get("api_key_param", "api_key"), source["api_key"]
+                    )
+                response = make_request(
+                    "GET",
+                    series["url"],
+                    params=params or None,
+                    headers=source.get("headers"),
+                    correlation_id=correlation_id,
+                )
+                response.raise_for_status()
+                parsed = self._parse(response, series, acquired_at=acquired_at)
+                if not parsed:
+                    empty_series.append(series["id"])
+                records.extend(parsed)
+            except Exception as exc:
+                failures.append({"series_id": series["id"], "error": str(exc)})
+                logger.error(
+                    "official_series_failed",
+                    source_id=self.source_id,
+                    series_id=series["id"],
+                    error=str(exc),
+                    correlation_id=correlation_id,
+                )
+
+        state = "partial" if failures or empty_series else "success"
+        if not records:
+            raise CollectorNoData(
+                f"{self.source_id.upper()} returned no observations",
+                source_id=self.source_id,
+                failed_series=failures,
+                empty_series=empty_series,
+            )
+        self.last_result_metadata = {
+            "state": state,
+            "source_id": self.source_id,
+            "series_configured": len(series_list),
+            "series_failed": failures,
+            "series_empty": empty_series,
+            "records": len(records),
+            "acquired_at": acquired_at.isoformat(),
+        }
+        logger.info(
+            "official_collection_completed",
+            correlation_id=correlation_id,
+            **self.last_result_metadata,
+        )
         return records
 
-    def _parse(self, response, series: dict) -> list[dict]:
+    def _parse(
+        self,
+        response,
+        series: dict,
+        acquired_at: datetime | None = None,
+    ) -> list[dict]:
         fmt = series.get("format", "json")
         rows = (
             list(csv.DictReader(io.StringIO(response.text)))
             if fmt == "csv"
             else self._json_rows(response.json(), series.get("records_path", []))
         )
+        acquired_at = acquired_at or datetime.now(timezone.utc)
         output = []
         for row in rows:
             try:
-                observed = datetime.fromisoformat(
-                    str(row[series["date_field"]]).replace("Z", "+00:00")
-                )
+                observed = self._parse_time(row[series["date_field"]], series)
                 if observed.tzinfo is None:
                     observed = observed.replace(tzinfo=timezone.utc)
                 value = float(row[series["value_field"]])
@@ -52,15 +120,29 @@ class ConfiguredMacroCollector:
                     "source": self.source_id,
                     "released_at": self._optional_time(row, series.get("release_field")),
                     "revision_at": self._optional_time(row, series.get("revision_field")),
+                    "acquired_at": acquired_at,
                     "metadata": {
                         "frequency": series.get("frequency"),
                         "semantic_feature": series.get("semantic_feature"),
                         "region": series.get("region"),
                         "title": series.get("title", series["id"]),
+                        "provider_series": series.get("provider_series", series["id"]),
                     },
                 }
             )
         return output
+
+    @staticmethod
+    def _parse_time(value, series):
+        text_value = str(value).strip()
+        date_format = series.get("date_format")
+        if date_format:
+            return datetime.strptime(text_value, date_format).replace(tzinfo=timezone.utc)
+        if len(text_value) == 7 and text_value[4] == "-":
+            text_value = f"{text_value}-01"
+        elif len(text_value) == 4 and text_value.isdigit():
+            text_value = f"{text_value}-01-01"
+        return datetime.fromisoformat(text_value.replace("Z", "+00:00"))
 
     @staticmethod
     def _json_rows(payload, path):
@@ -83,16 +165,43 @@ class ConfiguredMacroCollector:
         started = time.monotonic()
         series = config["collectors"][self.source_id].get("series", [])
         if not series:
-            return {"healthy": False, "message": "No series configured", "latency_ms": 0}
+            return {
+                "healthy": False,
+                "state": "setup_required",
+                "message": "No series configured",
+                "latency_ms": 0,
+            }
+        if (
+            config["collectors"][self.source_id].get("requires_api_key")
+            and not config["collectors"][self.source_id].get("api_key")
+        ):
+            return {
+                "healthy": False,
+                "state": "setup_required",
+                "message": f"{self.source_id.upper()} API key is not configured",
+                "latency_ms": 0,
+            }
         try:
-            response = make_request("GET", series[0]["url"], timeout=15)
+            source = config["collectors"][self.source_id]
+            params = dict(series[0].get("params") or {})
+            if source.get("api_key"):
+                params.setdefault(source.get("api_key_param", "api_key"), source["api_key"])
+            response = make_request(
+                "GET", series[0]["url"], params=params or None, timeout=15
+            )
             return {
                 "healthy": response.status_code < 400,
+                "state": "success" if response.status_code < 400 else "failed",
                 "message": f"HTTP {response.status_code}",
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
         except Exception as exc:
-            return {"healthy": False, "message": str(exc), "latency_ms": int((time.monotonic() - started) * 1000)}
+            return {
+                "healthy": False,
+                "state": "failed",
+                "message": str(exc),
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
 
     def get_schedule(self, config): return config["collectors"][self.source_id]["schedule"]
     def get_target_table(self): return "macro_series"

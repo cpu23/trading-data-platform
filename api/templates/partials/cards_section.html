@@ -2,46 +2,35 @@
          hx-get="/partials/cards"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  <div class="section-heading">
-    <span class="label">Watchlist</span>
-  </div>
-  {% if not briefing or not briefing.sections %}
-    <div class="empty-state">No briefing has been generated yet. Run cycle to create one.</div>
+  <div class="section-heading"><span class="label">Watchlist</span></div>
+  {% if briefing and briefing.error and not asset_cards %}
+    <div class="error-block">Watchlist assessment unavailable: {{ briefing.error }}</div>
+  {% elif not asset_cards %}
+    <div class="empty-state">No watchlist instruments configured.</div>
   {% else %}
-    {% set notes = briefing.sections.get('watchlist_notes', []) %}
-    {% if notes is not iterable or notes is string %}
-      <div class="empty-state">Watchlist data unavailable.</div>
-    {% elif notes | length == 0 %}
-      <div class="empty-state">No watchlist instruments configured.</div>
-    {% else %}
-      <div class="instruments-grid">
-        {% for note in notes %}
-          {% set price = price_map.get(note.symbol) if price_map else none %}
-          <div class="instrument-card"
-               role="button"
-               tabindex="0"
-               data-symbol="{{ note.symbol }}"
-               data-card-index="{{ loop.index0 }}">
-            <div class="instrument-header">
-              <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
-              <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
-            </div>
-            <div class="instrument-price tabular" data-live-price="{{ note.symbol }}">
-              {% if price %}
-                {{ "%.5g"|format(price.price) }}
-              {% else %}
-                —
-              {% endif %}
-            </div>
-            {% if price and price.timestamp %}
-              <div class="instrument-meta tabular" data-live-time="{{ note.symbol }}">{{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
-            {% endif %}
-            {% if note.summary %}
-              <div class="instrument-summary">{{ note.summary }}</div>
-            {% endif %}
+    <div class="instruments-grid">
+      {% for note in asset_cards %}
+        {% set price = price_map.get(note.symbol) if price_map else none %}
+        <div class="instrument-card"
+             role="button"
+             tabindex="0"
+             aria-expanded="false"
+             aria-controls="expansion-panel"
+             data-symbol="{{ note.symbol }}"
+             data-card-index="{{ loop.index0 }}">
+          <div class="instrument-header">
+            <span class="instrument-symbol tabular">{{ note.symbol }}</span>
+            <span class="bias-text bias-{{ (note.bias or 'pending') | lower }}">{{ (note.bias or 'pending') | upper }}</span>
           </div>
-        {% endfor %}
-      </div>
-    {% endif %}
+          <div class="instrument-price tabular" data-live-price="{{ note.symbol }}">
+            {% if price %}{{ "%.5g"|format(price.price) }}{% else %}—{% endif %}
+          </div>
+          <div class="instrument-meta tabular" data-live-time="{{ note.symbol }}">
+            {% if price and price.timestamp %}snapshot · {{ price.timestamp.strftime('%d %b %H:%M UTC') }}{% else %}live price unavailable{% endif %}
+          </div>
+          {% if note.summary %}<div class="instrument-summary">{{ note.summary }}</div>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
   {% endif %}
 </section>

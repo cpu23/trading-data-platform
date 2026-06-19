@@ -1,7 +1,8 @@
 {% for log in logs %}
-  <tr data-log-id="{{ log.log_id }}" data-correlation-id="{{ log.correlation_id or '' }}">
+  <tr data-log-id="{{ log.log_id }}" data-correlation-id="{{ log.correlation_id or '' }}"
+      tabindex="0" role="button" aria-expanded="false" aria-controls="log-detail-{{ log.log_id }}">
     <td>
-      <span class="status-dot {% if log.status == 'success' %}status-success{% elif log.status == 'partial' %}status-partial{% else %}status-failed{% endif %}"></span>
+      <span class="status-dot {% if log.status == 'success' %}status-success{% elif log.status in ['partial','degraded_cache','skipped','setup_required','no_data','budget_denied'] %}status-partial{% else %}status-failed{% endif %}"></span>
       {{ log.component }}
     </td>
     <td>{{ log.log_type }}</td>
@@ -10,9 +11,9 @@
     <td>{{ log.status }}</td>
     <td class="tabular">
       {% if log.log_type == 'collection' %}
-        {{ log.records_fetched or '—' }} / {{ log.records_written or '—' }}
+        {{ log.records_fetched if log.records_fetched is not none else '—' }} / {{ log.records_written if log.records_written is not none else '—' }}
       {% else %}
-        {{ log.tokens_input or '—' }} / {{ log.tokens_output or '—' }}
+        {{ log.tokens_input if log.tokens_input is not none else '—' }} / {{ log.tokens_output if log.tokens_output is not none else '—' }}
       {% endif %}
     </td>
     <td class="tabular">
@@ -23,7 +24,7 @@
       {% endif %}
     </td>
   </tr>
-  <tr class="log-detail-row" data-detail-for="{{ log.log_id }}">
+  <tr class="log-detail-row" data-detail-for="{{ log.log_id }}" id="log-detail-{{ log.log_id }}">
     <td colspan="7">
       <div class="log-detail">
         {% if log.log_type == 'collection' %}
@@ -36,7 +37,7 @@
           {% endif %}
         {% else %}
           <strong>Model:</strong> {{ log.model_used or '—' }}<br>
-          <strong>Tokens:</strong> {{ log.tokens_input or '—' }} in / {{ log.tokens_output or '—' }} out<br>
+          <strong>Tokens:</strong> {{ log.tokens_input if log.tokens_input is not none else '—' }} in / {{ log.tokens_output if log.tokens_output is not none else '—' }} out<br>
           <strong>Cost:</strong> ${{ '%.4f' | format(log.get('cost_usd')) if log.get('cost_usd') is not none else '—' }}<br>
           <hr style="border: none; border-top: 1px solid var(--hairline); margin: 8px 0;">
           {% if log.get('prompt_text') %}<strong>Prompt:</strong><br><pre style="white-space: pre-wrap; margin: 4px 0;">{{ log.get('prompt_text') }}</pre><br>{% endif %}

@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -432,6 +433,79 @@ def _get_dashboard_health() -> dict:
         }
 
 
+def _payload(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
+    return {}
+
+
+def _get_global_intelligence(config: dict) -> dict:
+    row = query_one(
+        """
+        SELECT opinion_id, created_at, published_at, direction, confidence, summary, payload
+        FROM structured_opinions
+        WHERE opinion_type = 'narrative_memory' AND lifecycle_status = 'published'
+        ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
+        """,
+        config=config,
+    )
+    if not row:
+        return {}
+    return {
+        **row,
+        "opinion_id": str(row["opinion_id"]),
+        "payload": _payload(row.get("payload")),
+    }
+
+
+def _get_asset_cards(config: dict, briefing: dict | None) -> list[dict]:
+    watchlist = config.get("watchlist", {}).get("trading", [])
+    rows = query_many(
+        """
+        SELECT DISTINCT ON (scope) opinion_id, scope, direction, confidence, summary, payload
+        FROM structured_opinions
+        WHERE opinion_type = 'asset_panel' AND lifecycle_status = 'published'
+        ORDER BY scope, published_at DESC NULLS LAST, created_at DESC
+        """,
+        config=config,
+    )
+    panels = {
+        row["scope"].split(":", 1)[-1]: {
+            **row,
+            "opinion_id": str(row["opinion_id"]),
+            "payload": _payload(row.get("payload")),
+        }
+        for row in rows
+    }
+    briefing_notes = {}
+    sections = briefing.get("sections", {}) if briefing else {}
+    if isinstance(sections, dict):
+        for note in sections.get("watchlist_notes", []) or []:
+            if isinstance(note, dict) and note.get("symbol"):
+                briefing_notes[note["symbol"]] = note
+    cards = []
+    for configured in watchlist:
+        symbol = configured["symbol"]
+        panel = panels.get(symbol, {})
+        fallback = briefing_notes.get(symbol, {})
+        cards.append({
+            "symbol": symbol,
+            "type": configured.get("type"),
+            "bias": panel.get("direction") or fallback.get("bias") or "pending",
+            "confidence": panel.get("confidence"),
+            "summary": panel.get("summary") or fallback.get("summary") or fallback.get("note"),
+            "opinion_id": panel.get("opinion_id"),
+            "payload": panel.get("payload", {}),
+        })
+    return cards
+
+
 @router.get("/")
 def dashboard(request: Request):
     config = load_config()
@@ -456,8 +530,8 @@ def dashboard(request: Request):
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
             briefing["stale_reason"] = _format_stale_reason(briefing["stale_reason"], "briefing")
-    except Exception:
-        briefing = None
+    except Exception as exc:
+        briefing = {"error": str(exc)}
 
     events_data = {}
     try:
@@ -469,6 +543,7 @@ def dashboard(request: Request):
         events_data = {"error": str(exc)}
 
     indicators = []
+    indicators_error = None
     indicators_stale = False
     indicators_stale_reason = None
     try:
@@ -489,7 +564,7 @@ def dashboard(request: Request):
             )
             indicators_stale_reason = _format_stale_reason(indicators_stale_reason, "indicators")
     except Exception as exc:
-        indicators = [{"error": str(exc)}]
+        indicators_error = str(exc)
 
     now = datetime.now(timezone.utc)
     event_context = _event_template_context(events_data, config)
@@ -511,6 +586,7 @@ def dashboard(request: Request):
         "briefing": briefing,
         "events_data": events_data,
         "indicators": indicators,
+        "indicators_error": indicators_error,
         "stale": indicators_stale,
         "stale_reason": indicators_stale_reason,
         "current_time": now,
@@ -522,6 +598,8 @@ def dashboard(request: Request):
         "budget": get_budget_status(),
         "changes": get_latest_changes(),
         "cycle_issue": _change_notice(config),
+        "global_intelligence": _get_global_intelligence(config),
+        "asset_cards": _get_asset_cards(config, briefing),
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -548,6 +626,18 @@ def partial_system_health(request: Request):
         "request": request,
         "system_health": _get_dashboard_health(),
     })
+
+
+@router.get("/partials/intelligence")
+def partial_intelligence(request: Request):
+    return _get_templates(request).TemplateResponse(
+        request,
+        "partials/intelligence_section.html",
+        {
+            "request": request,
+            "global_intelligence": _get_global_intelligence(load_config()),
+        },
+    )
 
 
 @router.get("/partials/header")
@@ -657,8 +747,8 @@ def partial_cards_symbol(request: Request, symbol: str):
     briefing = None
     try:
         briefing = get_briefing_latest()
-    except Exception:
-        briefing = None
+    except Exception as exc:
+        briefing = {"error": str(exc)}
 
     note = None
     if briefing and briefing.get("sections") and isinstance(briefing["sections"], dict):
@@ -669,6 +759,22 @@ def partial_cards_symbol(request: Request, symbol: str):
                     note = n
                     break
 
+    asset_intelligence = {}
+    panel_opinion_id = None
+    try:
+        panel = get_asset(symbol).get("panel", {})
+        asset_intelligence = panel.get("payload", {}) or {}
+        panel_opinion_id = panel.get("opinion_id")
+        if panel and not note:
+            note = {
+                "symbol": symbol,
+                "bias": panel.get("direction"),
+                "confidence": panel.get("confidence"),
+                "summary": panel.get("summary"),
+            }
+    except Exception:
+        pass
+
     if note:
         events = []
         try:
@@ -678,18 +784,13 @@ def partial_cards_symbol(request: Request, symbol: str):
                 ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
         except Exception:
             events = []
-        asset_intelligence = {}
-        try:
-            asset_intelligence = get_asset(symbol).get("panel", {}).get("payload", {})
-        except Exception:
-            pass
         return templates.TemplateResponse(request, "partials/expansion_content.html", {
             "request": request,
             "note": note,
             "price": _get_latest_prices(config).get(symbol),
             "drivers": _asset_drivers(note),
             "matched_events": _matched_asset_events(symbol, events),
-            "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
+            "opinion_id": panel_opinion_id or (briefing.get("opinion_ids", [])[-1] if briefing and briefing.get("opinion_ids") else None),
             "asset_intelligence": asset_intelligence,
         })
 
@@ -709,12 +810,13 @@ def partial_cards(request: Request):
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
             briefing["stale_reason"] = _format_stale_reason(briefing["stale_reason"], "briefing")
-    except Exception:
-        briefing = None
+    except Exception as exc:
+        briefing = {"error": str(exc)}
     return templates.TemplateResponse(request, "partials/cards_section.html", {
         "request": request,
         "briefing": briefing,
         "price_map": _get_latest_prices(config),
+        "asset_cards": _get_asset_cards(config, briefing),
     })
 
 
@@ -765,8 +867,8 @@ def partial_briefing(request: Request):
     briefing = None
     try:
         briefing = get_briefing_latest()
-    except Exception:
-        briefing = None
+    except Exception as exc:
+        briefing = {"error": str(exc)}
     return templates.TemplateResponse(request, "partials/briefing_prose.html", {
         "request": request,
         "briefing": briefing,

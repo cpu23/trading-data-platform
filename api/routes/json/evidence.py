@@ -48,7 +48,9 @@ def get_evidence(opinion_id: str):
         """
         SELECT log_id, correlation_id, processor, started_at, completed_at, status,
                model_used, tokens_input, tokens_output, cost_usd, prompt_text
-        FROM processing_log WHERE output_id = :opinion_id
+        FROM processing_log
+        WHERE output_id = CAST(:opinion_id AS UUID)
+           OR CAST(:opinion_id AS UUID) = ANY(COALESCE(output_ids, ARRAY[]::UUID[]))
         ORDER BY started_at DESC LIMIT 1
         """,
         {"opinion_id": opinion_id},
@@ -84,9 +86,27 @@ def get_evidence(opinion_id: str):
             config=config,
         )
 
+    generation_attempts = []
+    correlation_id = opinion.get("correlation_id")
+    if correlation_id:
+        generation_attempts = query_many(
+            """
+            SELECT attempt_id, stage, attempt_number, status, validation_issues,
+                   model_used, tokens_input, tokens_output, cost_usd, duration_ms,
+                   created_at
+            FROM generation_attempts
+            WHERE correlation_id = :correlation_id
+              AND processor = 'market_intelligence'
+            ORDER BY created_at, stage, attempt_number
+            """,
+            {"correlation_id": correlation_id},
+            config=config,
+        )
+
     return _json_value({
         "opinion": opinion,
         "data_inputs": data_inputs,
         "processing": processing,
+        "generation_attempts": generation_attempts,
         "records": records,
     })

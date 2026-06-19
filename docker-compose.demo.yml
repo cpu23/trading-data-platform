@@ -35,9 +35,11 @@ services:
       DASHBOARD_USER: demo
       DASHBOARD_PASSWORD: demo
       DEMO_MODE: "true"
+      REQUIRE_PERSISTENT_STATE: "1"
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
+      - demo_state:/app/state
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,6 +52,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
+      - demo_state:/app/state
       - ./api/static:/app/static:ro
       - ./api/templates:/app/templates:ro
       - ./api/routes:/app/routes:ro
@@ -61,3 +64,4 @@ services:
 
 volumes:
   demo_pgdata:
+  demo_state:

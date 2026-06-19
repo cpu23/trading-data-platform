@@ -26,7 +26,8 @@ def get_system_health():
 
     collector_sql = """
         SELECT DISTINCT ON (collector)
-            collector, started_at, status, duration_ms
+            collector, started_at, completed_at, status, duration_ms,
+            records_fetched, records_written, error_message, config_snapshot
         FROM collection_log
         ORDER BY collector, started_at DESC
     """
@@ -55,7 +56,8 @@ def get_system_health():
         today_cost = float(cost_rows[0].get("total_cost", 0) or 0)
         today_tokens = int(cost_rows[0].get("total_tokens", 0) or 0)
 
-    components = []
+    data_sources = []
+    intelligence = []
     schedule_map = {}
     quality_warn_map = {}
     try:
@@ -65,14 +67,17 @@ def get_system_health():
             for job in orchestration.get("scheduler", {}).get("jobs", [])
         }
         stream = orchestration.get("stream", {})
-        components.append({
-            "name": "live_prices",
+        data_sources.append({
+            "name": "oanda",
+            "label": "OANDA live",
             "kind": "stream",
             "last_run_at": stream.get("last_heartbeat"),
             "last_status": stream.get("status", "stopped"),
             "next_due_at": None,
             "stale": stream.get("status") not in ("connected", "simulated"),
-            "quality_warn": quality_warn_map.get("live_prices", False),
+            "quality_warn": False,
+            "acquisition_mode": "live",
+            "records_fetched": len(orchestration.get("quotes", [])),
         })
     except Exception:
         pass
@@ -95,14 +100,34 @@ def get_system_health():
     for source_id, coll_config in enabled_collectors.items():
         if not coll_config.get("enabled", True):
             continue
+        if source_id == "oanda":
+            continue
         row = collector_map.get(source_id)
         if row:
+            snapshot = row.get("config_snapshot") or {}
+            if isinstance(snapshot, str):
+                try:
+                    import json
+                    snapshot = json.loads(snapshot)
+                except (TypeError, ValueError):
+                    snapshot = {}
+            acquisition = snapshot.get("acquisition", {}) if isinstance(snapshot, dict) else {}
             threshold_hours = thresholds.get("macro_hours", 30)
             if source_id == "forex_factory":
                 threshold_hours = thresholds.get("events_hours", 8)
             stale, _ = is_stale(row["started_at"], threshold_hours)
-            components.append({
+            data_sources.append({
                 "name": source_id,
+                "label": {
+                    "forex_factory": "Calendar",
+                    "central_banks": "Central banks",
+                    "cftc": "CFTC",
+                    "fred": "FRED",
+                    "oecd": "OECD",
+                    "ecb": "ECB",
+                    "boe": "BoE",
+                    "eia": "EIA",
+                }.get(source_id, source_id.replace("_", " ").title()),
                 "kind": "collector",
                 "last_run_at": _fmt(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
@@ -110,10 +135,19 @@ def get_system_health():
                 "stale": stale,
                 "quality_warn": quality_warn_map.get(source_id, False),
                 "error_message": row.get("error_message") if row.get("status") in ("failed", "partial") else None,
+                "records_fetched": row.get("records_fetched"),
+                "records_written": row.get("records_written"),
+                "acquisition_mode": (
+                    acquisition.get("payload_source")
+                ),
+                "target_week": acquisition.get("target_week"),
+                "source_fetched_at": acquisition.get("fetched_at"),
+                "cache_age_hours": acquisition.get("cache_age_hours"),
             })
         else:
-            components.append({
+            data_sources.append({
                 "name": source_id,
+                "label": source_id.replace("_", " ").title(),
                 "kind": "collector",
                 "last_run_at": None,
                 "last_status": "never_run",
@@ -134,8 +168,13 @@ def get_system_health():
             if proc_id == "briefing":
                 threshold_hours = thresholds.get("briefing_hours", 18)
             stale, _ = is_stale(row["started_at"], threshold_hours)
-            components.append({
+            intelligence.append({
                 "name": proc_id,
+                "label": {
+                    "macro_regime": "Macro regime",
+                    "market_intelligence": "Market intelligence",
+                    "briefing": "Briefing",
+                }.get(proc_id, proc_id.replace("_", " ").title()),
                 "kind": "processor",
                 "last_run_at": _fmt(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
@@ -145,8 +184,9 @@ def get_system_health():
                 "error_message": row.get("error_message") if row.get("status") in ("failed", "partial") else None,
             })
         else:
-            components.append({
+            intelligence.append({
                 "name": proc_id,
+                "label": proc_id.replace("_", " ").title(),
                 "kind": "processor",
                 "last_run_at": None,
                 "last_status": "never_run",
@@ -155,6 +195,7 @@ def get_system_health():
                 "quality_warn": quality_warn_map.get(proc_id, False),
             })
 
+    components = data_sources + intelligence
     all_ok = all(
         not c.get("stale")
         and c["last_status"] in ("success", "connected", "simulated")
@@ -172,6 +213,8 @@ def get_system_health():
     return {
         "overall": overall,
         "components": components,
+        "data_sources": data_sources,
+        "intelligence": intelligence,
         "today_llm_cost_usd": round(today_cost, 4),
         "today_token_count": today_tokens,
         "quality": quality,

@@ -110,19 +110,11 @@ def _write_cycle_run(
         logger.error("cycle_run_write_failed", correlation_id=correlation_id, status=status, error=str(exc))
 
 
-def _run_cycle_task(correlation_id: str):
+def _run_cycle_task(correlation_id: str, config: dict):
     global _cycle_correlation_id
-    _write_cycle_run(correlation_id, "running")
     try:
-        config = _get_config()
         result = run_full_cycle(config=config, correlation_id=correlation_id)
         logger.info("cycle_completed", correlation_id=correlation_id, result=result)
-        _write_cycle_run(
-            correlation_id,
-            "completed",
-            result_status=result["status"],
-            summary=result,
-        )
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
         _write_cycle_run(correlation_id, "failed", error_message=str(exc))
@@ -147,7 +139,14 @@ def trigger_cycle(
 
     try:
         _cycle_correlation_id = correlation_id
-        background_tasks.add_task(_run_cycle_task, correlation_id)
+        config = _get_config()
+        ensure_run(
+            correlation_id,
+            config,
+            run_kind="cycle",
+            triggered_by="api",
+        )
+        background_tasks.add_task(_run_cycle_task, correlation_id, config)
     except Exception:
         _cycle_correlation_id = None
         _cycle_lock.release()
@@ -167,14 +166,20 @@ def get_cycle_status():
     }
 
 
-def _run_collector_task(source_id: str, correlation_id: str):
+def _run_collector_task(source_id: str, correlation_id: str, config: dict):
     try:
-        config = _get_config()
         result = run_collector(source_id, config=config, correlation_id=correlation_id)
         finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
+        finish_run(
+            correlation_id,
+            "failed",
+            {"collector": source_id, "error": str(exc)},
+            config,
+            str(exc),
+        )
 
 
 @app.post("/run_collector/{source_id}", status_code=202)
@@ -184,21 +189,37 @@ def trigger_collector(
     body: dict | None = Body(default=None),
 ):
     correlation_id = _correlation_id_from_body(body)
-    background_tasks.add_task(_run_collector_task, source_id, correlation_id)
+    config = _get_config()
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="collector",
+        requested_component=source_id,
+        triggered_by="api",
+    )
+    background_tasks.add_task(
+        _run_collector_task, source_id, correlation_id, config
+    )
     return {
         "job_id": correlation_id,
         "accepted_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def _run_processor_task(processor_id: str, correlation_id: str):
+def _run_processor_task(processor_id: str, correlation_id: str, config: dict):
     try:
-        config = _get_config()
         result = run_processor(processor_id, config=config, correlation_id=correlation_id)
         finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))
+        finish_run(
+            correlation_id,
+            "failed",
+            {"processor": processor_id, "error": str(exc)},
+            config,
+            str(exc),
+        )
 
 
 @app.post("/run_processor/{processor_id}", status_code=202)
@@ -208,7 +229,17 @@ def trigger_processor(
     body: dict | None = Body(default=None),
 ):
     correlation_id = _correlation_id_from_body(body)
-    background_tasks.add_task(_run_processor_task, processor_id, correlation_id)
+    config = _get_config()
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="processor",
+        requested_component=processor_id,
+        triggered_by="api",
+    )
+    background_tasks.add_task(
+        _run_processor_task, processor_id, correlation_id, config
+    )
     return {
         "job_id": correlation_id,
         "accepted_at": datetime.now(timezone.utc).isoformat(),

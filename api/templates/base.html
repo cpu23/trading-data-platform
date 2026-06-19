@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   {% if request.session.get('csrf') %}<meta name="csrf-token" content="{{ request.session.get('csrf') }}">{% endif %}
-  <title>{% block title %}Trading data{% endblock %}</title>
+  <title>{% block title %}Market intelligence{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/vendor/htmx.min.js"></script>
   <script src="/static/vendor/chart.min.js"></script>
@@ -14,7 +14,6 @@
   <div class="container">
     {% block content %}{% endblock %}
 
-    <footer class="page-footer"></footer>
   </div>
 
   <!-- Indicator modal -->
@@ -26,7 +25,7 @@
       </div>
       <div id="modal-status" class="modal-status" hidden></div>
       <div id="modal-chart-container" style="height: 400px;">
-        <canvas id="modal-chart"></canvas>
+        <canvas id="modal-chart" role="img" aria-label="Historical macroeconomic time series"></canvas>
       </div>
     </div>
   </div>

@@ -2,6 +2,10 @@
          hx-get="/partials/events"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
+  {% if events_data and events_data.error %}
+    <div class="section-heading"><span class="label">Economic calendar</span></div>
+    <div class="error-block">Calendar unavailable: {{ events_data.error }}</div>
+  {% else %}
   <details class="calendar-details">
     <summary class="section-heading">
       <span class="label calendar-title calendar-title-compact">Upcoming high-impact catalysts</span>
@@ -57,4 +61,5 @@
       {% endfor %}
     {% endif %}
   </div>
+  {% endif %}
 </section>

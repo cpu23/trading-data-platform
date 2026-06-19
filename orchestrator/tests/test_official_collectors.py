@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.cftc import CftcCollector
-from collectors.official_macro import OecdCollector
+from collectors.base import CollectorNoData, CollectorSetupRequired
+from collectors.official_macro import EiaCollector, OecdCollector
 
 
 class OfficialCollectorTests(unittest.TestCase):
@@ -26,11 +27,32 @@ class OfficialCollectorTests(unittest.TestCase):
         config = {"collectors": {"cftc": {
             "url": "https://example.test", "categories": [
                 ["dealer", "dealer_positions_long_all", "dealer_positions_short_all"]
-            ]
+            ],
+            "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
         }}}
         records = CftcCollector().collect(config, "corr")
         self.assertEqual(records[0]["net_position"], 100)
         self.assertEqual(records[0]["net_pct_open_interest"], 10)
+        self.assertEqual(records[0]["metadata"]["assets"], ["EURUSD"])
+        self.assertIn("cftc_contract_market_code", request.call_args.kwargs["params"]["$where"])
+
+    @patch("collectors.cftc.make_request")
+    def test_cftc_ignores_unmapped_contracts(self, request):
+        response = Mock()
+        response.json.return_value = [{
+            "cftc_contract_market_code": "OTHER",
+            "report_date_as_yyyy_mm_dd": "2026-06-16",
+        }]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = {"collectors": {"cftc": {
+            "url": "https://example.test",
+            "categories": [],
+            "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
+        }}}
+
+        with self.assertRaises(CollectorNoData):
+            CftcCollector().collect(config, "corr")
 
     def test_official_macro_namespaces_series_and_preserves_semantics(self):
         response = Mock()
@@ -43,6 +65,52 @@ class OfficialCollectorTests(unittest.TestCase):
         records = OecdCollector()._parse(response, series)
         self.assertEqual(records[0]["series_id"], "OECD:CLI_US")
         self.assertEqual(records[0]["metadata"]["semantic_feature"], "growth.us")
+        self.assertIn("acquired_at", records[0])
+
+    def test_official_collector_requires_configured_series(self):
+        with self.assertRaises(CollectorSetupRequired):
+            OecdCollector().collect(
+                {"collectors": {"oecd": {"series": []}}},
+                "corr",
+            )
+
+    def test_eia_requires_explicit_api_key(self):
+        config = {"collectors": {"eia": {
+            "requires_api_key": True,
+            "api_key": "",
+            "series": [{"id": "BRENT", "url": "https://example.test"}],
+        }}}
+        with self.assertRaises(CollectorSetupRequired):
+            EiaCollector().collect(config, "corr")
+
+    @patch("collectors.official_macro.make_request")
+    def test_official_collector_reports_partial_series_failure(self, request):
+        good = Mock()
+        good.raise_for_status.return_value = None
+        good.json.return_value = {"rows": [{"date": "2026-05", "value": "101.2"}]}
+        request.side_effect = [good, RuntimeError("rate limited")]
+        config = {"collectors": {"oecd": {"series": [
+            {
+                "id": "CLI_US", "url": "https://example.test/us",
+                "records_path": ["rows"], "date_field": "date",
+                "value_field": "value",
+            },
+            {
+                "id": "CLI_GB", "url": "https://example.test/gb",
+                "records_path": ["rows"], "date_field": "date",
+                "value_field": "value",
+            },
+        ]}}}
+        collector = OecdCollector()
+
+        records = collector.collect(config, "corr")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(collector.last_result_metadata["state"], "partial")
+        self.assertEqual(
+            collector.last_result_metadata["series_failed"][0]["series_id"],
+            "CLI_GB",
+        )
 
 
 if __name__ == "__main__":

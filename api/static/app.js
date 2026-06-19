@@ -14,6 +14,7 @@
   Chart.defaults.animation = false;
 
   let modalChart = null;
+  let modalReturnFocus = null;
 
   /* Modal chart ------------------------------------------------------------- */
   function setModalState(message, isError) {
@@ -28,8 +29,11 @@
     var modal = document.getElementById('indicator-modal');
     var title = document.getElementById('modal-title');
     title.textContent = label || seriesId;
+    modalReturnFocus = document.activeElement;
     modal.classList.add('active');
     modal.setAttribute('aria-hidden', 'false');
+    document.querySelector('.container').setAttribute('inert', '');
+    window.setTimeout(function () { modal.querySelector('.modal-close').focus(); }, 0);
     setModalState('Loading series...', false);
     if (modalChart) {
       modalChart.destroy();
@@ -96,10 +100,13 @@
     var modal = document.getElementById('indicator-modal');
     modal.classList.remove('active');
     modal.setAttribute('aria-hidden', 'true');
+    document.querySelector('.container').removeAttribute('inert');
     if (modalChart) {
       modalChart.destroy();
       modalChart = null;
     }
+    if (modalReturnFocus && modalReturnFocus.focus) modalReturnFocus.focus();
+    modalReturnFocus = null;
   }
 
   function initModal() {
@@ -121,6 +128,16 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && modal.classList.contains('active')) {
         closeModal();
+      } else if (e.key === 'Tab' && modal.classList.contains('active')) {
+        var focusable = modal.querySelectorAll('button,[href],[tabindex]:not([tabindex="-1"])');
+        if (!focusable.length) return;
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault(); first.focus();
+        }
       }
     });
   }
@@ -170,8 +187,14 @@
         var panel = document.getElementById('expansion-panel');
         var symbol = panel ? panel.dataset.symbol : null;
         document.querySelectorAll('.instrument-card').forEach(function (c) {
-          c.classList.toggle('expanded', c.dataset.symbol === symbol);
+          var expanded = c.dataset.symbol === symbol;
+          c.classList.toggle('expanded', expanded);
+          c.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         });
+        if (symbol && panel) {
+          panel.setAttribute('tabindex', '-1');
+          panel.focus({preventScroll:true});
+        }
       }
     });
   }
@@ -349,31 +372,57 @@
   /* Log row expand / collapse ----------------------------------------------- */
   function initLogs() {
     var expandedLogIds = new Set();
+    var detailScroll = new Map();
 
-    document.body.addEventListener('click', function (e) {
-      var row = e.target.closest('#logs-table-body tr[data-log-id]');
+    function toggleLogRow(row) {
       if (row) {
         var id = row.getAttribute('data-log-id');
         var detailRow = document.querySelector('#logs-table-body tr[data-detail-for="' + id + '"]');
         if (detailRow) {
+          var detail = detailRow.querySelector('.log-detail');
+          if (detail && detailRow.classList.contains('expanded')) detailScroll.set(id, detail.scrollTop);
           detailRow.classList.toggle('expanded');
-          if (detailRow.classList.contains('expanded')) expandedLogIds.add(id);
+          var expanded = detailRow.classList.contains('expanded');
+          row.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+          if (expanded) expandedLogIds.add(id);
           else expandedLogIds.delete(id);
         }
       }
+    }
+
+    document.body.addEventListener('click', function (e) {
+      var row = e.target.closest('#logs-table-body tr[data-log-id]');
+      if (row) toggleLogRow(row);
+    });
+    document.body.addEventListener('keydown', function (e) {
+      var row = e.target.closest('#logs-table-body tr[data-log-id]');
+      if (!row || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      toggleLogRow(row);
     });
 
     document.body.addEventListener('htmx:afterSwap', function (evt) {
       if (!evt.detail.target || evt.detail.target.id !== 'logs-table-body') return;
       expandedLogIds.forEach(function (id) {
         var detail = document.querySelector('#logs-table-body tr[data-detail-for="' + id + '"]');
-        if (detail) detail.classList.add('expanded');
+        var row = document.querySelector('#logs-table-body tr[data-log-id="' + id + '"]');
+        if (detail) {
+          detail.classList.add('expanded');
+          if (row) row.setAttribute('aria-expanded', 'true');
+          var content = detail.querySelector('.log-detail');
+          if (content) content.scrollTop = detailScroll.get(id) || 0;
+        }
       });
     });
 
     document.body.addEventListener('htmx:beforeRequest', function (evt) {
       if (!evt.detail.elt || evt.detail.elt.id !== 'logs-table-body') return;
       if (expandedLogIds.size > 0) evt.preventDefault();
+    });
+    var filterForm = document.getElementById('logs-filter-form');
+    if (filterForm) filterForm.addEventListener('change', function () {
+      expandedLogIds.clear();
+      detailScroll.clear();
     });
 
     document.body.addEventListener('click', function (e) {

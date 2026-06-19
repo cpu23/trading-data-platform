@@ -9,7 +9,7 @@
   </section>
   <section class="setup-step">
     <h2>Secure this dashboard</h2>
-    <input id="setup-password" type="password" minlength="12" placeholder="Administrator password">
+    <input id="setup-password" type="password" minlength="12" required autocomplete="new-password" placeholder="Administrator password">
   </section>
   <section class="setup-step">
     <h2>Connect intelligence</h2>
@@ -38,12 +38,20 @@
         <label><span><strong>Energy</strong><small>EIA inventories and energy fundamentals</small></span><input data-coverage="eia" type="checkbox"></label>
       </div>
     </details>
+    <details class="coverage-detail">
+      <summary>Add data credentials</summary>
+      <p class="dim">Only services you enable need credentials. Forex Factory, CFTC, OECD, ECB, BoE and central-bank feeds do not require keys.</p>
+      <label>FRED API key<input id="fred-key" type="password" autocomplete="off" placeholder="Required for US macroeconomics"></label>
+      <label>OANDA API key<input id="oanda-key" type="password" autocomplete="off" placeholder="Required for live market prices"></label>
+      <label>EIA API key<input id="eia-key" type="password" autocomplete="off" placeholder="Required if Energy is enabled"></label>
+    </details>
   </section>
   <button class="btn" id="activate-setup">Activate platform</button>
-  <p id="setup-result" class="dim"></p>
+  <p id="setup-result" class="dim" role="alert" aria-live="polite"></p>
 </main>
 <script>
 document.getElementById('activate-setup').onclick = async function () {
+  const button = this;
   const password = document.getElementById('setup-password');
   const result = document.getElementById('setup-result');
   if (!password.checkValidity()) {
@@ -61,16 +69,25 @@ document.getElementById('activate-setup').onclick = async function () {
     coverage: Object.fromEntries(
       [...document.querySelectorAll('[data-coverage]')].map(input => [input.dataset.coverage, input.checked])
     ),
-    secrets: {LLM_API_KEY: document.getElementById('llm-key').value}
+    secrets: {
+      LLM_API_KEY: document.getElementById('llm-key').value,
+      FRED_API_KEY: document.getElementById('fred-key').value,
+      OANDA_API_KEY: document.getElementById('oanda-key').value,
+      EIA_API_KEY: document.getElementById('eia-key').value
+    }
   };
-  const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  let message = 'Ready. Opening dashboard…';
-  if (!response.ok) {
+  button.disabled = true;
+  result.textContent = 'Activating…';
+  try {
+    const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const payload = await response.json().catch(() => null);
-    message = payload?.detail || 'Setup could not be activated.';
+    if (!response.ok) throw new Error(payload?.detail || 'Setup could not be activated.');
+    result.textContent = 'Ready. Opening dashboard…';
+    setTimeout(() => location.href='/', 600);
+  } catch (error) {
+    result.textContent = error.message || 'Setup could not be activated.';
+    button.disabled = false;
   }
-  result.textContent = message;
-  if (response.ok) setTimeout(() => location.href='/', 600);
 };
 </script>
 {% endblock %}

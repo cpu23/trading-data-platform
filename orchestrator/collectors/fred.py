@@ -2,6 +2,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from collectors.base import CollectorNoData, CollectorSetupRequired
 from db import query_latest
 from http_client import make_request
 from logging_config import get_logger
@@ -26,10 +27,17 @@ class FredCollector:
 
     def __init__(self):
         self._metadata_cache = {}
+        self.last_result_metadata: dict = {}
 
     def collect(self, config: dict, correlation_id: str) -> list[dict]:
         fred_config = config["collectors"]["fred"]
-        api_key = fred_config["api_key"]
+        api_key = fred_config.get("api_key", "")
+        if not api_key:
+            raise CollectorSetupRequired(
+                "FRED API key is not configured",
+                source_id=self.source_id,
+                credential="FRED_API_KEY",
+            )
         series_list = fred_config["series"]
 
         backfill_overrides = {
@@ -40,6 +48,9 @@ class FredCollector:
         }
 
         all_records: list[dict] = []
+        failures = []
+        empty_series = []
+        acquired_at = datetime.now(timezone.utc)
 
         for series_entry in series_list:
             series_id = series_entry["id"]
@@ -53,8 +64,11 @@ class FredCollector:
                     backfill_years=backfill_overrides.get(frequency, 5),
                     correlation_id=correlation_id,
                     config=config,
+                    acquired_at=acquired_at,
                 )
                 all_records.extend(records)
+                if not records:
+                    empty_series.append(series_id)
                 logger.info(
                     "series_collected",
                     action="collect_series",
@@ -63,6 +77,7 @@ class FredCollector:
                     correlation_id=correlation_id,
                 )
             except Exception as exc:
+                failures.append({"series_id": series_id, "error": str(exc)})
                 logger.error(
                     "series_collection_failed",
                     action="collect_series",
@@ -71,6 +86,27 @@ class FredCollector:
                     correlation_id=correlation_id,
                 )
 
+        if not all_records:
+            raise CollectorNoData(
+                "FRED returned no observations",
+                source_id=self.source_id,
+                failed_series=failures,
+                empty_series=empty_series,
+            )
+        self.last_result_metadata = {
+            "state": "partial" if failures or empty_series else "success",
+            "source_id": self.source_id,
+            "series_configured": len(series_list),
+            "series_failed": failures,
+            "series_empty": empty_series,
+            "records": len(all_records),
+            "acquired_at": acquired_at.isoformat(),
+        }
+        logger.info(
+            "fred_collection_completed",
+            correlation_id=correlation_id,
+            **self.last_result_metadata,
+        )
         return all_records
 
     def _collect_series(
@@ -81,6 +117,7 @@ class FredCollector:
         backfill_years: int,
         correlation_id: str,
         config: dict,
+        acquired_at: datetime,
     ) -> list[dict]:
         start_date = self._get_start_date(series_id, frequency, backfill_years, config)
 
@@ -128,6 +165,7 @@ class FredCollector:
                 "observed_at": observed_at,
                 "value": value,
                 "source": "fred",
+                "acquired_at": acquired_at,
                 "metadata": {
                     "units": metadata.get("units", ""),
                     "seasonal_adjustment": metadata.get("seasonal_adjustment", ""),
@@ -158,7 +196,22 @@ class FredCollector:
                 last_observed = latest[0]["observed_at"]
                 if isinstance(last_observed, str):
                     last_observed = datetime.fromisoformat(last_observed.replace("Z", "+00:00"))
-                return last_observed + timedelta(days=1)
+                revision_days = (
+                    config.get("collectors", {})
+                    .get("fred", {})
+                    .get(
+                        "revision_window_days",
+                        {
+                            "daily": 14,
+                            "weekly": 35,
+                            "monthly": 120,
+                            "quarterly": 550,
+                            "annual": 730,
+                        },
+                    )
+                    .get(frequency, 120)
+                )
+                return last_observed - timedelta(days=revision_days)
         except Exception as exc:
             logger.warning(
                 "latest_query_failed",
@@ -206,7 +259,14 @@ class FredCollector:
         return config["collectors"]["fred"]["schedule"]
 
     def health_check(self, config: dict) -> dict:
-        api_key = config["collectors"]["fred"]["api_key"]
+        api_key = config["collectors"]["fred"].get("api_key", "")
+        if not api_key:
+            return {
+                "healthy": False,
+                "state": "setup_required",
+                "message": "FRED_API_KEY is not set",
+                "latency_ms": 0,
+            }
         start_ms = time.monotonic() * 1000
 
         try:
@@ -226,12 +286,14 @@ class FredCollector:
             if response.status_code == 200:
                 return {
                     "healthy": True,
+                    "state": "success",
                     "message": "FRED API reachable",
                     "latency_ms": latency_ms,
                 }
             else:
                 return {
                     "healthy": False,
+                    "state": "failed",
                     "message": f"FRED API returned status {response.status_code}",
                     "latency_ms": latency_ms,
                 }
@@ -239,6 +301,7 @@ class FredCollector:
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             return {
                 "healthy": False,
+                "state": "failed",
                 "message": f"FRED API unreachable: {exc}",
                 "latency_ms": latency_ms,
             }

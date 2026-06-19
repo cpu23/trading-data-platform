@@ -4,8 +4,19 @@ from uuid import uuid4
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from db import advisory_lock
 from logging_config import get_logger
-from orchestrator import finish_run, run_collector, run_processor
+from orchestrator import (
+    DEPENDENCY_READY_STATES,
+    RUNTIME_LOCK_NAME,
+    _aggregate_stage_status,
+    _resolve_and_run_processors,
+    ensure_run,
+    finish_run,
+    get_transitive_dependents,
+    run_collector,
+    run_processor,
+)
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
@@ -13,29 +24,107 @@ _scheduler: BackgroundScheduler | None = None
 
 def _scheduled_collector(source_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
-    result = run_collector(source_id, config=config, correlation_id=correlation_id)
-    stages = {source_id: result}
-    if result["status"] in ("success", "partial"):
-        for processor_id, processor_config in config.get("processors", {}).items():
-            if not processor_config.get("enabled", False):
-                continue
-            if processor_config.get("schedule") != "after_dependency":
-                continue
-            from processors import get_processor
-            if source_id in get_processor(processor_id).get_depends_on():
-                stages[processor_id] = run_processor(
-                    processor_id, config=config, correlation_id=correlation_id
-                )
-    overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
-        "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="collector",
+        requested_component=source_id,
+        triggered_by="scheduler",
     )
-    finish_run(correlation_id, overall, {"stages": stages}, config)
+    try:
+        with advisory_lock(RUNTIME_LOCK_NAME, config) as acquired:
+            if not acquired:
+                stages = {
+                    source_id: {
+                        "collector": source_id,
+                        "status": "skipped",
+                        "error": "Another cycle or component run is already active",
+                        "correlation_id": correlation_id,
+                    }
+                }
+            else:
+                collector_result = run_collector(
+                    source_id,
+                    config=config,
+                    correlation_id=correlation_id,
+                    acquire_runtime_lock=False,
+                )
+                stages = {source_id: collector_result}
+                processor_ids = {
+                    processor_id
+                    for processor_id in get_transitive_dependents(
+                        source_id, config
+                    )
+                    if config.get("processors", {})
+                    .get(processor_id, {})
+                    .get("schedule")
+                    == "after_dependency"
+                }
+                stages.update(
+                    _resolve_and_run_processors(
+                        config=config,
+                        correlation_id=correlation_id,
+                        successful_collectors=(
+                            {source_id}
+                            if collector_result["status"]
+                            in DEPENDENCY_READY_STATES
+                            else set()
+                        ),
+                        processor_ids=processor_ids,
+                    )
+                )
+        overall = _aggregate_stage_status(stages)
+        finish_run(correlation_id, overall, {"stages": stages}, config)
+    except Exception as exc:
+        logger.exception(
+            "scheduled_collector_failed",
+            source_id=source_id,
+            correlation_id=correlation_id,
+        )
+        finish_run(
+            correlation_id,
+            "failed",
+            {"stages": {}, "error": str(exc)},
+            config,
+            str(exc),
+        )
 
 
 def _scheduled_processor(processor_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
-    result = run_processor(processor_id, config=config, correlation_id=correlation_id)
-    finish_run(correlation_id, result["status"], result, config, result.get("error"))
+    ensure_run(
+        correlation_id,
+        config,
+        run_kind="processor",
+        requested_component=processor_id,
+        triggered_by="scheduler",
+    )
+    try:
+        result = run_processor(
+            processor_id,
+            config=config,
+            correlation_id=correlation_id,
+        )
+        finish_run(
+            correlation_id,
+            result["status"],
+            result,
+            config,
+            result.get("error"),
+        )
+    except Exception as exc:
+        logger.exception(
+            "scheduled_processor_failed",
+            processor_id=processor_id,
+            correlation_id=correlation_id,
+        )
+        finish_run(
+            correlation_id,
+            "failed",
+            {"processor": processor_id, "error": str(exc)},
+            config,
+            str(exc),
+        )
 
 
 def start_scheduler(config: dict) -> None:
