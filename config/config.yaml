@@ -90,7 +90,7 @@ collectors:
     series:
       - id: CLI_US
         title: Composite leading indicator — United States
-        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/.M.LI...USA"
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/USA.M.LI.IX._Z.AA.IX._Z.H"
         params: {startPeriod: "2015-01"}
         format: csv
         date_field: TIME_PERIOD
@@ -98,19 +98,19 @@ collectors:
         frequency: monthly
         semantic_feature: growth.global
         region: US
-      - id: CLI_EA
-        title: Composite leading indicator — Euro area
-        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/.M.LI...EA20"
+      - id: CLI_DE
+        title: Composite leading indicator — Germany
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/DEU.M.LI.IX._Z.AA.IX._Z.H"
         params: {startPeriod: "2015-01"}
         format: csv
         date_field: TIME_PERIOD
         value_field: OBS_VALUE
         frequency: monthly
         semantic_feature: growth.global
-        region: EA
+        region: DE
       - id: CLI_GB
         title: Composite leading indicator — United Kingdom
-        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/.M.LI...GBR"
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/GBR.M.LI.IX._Z.AA.IX._Z.H"
         params: {startPeriod: "2015-01"}
         format: csv
         date_field: TIME_PERIOD
@@ -120,7 +120,7 @@ collectors:
         region: GB
       - id: CLI_JP
         title: Composite leading indicator — Japan
-        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/.M.LI...JPN"
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/JPN.M.LI.IX._Z.AA.IX._Z.H"
         params: {startPeriod: "2015-01"}
         format: csv
         date_field: TIME_PERIOD
@@ -201,6 +201,9 @@ collectors:
     enabled: false
     schedule: "50 6 * * *"
     freshness_hours: 36
+    headers:
+      Accept: "text/csv"
+      User-Agent: "Mozilla/5.0 (compatible; TradingDataPlatform/1.0)"
     series:
       - id: BANK_RATE
         provider_series: IUDBEDR
@@ -221,46 +224,6 @@ collectors:
         value_field: IUDBEDR
         frequency: daily
         semantic_feature: policy.uk
-        region: GB
-      - id: SONIA
-        provider_series: IUDERB6
-        title: SONIA
-        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
-        params:
-          csv.x: "yes"
-          Datefrom: "01/Jan/2015"
-          Dateto: "31/Dec/2099"
-          SeriesCodes: IUDERB6
-          CSVF: TN
-          UsingCodes: "Y"
-          VPD: "Y"
-          VFD: "N"
-        format: csv
-        date_field: DATE
-        date_format: "%d %b %Y"
-        value_field: IUDERB6
-        frequency: daily
-        semantic_feature: policy.uk
-        region: GB
-      - id: GILT_10Y
-        provider_series: IUDERB4
-        title: UK 10-year nominal yield curve
-        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
-        params:
-          csv.x: "yes"
-          Datefrom: "01/Jan/2015"
-          Dateto: "31/Dec/2099"
-          SeriesCodes: IUDERB4
-          CSVF: TN
-          UsingCodes: "Y"
-          VPD: "Y"
-          VFD: "N"
-        format: csv
-        date_field: DATE
-        date_format: "%d %b %Y"
-        value_field: IUDERB4
-        frequency: daily
-        semantic_feature: yields.uk
         region: GB
       - id: M4
         provider_series: LPMAUZI

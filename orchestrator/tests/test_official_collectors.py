@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.cftc import CftcCollector
 from collectors.base import CollectorNoData, CollectorSetupRequired
-from collectors.official_macro import EiaCollector, OecdCollector
+from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
 
 
 class OfficialCollectorTests(unittest.TestCase):
@@ -66,6 +66,47 @@ class OfficialCollectorTests(unittest.TestCase):
         self.assertEqual(records[0]["series_id"], "OECD:CLI_US")
         self.assertEqual(records[0]["metadata"]["semantic_feature"], "growth.us")
         self.assertIn("acquired_at", records[0])
+
+    def test_oecd_parses_current_sdmx_csv_shape(self):
+        response = Mock()
+        response.text = (
+            "DATAFLOW,REF_AREA,FREQ,MEASURE,UNIT_MEASURE,ACTIVITY,ADJUSTMENT,"
+            "TRANSFORMATION,TIME_HORIZ,METHODOLOGY,TIME_PERIOD,OBS_VALUE\n"
+            "OECD.SDD.STES:DSD_STES@DF_CLI(4.1),USA,M,LI,IX,_Z,AA,IX,_Z,H,"
+            "2026-04,100.12\n"
+        )
+        series = {
+            "id": "CLI_US",
+            "format": "csv",
+            "date_field": "TIME_PERIOD",
+            "value_field": "OBS_VALUE",
+            "frequency": "monthly",
+            "region": "US",
+        }
+
+        records = OecdCollector()._parse(response, series)
+
+        self.assertEqual(records[0]["series_id"], "OECD:CLI_US")
+        self.assertEqual(records[0]["value"], 100.12)
+
+    def test_boe_parses_current_iadb_csv_shape(self):
+        response = Mock()
+        response.text = "DATE,IUDBEDR\n02 Jan 2026,3.75\n"
+        series = {
+            "id": "BANK_RATE",
+            "provider_series": "IUDBEDR",
+            "format": "csv",
+            "date_field": "DATE",
+            "date_format": "%d %b %Y",
+            "value_field": "IUDBEDR",
+            "frequency": "daily",
+            "region": "GB",
+        }
+
+        records = BoeCollector()._parse(response, series)
+
+        self.assertEqual(records[0]["series_id"], "BOE:BANK_RATE")
+        self.assertEqual(records[0]["value"], 3.75)
 
     def test_official_collector_requires_configured_series(self):
         with self.assertRaises(CollectorSetupRequired):
