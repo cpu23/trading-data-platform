@@ -78,6 +78,16 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
             ),
             "partial",
         )
+        self.assertEqual(
+            _aggregate_stage_status(
+                {
+                    "fred": {"status": "success", "blocking": True},
+                    "oecd": {"status": "no_data", "blocking": False},
+                    "macro": {"status": "success", "blocking": True},
+                }
+            ),
+            "success",
+        )
 
     @patch("orchestrator.get_all_processors")
     def test_transitive_dependents_include_downstream_processors(

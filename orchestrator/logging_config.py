@@ -78,6 +78,11 @@ def setup_logging(level: str = "DEBUG", correlation_id: str | None = None):
     root_logger.handlers.clear()
     for h in handlers:
         root_logger.addHandler(h)
+    # Third-party HTTP debug logs include fully rendered query strings, which
+    # may contain API keys. Our own request logger records the endpoint without
+    # query parameters and retains the useful status/latency metadata.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     structlog.configure(
         processors=shared_processors

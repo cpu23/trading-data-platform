@@ -101,6 +101,16 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertTrue(any("invalid value" in issue for issue in issues))
         self.assertTrue(any("unsupported id" in issue for issue in issues))
 
+    def test_role_allows_asset_without_direct_evidence_claims(self):
+        value = valid_role("analyst")
+        value["assets"][0]["claims"] = []
+
+        issues = self.processor._validate_role(
+            value, SYMBOLS, "analyst", {EVIDENCE_ID}
+        )
+
+        self.assertEqual(issues, [])
+
     def test_editor_rejects_claims_not_supported_by_roles(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
         value = valid_editor()
@@ -114,6 +124,21 @@ class IntelligenceSchemaTests(unittest.TestCase):
         value["global"]["drivers"][0]["evidence_ids"] = ["event:invented"]
         issues = self.processor._validate_editor(value, SYMBOLS, roles)
         self.assertTrue(any("unsupported id 'event:invented'" in issue for issue in issues))
+
+    def test_editor_accepts_union_of_evidence_from_cited_claims(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        second_evidence = "positioning:cftc:097741:2026-06-09:dealer"
+        roles["skeptic"]["global"]["claims"][0]["evidence_ids"] = [second_evidence]
+        value = valid_editor()
+        value["global"]["summary"]["source_claim_ids"] = [
+            "analyst.global.1",
+            "skeptic.global.1",
+        ]
+        value["global"]["summary"]["evidence_ids"] = [EVIDENCE_ID, second_evidence]
+
+        issues = self.processor._validate_editor(value, SYMBOLS, roles)
+
+        self.assertEqual(issues, [])
 
     def test_editor_summary_is_evidence_bounded_and_normalized(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
@@ -133,6 +158,33 @@ class IntelligenceSchemaTests(unittest.TestCase):
             normalized["global"]["drivers_evidence"][0]["evidence_ids"],
             [EVIDENCE_ID],
         )
+
+    def test_editor_repairs_empty_evidence_and_drops_unreferenced_optional_items(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["global"]["summary"]["evidence_ids"] = []
+        value["assets"][0]["contradictions"] = [
+            {
+                "text": "Unsupported optional detail.",
+                "source_claim_ids": [],
+                "evidence_ids": [],
+            }
+        ]
+
+        issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(value["global"]["summary"]["evidence_ids"], [EVIDENCE_ID])
+        self.assertEqual(value["assets"][0]["contradictions"], [])
+
+    def test_editor_does_not_repair_unsupported_nonempty_references(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["global"]["summary"]["evidence_ids"] = ["event:invented"]
+
+        issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
+
+        self.assertTrue(any("unsupported id 'event:invented'" in issue for issue in issues))
 
     def test_prompts_delimit_untrusted_data_and_align_policy_vocabulary(self):
         context = {
@@ -201,6 +253,16 @@ class IntelligenceRepairTests(unittest.TestCase):
         self.assertNotIn("quarantined", str(raised.exception))
         self.assertEqual(call_llm.call_count, 2)
         self.assertEqual(record_attempt.call_count, 2)
+
+    def test_repair_prompt_contains_invalid_response(self):
+        prompt = MarketIntelligenceProcessor._repair_prompt(
+            "original schema",
+            '{"contradictions":[{"claim_id":"x"}]}',
+            ["missing keys: text"],
+        )
+        self.assertIn("<INVALID_JSON>", prompt)
+        self.assertIn('"claim_id":"x"', prompt)
+        self.assertIn("missing keys: text", prompt)
 
 
 class IntelligenceDeltaTests(unittest.TestCase):

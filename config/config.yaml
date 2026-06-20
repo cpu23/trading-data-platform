@@ -80,15 +80,6 @@ collectors:
       - institution: ecb
         document_type: decision
         url: "https://www.ecb.europa.eu/rss/press.html"
-      - institution: ecb
-        document_type: speech
-        url: "https://www.ecb.europa.eu/rss/speeches.html"
-      - institution: boe
-        document_type: communication
-        url: "https://www.bankofengland.co.uk/rss/news"
-      - institution: boe
-        document_type: speech
-        url: "https://www.bankofengland.co.uk/rss/speeches"
 
   oecd:
     enabled: false
@@ -338,7 +329,7 @@ collectors:
     freshness_hours: 36
     requires_api_key: true
     credential_name: EIA_API_KEY
-    api_key: ""
+    api_key: ${EIA_API_KEY}
     api_key_param: api_key
     series:
       - id: BRENT

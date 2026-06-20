@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
+from collectors.base import CollectorStateError
 from db import (
     advisory_lock,
     get_session,
@@ -111,7 +112,13 @@ def finish_run(
 def _aggregate_stage_status(results: dict[str, dict]) -> str:
     if not results:
         return "failed"
-    statuses = [result.get("status", "failed") for result in results.values()]
+    statuses = [
+        result.get("status", "failed")
+        for result in results.values()
+        if result.get("blocking", True)
+    ]
+    if not statuses:
+        return "success"
     if all(status in COMPLETE_STAGE_STATES for status in statuses):
         return "success"
     if all(status in FAILED_STAGE_STATES | {"skipped", "budget_denied"} for status in statuses):
@@ -248,6 +255,24 @@ def run_collector(
             api_calls_made = _estimate_api_calls(
                 source_id, records_fetched, config
             )
+        except CollectorStateError as exc:
+            raw_metadata = getattr(
+                locals().get("collector"), "last_result_metadata", {}
+            )
+            result_metadata = (
+                dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
+            result_metadata.update(exc.metadata)
+            status = exc.state
+            error_message = str(exc)
+            logger.warning(
+                "collector_expected_state",
+                action="run_collector",
+                collector=source_id,
+                state=status,
+                error=str(exc),
+                correlation_id=correlation_id,
+            )
         except Exception as exc:
             raw_metadata = getattr(
                 locals().get("collector"), "last_result_metadata", {}
@@ -372,6 +397,12 @@ def _run_full_cycle_unlocked(config: dict, correlation_id: str) -> dict:
         for processor_id in get_all_processors()
         if config.get("processors", {}).get(processor_id, {}).get("enabled", False)
     ]
+    required_collectors = {
+        dependency
+        for processor_id in enabled_processors
+        for dependency in get_processor(processor_id).get_depends_on()
+        if dependency in enabled_collectors
+    }
     progress = {
         "current_stage": None,
         "current_kind": None,
@@ -437,6 +468,7 @@ def _run_full_cycle_unlocked(config: dict, correlation_id: str) -> dict:
             acquire_runtime_lock=False,
         )
         collector_results[source_id] = result
+        result["blocking"] = source_id in required_collectors
         record_progress(source_id, "collector", result["status"], result)
         if result["status"] in ("success", "partial"):
             successful_collectors.add(source_id)
@@ -448,6 +480,8 @@ def _run_full_cycle_unlocked(config: dict, correlation_id: str) -> dict:
         progress_callback=record_progress,
         budget_override=budget_override,
     )
+    for result in processor_results.values():
+        result["blocking"] = True
 
     all_results = {**collector_results, **processor_results}
     overall_status = _aggregate_stage_status(all_results)

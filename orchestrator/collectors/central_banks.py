@@ -75,7 +75,9 @@ class CentralBanksCollector:
 
     @staticmethod
     def _text(item, name):
-        node = item.find(name) or item.find(f"{{http://www.w3.org/2005/Atom}}{name}")
+        node = item.find(name)
+        if node is None:
+            node = item.find(f"{{http://www.w3.org/2005/Atom}}{name}")
         return (node.text or "").strip() if node is not None else None
 
     @staticmethod

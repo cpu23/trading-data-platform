@@ -64,6 +64,8 @@ def setup_logging(level: str = "INFO"):
     root_logger.handlers.clear()
     for h in handlers:
         root_logger.addHandler(h)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     structlog.configure(
         processors=shared_processors
