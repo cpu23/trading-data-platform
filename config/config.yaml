@@ -19,6 +19,35 @@ llm:
   capability_fallback: auto
   timeout_seconds: 120
   max_retries: 3
+  intelligence_roles:
+    analyst:
+      model: openai/gpt-oss-120b
+      reasoning_effort: low
+      max_tokens: 7000
+      provider:
+        order: [WandB, Novita]
+        allow_fallbacks: true
+    skeptic:
+      model: openai/gpt-oss-120b
+      reasoning_effort: low
+      max_tokens: 7000
+      provider:
+        order: [WandB, Novita]
+        allow_fallbacks: true
+    auditor:
+      model: openai/gpt-oss-120b
+      reasoning_effort: low
+      max_tokens: 7000
+      provider:
+        order: [WandB, Novita]
+        allow_fallbacks: true
+    editor:
+      model: openai/gpt-oss-120b
+      reasoning_effort: low
+      max_tokens: 7000
+      provider:
+        order: [WandB, Novita]
+        allow_fallbacks: true
 
 timezone:
   primary:
@@ -462,6 +491,38 @@ processors:
     enabled: true
     depends_on: [macro_regime]
     schedule: after_dependency
+    asset_context:
+      EURUSD:
+        channels: [US-Eurozone relative growth, relative monetary policy, inflation expectations]
+        positioning_effects:
+          EUR: "Net long Euro supports EURUSD; net short Euro pressures EURUSD."
+      DXY:
+        channels: [broad US relative growth, Federal Reserve policy, global risk demand]
+      AUDJPY:
+        channels: [global growth and risk appetite, Australia-Japan policy differential, commodity demand]
+        positioning_effects:
+          AUD: "Net long Australian Dollar supports AUDJPY; net short pressures it."
+          JPY: "Net long Japanese Yen pressures AUDJPY; net short supports it."
+      USDJPY:
+        channels: [US-Japan policy differential, yield differential, global risk demand]
+        positioning_effects:
+          JPY: "Net long Japanese Yen pressures USDJPY; net short supports USDJPY."
+      SP500:
+        channels: [US growth, inflation and discount rates, credit conditions, systemic stress]
+      XAUUSD:
+        channels: [real-rate pressure, inflation expectations, dollar conditions, systemic stress]
+        channel_effects:
+          - "Higher real-rate pressure generally weighs on gold; lower real-rate pressure supports it."
+          - "A stronger dollar generally weighs on gold; systemic stress can support safe-haven demand."
+      XPTUSD:
+        channels: [global industrial growth, automotive demand, energy conditions, dollar conditions]
+        channel_effects:
+          - "Stronger industrial and automotive demand generally supports platinum; weaker demand pressures it."
+          - "A stronger dollar generally pressures platinum."
+      GER40:
+        channels: [Eurozone and German growth, ECB policy, credit conditions, global trade]
+      UK100:
+        channels: [UK growth and credit, BoE policy, sterling conditions, global commodity demand]
 
   macro_regime:
     enabled: true

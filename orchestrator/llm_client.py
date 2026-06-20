@@ -28,6 +28,8 @@ def call_llm(
     correlation_id: str | None = None,
     config: dict | None = None,
     reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
+    provider_preferences: dict | None = None,
 ) -> dict:
     if config is None:
         from config_loader import load_config
@@ -79,6 +81,10 @@ def call_llm(
         request_body["top_p"] = effective_top_p
     if effective_reasoning is not None:
         request_body["reasoning_effort"] = effective_reasoning
+    if max_tokens is not None:
+        request_body["max_tokens"] = int(max_tokens)
+    if provider_preferences:
+        request_body["provider"] = provider_preferences
 
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -212,6 +218,8 @@ def call_llm(
             for key in ("temperature", "top_p")
             if key in request_body
         },
+        "max_tokens": request_body.get("max_tokens"),
+        "provider_preferences": request_body.get("provider"),
     }
     result = {
         "content": content,

@@ -17,6 +17,15 @@
         {% for effort in ['low', 'medium', 'high'] %}<option value="{{ effort }}" {{ 'selected' if config.llm.reasoning_effort == effort }}>{{ effort | capitalize }}</option>{% endfor %}
       </select>
     </label>
+    {% set intelligence_profile = config.llm.get('intelligence_roles', {}).get('editor', {}) %}
+    {% if intelligence_profile %}
+      <p class="dim">Market intelligence uses an optimized role profile:
+        {{ intelligence_profile.get('model', config.llm.default_model) }}
+        · {{ intelligence_profile.get('reasoning_effort', config.llm.reasoning_effort) }} effort
+        · {{ intelligence_profile.get('provider', {}).get('order', []) | join(' → ') }}.
+        The reasoning control above remains the default for other intelligence features.
+      </p>
+    {% endif %}
     <label>Daily AI budget
       <span class="input-prefix"><span>$</span><input id="settings-budget" type="number" min="0" step="0.01" value="{{ config.budgets.daily_llm_usd }}"></span>
     </label>

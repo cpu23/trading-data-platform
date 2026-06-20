@@ -111,6 +111,76 @@ class IntelligenceSchemaTests(unittest.TestCase):
 
         self.assertEqual(issues, [])
 
+    def test_role_claim_ids_are_canonicalized_before_validation(self):
+        value = valid_role("analyst")
+        value["assets"][0]["claims"][0]["claim_id"] = "EURUSD-thesis"
+
+        issues = self.processor._validate_prepared_role(
+            value, SYMBOLS, "analyst", {EVIDENCE_ID}
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            value["assets"][0]["claims"][0]["claim_id"],
+            "analyst.asset.EURUSD.1",
+        )
+
+    def test_role_drops_positioning_not_mapped_to_asset(self):
+        value = valid_role("analyst")
+        value["assets"][0]["claims"][0]["evidence_ids"] = [
+            "positioning:cftc:other:2026-06-09:dealer"
+        ]
+
+        issues = self.processor._validate_prepared_role(
+            value,
+            SYMBOLS,
+            "analyst",
+            {EVIDENCE_ID, "positioning:cftc:other:2026-06-09:dealer"},
+            {"EURUSD": [EVIDENCE_ID]},
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(value["assets"][0]["claims"], [])
+
+    def test_role_normalizes_description_claim_shape(self):
+        value = valid_role("analyst")
+        value["assets"][0]["contradictions"] = [
+            {
+                "contradiction_id": "x",
+                "description": "Evidence points in opposite directions.",
+                "evidence_ids": [EVIDENCE_ID],
+            }
+        ]
+
+        issues = self.processor._validate_prepared_role(
+            value, SYMBOLS, "analyst", {EVIDENCE_ID}
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            value["assets"][0]["contradictions"][0]["text"],
+            "Evidence points in opposite directions.",
+        )
+
+    def test_role_normalizes_claim_reference_contradiction(self):
+        value = valid_role("analyst")
+        claim_id = value["assets"][0]["claims"][0]["claim_id"]
+        value["assets"][0]["contradictions"] = [
+            {
+                "contradiction_id": "x",
+                "claim_ids": [claim_id],
+            }
+        ]
+
+        issues = self.processor._validate_prepared_role(
+            value, SYMBOLS, "analyst", {EVIDENCE_ID}
+        )
+
+        self.assertEqual(issues, [])
+        contradiction = value["assets"][0]["contradictions"][0]
+        self.assertIn("conflicting economic pressures", contradiction["text"])
+        self.assertEqual(contradiction["evidence_ids"], [EVIDENCE_ID])
+
     def test_editor_rejects_claims_not_supported_by_roles(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
         value = valid_editor()
@@ -184,7 +254,26 @@ class IntelligenceSchemaTests(unittest.TestCase):
 
         issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
 
-        self.assertTrue(any("unsupported id 'event:invented'" in issue for issue in issues))
+        self.assertEqual(issues, [])
+        self.assertEqual(value["global"]["summary"]["evidence_ids"], [EVIDENCE_ID])
+
+    def test_editor_fills_sparse_asset_summary_from_global_claim(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        for role_value in roles.values():
+            role_value["assets"][0]["claims"] = []
+        value = valid_editor()
+        value["assets"][0]["summary"] = {
+            "text": "",
+            "source_claim_ids": [],
+            "evidence_ids": [],
+        }
+
+        issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(value["assets"][0]["bias"], "neutral")
+        self.assertEqual(value["assets"][0]["confidence"], "low")
+        self.assertIn("Insufficient direct evidence", value["assets"][0]["summary"]["text"])
 
     def test_prompts_delimit_untrusted_data_and_align_policy_vocabulary(self):
         context = {
@@ -199,6 +288,32 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertIn("technical analysis", prompt)
         self.assertIn("position sizing", prompt)
         self.assertIn("portfolio allocation", prompt)
+        self.assertIn("at most 2 claims", prompt)
+
+    def test_stage_profile_supports_role_specific_model_and_provider(self):
+        config = {
+            "llm": {
+                "intelligence_roles": {
+                    "skeptic": {
+                        "model": "openai/gpt-oss-120b",
+                        "reasoning_effort": "medium",
+                        "max_tokens": 2400,
+                        "provider": {
+                            "order": ["WandB"],
+                            "allow_fallbacks": False,
+                        },
+                    }
+                }
+            }
+        }
+
+        profile = self.processor._stage_profile(config, "skeptic", "fallback")
+
+        self.assertEqual(profile["model"], "openai/gpt-oss-120b")
+        self.assertEqual(profile["call_options"]["max_tokens"], 2400)
+        self.assertEqual(
+            profile["call_options"]["provider_preferences"]["order"], ["WandB"]
+        )
 
 
 class IntelligenceRepairTests(unittest.TestCase):

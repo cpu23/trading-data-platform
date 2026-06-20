@@ -94,6 +94,29 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(result["usage"]["total_tokens"], 18)
 
     @patch("llm_client.make_request")
+    def test_sends_output_cap_and_provider_preferences(self, request):
+        request.return_value = _response()
+        config = {
+            "llm": {
+                "base_url": "https://openrouter.ai/api/v1",
+                "default_model": "openai/gpt-oss-120b",
+            }
+        }
+        provider = {"order": ["WandB"], "allow_fallbacks": False}
+
+        result = call_llm(
+            "hello",
+            config=config,
+            max_tokens=2400,
+            provider_preferences=provider,
+        )
+
+        body = request.call_args.kwargs["json_body"]
+        self.assertEqual(body["max_tokens"], 2400)
+        self.assertEqual(body["provider"], provider)
+        self.assertEqual(result["request_metadata"]["max_tokens"], 2400)
+
+    @patch("llm_client.make_request")
     def test_reasoning_falls_back_only_for_explicit_unsupported_parameter(self, request):
         request.side_effect = [
             _response(
