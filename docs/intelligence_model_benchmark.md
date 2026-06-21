@@ -18,9 +18,15 @@ Two final directionally constrained trials completed in 73 and 72 seconds with
 no repairs. Cost was $0.00181 and $0.00193. A later pair completed in 79 and 93
 seconds after stronger economic-direction prompts; both published successfully.
 
-The deployed production verification completed on 2026-06-20 in 86.4 seconds.
-All four roles validated on their first attempt through W&B, total cost was
-$0.00207, and the 11-opinion snapshot published atomically.
+The initial deployed production verification completed on 2026-06-20 in 86.4
+seconds. All four roles validated on their first attempt through W&B, total
+cost was $0.00207, and the 11-opinion snapshot published atomically.
+
+A final forced production-quality run on 2026-06-21 completed in 107 seconds
+and cost $0.00217. It exercised stricter causal-direction, participant-category,
+claim-scope, and evidence-lineage contracts. One auditor repair was required;
+the editor validated on its first attempt and the complete 11-opinion snapshot
+published successfully.
 
 ## Comparison
 
@@ -43,5 +49,8 @@ $0.00207, and the 11-opinion snapshot published atomically.
 - Derived editor evidence lineage deterministically.
 - Dropped unsupported optional narratives.
 - Added safe low-confidence summaries for genuinely sparse assets.
+- Prevented global narratives from citing asset claims and vice versa.
+- Limited each positioning claim to one participant category.
+- Dropped optional prose when any cited source claim is invalid.
 
 The benchmark harness is `orchestrator/benchmark_intelligence.py`.

@@ -1,5 +1,10 @@
 # Trading Data Infrastructure — Architecture Document
 
+> Historical foundation document. Several items described as future work here
+> are now implemented, and authentication, storage, source, and processor
+> contracts have changed. For current behavior, use
+> [Current Architecture and Operations](current-architecture-and-operations.md).
+
 **Version:** 1.0
 **Purpose:** Modular data platform for discretionary trading context and investment research
 **Operator:** Solo trader, local hardware

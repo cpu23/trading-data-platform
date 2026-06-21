@@ -1,5 +1,11 @@
 # Phase 2 — Dashboard and API
 
+> Historical design record. This document predates session authentication,
+> onboarding, responsive layouts, atomic intelligence publishing, expanded
+> collectors, server-side budgets, and current dashboard navigation. For the
+> deployed system, use
+> [Current Architecture and Operations](current-architecture-and-operations.md).
+
 **Version:** 1.0
 **Status:** Ready for implementation
 **Predecessor:** Phase 1 (data pipeline) — complete

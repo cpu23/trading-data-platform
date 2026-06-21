@@ -6,287 +6,251 @@
 [![TimescaleDB](https://img.shields.io/badge/TimescaleDB-FDB515?logo=postgresql&logoColor=111827)](https://www.timescale.com/)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
-A local-first market intelligence platform that collects macroeconomic,
-economic-calendar, and price data; runs dependency-aware analytical processors;
-and presents traceable daily market context through a FastAPI and HTMX
+A local-first market-intelligence platform for collecting free macroeconomic,
+policy, positioning, energy, calendar, and live market data. It publishes
+evidence-linked economic assessments through a restrained FastAPI and HTMX
 dashboard.
 
-This public-safe repository demonstrates the platform architecture, collectors,
-processors, API, database schema, operational views, and dashboard. It excludes
-credentials, generated logs, private databases, proprietary research, and
-trading decisions.
+The platform assesses markets. It does not recommend trades, entries, exits,
+stops, targets, sizing, or allocation.
 
 ![Trading dashboard](docs/assets/dashboard-full-page.png)
 
-## Why This Project Exists
+## What It Does
 
-Market context often lives across unrelated websites, spreadsheets, API
-responses, and manually written notes. This platform turns those inputs into a
-repeatable data workflow:
+- Collects FRED, CFTC COT, central-bank communications, OECD, ECB, BoE, EIA,
+  and weekly Forex Factory calendar data.
+- Maintains an OANDA live-price stream independently of collection cycles.
+- Produces macro-regime, daily-briefing, and per-asset market-intelligence
+  snapshots.
+- Runs analyst, skeptic, auditor, and editor roles with strict schemas,
+  evidence lineage, policy scanning, retry accounting, and atomic publishing.
+- Keeps the previous published snapshot visible while a cycle is running.
+- Shows current intelligence, cycle changes, watchlist history, source
+  freshness, logs, costs, and failures without a permanent sidebar.
+- Supports secure first-run setup, session login, resumable configuration, and
+  progressively disclosed settings.
 
-1. Collect and normalise source data.
-2. Store raw observations separately from derived analysis.
-3. Run processors only when their dependencies have succeeded.
-4. Record lineage, status, duration, model usage, and cost.
-5. Present the latest context and operational health in one dashboard.
+## Safety Boundary
 
-The platform is decision support, not a signal or execution engine. Analytical
-outputs provide context for human review and do not produce trade calls,
-entries, or position-sizing instructions.
+AI output is limited to economics, fundamentals, monetary and fiscal policy,
+institutional positioning, energy, stress, and identifiable catalysts.
 
-## Architecture
+Every generated output is:
+
+1. Parsed against a strict structured schema.
+2. Checked for prohibited advisory and technical-analysis language.
+3. Checked against supplied evidence and asset-specific economic channels.
+4. Repaired at most once when validation fails.
+5. Published only as part of a complete validated snapshot.
+
+Invalid output never replaces the last published dashboard state.
+
+## Current Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Sources["External Data Sources"]
-        FRED["FRED macro data"]
-        Calendar["Economic calendar"]
-        OANDA["OANDA price snapshots"]
-        LLM["OpenRouter LLM"]
-    end
+    Sources["FRED · CFTC · central banks · OECD · ECB · BoE · EIA · calendar"]
+    Stream["OANDA live stream"]
+    Collectors["Isolated collectors"]
+    Cycle["Dependency-aware cycle"]
+    Processors["Regime · briefing · four-role intelligence"]
+    DB["PostgreSQL + TimescaleDB"]
+    API["FastAPI JSON + HTMX"]
+    UI["Dashboard · assets · settings · logs · quality"]
 
-    subgraph Orchestration["Collection and Processing"]
-        Collectors["Normalising collectors"]
-        Cycle["Dependency-aware cycle runner"]
-        Regime["Macro regime processor"]
-        Events["Event impact processor"]
-        Briefing["Daily briefing processor"]
-    end
-
-    subgraph Storage["PostgreSQL and TimescaleDB"]
-        Raw["Raw time-series and events"]
-        Derived["Derived intelligence"]
-        Operations["Run history, logs, costs"]
-    end
-
-    subgraph Delivery["Delivery Layer"]
-        API["FastAPI JSON API"]
-        Dashboard["HTMX dashboard"]
-        Health["Health and logs views"]
-    end
-
-    FRED --> Collectors
-    Calendar --> Collectors
-    OANDA --> Collectors
-    Collectors --> Raw
-    Collectors --> Cycle
-
-    Cycle --> Regime
-    Cycle --> Events
-    Regime --> Briefing
-    LLM --> Regime
-    LLM --> Events
-    LLM --> Briefing
-
-    Regime --> Derived
-    Events --> Derived
-    Briefing --> Derived
-    Cycle --> Operations
-
-    Raw --> API
-    Derived --> API
-    Operations --> API
-    API --> Dashboard
-    API --> Health
+    Sources --> Collectors --> DB
+    Collectors --> Cycle --> Processors --> DB
+    Stream --> API
+    DB --> API --> UI
 ```
 
-Every triggered cycle receives a correlation ID that connects collector runs,
-processor runs, operational logs, and cycle status. This makes failures and
-derived outputs inspectable without mixing raw source data with analysis.
+Collectors fail independently. A complete cycle stages its processor outputs
+and publishes regime, briefing, asset assessments, narrative memory, and delta
+atomically. Correlation IDs connect cycle records, collector logs, processor
+logs, generation attempts, evidence, costs, and published opinions.
 
-## Engineering Highlights
-
-- **Configuration-driven collectors:** FRED macro series, economic-calendar
-  events, OANDA price snapshots, and their intended schedules are defined in
-  YAML rather than hard-coded.
-- **Dependency-aware processing:** processors run only after their required
-  collectors or upstream processors succeed.
-- **Traceable LLM usage:** processing logs capture model, prompt version, token
-  usage, cost, duration, status, and errors.
-- **Resilient collection:** retries, upserts, structured logging, source payload
-  caching, and stale-cache fallback reduce avoidable failures.
-- **Time-series storage:** PostgreSQL with TimescaleDB stores macro observations
-  and market snapshots as hypertables.
-- **Operational visibility:** health, freshness, cycle status, logs, and daily
-  LLM spend are available through both the API and dashboard.
-- **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
-  share the same stored data without coupling collection to presentation.
-
-## Dashboard
-
-The dashboard is designed as a trader-facing morning context view rather than a
-signal engine. It includes:
-
-- Source and processor health with freshness indicators
-- Current macro regime and supporting indicators
-- Watchlist cards with price snapshots, context, and matched catalysts
-- Upcoming high-impact economic events
-- Daily briefing and analytical summaries
-- Manual cycle controls with live status
-- A searchable operational logs view
-
-![System logs](docs/assets/system-logs-full-page.png)
-
-## API Surface
-
-FastAPI exposes JSON endpoints for:
-
-- Current and historical macro regimes
-- Macro dashboard data and individual series
-- Upcoming and recent economic events
-- Latest and dated daily briefings
-- Watchlist context and structured opinions
-- System health, logs, and cycle status
-- Manually triggered collectors, processors, and full cycles
-
-When the API service is running, interactive OpenAPI documentation is available
-at `/docs`.
-
-## Data Model
-
-The database keeps responsibilities explicit:
-
-| Layer | Tables | Purpose |
-| --- | --- | --- |
-| Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache` | Normalised source observations and cached upstream payloads |
-| Derived | `regime_classifications`, `structured_opinions`, `daily_briefings` | Versioned analytical outputs |
-| Operations | `collection_log`, `processing_log`, `cycle_runs` | Status, lineage, errors, duration, token usage, and cost |
+See [Current Architecture and Operations](docs/current-architecture-and-operations.md)
+for the detailed contracts.
 
 ## Quick Start
 
-For a populated, credential-free portfolio demo:
+### Requirements
 
-```bash
-docker compose -f docker-compose.demo.yml up --build
-# Open http://127.0.0.1:8001 and sign in with demo / demo
-```
+- Docker with Compose v2
+- A FRED API key
+- An API key for an OpenAI-compatible endpoint
+- An EIA API key for the energy pack
+- Optional OANDA practice/live token for streaming prices
 
-The demo seeds deterministic fictional analysis, linked operational runs, and
-an in-memory simulated quote stream. It makes no external or paid API calls.
-
-### Prerequisites
-
-- Docker and Docker Compose v2
-- A free [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html)
-- An OpenRouter API key for analytical processors
-- Optional: an OANDA personal access token for watchlist price snapshots
-
-### Start The Platform
+### Start a private installation
 
 ```bash
 cp .env.example .env
-# Add your API keys and replace the example passwords.
-docker compose up -d
+# Set database bootstrap values and any credentials you want supplied by env.
+docker compose up -d --build
 ```
 
-Docker Compose starts:
+Open `http://127.0.0.1:8001`.
 
-- PostgreSQL with TimescaleDB
-- The collection and processing orchestrator
-- The FastAPI JSON API and dashboard
+On first launch, choose **Explore Demo** or **Set Up My Data**. Setup guides
+administrator creation, endpoint testing, watchlist selection, source
+coverage, credentials, reasoning effort, budget, and the first analysis.
 
-The dashboard is exposed at `http://127.0.0.1:8001` by default.
+Credentials entered during setup are stored in the private Docker state volume
+with `0600` file permissions. Saved secrets are never returned to the browser.
 
-### Run And Inspect Collectors
+### Demo
+
+```bash
+docker compose -f docker-compose.demo.yml up --build
+```
+
+Open `http://127.0.0.1:8001`. The demo uses deterministic fictional data,
+requires no external credentials, and makes no paid API calls.
+
+## AI Configuration
+
+The operator default model is:
+
+```text
+deepseek/deepseek-v4-flash
+```
+
+The default reasoning effort is `high` for general intelligence features.
+
+Market intelligence uses an optimized role profile:
+
+```text
+openai/gpt-oss-120b
+reasoning: low
+provider order: WandB → Novita
+```
+
+Role profiles are configuration-driven and can be replaced independently.
+The selected profile typically completes in roughly 70–110 seconds and costs
+about $0.002 per paid market-intelligence run on the observed workload. See
+[Market Intelligence Model Benchmark](docs/intelligence_model_benchmark.md).
+
+## Data Acquisition
+
+| Source | Mode | Notes |
+| --- | --- | --- |
+| FRED | scheduled/on demand | US growth, inflation, rates, labor, dollar, stress |
+| Forex Factory | weekly immutable cache | Live fetch on the first run for a week; cached thereafter |
+| CFTC COT | weekly | Participant positioning mapped only to configured assets |
+| Central banks | scheduled | Selected Fed and ECB decisions, communications, and speeches |
+| OECD | daily collection | Regional composite leading indicators |
+| ECB | daily collection | Rates, €STR, systemic stress, credit, and yields |
+| BoE | daily collection | Bank Rate, curves, money, credit, and lending |
+| EIA | daily collection | Oil prices, petroleum inventories, and gas storage |
+| OANDA | continuous stream | Not fetched during collection cycles |
+
+The dashboard identifies the calendar payload as live, cached, or stale-cache.
+Freshness checks are frequency and schedule aware.
+
+## Running a Cycle
+
+From the dashboard, use **Run cycle**, or run:
 
 ```bash
 docker compose exec orchestrator python cli.py collect --all
-docker compose exec orchestrator python cli.py status
-docker compose exec orchestrator python cli.py health
-docker compose logs orchestrator
 ```
 
-Additional collector commands:
+Useful operator commands:
 
 ```bash
-docker compose exec orchestrator python cli.py collect fred
-docker compose exec orchestrator python cli.py collect oanda
-docker compose exec orchestrator python cli.py db-check
+docker compose exec orchestrator python cli.py status
+docker compose exec orchestrator python cli.py health
+docker compose exec orchestrator python cli.py collect central_banks
+docker compose exec orchestrator python cli.py process market_intelligence
+docker compose logs -f orchestrator
 ```
 
-## Local Verification
+A normal full cycle includes enabled collectors followed by macro regime,
+briefing, and market intelligence. OANDA continues streaming separately.
+Unchanged intelligence inputs bypass paid inference.
 
-The repository uses locked `uv` environments for the API and orchestrator.
+## Dashboard Surfaces
+
+- `/` — current regime, since-last-cycle delta, source state, watchlist, and
+  compact intelligence
+- `/assets/{symbol}` — sparse asset history and evidence
+- `/settings` — endpoint, model, reasoning, budget, credentials, coverage, and
+  security information
+- `/logs` — run inspector and detailed collection/processing history
+- `/quality` — freshness, gaps, duplicates, and anomaly checks
+- `/docs` — interactive JSON API documentation
+- `/api/meta/build` — deployed commit, build time, and state readiness metadata
+
+Benchmark runs remain queryable for audit but are hidden from normal operator
+history unless explicitly requested through the API.
+
+## Security and Deployment
+
+- Session-based administrator authentication after activation
+- Same-origin and CSRF protection for state-changing requests
+- Trusted-host enforcement
+- Private `0600` credentials, operator profile, and session secret
+- Secret redaction: credentials are not returned or written to application logs
+- Setup routes lock after activation
+- Persistent-state and activation readiness checks
+
+Compose binds the dashboard and database to loopback by default. For LAN or
+Tailscale access, explicitly configure trusted hosts and your reverse
+proxy/network boundary; the project does not automatically expose or configure
+Tailscale.
+
+## Verification
+
+The CI-equivalent local checks are:
 
 ```bash
 python3 -m compileall -q -x '/\.venv/' api orchestrator
+
 cd orchestrator
 uv sync --frozen
 uv run python -m unittest discover -s tests -v
+
+cd ../api
+uv sync --frozen
+STATE_DIR=/tmp/trading-api-ci-state \
+CONFIG_DIR=../config \
+DB_USER=ci DB_PASSWORD=ci \
+FRED_API_KEY=ci OPENROUTER_API_KEY=ci \
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash OANDA_API_KEY=ci \
+DASHBOARD_USER=ci DASHBOARD_PASSWORD=ci \
+uv run python -c "import main; assert main.app.title == 'Trading Data API'"
+
 cd ..
+cp .env.example .env
 docker compose config --quiet
+docker compose -f docker-compose.demo.yml config --quiet
 ```
 
-The GitHub Actions workflow runs compilation, unit tests, Docker Compose
-validation, and a tracked-file secret scan on every push and pull request.
+GitHub Actions runs Python compilation, locked-environment tests, API import
+verification, both Compose validations, and a tracked-file secret scan.
 
-## Project Structure
+## Repository Layout
 
 ```text
 .
-├── api/                    # FastAPI JSON routes, HTMX views, templates, assets
-├── config/                 # Collectors, processors, models, schedules, dashboard
-├── db/
-│   ├── init/               # Initial TimescaleDB and PostgreSQL schema
-│   └── migrations/         # Incremental schema changes
-├── docs/                   # Architecture notes and dashboard design decisions
+├── api/                 FastAPI routes, authentication, templates, static UI
+├── config/              Sources, schedules, features, models, watchlist
+├── db/                  Initial schema, migrations, demo seed
+├── docs/                Current operations, benchmark, historical design docs
 ├── orchestrator/
-│   ├── collectors/         # FRED, economic-calendar, and OANDA collectors
-│   ├── processors/         # Regime, event-impact, and briefing processors
-│   ├── tests/              # Focused collector and processor unit tests
-│   ├── cli.py              # Operator commands
-│   └── orchestrator.py     # Dependency-aware cycle execution
-├── prompts/                # Versioned public-safe analytical prompt templates
-└── docker-compose.yml      # Database, orchestrator, and API services
+│   ├── collectors/      Isolated source adapters
+│   ├── processors/      Regime, briefing, policy, and intelligence pipeline
+│   ├── tests/           Collector, schema, policy, runtime, and failure tests
+│   └── cli.py           Operator commands
+├── prompts/             Versioned economics-only prompt templates
+└── docker-compose.yml
 ```
-
-## Design Decisions
-
-**Why separate raw and derived data?**
-
-Source observations remain inspectable even when analytical logic changes.
-Derived outputs can be regenerated and reviewed without losing provenance.
-
-**Why a small custom orchestrator?**
-
-The workload is local-first and operated by one user. A compact dependency
-runner keeps execution understandable without introducing a distributed
-workflow platform before it is needed.
-
-**Why server-rendered HTMX views?**
-
-The dashboard prioritises operational clarity and low maintenance over a large
-frontend application. JSON routes remain available for other clients.
-
-**Why keep humans responsible for decisions?**
-
-LLM outputs are useful for synthesis and context, but they can be incomplete or
-wrong. The system records evidence and operational metadata while leaving
-interpretation and decisions with the user.
-
-## Roadmap
-
-- Synthetic demo mode requiring no external API credentials
-- Persistent schedule runner for the configured collection and processing times
-- Historical regime timeline and macro comparison views
-- Per-claim evidence and data-lineage inspection
-- Expanded API, orchestration, and database integration tests
-- Data-quality checks for freshness, gaps, duplicates, and anomalies
-- Server-side budgets and rate limits for analytical processing
-- Explicit migration tooling and TimescaleDB retention policies
 
 ## Public Boundary
 
-This repository is intentionally public-safe. It does not include:
-
-- Credentials, `.env` files, or API tokens
-- Local databases, generated logs, or private briefings
-- Proprietary trading research or strategy logic
-- Trade calls, execution instructions, or trading decisions
-
-The screenshots are curated examples of the presentation layer.
-
-## Suggested Repository Topics
-
-`trading`, `market-data`, `data-engineering`, `timescaledb`, `fastapi`,
-`htmx`, `docker`, `llm-observability`
+This repository contains public-safe application code, configuration examples,
+schemas, tests, and deterministic demo fixtures. It excludes real credentials,
+private databases, generated logs, proprietary research, and trading
+decisions.
