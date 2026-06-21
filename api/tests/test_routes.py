@@ -13,6 +13,11 @@ os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
 os.environ["LEGACY_BASIC_AUTH"] = "true"
 
+# Discovery may import auth in an earlier test module. Keep these legacy-route
+# tests independent from any mounted activation state.
+_setup_complete_patcher = patch("auth.setup_complete", return_value=False)
+_setup_complete_patcher.start()
+
 # ── Minimal config that every route handler can consume ─────────────────────
 MOCK_CONFIG = {
     "logging": {"level": "INFO"},
@@ -70,7 +75,8 @@ class TestSystemRoutes(unittest.TestCase):
 
     @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
     @patch("routes.json.system.query_many", return_value=[])
-    def test_health_returns_200(self, _mock_qm, _mock_config):
+    @patch("routes.json.system.httpx.get", side_effect=RuntimeError("offline"))
+    def test_health_returns_200(self, _mock_http, _mock_qm, _mock_config):
         """GET /api/system/health with empty DB should return 200 + 'overall' key."""
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -95,6 +101,44 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIn("logs", data)
         self.assertIsInstance(data["logs"], list)
         self.assertIn("limit", data)
+
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_logs_hide_benchmark_runs_by_default(self, query_many, _mock_config):
+        resp = client.get("/api/system/logs", headers=AUTH)
+        self.assertEqual(resp.status_code, 200)
+        sql = query_many.call_args.args[0]
+        self.assertIn("cr.triggered_by = 'benchmark'", sql)
+
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_logs_can_include_benchmark_runs_for_audit(self, query_many, _mock_config):
+        resp = client.get(
+            "/api/system/logs?include_internal=true",
+            headers=AUTH,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn(
+            "cr.triggered_by = 'benchmark'",
+            query_many.call_args.args[0],
+        )
+
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_recent_runs_hide_benchmarks_by_default(self, query_many, _mock_config):
+        resp = client.get("/api/system/runs", headers=AUTH)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("triggered_by <> 'benchmark'", query_many.call_args.args[0])
+
+    @patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_recent_runs_can_include_internal_runs(self, query_many, _mock_config):
+        resp = client.get(
+            "/api/system/runs?include_internal=true",
+            headers=AUTH,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("triggered_by <> 'benchmark'", query_many.call_args.args[0])
 
 
 class TestRegimeRoutes(unittest.TestCase):

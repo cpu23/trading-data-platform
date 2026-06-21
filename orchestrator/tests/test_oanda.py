@@ -25,6 +25,19 @@ class OandaCollectorTests(unittest.TestCase):
         self.assertEqual(stream.quotes, {})
         self.assertIsNone(stream._thread)
 
+    def test_disabled_oanda_source_does_not_start_live_stream(self):
+        stream = QuoteStream()
+
+        stream.start({
+            "demo": {"enabled": False},
+            "collectors": {
+                "oanda": {"enabled": False, "stream_enabled": True}
+            },
+        })
+
+        self.assertEqual(stream.state["status"], "disabled")
+        self.assertIsNone(stream._thread)
+
     def test_parse_oanda_nanosecond_timestamp_as_utc(self):
         collector = OandaCollector()
 

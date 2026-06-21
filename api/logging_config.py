@@ -61,6 +61,8 @@ def setup_logging(level: str = "INFO"):
 
     root_logger = logging.getLogger()
     root_logger.setLevel(stdlib_level)
+    for existing_handler in root_logger.handlers:
+        existing_handler.close()
     root_logger.handlers.clear()
     for h in handlers:
         root_logger.addHandler(h)

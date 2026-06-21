@@ -232,6 +232,7 @@ def get_system_logs(
     status: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=500),
     include_detail: bool = Query(default=False),
+    include_internal: bool = Query(default=False),
     from_date: datetime | None = Query(default=None, alias="from"),
     correlation_id: str = Query(default=""),
 ):
@@ -258,6 +259,22 @@ def get_system_logs(
 
     where_clauses_collector = []
     where_clauses_processor = []
+
+    if not include_internal:
+        where_clauses_collector.append(
+            "NOT EXISTS ("
+            "SELECT 1 FROM cycle_runs cr "
+            "WHERE cr.correlation_id = collection_log.correlation_id "
+            "AND cr.triggered_by = 'benchmark'"
+            ")"
+        )
+        where_clauses_processor.append(
+            "NOT EXISTS ("
+            "SELECT 1 FROM cycle_runs cr "
+            "WHERE cr.correlation_id = processing_log.correlation_id "
+            "AND cr.triggered_by = 'benchmark'"
+            ")"
+        )
 
     if component:
         where_clauses_collector.append("collector LIKE :comp_filter")
@@ -348,9 +365,13 @@ def _run_payload(row: dict) -> dict:
 
 
 @router.get("/system/runs")
-def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
+def get_system_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    include_internal: bool = Query(default=False),
+):
+    where = "" if include_internal else "WHERE triggered_by <> 'benchmark'"
     rows = query_many(
-        "SELECT * FROM cycle_runs ORDER BY started_at DESC LIMIT :limit",
+        f"SELECT * FROM cycle_runs {where} ORDER BY started_at DESC LIMIT :limit",
         {"limit": limit},
         config=load_config(),
     )

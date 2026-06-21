@@ -289,6 +289,47 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertIn("position sizing", prompt)
         self.assertIn("portfolio allocation", prompt)
         self.assertIn("at most 2 claims", prompt)
+        self.assertIn("risk appetite with physical industrial demand", prompt)
+        self.assertIn("weaker dollar as a bearish force", prompt)
+        self.assertIn("exactly one participant category", prompt)
+
+        editor_prompt = self.processor._editor_prompt(
+            context,
+            {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")},
+        ).lower()
+        self.assertIn("risk appetite is not physical industrial demand", editor_prompt)
+        self.assertIn("weaker dollar cannot be presented as bearish", editor_prompt)
+
+    def test_editor_drops_optional_narrative_when_any_source_claim_is_unknown(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["assets"][0]["disagreements"] = [{
+            "text": "This sentence still describes an invented analyst claim.",
+            "source_claim_ids": [
+                "analyst.asset.EURUSD.999",
+                "auditor.asset.EURUSD.1",
+            ],
+            "evidence_ids": [EVIDENCE_ID],
+        }]
+
+        issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(value["assets"][0]["disagreements"], [])
+
+    def test_editor_drops_narrative_that_cites_a_claim_from_another_scope(self):
+        roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
+        value = valid_editor()
+        value["global"]["drivers"] = [{
+            "text": "Asset-specific positioning must not become a global driver.",
+            "source_claim_ids": ["analyst.asset.EURUSD.1"],
+            "evidence_ids": [EVIDENCE_ID],
+        }]
+
+        issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(value["global"]["drivers"], [])
 
     def test_stage_profile_supports_role_specific_model_and_provider(self):
         config = {

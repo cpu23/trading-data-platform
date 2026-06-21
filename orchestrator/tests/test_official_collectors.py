@@ -11,6 +11,21 @@ from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
 
 
 class OfficialCollectorTests(unittest.TestCase):
+    def test_configured_ecb_series_do_not_include_retired_5y5y_key(self):
+        import yaml
+
+        container_config = Path("/app/config/config.yaml")
+        config_path = (
+            container_config
+            if container_config.exists()
+            else Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text())
+        ids = {
+            series["id"] for series in config["collectors"]["ecb"]["series"]
+        }
+        self.assertNotIn("INFLATION_5Y5Y", ids)
+
     @patch("collectors.cftc.make_request")
     def test_cftc_normalizes_positioning(self, request):
         response = Mock()

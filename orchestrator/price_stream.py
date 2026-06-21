@@ -26,7 +26,10 @@ class QuoteStream:
         demo = config.get("demo", {}).get("enabled", False)
         if demo:
             target = self._run_demo
-        elif oanda_config.get("stream_enabled", False):
+        elif (
+            oanda_config.get("enabled", True)
+            and oanda_config.get("stream_enabled", False)
+        ):
             target = self._run_oanda
         else:
             self.state.update(

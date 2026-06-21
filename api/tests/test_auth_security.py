@@ -1,8 +1,18 @@
+import os
 import tempfile
 import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
+
+# unittest discovery imports test modules as top-level modules, so package-level
+# test fixtures are not guaranteed to run before auth captures its state paths.
+_TEST_STATE_DIR = tempfile.mkdtemp(prefix="trading-api-auth-tests-")
+os.environ["STATE_DIR"] = _TEST_STATE_DIR
+os.environ["LEGACY_STATE_DIR"] = ""
+os.environ["LEGACY_BASIC_AUTH"] = "true"
+os.environ["DASHBOARD_USER"] = "test"
+os.environ["DASHBOARD_PASSWORD"] = "test"
 
 import auth
 from routes.json import setup
@@ -80,6 +90,10 @@ class AuthSecurityTests(unittest.TestCase):
             with (
                 patch.dict("os.environ", {"LEGACY_STATE_DIR": str(legacy)}),
                 patch.object(auth, "STATE_DIR", state),
+                patch.object(auth, "AUTH_FILE", state / "auth.json"),
+                patch.object(auth, "OPERATOR_FILE", state / "operator.yaml"),
+                patch.object(auth, "ACTIVATION_FILE", state / "activated.json"),
+                patch.object(auth, "SESSION_SECRET_FILE", state / "session_secret"),
             ):
                 self.assertTrue(auth.migrate_legacy_state())
                 self.assertFalse(auth.migrate_legacy_state())

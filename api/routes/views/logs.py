@@ -38,6 +38,7 @@ def _fetch_logs(component: str = "", status: str = "", range_val: str = "", corr
         status=status,
         limit=limit,
         include_detail=True,
+        include_internal=False,
         from_date=from_date,
         correlation_id=correlation_id,
     )
@@ -89,7 +90,7 @@ def logs_page(
         "selected_status": status,
         "selected_range": range,
         "selected_correlation_id": correlation_id,
-        "runs": get_system_runs(limit=12).get("runs", []),
+        "runs": get_system_runs(limit=12, include_internal=False).get("runs", []),
     })
 
 

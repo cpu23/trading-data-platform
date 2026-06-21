@@ -443,8 +443,16 @@ class MarketIntelligenceProcessor:
             "contract identity from its numeric market_id. Every asset must include "
             "at least one claim when supplied macro evidence materially affects one "
             "of its listed channels; use an empty claim array only when no listed "
-            "channel can be supported. Follow positioning_effects and channel_effects "
-            "literally; never reverse the stated directional relationship. "
+            "channel can be supported. A positioning claim may describe exactly one "
+            "participant category and one positioning evidence_id; never combine "
+            "dealers, asset managers or leveraged funds into one directional claim. "
+            "Follow positioning_effects and channel_effects "
+            "literally; never reverse the stated directional relationship. Check the "
+            "sign of every causal chain before writing it. Do not equate financial "
+            "risk appetite with physical industrial demand. For USD-priced assets, "
+            "do not describe a weaker dollar as a bearish force when the supplied "
+            "channel says a stronger dollar is the bearish force. Omit an asset claim "
+            "when its causal direction is ambiguous. "
             "Return strict JSON with no extra keys and every symbol exactly once in "
             "the configured order.\n"
             f"Required schema example:\n{json.dumps(schema)}\n"
@@ -497,7 +505,12 @@ class MarketIntelligenceProcessor:
             "Include the union of evidence used by the cited claims. "
             "Discard any role claim that reverses or violates a supplied "
             "positioning_effect or channel_effect; do not preserve such an error as "
-            "a legitimate disagreement. Be extremely compact: summary text maximum "
+            "a legitimate disagreement. Independently check causal signs: financial "
+            "risk appetite is not physical industrial demand, and a weaker dollar "
+            "cannot be presented as bearish where the supplied channel identifies a "
+            "stronger dollar as bearish. If all available asset claims fail this "
+            "check, return a neutral, low-confidence assessment with no drivers. "
+            "Be extremely compact: summary text maximum "
             "35 words; at most 3 global drivers, 3 "
             "global contradictions and 2 global invalidation conditions; per asset "
             "at most 2 drivers, 2 contradictions, 1 invalidation condition and 1 "
@@ -897,7 +910,9 @@ class MarketIntelligenceProcessor:
         if not self._exact_keys(value, EDITOR_KEYS, "$", issues):
             return issues + scan_prohibited_language(value)
         claims = self._claim_index(roles)
-        self._validate_editor_assessment(value.get("global"), "$.global", issues, claims)
+        self._validate_editor_assessment(
+            value.get("global"), "$.global", issues, claims, "global"
+        )
         assets = value.get("assets")
         if not isinstance(assets, list):
             issues.append("$.assets must be an array")
@@ -915,12 +930,14 @@ class MarketIntelligenceProcessor:
                     path,
                     issues,
                     claims,
+                    symbol,
                 )
                 self._validate_narratives(
                     asset.get("disagreements"),
                     f"{path}.disagreements",
                     issues,
                     claims,
+                    self._claim_ids_for_scope(claims, symbol),
                 )
             if actual_symbols != symbols:
                 issues.append(
@@ -957,7 +974,7 @@ class MarketIntelligenceProcessor:
                 continue
             summary = assessment.get("summary")
             if isinstance(summary, dict):
-                self._prepare_editor_item(summary, claims)
+                self._prepare_editor_item(summary, claims, scope)
                 if not summary.get("source_claim_ids") or not summary.get("evidence_ids"):
                     fallback_ids = self._fallback_claim_ids(claims, scope)
                     if fallback_ids:
@@ -967,7 +984,7 @@ class MarketIntelligenceProcessor:
                             else "Available economic evidence supports only a low-confidence assessment."
                         )
                         summary["source_claim_ids"] = fallback_ids
-                        self._prepare_editor_item(summary, claims)
+                        self._prepare_editor_item(summary, claims, scope)
                         if scope != "global":
                             assessment["bias"] = "neutral"
                             assessment["confidence"] = "low"
@@ -985,17 +1002,26 @@ class MarketIntelligenceProcessor:
                     if not isinstance(item, dict):
                         kept.append(item)
                         continue
-                    self._prepare_editor_item(item, claims)
+                    self._prepare_editor_item(item, claims, scope)
                     if item.get("source_claim_ids") and item.get("evidence_ids"):
                         kept.append(item)
                 assessment[field] = kept
 
     @staticmethod
-    def _prepare_editor_item(item, claims):
+    def _prepare_editor_item(item, claims, scope="global"):
         source_ids = item.get("source_claim_ids")
         if not isinstance(source_ids, list) or not source_ids:
             return
-        source_ids = [claim_id for claim_id in source_ids if claim_id in claims]
+        # Optional prose cannot safely survive after a cited source disappears:
+        # the sentence may still describe the removed claim. Drop the item and let
+        # the caller omit it (or use the deterministic summary fallback) instead.
+        allowed_source_ids = MarketIntelligenceProcessor._claim_ids_for_scope(
+            claims, scope
+        )
+        if any(claim_id not in allowed_source_ids for claim_id in source_ids):
+            item["source_claim_ids"] = []
+            item["evidence_ids"] = []
+            return
         item["source_claim_ids"] = source_ids
         supported = set()
         for claim_id in source_ids:
@@ -1015,7 +1041,12 @@ class MarketIntelligenceProcessor:
             claim_id for claim_id in claims if ".global." in claim_id
         )[:1]
 
-    def _validate_editor_assessment(self, value, path, issues, claims):
+    @staticmethod
+    def _claim_ids_for_scope(claims, scope):
+        marker = ".global." if scope == "global" else f".asset.{scope}."
+        return {claim_id for claim_id in claims if marker in claim_id}
+
+    def _validate_editor_assessment(self, value, path, issues, claims, scope):
         if not isinstance(value, dict):
             issues.append(f"{path} must be an object")
             return
@@ -1028,11 +1059,20 @@ class MarketIntelligenceProcessor:
             issues,
         )
         self._validate_narratives(
-            [value.get("summary")], f"{path}.summary", issues, claims
+            [value.get("summary")],
+            f"{path}.summary",
+            issues,
+            claims,
+            self._claim_ids_for_scope(claims, scope),
+            allow_unavailable_summary=scope != "global",
         )
         for field in ("drivers", "contradictions", "invalidation_conditions"):
             self._validate_narratives(
-                value.get(field), f"{path}.{field}", issues, claims
+                value.get(field),
+                f"{path}.{field}",
+                issues,
+                claims,
+                self._claim_ids_for_scope(claims, scope),
             )
 
     @staticmethod
@@ -1057,7 +1097,15 @@ class MarketIntelligenceProcessor:
                 assessment[field] = [item["text"] for item in items]
         return value
 
-    def _validate_narratives(self, items, path, issues, claims):
+    def _validate_narratives(
+        self,
+        items,
+        path,
+        issues,
+        claims,
+        allowed_claim_ids=None,
+        allow_unavailable_summary=False,
+    ):
         if not isinstance(items, list):
             issues.append(f"{path} must be an array")
             return
@@ -1068,11 +1116,19 @@ class MarketIntelligenceProcessor:
             self._nonempty(item.get("text"), f"{item_path}.text", issues)
             source_ids = item.get("source_claim_ids")
             evidence_ids = item.get("evidence_ids")
+            if (
+                allow_unavailable_summary
+                and item.get("text")
+                == "Insufficient direct evidence for a distinct asset assessment."
+                and source_ids == []
+                and evidence_ids == []
+            ):
+                continue
             self._validate_id_list(
                 source_ids,
                 f"{item_path}.source_claim_ids",
                 issues,
-                set(claims),
+                allowed_claim_ids if allowed_claim_ids is not None else set(claims),
                 min_items=1,
             )
             supported = set()

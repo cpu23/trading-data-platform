@@ -215,16 +215,6 @@ collectors:
         frequency: monthly
         semantic_feature: yields.eu
         region: EA
-      - id: INFLATION_5Y5Y
-        title: Euro-area five-year five-year forward inflation expectation
-        url: "https://data-api.ecb.europa.eu/service/data/FM/M.U2.EUR.4F.BB.U2_10Y_IF_5Y5Y.PY"
-        params: {format: csvdata, startPeriod: "2015-01"}
-        format: csv
-        date_field: TIME_PERIOD
-        value_field: OBS_VALUE
-        frequency: monthly
-        semantic_feature: expectations.eu
-        region: EA
 
   boe:
     enabled: false
