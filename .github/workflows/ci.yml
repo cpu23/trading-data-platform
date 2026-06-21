@@ -56,6 +56,8 @@ jobs:
           OANDA_API_KEY: ci
           DASHBOARD_USER: ci
           DASHBOARD_PASSWORD: ci
+          STATE_DIR: ${{ runner.temp }}/trading-api-state
+          LEGACY_STATE_DIR: ""
         run: uv run python -c "import main; assert main.app.title == 'Trading Data API'"
 
   compose:
