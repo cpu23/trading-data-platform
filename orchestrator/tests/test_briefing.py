@@ -1,5 +1,4 @@
 import json
-import os
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -66,7 +65,7 @@ class BriefingTests(unittest.TestCase):
     def test_prompt_assembly_includes_calendar_and_watchlist(self):
         processor = DailyBriefingProcessor()
         prompt_path = (
-            Path(os.environ.get("CONFIG_DIR", "/app"))
+            Path(__file__).resolve().parents[2]
             / "prompts"
             / "briefing_v3.txt"
         )
