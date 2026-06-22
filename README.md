@@ -73,6 +73,11 @@ logs, generation attempts, evidence, costs, and published opinions.
 See [Current Architecture and Operations](docs/current-architecture-and-operations.md)
 for the detailed contracts.
 
+Architecture governance:
+
+- [C4 architecture model](docs/architecture/c4-model.md)
+- [Architecture decision records](docs/adr/README.md)
+
 ## Quick Start
 
 ### Requirements
