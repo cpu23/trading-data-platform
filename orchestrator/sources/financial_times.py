@@ -160,9 +160,21 @@ def _default_fetch(url: str) -> str:
     """Fetch RSS XML using httpx (default fetcher)."""
     import httpx
 
-    response = httpx.get(url, timeout=30)
+    response = httpx.get(url, timeout=30, follow_redirects=True)
     response.raise_for_status()
     return response.text
+
+
+def _default_archive_request(method: str, url: str, **kwargs):
+    """Default HTTP request function for archive.fo client."""
+    import httpx
+
+    # Translate allow_redirects -> follow_redirects for httpx
+    if "allow_redirects" in kwargs:
+        kwargs["follow_redirects"] = kwargs.pop("allow_redirects")
+
+    client = httpx.Client()
+    return client.request(method, url, **kwargs)
 
 
 def _extract_body_text(html: str) -> tuple[str, int]:
@@ -306,6 +318,7 @@ def run_financial_times(
                 archive_host=ft_config.get("archive_host", "https://archive.fo"),
                 poll_interval=ft_config.get("poll_interval_seconds", 10),
                 max_polls=ft_config.get("max_poll_attempts", 12),
+                request_fn=_default_archive_request,
             )
 
         with get_session(config) as session:
@@ -507,6 +520,7 @@ def resume_ft_captures(
             archive_host=ft_config.get("archive_host", "https://archive.fo"),
             poll_interval=ft_config.get("poll_interval_seconds", 10),
             max_polls=ft_config.get("max_poll_attempts", 12),
+            request_fn=_default_archive_request,
         )
 
     with get_session(config) as session:

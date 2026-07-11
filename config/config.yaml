@@ -134,7 +134,7 @@ financial_times:
   enabled: true
   on_demand_only: true
   feeds:
-    homepage: "https://www.ft.com/?format=rss"
+    homepage: "https://www.ft.com/rss/home/uk"
     lex: "https://www.ft.com/lex?format=rss"
     unhedged: "https://www.ft.com/unhedged?format=rss"
   archive_host: "https://archive.fo"
