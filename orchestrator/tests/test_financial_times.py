@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -878,6 +879,188 @@ class FinancialTimesCliTests(unittest.TestCase):
         runner = CliRunner()
         result = runner.invoke(cli, ["ft", "discover", "--sections", "invalid_feed"])
         self.assertNotEqual(result.exit_code, 0)
+
+
+import threading
+from unittest.mock import patch as mock_patch, MagicMock
+
+from fastapi.testclient import TestClient
+
+
+class BriefingFinancialTimesTests(unittest.TestCase):
+    """Tests for FT context integration in the briefing processor."""
+
+    def test_briefing_prompt_includes_ft_context(self):
+        """_build_prompt should replace {{financial_times_context}} with ft_context."""
+        from processors.briefing import DailyBriefingProcessor
+
+        processor = DailyBriefingProcessor()
+        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v3.txt"
+
+        ft_text = "## Financial Times Context\n\n**Test Article**\nSome body text."
+
+        prompt = processor._build_prompt(
+            template_path=str(prompt_path),
+            current_date="Friday, July 11, 2026",
+            macro_regime_summary="Risk-on.",
+            today_events="No events.",
+            this_week_events="No events.",
+            watchlist="EURUSD (forex)",
+            ft_context=ft_text,
+        )
+
+        self.assertIn("Financial Times Context", prompt)
+        self.assertIn("Test Article", prompt)
+        self.assertIn("Some body text.", prompt)
+        # The placeholder should be replaced, not left as-is
+        self.assertNotIn("{{financial_times_context}}", prompt)
+
+    def test_briefing_no_ft_context_produces_empty_string(self):
+        """When ft_context is empty, the placeholder is replaced with empty string."""
+        from processors.briefing import DailyBriefingProcessor
+
+        processor = DailyBriefingProcessor()
+        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v3.txt"
+
+        prompt = processor._build_prompt(
+            template_path=str(prompt_path),
+            current_date="Friday, July 11, 2026",
+            macro_regime_summary="Risk-on.",
+            today_events="No events.",
+            this_week_events="No events.",
+            watchlist="EURUSD (forex)",
+            ft_context="",
+        )
+
+        self.assertNotIn("{{financial_times_context}}", prompt)
+        self.assertNotIn("Financial Times Context", prompt)
+
+    def test_briefing_does_not_call_ft_network_services(self):
+        """_get_financial_times_bundle only queries the database, never RSS or archive."""
+        from processors.briefing import DailyBriefingProcessor
+        from unittest.mock import patch, MagicMock
+
+        processor = DailyBriefingProcessor()
+
+        config = {
+            "financial_times": {"enabled": False},
+        }
+
+        # With FT disabled, should return empty immediately without DB calls
+        with patch("processors.briefing.get_session") as mock_session:
+            result = processor._get_financial_times_bundle(config)
+            mock_session.assert_not_called()
+
+        self.assertEqual(result["prompt_text"], "")
+        self.assertEqual(result["article_ids"], [])
+
+    def test_briefing_ft_bundle_returns_article_ids(self):
+        """When FT is enabled and articles exist, bundle returns their IDs."""
+        from processors.briefing import DailyBriefingProcessor
+        from unittest.mock import patch, MagicMock
+
+        processor = DailyBriefingProcessor()
+        config = {
+            "financial_times": {"enabled": True},
+        }
+
+        fake_row = _FakeRow({
+            "article_id": "art-1",
+            "title": "Markets Rally",
+            "byline": "Staff Reporter",
+            "published_at": datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc),
+            "body_text": "Markets rallied today on strong earnings. " * 5,
+            "word_count": 30,
+            "archive_url": "https://archive.ph/abc",
+            "canonical_url": "https://www.ft.com/content/art-1",
+            "content_id": "art-1",
+        })
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        # Make execute return an iterable list of _FakeRow
+        mock_session.execute = MagicMock(return_value=[fake_row])
+
+        with patch("processors.briefing.get_session", return_value=mock_session):
+            result = processor._get_financial_times_bundle(config)
+
+        self.assertEqual(len(result["article_ids"]), 1)
+        self.assertEqual(result["article_ids"][0], "art-1")
+        self.assertIn("Markets Rally", result["prompt_text"])
+        self.assertIn("https://www.ft.com/content/art-1", result["prompt_text"])
+
+
+class FinancialTimesEndpointTests(unittest.TestCase):
+    """Tests for the /run_financial_times orchestrator endpoint."""
+
+    def setUp(self):
+        import main as m
+        self._mod = m
+        # Ensure the lock is initialised (normally done at startup)
+        if m._ft_lock is None:
+            m._ft_lock = threading.Lock()
+        m._ft_correlation_id = None
+
+    def _client(self):
+        from unittest.mock import patch as _patch
+        with _patch.object(self._mod, "check_connection", return_value=True), \
+             _patch.object(self._mod, "start_scheduler"), \
+             _patch.object(self._mod.quote_stream, "start"), \
+             _patch.object(self._mod.quote_stream, "stop"):
+            return TestClient(self._mod.app)
+
+    def test_run_financial_times_endpoint_returns_202(self):
+        client = self._client()
+        with mock_patch.object(self._mod, "run_financial_times", return_value={"status": "completed"}):
+            resp = client.post("/run_financial_times", json={})
+        self.assertEqual(resp.status_code, 202)
+        data = resp.json()
+        self.assertIn("job_id", data)
+        self.assertIn("accepted_at", data)
+        self.assertIn("status_url", data)
+
+    def test_run_financial_times_accepts_body_parameters(self):
+        client = self._client()
+        with mock_patch.object(self._mod, "run_financial_times", return_value={"status": "completed"}) as mock_ft:
+            resp = client.post(
+                "/run_financial_times",
+                json={
+                    "sections": ["lex"],
+                    "max_articles": 5,
+                    "ingest": False,
+                    "wait_for_capture": False,
+                },
+            )
+        self.assertEqual(resp.status_code, 202)
+        # Verify parameters were passed to the background task
+        mock_ft.assert_not_called()  # background, not called yet
+
+    def test_invalid_sections_return_422(self):
+        client = self._client()
+        with mock_patch.object(self._mod, "run_financial_times"):
+            resp = client.post("/run_financial_times", json={"sections": ["invalid_feed"]})
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("invalid_feed", resp.json()["detail"])
+
+    def test_concurrent_ft_request_returns_409(self):
+        client = self._client()
+        self._mod._ft_correlation_id = "already-running-id"
+        # Simulate lock already held
+        self._mod._ft_lock.acquire()
+        try:
+            resp = client.post("/run_financial_times", json={})
+            self.assertEqual(resp.status_code, 409)
+            self.assertIn("already running", resp.json()["detail"])
+        finally:
+            self._mod._ft_lock.release()
+            self._mod._ft_correlation_id = None
+
+    def test_default_sections_are_homepage_lex_unhedged(self):
+        client = self._client()
+        with mock_patch.object(self._mod, "run_financial_times", return_value={"status": "completed"}):
+            resp = client.post("/run_financial_times")
+        self.assertEqual(resp.status_code, 202)
 
 
 if __name__ == "__main__":
