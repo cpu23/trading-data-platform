@@ -575,5 +575,310 @@ class FinancialTimesRepositoryTests(unittest.TestCase):
         self.assertIn("INSERT INTO ft_collection_runs", session.calls[0][0])
 
 
+from click.testing import CliRunner
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — Service-level tests for run_financial_times
+# ---------------------------------------------------------------------------
+class _FakeArchiveClient:
+    """Minimal archive client for service tests."""
+
+    def __init__(self, submit_url="https://archive.ph/fake123", html=None, title_map=None):
+        self._submit_url = submit_url
+        self._html = html or load_fixture("archive_ft_article.html")
+        self._title_map = title_map or {}  # canonical_url -> html mapping
+        self._archive_to_canonical: dict[str, str] = {}  # archive_url -> canonical_url
+        self.submitted: list[str] = []
+        self.polled: list[str] = []
+        self.downloaded: list[str] = []
+
+    def submit(self, url: str) -> str:
+        self.submitted.append(url)
+        archive_url = f"{self._submit_url}/{len(self.submitted)}"
+        self._archive_to_canonical[archive_url] = url
+        return archive_url
+
+    def poll(self, url: str) -> str:
+        self.polled.append(url)
+        return url
+
+    def download(self, url: str) -> str:
+        self.downloaded.append(url)
+        canonical = self._archive_to_canonical.get(url)
+        if canonical and canonical in self._title_map:
+            return self._title_map[canonical]
+        return self._html
+
+
+class FinancialTimesServiceTests(unittest.TestCase):
+    """Test run_financial_times with fakes and mocks."""
+
+    def _base_config(self):
+        return {
+            "financial_times": {
+                "feeds": {
+                    "homepage": "https://www.ft.com/?format=rss",
+                    "lex": "https://www.ft.com/lex?format=rss",
+                    "unhedged": "https://www.ft.com/unhedged?format=rss",
+                },
+                "archive_host": "https://archive.fo",
+                "poll_interval_seconds": 0,
+                "max_poll_attempts": 1,
+                "raw_storage_path": "/tmp/ft_test_raw",
+            }
+        }
+
+    @staticmethod
+    def _make_article_html(title: str) -> str:
+        """Generate valid archive HTML with the given title."""
+        return (
+            '<!DOCTYPE html><html lang="en"><head>'
+            f"<title>{title}</title>"
+            "</head><body><article>"
+            f"<h1>{title}</h1>"
+            '<div class="byline"><span class="author">Staff</span></div>'
+            "<p>" + "word " * 30 + "</p>"
+            "</article></body></html>"
+        )
+
+    def _make_title_map(self, fetch_xml: str) -> dict:
+        """Build url→html mapping so every RSS article passes title validation."""
+        import xml.etree.ElementTree as ET
+        from sources.financial_times import canonicalise_ft_url, _extract_content_id
+        from sources.financial_times import _extract_content_id as eci
+
+        title_map = {}
+        root = ET.fromstring(fetch_xml)
+        for item in root.iter("item"):
+            link_el = item.find("link")
+            title_el = item.find("title")
+            if link_el is None or link_el.text is None:
+                continue
+            link = link_el.text.strip()
+            if _extract_content_id(link) is None:
+                continue
+            canonical = canonicalise_ft_url(link)
+            title = title_el.text.strip() if title_el is not None and title_el.text else "Article"
+            title_map[canonical] = self._make_article_html(title)
+        return title_map
+
+    def test_run_discovers_ingests_and_returns_provenance_bundle(self):
+        from sources.financial_times import run_financial_times
+        from unittest.mock import patch, MagicMock
+        import tempfile, shutil
+
+        config = self._base_config()
+        tmp_dir = tempfile.mkdtemp()
+        config["financial_times"]["raw_storage_path"] = tmp_dir
+
+        rss_xml = load_fixture("ft_homepage.xml")
+        fetch_fn = MagicMock(return_value=rss_xml)
+        title_map = self._make_title_map(rss_xml)
+        archive_client = _FakeArchiveClient(title_map=title_map)
+
+        session = _FakeSession()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=session)
+        ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("sources.financial_times.get_session", return_value=ctx):
+            result = run_financial_times(
+                config=config,
+                correlation_id="test-corr-1",
+                sections=("homepage",),
+                ingest=True,
+                wait_for_capture=False,
+                fetch_fn=fetch_fn,
+                archive_client=archive_client,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertGreater(result["articles_discovered"], 0)
+        self.assertEqual(result["articles_captured"], result["articles_discovered"])
+        self.assertEqual(result["articles_failed"], 0)
+        for art in result["articles"]:
+            self.assertIn("archive_url", art)
+            self.assertIn("content_hash", art)
+            self.assertEqual(art["status"], "captured")
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_ingest_false_returns_discovery_only(self):
+        from sources.financial_times import run_financial_times
+        from unittest.mock import patch, MagicMock
+
+        config = self._base_config()
+        fetch_fn = MagicMock(return_value=load_fixture("ft_homepage.xml"))
+        archive_client = _FakeArchiveClient()
+
+        session = _FakeSession()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=session)
+        ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("sources.financial_times.get_session", return_value=ctx):
+            result = run_financial_times(
+                config=config,
+                correlation_id="test-corr-2",
+                sections=("homepage",),
+                ingest=False,
+                fetch_fn=fetch_fn,
+                archive_client=archive_client,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertGreater(result["articles_discovered"], 0)
+        self.assertEqual(result["articles_captured"], 0)
+        # No archive calls should have been made
+        self.assertEqual(len(archive_client.submitted), 0)
+
+    def test_article_outside_window_excluded(self):
+        from sources.financial_times import run_financial_times
+        from unittest.mock import patch, MagicMock
+        from datetime import datetime, timezone, timedelta
+
+        config = self._base_config()
+        # Fixture pubDate is 2026-07-11 08:00 UTC — set since after that
+        since = datetime(2026, 7, 12, tzinfo=timezone.utc)
+        fetch_fn = MagicMock(return_value=load_fixture("ft_homepage.xml"))
+
+        session = _FakeSession()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=session)
+        ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("sources.financial_times.get_session", return_value=ctx):
+            result = run_financial_times(
+                config=config,
+                correlation_id="test-corr-3",
+                sections=("homepage",),
+                since=since,
+                ingest=False,
+                fetch_fn=fetch_fn,
+            )
+
+        self.assertEqual(result["articles_discovered"], 0)
+        self.assertEqual(len(result["articles"]), 0)
+
+    def test_repeated_run_reuses_existing_content(self):
+        from sources.financial_times import run_financial_times
+        from unittest.mock import patch, MagicMock
+        import tempfile, shutil
+
+        config = self._base_config()
+        tmp_dir = tempfile.mkdtemp()
+        config["financial_times"]["raw_storage_path"] = tmp_dir
+
+        fetch_fn = MagicMock(return_value=load_fixture("ft_homepage.xml"))
+        archive_client = _FakeArchiveClient()
+
+        # FakeSession returns reusable capture from get_reusable_capture
+        reusable = {
+            "capture_id": "cap-existing",
+            "archive_url": "https://archive.ph/existing",
+            "raw_content_hash": "abc123",
+        }
+        session = _FakeSession(return_rows=[reusable])
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=session)
+        ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("sources.financial_times.get_session", return_value=ctx):
+            result = run_financial_times(
+                config=config,
+                correlation_id="test-corr-4",
+                sections=("homepage",),
+                ingest=True,
+                wait_for_capture=False,
+                fetch_fn=fetch_fn,
+                archive_client=archive_client,
+            )
+
+        # All articles should be reused
+        self.assertEqual(result["status"], "completed")
+        for art in result["articles"]:
+            self.assertEqual(art["status"], "reused")
+        # No archive submission should have happened
+        self.assertEqual(len(archive_client.submitted), 0)
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_challenge_page_not_stored_as_validated_version(self):
+        from sources.financial_times import run_financial_times
+        from unittest.mock import patch, MagicMock
+        import tempfile, shutil
+
+        config = self._base_config()
+        tmp_dir = tempfile.mkdtemp()
+        config["financial_times"]["raw_storage_path"] = tmp_dir
+
+        fetch_fn = MagicMock(return_value=load_fixture("ft_homepage.xml"))
+        # Archive returns challenge page HTML instead of article
+        archive_client = _FakeArchiveClient(
+            html=load_fixture("archive_challenge.html")
+        )
+
+        session = _FakeSession()
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=session)
+        ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("sources.financial_times.get_session", return_value=ctx):
+            result = run_financial_times(
+                config=config,
+                correlation_id="test-corr-5",
+                sections=("homepage",),
+                ingest=True,
+                wait_for_capture=False,
+                fetch_fn=fetch_fn,
+                archive_client=archive_client,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        for art in result["articles"]:
+            self.assertEqual(art["status"], "invalid")
+            self.assertIn("reason", art)
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — CLI command tests
+# ---------------------------------------------------------------------------
+class FinancialTimesCliTests(unittest.TestCase):
+    def test_ft_discover_command_exists(self):
+        from cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ft", "discover", "--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--sections", result.output)
+
+    def test_ft_run_command_exists(self):
+        from cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ft", "run", "--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--no-ingest", result.output)
+
+    def test_ft_resume_command_exists(self):
+        from cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ft", "resume", "--help"])
+        self.assertEqual(result.exit_code, 0)
+
+    def test_ft_status_command_exists(self):
+        from cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ft", "status", "--help"])
+        self.assertEqual(result.exit_code, 0)
+
+    def test_invalid_section_rejected(self):
+        from cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ft", "discover", "--sections", "invalid_feed"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
