@@ -111,6 +111,9 @@ derived outputs inspectable without mixing raw source data with analysis.
   LLM spend are available through both the API and dashboard.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
+- **On-demand FT ingestion:** RSS discovery and archive.fo capture for
+  Financial Times articles, with resumable runs and briefing integration.
+  See [docs/financial-times-source.md](docs/financial-times-source.md).
 
 ## Dashboard
 
@@ -138,6 +141,7 @@ FastAPI exposes JSON endpoints for:
 - Watchlist context and structured opinions
 - System health, logs, and cycle status
 - Manually triggered collectors, processors, and full cycles
+- Financial Times on-demand collection
 
 When the API service is running, interactive OpenAPI documentation is available
 at `/docs`.
