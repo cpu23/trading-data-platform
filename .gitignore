@@ -21,3 +21,4 @@ pgdata/
 *.sqlite
 *.sqlite3
 *.db
+data/

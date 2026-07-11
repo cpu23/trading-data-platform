@@ -23,6 +23,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
+      - ./data/financial_times:/var/lib/trading-data/financial_times
       - ./logs:/var/log/trading-data
     depends_on:
       postgres:
