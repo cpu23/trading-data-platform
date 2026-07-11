@@ -137,7 +137,12 @@ financial_times:
     homepage: "https://www.ft.com/rss/home/uk"
     lex: "https://www.ft.com/lex?format=rss"
     unhedged: "https://www.ft.com/unhedged?format=rss"
-  archive_host: "https://archive.fo"
+  archive_hosts:
+    - "https://archive.fo"
+    - "https://archive.ph"
+    - "https://archive.today"
+    - "https://archive.li"
+    - "https://web.archive.org"
   request_delay_seconds: 2
   poll_interval_seconds: 10
   max_poll_attempts: 12

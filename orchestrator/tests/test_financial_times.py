@@ -129,7 +129,7 @@ class ArchiveFoTests(unittest.TestCase):
         assert "ft.com" in call_args[0][1]
 
     def test_submit_raises_on_missing_location(self):
-        from sources.archive_fo import ArchiveFoClient
+        from sources.archive_fo import ArchiveFoClient, ArchiveCaptureError
         from unittest.mock import MagicMock
 
         mock_response = MagicMock()
@@ -140,7 +140,7 @@ class ArchiveFoTests(unittest.TestCase):
         request_fn = MagicMock(return_value=mock_response)
         client = ArchiveFoClient(request_fn=request_fn)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(ArchiveCaptureError):
             client.submit("https://www.ft.com/content/missing")
 
     def test_poll_times_out_after_max_polls(self):
