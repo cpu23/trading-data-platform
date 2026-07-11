@@ -373,3 +373,18 @@ def get_latest_ft_run(session) -> dict | None:
     result = session.execute(sql)
     row = result.fetchone()
     return dict(row._mapping) if row else None
+
+
+def get_ft_run(session, run_id: str) -> dict | None:
+    """Get a specific FT collection run by ID."""
+    sql = text("SELECT * FROM ft_collection_runs WHERE run_id = :run_id")
+    result = session.execute(sql, {"run_id": run_id})
+    row = result.fetchone()
+    return dict(row._mapping) if row else None
+
+
+def get_recent_ft_runs(session, limit: int = 10) -> list[dict]:
+    """Get recent FT collection runs."""
+    sql = text("SELECT * FROM ft_collection_runs ORDER BY started_at DESC LIMIT :limit")
+    result = session.execute(sql, {"limit": limit})
+    return [dict(row._mapping) for row in result.fetchall()]
