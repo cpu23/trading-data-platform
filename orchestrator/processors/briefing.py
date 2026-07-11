@@ -39,6 +39,10 @@ class DailyBriefingProcessor:
             regime_summary = "No macro regime classification available yet. Run the macro_regime processor first."
             missing_context.append("macro regime classification")
 
+        ft_bundle = self._get_financial_times_bundle(config)
+        if ft_bundle["prompt_text"]:
+            missing_context = [c for c in missing_context if "Financial Times" not in c]
+
         prompt_text = self._build_prompt(
             template_path=prompt_template_path,
             current_date=current_date,
@@ -46,6 +50,7 @@ class DailyBriefingProcessor:
             today_events=calendar_bundle["today_prompt"],
             this_week_events=calendar_bundle["week_prompt"],
             watchlist=watchlist_str,
+            ft_context=ft_bundle["prompt_text"],
         )
 
         model = resolve_model(config, processor_id=self.processor_id)
@@ -113,6 +118,7 @@ class DailyBriefingProcessor:
             "data_inputs": {
                 "opinions_used": opinion_ids_used,
                 "calendar_window": calendar_bundle["window"],
+                "ft_article_ids": ft_bundle["article_ids"],
             },
             "model_used": llm_result.get("model", model),
             "prompt_version": self.get_prompt_version(),
@@ -139,6 +145,7 @@ class DailyBriefingProcessor:
                 "regime_available": regime_summary is not None and "No macro regime classification" not in regime_summary,
                 "calendar_events_today": calendar_bundle["today_count"],
                 "calendar_events_this_week": calendar_bundle["week_count"],
+                "ft_articles_count": len(ft_bundle["article_ids"]),
                 "missing_context": missing_context,
             },
             "output_id": opinion_id,
@@ -528,6 +535,83 @@ class DailyBriefingProcessor:
 
         return ", ".join(lines)
 
+    def _get_financial_times_bundle(self, config: dict) -> dict:
+        """Query recently validated FT article versions. Read-only, no network calls."""
+        ft_config = config.get("financial_times", {})
+        if not ft_config.get("enabled", False):
+            return {"prompt_text": "", "article_ids": [], "run_id": None}
+
+        lookback_hours = ft_config.get("briefing_lookback_hours", 48)
+        max_articles = ft_config.get("briefing_max_articles", 10)
+        excerpt_max_words = ft_config.get("briefing_excerpt_max_words", 100)
+
+        from datetime import timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+
+        sql = text("""
+            SELECT av.article_id, av.title, av.byline, av.published_at,
+                   av.body_text, av.word_count, av.archive_url,
+                   fa.canonical_url, fa.content_id
+            FROM ft_article_versions av
+            JOIN ft_articles fa ON av.article_id = fa.article_id
+            WHERE av.created_at >= :cutoff
+              AND av.extraction_status = 'ok'
+            ORDER BY av.published_at DESC
+            LIMIT :limit
+        """)
+
+        try:
+            with get_session(config) as session:
+                result = session.execute(sql, {"cutoff": cutoff, "limit": max_articles})
+                rows = [dict(row._mapping) for row in result]
+        except Exception as exc:
+            logger.warning("ft_bundle_query_failed", error=str(exc))
+            return {"prompt_text": "", "article_ids": [], "run_id": None}
+
+        if not rows:
+            return {
+                "prompt_text": "No Financial Times context available for this briefing window.",
+                "article_ids": [],
+                "run_id": None,
+            }
+
+        lines = ["## Financial Times Context", ""]
+        article_ids = []
+
+        for row in rows:
+            article_ids.append(row["article_id"])
+            title = row.get("title", "Untitled")
+            byline = row.get("byline", "")
+            published = row.get("published_at", "")
+            if hasattr(published, "strftime"):
+                published = published.strftime("%Y-%m-%d %H:%M UTC")
+
+            body = row.get("body_text", "")
+            words = body.split()
+            if len(words) > excerpt_max_words:
+                body = " ".join(words[:excerpt_max_words]) + "..."
+
+            ft_url = row.get("canonical_url", "")
+            archive_url = row.get("archive_url", "")
+
+            lines.append(f"**{title}**")
+            if byline:
+                lines.append(f"By {byline}")
+            lines.append(f"Published: {published}")
+            lines.append(f"FT: {ft_url}")
+            lines.append(f"Archive: {archive_url}")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        return {
+            "prompt_text": "\n".join(lines),
+            "article_ids": article_ids,
+        }
+
     def _build_prompt(
         self,
         template_path: str,
@@ -536,6 +620,7 @@ class DailyBriefingProcessor:
         today_events: str,
         this_week_events: str,
         watchlist: str,
+        ft_context: str = "",
     ) -> str:
         if not os.path.isabs(template_path):
             config_dir = os.environ.get("CONFIG_DIR", "/app")
@@ -553,6 +638,7 @@ class DailyBriefingProcessor:
         result = result.replace("{{today_events}}", today_events)
         result = result.replace("{{this_week_events}}", this_week_events)
         result = result.replace("{{watchlist}}", watchlist)
+        result = result.replace("{{financial_times_context}}", ft_context)
 
         return result
 

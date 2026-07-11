@@ -143,6 +143,9 @@ financial_times:
   max_poll_attempts: 12
   raw_storage_path: "/var/lib/trading-data/financial_times"
   default_window: "24h"
+  briefing_lookback_hours: 48
+  briefing_max_articles: 10
+  briefing_excerpt_max_words: 100
 
 processors:
   macro_regime:
