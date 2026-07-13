@@ -2,15 +2,19 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, BackgroundTasks, Body, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from config_loader import load_config
 from db import check_connection, get_session
 
 try:
-    from data_quality import DATA_QUALITY_CHECKS
+    from data_quality import DATA_QUALITY_CHECKS, run_quality_checks
 except ImportError:
     DATA_QUALITY_CHECKS = {}
+
+    def run_quality_checks(config):
+        return {}
 from logging_config import get_logger, setup_logging
 from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor, get_last_collection_runs
 
@@ -54,6 +58,24 @@ def on_shutdown():
 @app.get("/health")
 def health():
     config = _get_config()
+    scheduler = scheduler_status()
+    stream = quote_stream.state
+    if not check_connection(config):
+        payload = {
+            "liveness": "ok",
+            "readiness": "unready",
+            "data_health": "degraded",
+            "status": "unhealthy",
+            "components": [{
+                "name": "database", "kind": "service", "critical": True,
+                "status": "unavailable", "reason": "database connection failed",
+            }],
+            "scheduler": scheduler,
+            "stream": stream,
+            "collectors": {},
+        }
+        return JSONResponse(status_code=503, content=payload)
+
     last_runs = get_last_collection_runs(config)
     collectors_status = {}
     for run in last_runs:
@@ -65,10 +87,39 @@ def health():
             "records_written": run.get("records_written"),
             "error_message": run.get("error_message"),
         }
+
+    components = [{
+        "name": "database", "kind": "service", "critical": True,
+        "status": "available", "reason": None,
+    }]
+    try:
+        quality_results = run_quality_checks(config)
+    except Exception as exc:
+        logger.error("health_quality_checks_failed", error=str(exc))
+        quality_results = {"quality_runner": {"healthy": False, "detail": str(exc)}}
+    unhealthy = {
+        check_id: result for check_id, result in quality_results.items()
+        if not result.get("healthy", True)
+    }
+    if unhealthy:
+        components.append({
+            "name": "data_quality", "kind": "data", "critical": False,
+            "status": "degraded",
+            "reason": "; ".join(
+                f"{check_id}: {result.get('detail', 'unhealthy')}"
+                for check_id, result in unhealthy.items()
+            ),
+        })
+
+    data_health = "degraded" if unhealthy else "healthy"
     return {
-        "status": "ok",
-        "scheduler": scheduler_status(),
-        "stream": quote_stream.state,
+        "liveness": "ok",
+        "readiness": "ready",
+        "data_health": data_health,
+        "status": "degraded" if unhealthy else "healthy",
+        "components": components,
+        "scheduler": scheduler,
+        "stream": stream,
         "collectors": collectors_status,
     }
 
@@ -235,13 +286,7 @@ def trigger_processor(
 def quality():
     config = _get_config()
     logger.info("quality_endpoint_called")
-    results: dict[str, dict] = {}
-    for check_id, check_fn in DATA_QUALITY_CHECKS.items():
-        try:
-            results[check_id] = check_fn(config)
-        except Exception as exc:
-            logger.error("quality_check_failed", check_id=check_id, error=str(exc))
-            results[check_id] = {"healthy": False, "detail": f"check failed: {str(exc)}"}
+    results = run_quality_checks(config)
     any_unhealthy = any(not r.get("healthy", True) for r in results.values())
     overall = "degraded" if any_unhealthy else "healthy"
     logger.info("quality_check_complete", overall=overall, check_count=len(results))

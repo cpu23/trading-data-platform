@@ -84,38 +84,82 @@ def get_system_health():
     quality = {}
     quality_warn_map = {}
 
-    # ── Fetch orchestrator health (schedule + stream) ──
-    orc_health_error = None
+    # ── Fetch and validate orchestrator contracts ──
     try:
-        orchestration = httpx.get("http://orchestrator:8000/health", timeout=2.0).json()
-        schedule_map = {
-            job["id"].split(":", 1)[-1]: job.get("next_due_at")
-            for job in orchestration.get("scheduler", {}).get("jobs", [])
-        }
-        stream_info = orchestration.get("stream", {})
-    except Exception as exc:
-        logger.warning("orchestrator_health_unavailable", error=str(exc))
-        orc_health_error = str(exc)
+        health_response = httpx.get("http://orchestrator:8000/health", timeout=2.0)
+        health_response.raise_for_status()
+        orchestration = health_response.json()
+        required_health = {"liveness", "readiness", "data_health", "components"}
+        if not isinstance(orchestration, dict) or not required_health.issubset(orchestration):
+            raise ValueError("invalid orchestrator health contract")
+        if orchestration["liveness"] != "ok" or orchestration["readiness"] not in {"ready", "degraded"}:
+            raise ValueError(
+                f"orchestrator is not ready ({orchestration.get('readiness')})"
+            )
 
-    # ── Fetch orchestrator quality checks ──
-    orc_quality_error = None
-    try:
-        quality = httpx.get("http://orchestrator:8000/quality", timeout=5.0).json()
-        # Orchestrator returns checks as a dict {check_id: {healthy, detail, ...}}
-        raw_checks = quality.get("checks", {})
-        if isinstance(raw_checks, dict):
-            for check_id, check_data in raw_checks.items():
-                source_id = check_data.get("source_id", "")
-                if source_id and not check_data.get("healthy", True):
-                    quality_warn_map[source_id] = True
-        elif isinstance(raw_checks, list):
-            for check in raw_checks:
-                source_id = check.get("source_id", "")
-                if source_id and not check.get("healthy", True):
-                    quality_warn_map[source_id] = True
+        quality_response = httpx.get("http://orchestrator:8000/quality", timeout=5.0)
+        quality_response.raise_for_status()
+        quality = quality_response.json()
+        if (
+            not isinstance(quality, dict)
+            or quality.get("overall") not in {"healthy", "degraded", "unhealthy"}
+            or not isinstance(quality.get("checks"), (dict, list))
+        ):
+            raise ValueError("invalid orchestrator quality contract")
     except Exception as exc:
-        logger.warning("orchestrator_quality_unavailable", error=str(exc))
-        orc_quality_error = str(exc)
+        reason = str(exc) or type(exc).__name__
+        logger.warning("orchestrator_contract_unavailable", error=reason)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "liveness": "ok",
+                "readiness": "unready",
+                "data_health": "degraded",
+                "overall": "degraded",
+                "components": [
+                    {
+                        "name": "orchestrator", "kind": "service",
+                        "last_run_at": None, "last_status": "error",
+                        "next_due_at": None, "stale": True,
+                        "quality_warn": False, "error_message": reason,
+                    },
+                    {
+                        "name": "live_prices", "kind": "stream",
+                        "last_run_at": None, "last_status": "unknown",
+                        "next_due_at": None, "stale": True,
+                        "quality_warn": False,
+                        "error_message": "orchestrator unavailable",
+                    },
+                ],
+                "today_llm_cost_usd": round(today_cost, 4),
+                "today_token_count": today_tokens,
+                "quality": {},
+            },
+        )
+
+    schedule_map = {
+        job["id"].split(":", 1)[-1]: job.get("next_due_at")
+        for job in orchestration.get("scheduler", {}).get("jobs", [])
+    }
+    stream_info = orchestration.get("stream", {})
+
+    raw_checks = quality["checks"]
+    checks_iter = raw_checks.items() if isinstance(raw_checks, dict) else (
+        (check.get("name", f"check_{index}"), check)
+        for index, check in enumerate(raw_checks)
+    )
+    unhealthy_checks = []
+    invalid_states = {"unhealthy", "stale", "future-invalid", "future_invalid"}
+    for check_id, check_data in checks_iter:
+        status = str(check_data.get("status", check_data.get("freshness", ""))).lower()
+        unhealthy = not check_data.get("healthy", True) or status in invalid_states
+        if unhealthy:
+            unhealthy_checks.append((check_id, check_data))
+            source_id = check_data.get("source_id", "")
+            if source_id:
+                quality_warn_map[source_id] = True
+
+    quality_degraded = quality.get("overall") != "healthy" or bool(unhealthy_checks)
 
     # ── Add live_prices stream component AFTER quality_warn_map is populated ──
     stream_stale = True
@@ -129,21 +173,25 @@ def get_system_health():
         "next_due_at": None,
         "stale": stream_stale,
         "quality_warn": quality_warn_map.get("live_prices", False),
-        "error_message": orc_health_error if orc_health_error and stream_stale else None,
+        "error_message": None,
     })
 
-    # ── Expose orchestrator errors as degraded components ──
-    if orc_quality_error:
-        logger.warning("quality_contract_degraded", error=orc_quality_error)
+    if quality_degraded:
+        reasons = [
+            f"{check_id}: {check.get('detail', check.get('status', 'unhealthy'))}"
+            for check_id, check in unhealthy_checks
+        ]
+        if not reasons:
+            reasons = [f"orchestrator quality overall is {quality.get('overall')}"]
         components.append({
             "name": "quality_checks",
-            "kind": "service",
+            "kind": "data",
             "last_run_at": None,
-            "last_status": "error",
+            "last_status": "degraded",
             "next_due_at": None,
-            "stale": True,
-            "quality_warn": False,
-            "error_message": orc_quality_error,
+            "stale": False,
+            "quality_warn": True,
+            "error_message": "; ".join(reasons),
         })
 
     # ── Build collector/processor components ──

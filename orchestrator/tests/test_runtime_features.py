@@ -409,17 +409,62 @@ class HealthContractTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         self.client = TestClient(app)
 
+    @patch("main.run_quality_checks", return_value={})
+    @patch("main.check_connection", return_value=True)
     @patch("main.get_last_collection_runs", return_value=[])
     @patch("main._get_config")
-    def test_health_returns_status_and_stream_keys(self, mock_get_config, _mock_runs):
-        """GET /health returns status, stream, scheduler, collectors."""
+    def test_health_returns_separated_healthy_contract(
+        self, mock_get_config, _mock_runs, _mock_db, _mock_quality
+    ):
         mock_get_config.return_value = {"logging": {"level": "INFO"}}
         resp = self.client.get("/health")
-        self.assertIn(resp.status_code, (200, 500))  # may fail if no DB, but shape is what we test
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["liveness"], "ok")
+        self.assertEqual(data["readiness"], "ready")
+        self.assertEqual(data["data_health"], "healthy")
+        self.assertEqual(data["status"], "healthy")
+        self.assertIsInstance(data["components"], list)
+        self.assertIn("scheduler", data)
+        self.assertIn("stream", data)
+        self.assertIn("collectors", data)
+
+    @patch("main.check_connection", return_value=False)
+    @patch("main._get_config", return_value={})
+    def test_health_returns_503_when_database_is_unavailable(self, _config, _db):
+        resp = self.client.get("/health")
+
+        self.assertEqual(resp.status_code, 503)
+        data = resp.json()
+        self.assertEqual(data["liveness"], "ok")
+        self.assertEqual(data["readiness"], "unready")
+        self.assertEqual(data["data_health"], "degraded")
+        db_component = next(c for c in data["components"] if c["name"] == "database")
+        self.assertEqual(db_component["status"], "unavailable")
+        self.assertTrue(db_component["critical"])
+
+    @patch("main.run_quality_checks", return_value={
+        "fred_DGS10_freshness": {"healthy": False, "detail": "stale", "source_id": "fred"}
+    })
+    @patch("main.check_connection", return_value=True)
+    @patch("main.get_last_collection_runs", return_value=[])
+    @patch("main._get_config", return_value={})
+    def test_stale_data_keeps_readiness_ready_and_http_200(
+        self, _config, _runs, _db, _quality
+    ):
+        resp = self.client.get("/health")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["liveness"], "ok")
+        self.assertEqual(data["readiness"], "ready")
+        self.assertEqual(data["data_health"], "degraded")
+        self.assertEqual(data["status"], "degraded")
 
     @patch("main._get_config")
-    @patch("main.DATA_QUALITY_CHECKS", {})
-    def test_quality_returns_overall_and_checks_with_empty_registry(self, mock_get_config):
+    @patch("main.run_quality_checks", return_value={})
+    def test_quality_returns_overall_and_checks_with_empty_registry(self, _runner, mock_get_config):
         """GET /quality returns {overall, checks} even with no checks registered."""
         mock_get_config.return_value = {"logging": {"level": "INFO"}}
         resp = self.client.get("/quality")
@@ -431,8 +476,23 @@ class HealthContractTests(unittest.TestCase):
         self.assertIsInstance(data["checks"], dict)
 
     @patch("main._get_config")
-    @patch("main.DATA_QUALITY_CHECKS", {})
-    def test_quality_checks_is_dict(self, mock_get_config):
+    @patch("main.run_quality_checks")
+    def test_quality_endpoint_uses_production_runner(self, runner, mock_get_config):
+        config = {"collectors": {"fred": {"series": [{"id": "DGS10", "frequency": "daily"}]}}}
+        mock_get_config.return_value = config
+        runner.return_value = {
+            "fred_DGS10_freshness": {"healthy": True, "source_id": "fred"}
+        }
+
+        resp = self.client.get("/quality")
+
+        self.assertEqual(resp.status_code, 200)
+        runner.assert_called_once_with(config)
+        self.assertIn("fred_DGS10_freshness", resp.json()["checks"])
+
+    @patch("main._get_config")
+    @patch("main.run_quality_checks", return_value={})
+    def test_quality_checks_is_dict(self, _runner, mock_get_config):
         """GET /quality checks key is always a dict."""
         mock_get_config.return_value = {"logging": {"level": "INFO"}}
         resp = self.client.get("/quality")

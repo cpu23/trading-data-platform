@@ -395,6 +395,51 @@ class DataQualityTests(unittest.TestCase):
         if result["age_hours"] is not None:
             self.assertGreaterEqual(result["age_hours"], 0)
 
+    @patch("data_quality.get_session")
+    def test_future_scheduled_event_is_healthy_and_marked_future(self, get_session):
+        """A future calendar event is expected data, not a corrupt observation."""
+        from data_quality import check_freshness
+
+        future_ts = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        session = self._make_session(fetchone=(future_ts,))
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_freshness(
+            source_id="forex_factory",
+            table="econ_events",
+            timestamp_column="scheduled_at",
+            max_age_hours=14 * 24,
+            config={},
+            future_is_valid=True,
+        )
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["freshness"], "future")
+        self.assertEqual(result["age_hours"], 0.0)
+
+    @patch("data_quality.get_session")
+    def test_daily_frequency_resolves_daily_business_grace(self, get_session):
+        """daily maps to daily_business rather than the generic 30-hour fallback."""
+        from data_quality import check_freshness
+
+        now = datetime(2026, 7, 15, 12, tzinfo=timezone.utc)  # Wednesday
+        monday = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
+        session = self._make_session(fetchone=(monday,))
+        get_session.return_value.__enter__.return_value = session
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            result = check_freshness(
+                source_id="fred",
+                table="macro_series",
+                timestamp_column="observed_at",
+                max_age_hours=30,
+                config={"data_quality": {"fred": {"grace_periods": {"daily_business": 2}}}},
+                frequency="daily",
+            )
+
+        self.assertTrue(result["healthy"], result)
+
     # ------------------------------------------------------------------
     # Frequency-aware gaps — weekend exclusion
     # ------------------------------------------------------------------
@@ -507,6 +552,95 @@ class DataQualityTests(unittest.TestCase):
                       f"SQL params should include series_id; got: {params}")
         # Verify the series_id value is correct
         self.assertEqual(params.get("series_id"), "UNRATE")
+
+    def test_runner_executes_fred_checks_per_configured_series(self):
+        """The production runner scopes every FRED statistic to one configured series."""
+        from data_quality import run_quality_checks
+
+        config = {
+            "collectors": {"fred": {"series": [
+                {"id": "CPIAUCSL", "frequency": "monthly"},
+                {"id": "DGS10", "frequency": "daily"},
+            ]}}
+        }
+        healthy = {"healthy": True, "detail": "ok"}
+        with patch("data_quality.check_freshness", return_value=healthy) as freshness, \
+             patch("data_quality.check_gaps", return_value=healthy) as gaps, \
+             patch("data_quality.check_anomalies", return_value=healthy) as anomalies, \
+             patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True):
+            results = run_quality_checks(config)
+
+        self.assertEqual(set(results), {
+            "fred_CPIAUCSL_freshness", "fred_CPIAUCSL_gaps", "fred_CPIAUCSL_anomalies",
+            "fred_DGS10_freshness", "fred_DGS10_gaps", "fred_DGS10_anomalies",
+        })
+        self.assertEqual(
+            [(c.kwargs["series_id"], c.kwargs["frequency"]) for c in freshness.call_args_list],
+            [("CPIAUCSL", "monthly"), ("DGS10", "daily")],
+        )
+        self.assertEqual(
+            [(c.kwargs["series_id"], c.kwargs["frequency"]) for c in gaps.call_args_list],
+            [("CPIAUCSL", "monthly"), ("DGS10", "daily")],
+        )
+        self.assertEqual(
+            [c.kwargs["series_id"] for c in anomalies.call_args_list],
+            ["CPIAUCSL", "DGS10"],
+        )
+        self.assertEqual(results["fred_DGS10_freshness"]["frequency"], "daily")
+        self.assertEqual(results["fred_DGS10_anomalies"]["source_id"], "fred")
+
+    def test_runner_records_one_failed_check_and_continues(self):
+        """One series/check failure degrades that key without suppressing later checks."""
+        from data_quality import run_quality_checks
+
+        config = {"collectors": {"fred": {"series": [
+            {"id": "BROKEN", "frequency": "monthly"},
+            {"id": "DGS10", "frequency": "daily"},
+        ]}}}
+        healthy = {"healthy": True, "detail": "ok"}
+        with patch("data_quality.check_freshness", side_effect=[RuntimeError("db error"), healthy]), \
+             patch("data_quality.check_gaps", return_value=healthy), \
+             patch("data_quality.check_anomalies", return_value=healthy), \
+             patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True):
+            results = run_quality_checks(config)
+
+        self.assertFalse(results["fred_BROKEN_freshness"]["healthy"])
+        self.assertIn("db error", results["fred_BROKEN_freshness"]["detail"])
+        self.assertEqual(results["fred_BROKEN_freshness"]["error_type"], "RuntimeError")
+        self.assertEqual(results["fred_BROKEN_freshness"]["source_id"], "fred")
+        self.assertEqual(results["fred_BROKEN_freshness"]["series_id"], "BROKEN")
+        self.assertEqual(results["fred_BROKEN_freshness"]["frequency"], "monthly")
+        self.assertTrue(results["fred_DGS10_freshness"]["healthy"])
+        self.assertEqual(len(results), 6)
+
+    def test_runner_isolates_static_check_failure_and_redacts_credentials(self):
+        """A static check failure is logged safely and does not suppress later checks."""
+        from data_quality import run_quality_checks
+
+        healthy = {"healthy": True, "detail": "ok"}
+        failed = Mock(side_effect=RuntimeError(
+            "connection postgresql://quality:hunter2@db/quality password=second-secret"
+        ))
+        later = Mock(return_value=healthy)
+        registry = {
+            "forex_factory_freshness": failed,
+            "oanda_freshness": later,
+        }
+        with patch.dict("data_quality.DATA_QUALITY_CHECKS", registry, clear=True), \
+             patch("data_quality.logger.error") as log_error:
+            results = run_quality_checks({})
+
+        failure = results["forex_factory_freshness"]
+        self.assertFalse(failure["healthy"])
+        self.assertEqual(failure["source_id"], "forex_factory")
+        self.assertEqual(failure["error_type"], "RuntimeError")
+        self.assertNotIn("hunter2", failure["detail"])
+        self.assertNotIn("second-secret", failure["detail"])
+        self.assertTrue(results["oanda_freshness"]["healthy"])
+        later.assert_called_once_with({})
+        log_error.assert_called_once()
+        self.assertEqual(log_error.call_args.kwargs["check_id"], "forex_factory_freshness")
+        self.assertEqual(log_error.call_args.kwargs["source_id"], "forex_factory")
 
     # ------------------------------------------------------------------
     # DATA_QUALITY_CHECKS registry

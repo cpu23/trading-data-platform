@@ -6,6 +6,7 @@ through ``db.get_session`` so callers (or tests) can supply a real or
 mock ``config`` dict.
 """
 
+import re
 import statistics
 from datetime import date, datetime, timedelta, timezone
 
@@ -14,6 +15,20 @@ from logging_config import get_logger
 from sqlalchemy import text
 
 logger = get_logger("data_quality")
+
+
+_URL_CREDENTIALS = re.compile(r"(://[^:/@\s]+:)[^@\s]+(@)")
+_NAMED_SECRET = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret)(\s*[=:]\s*)([^\s,;]+)"
+)
+
+
+def _safe_error_message(exc: Exception) -> str:
+    """Return a bounded exception message with common credential forms redacted."""
+    message = " ".join(str(exc).split()) or "quality check failed"
+    message = _URL_CREDENTIALS.sub(r"\1[REDACTED]\2", message)
+    message = _NAMED_SECRET.sub(r"\1\2[REDACTED]", message)
+    return message[:500]
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +70,8 @@ def _resolve_grace_hours(
     dq = config.get("data_quality", {})
     src_cfg = dq.get(source_id, {})
     grace = src_cfg.get("grace_periods", {})
-    days = grace.get(frequency)
+    grace_key = "daily_business" if frequency == "daily" else frequency
+    days = grace.get(grace_key)
     if days is not None:
         return float(days) * 24.0
     return fallback_hours
@@ -74,6 +90,7 @@ def check_freshness(
     *,
     frequency: str | None = None,
     series_id: str | None = None,
+    future_is_valid: bool = False,
 ) -> dict:
     """Verify the most recent row for *source_id* is not too old.
 
@@ -137,8 +154,9 @@ def check_freshness(
             latest_at=latest_at.isoformat(),
         )
         return {
-            "healthy": False,
+            "healthy": future_is_valid,
             "detail": f"future timestamp ({latest_at.isoformat()})",
+            "freshness": "future",
             "latest_at": latest_at.isoformat(),
             "age_hours": 0.0,
         }
@@ -486,6 +504,7 @@ DATA_QUALITY_CHECKS = {
         timestamp_column="scheduled_at",
         max_age_hours=14 * 24,  # 14 days
         config=config or {},
+        future_is_valid=True,
     ),
     "forex_factory_dupes": lambda config=None: check_duplicates(
         source_id="forex_factory",
@@ -501,3 +520,72 @@ DATA_QUALITY_CHECKS = {
         config=config or {},
     ),
 }
+
+
+def _run_quality_check(check_id: str, check_fn, **metadata) -> dict:
+    """Run one check, converting an operational exception into an unhealthy result."""
+    try:
+        result = check_fn()
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_message = _safe_error_message(exc)
+        logger.error(
+            "quality_check_failed",
+            check_id=check_id,
+            error_type=error_type,
+            error_message=error_message,
+            **metadata,
+        )
+        return {
+            "healthy": False,
+            "detail": f"{error_type}: {error_message}",
+            "error_type": error_type,
+            "error_message": error_message,
+            **metadata,
+        }
+    return {**result, **metadata}
+
+
+def run_quality_checks(config: dict) -> dict[str, dict]:
+    """Run production checks, isolating failures and expanding FRED per series."""
+    results: dict[str, dict] = {}
+    series_config = config.get("collectors", {}).get("fred", {}).get("series", [])
+    for series in series_config:
+        series_id = series["id"]
+        frequency = series.get("frequency")
+        checks = {
+            "freshness": lambda: check_freshness(
+                source_id="fred", table="macro_series",
+                timestamp_column="observed_at", max_age_hours=30,
+                config=config, series_id=series_id, frequency=frequency,
+            ),
+            "gaps": lambda: check_gaps(
+                source_id="fred", table="macro_series",
+                date_column="observed_at", expected_interval="1 day",
+                config=config, series_id=series_id, frequency=frequency,
+            ),
+            "anomalies": lambda: check_anomalies(
+                source_id="fred", table="macro_series", value_column="value",
+                timestamp_column="observed_at", config=config, series_id=series_id,
+            ),
+        }
+        for check_name, check_fn in checks.items():
+            check_id = f"fred_{series_id}_{check_name}"
+            results[check_id] = _run_quality_check(
+                check_id,
+                check_fn,
+                source_id="fred",
+                series_id=series_id,
+                frequency=frequency,
+            )
+
+    for check_id, check_fn in DATA_QUALITY_CHECKS.items():
+        if check_id.startswith("fred_"):
+            continue
+        source_id = check_id.rsplit("_", 1)[0]
+        results[check_id] = _run_quality_check(
+            check_id,
+            lambda check_fn=check_fn: check_fn(config),
+            source_id=source_id,
+        )
+    return results
