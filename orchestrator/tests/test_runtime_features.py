@@ -231,7 +231,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
         with patch("main._get_config", return_value={}), patch(
             "main.start_run", return_value=True
         ), patch("main.run_collector", side_effect=RuntimeError("boom")), patch(
-            "main.finish_run"
+            "main.finalize_run_safely"
         ) as finish:
             main._run_collector_task("fred", "run-id")
 
@@ -242,14 +242,14 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         with patch("main._get_config", return_value={}), patch(
             "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_full_cycle") as work, patch("main.finish_run") as finish:
+        ), patch("main.run_full_cycle") as work, patch("main.finalize_run_safely") as finish:
             main._run_cycle_task("run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
             "run-id", "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable",
+            {}, "run start unavailable", run_kind="cycle", component=None,
         )
 
     def test_collector_start_failure_finalizes_accepted_run_without_work(self):
@@ -257,14 +257,14 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         with patch("main._get_config", return_value={}), patch(
             "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_collector") as work, patch("main.finish_run") as finish:
+        ), patch("main.run_collector") as work, patch("main.finalize_run_safely") as finish:
             main._run_collector_task("fred", "run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
             "run-id", "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable",
+            {}, "run start unavailable", run_kind="collector", component="fred",
         )
 
     def test_processor_start_failure_finalizes_accepted_run_without_work(self):
@@ -272,14 +272,14 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         with patch("main._get_config", return_value={}), patch(
             "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_processor") as work, patch("main.finish_run") as finish:
+        ), patch("main.run_processor") as work, patch("main.finalize_run_safely") as finish:
             main._run_processor_task("briefing", "run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
             "run-id", "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable",
+            {}, "run start unavailable", run_kind="processor", component="briefing",
         )
 
     def test_lost_start_race_does_not_finish_accepted_run(self):
@@ -287,7 +287,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         with patch("main._get_config", return_value={}), patch(
             "main.start_run", return_value=False
-        ), patch("main.run_collector") as work, patch("main.finish_run") as finish:
+        ), patch("main.run_collector") as work, patch("main.finalize_run_safely") as finish:
             main._run_collector_task("fred", "run-id")
 
         work.assert_not_called()
@@ -301,7 +301,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
         ), patch(
             "scheduler.start_run", side_effect=RuntimeError("secret db failure")
         ), patch("scheduler._run_scheduled_collector_stages") as work, patch(
-            "scheduler.finish_run"
+            "scheduler.finalize_run_safely"
         ) as finish:
             scheduler._scheduled_collector("fred", {})
 
@@ -309,7 +309,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
         finish.assert_called_once_with(
             "run-id", "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable",
+            {}, "run start unavailable", run_kind="collector", component="fred",
         )
 
     def test_scheduler_processor_start_failure_finalizes_without_work(self):
@@ -320,7 +320,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
         ), patch(
             "scheduler.start_run", side_effect=RuntimeError("secret db failure")
         ), patch("scheduler.run_processor") as work, patch(
-            "scheduler.finish_run"
+            "scheduler.finalize_run_safely"
         ) as finish:
             scheduler._scheduled_processor("briefing", {})
 
@@ -328,7 +328,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
         finish.assert_called_once_with(
             "run-id", "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable",
+            {}, "run start unavailable", run_kind="processor", component="briefing",
         )
 
     def test_background_lock_conflict_finalizes_stable_failed_result(self):
@@ -339,7 +339,7 @@ class DurableRunLifecycleTests(unittest.TestCase):
             "main.start_run", return_value=True
         ), patch(
             "main.run_collector", side_effect=RunConflict("collector:fred")
-        ), patch("main.finish_run") as finish:
+        ), patch("main.finalize_run_safely") as finish:
             main._run_collector_task("fred", "run-id")
 
         self.assertEqual(
@@ -351,6 +351,191 @@ class DurableRunLifecycleTests(unittest.TestCase):
             },
         )
         self.assertEqual(finish.call_args.args[4], "run conflict: collector:fred")
+
+    def test_heartbeat_guard_ticks_with_owner_and_stops_on_success(self):
+        import orchestrator
+
+        events = []
+
+        class FakeEvent:
+            def __init__(self):
+                self.waits = 0
+
+            def wait(self, interval):
+                events.append(("wait", interval))
+                self.waits += 1
+                return self.waits > 1
+
+            def set(self):
+                events.append(("stop",))
+
+        class FakeThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+            def join(self):
+                events.append(("join",))
+
+        with patch("orchestrator.heartbeat_run", return_value=True) as heartbeat:
+            with orchestrator.maintain_run_heartbeat(
+                {"jobs": {"heartbeat_interval_seconds": 7}},
+                "run-id",
+                "worker-1",
+                event_factory=FakeEvent,
+                thread_factory=FakeThread,
+            ):
+                events.append(("work",))
+
+        heartbeat.assert_called_once_with(
+            {"jobs": {"heartbeat_interval_seconds": 7}}, "run-id", "worker-1"
+        )
+        self.assertIn(("wait", 7.0), events)
+        self.assertEqual(events[-2:], [("stop",), ("join",)])
+
+    def test_heartbeat_guard_stops_on_protected_exception(self):
+        import orchestrator
+
+        event = Mock()
+        event.wait.return_value = True
+        thread = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "original failure"):
+            with orchestrator.maintain_run_heartbeat(
+                {}, "run-id", "worker-1",
+                event_factory=Mock(return_value=event),
+                thread_factory=Mock(return_value=thread),
+            ):
+                raise RuntimeError("original failure")
+
+        event.set.assert_called_once_with()
+        thread.join.assert_called_once_with()
+
+    def test_direct_lifecycle_starts_heartbeat_only_after_successful_claim(self):
+        import orchestrator
+
+        guard = Mock(return_value=nullcontext())
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", return_value=False
+        ), patch.object(orchestrator, "maintain_run_heartbeat", guard), patch.object(
+            orchestrator, "_run_collector_impl"
+        ) as work:
+            self.assertIsNone(orchestrator.run_collector("fred", config={}))
+        guard.assert_not_called()
+        work.assert_not_called()
+
+        guard.reset_mock()
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", return_value=True
+        ) as start, patch.object(
+            orchestrator, "maintain_run_heartbeat", guard
+        ), patch.object(
+            orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
+        ), patch.object(
+            orchestrator, "_run_collector_impl", return_value={"status": "success", "error": None}
+        ), patch.object(orchestrator, "finalize_run_safely", return_value=True):
+            orchestrator.run_collector("fred", config={}, correlation_id="run-id")
+
+        worker_id = start.call_args.args[2]
+        guard.assert_called_once_with({}, "run-id", worker_id)
+
+    def test_full_cycle_progress_uses_parent_worker_and_children_do_not_own_heartbeat(self):
+        import orchestrator
+
+        collector_result = {"status": "success"}
+        with patch.object(orchestrator, "get_all_collectors", return_value={"fred": Mock()}), patch.object(
+            orchestrator, "get_all_processors", return_value={}
+        ), patch.object(orchestrator, "run_collector", return_value=collector_result) as child, patch.object(
+            orchestrator, "update_run_progress"
+        ) as progress:
+            orchestrator._run_full_cycle_impl(
+                {"collectors": {"fred": {"enabled": True}}},
+                "run-id",
+                manage_lifecycle=False,
+                worker_id="parent-worker",
+            )
+
+        self.assertFalse(child.call_args.kwargs["manage_lifecycle"])
+        self.assertTrue(progress.call_args_list)
+        self.assertTrue(all(call.args[3] == "parent-worker" for call in progress.call_args_list))
+
+    def test_safe_finalization_distinguishes_lost_owner_and_exception(self):
+        import orchestrator
+
+        with patch.object(orchestrator, "finish_run", return_value=False), patch.object(
+            orchestrator, "logger"
+        ) as logger:
+            self.assertFalse(orchestrator.finalize_run_safely(
+                "run-id", "success", {}, {}, worker_id="worker-1", run_kind="collector"
+            ))
+        logger.warning.assert_called_once()
+        self.assertEqual(logger.warning.call_args.args[0], "run_finalization_lost_ownership")
+
+        with patch.object(orchestrator, "finish_run", side_effect=RuntimeError("secret payload")), patch.object(
+            orchestrator, "logger"
+        ) as logger:
+            self.assertFalse(orchestrator.finalize_run_safely(
+                "run-id", "success", {}, {}, worker_id="worker-1", run_kind="collector"
+            ))
+        logger.error.assert_called_once()
+        self.assertNotIn("secret payload", str(logger.error.call_args))
+
+    def test_direct_finalization_failure_preserves_result_and_original_exception(self):
+        import orchestrator
+        from locks import RunConflict
+
+        result = {"status": "success", "error": None}
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", return_value=True
+        ), patch.object(
+            orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+        ), patch.object(
+            orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
+        ), patch.object(orchestrator, "_run_collector_impl", return_value=result), patch.object(
+            orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
+        ), patch.object(orchestrator, "logger") as logger:
+            self.assertIs(orchestrator.run_collector("fred", config={}), result)
+        self.assertFalse(any(call.args[0] == "collector_completed" for call in logger.info.call_args_list))
+
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", return_value=True
+        ), patch.object(
+            orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+        ), patch.object(
+            orchestrator, "advisory_lock", side_effect=RunConflict("collector:fred")
+        ), patch.object(
+            orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
+        ):
+            with self.assertRaisesRegex(RunConflict, "collector:fred"):
+                orchestrator.run_collector("fred", config={})
+
+    def test_http_and_scheduler_use_claim_worker_for_heartbeat_and_safe_finalize(self):
+        import main
+        import scheduler
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", return_value=True
+        ) as start, patch("main.maintain_run_heartbeat", return_value=nullcontext()) as guard, patch(
+            "main.run_collector", return_value={"status": "success", "error": None}
+        ), patch("main.finalize_run_safely", return_value=False), patch("main.logger") as logger:
+            main._run_collector_task("fred", "run-id")
+        worker_id = start.call_args.args[2]
+        guard.assert_called_once_with({}, "run-id", worker_id)
+        self.assertFalse(any(call.args[0] == "collector_trigger_completed" for call in logger.info.call_args_list))
+
+        with patch("scheduler.uuid4", side_effect=["run-id", "worker-id"]), patch(
+            "scheduler.accept_run"
+        ), patch("scheduler.start_run", return_value=True), patch(
+            "scheduler.maintain_run_heartbeat", return_value=nullcontext()
+        ) as guard, patch(
+            "scheduler.run_processor", side_effect=RuntimeError("original failure")
+        ), patch(
+            "orchestrator.finish_run", side_effect=RuntimeError("finalize failed")
+        ):
+            scheduler._scheduled_processor("briefing", {})
+        guard.assert_called_once_with({}, "run-id", "scheduler:worker-id")
 
 
 class AbandonedRunRecoveryTests(unittest.TestCase):

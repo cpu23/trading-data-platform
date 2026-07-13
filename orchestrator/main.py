@@ -22,9 +22,10 @@ from orchestrator import (
     DEFAULT_HEARTBEAT_TIMEOUT,
     RunAcceptanceConflict,
     accept_run,
-    finish_run,
+    finalize_run_safely,
     get_last_collection_runs,
     get_run_for_retry,
+    maintain_run_heartbeat,
     reconcile_abandoned_runs,
     run_collector,
     run_full_cycle,
@@ -212,21 +213,15 @@ def _start_http_run(
             run_kind=run_kind,
             component=component,
         )
-        try:
-            finish_run(
-                correlation_id,
-                "failed",
-                {"status": "failed", "reason": reason},
-                config,
-                reason,
-            )
-        except Exception:
-            logger.error(
-                "run_start_failure_finalize_failed",
-                correlation_id=correlation_id,
-                run_kind=run_kind,
-                component=component,
-            )
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {"status": "failed", "reason": reason},
+            config,
+            reason,
+            run_kind=run_kind,
+            component=component,
+        )
         return None
 
 
@@ -327,21 +322,34 @@ def _run_cycle_task(correlation_id: str):
             _cycle_correlation_id = None
         return
     try:
-        result = run_full_cycle(
-            config=config,
-            correlation_id=correlation_id,
-            manage_lifecycle=False,
-        )
-        finish_run(correlation_id, result["status"], result, config)
-        logger.info("cycle_completed", correlation_id=correlation_id, result=result)
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_full_cycle(
+                config=config,
+                correlation_id=correlation_id,
+                manage_lifecycle=False,
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                worker_id=worker_id,
+                run_kind="cycle",
+            )
+            if finalized:
+                logger.info("cycle_completed", correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
-        finish_run(
+        finalize_run_safely(
             correlation_id,
             "failed",
             _failed_run_summary(exc),
             config,
             str(exc),
+            worker_id=worker_id,
+            run_kind="cycle",
         )
     finally:
         if _cycle_correlation_id == correlation_id:
@@ -373,30 +381,47 @@ def get_cycle_status():
 
 def _run_collector_task(source_id: str, correlation_id: str):
     config = _get_config()
+    worker_id = f"api:{uuid4()}"
     started = _start_http_run(
-        config, correlation_id, f"api:{uuid4()}", "collector", source_id
+        config, correlation_id, worker_id, "collector", source_id
     )
     if started is not True:
         if started is False:
             logger.info("collector_start_lost", source_id=source_id, correlation_id=correlation_id)
         return
     try:
-        result = run_collector(
-            source_id,
-            config=config,
-            correlation_id=correlation_id,
-            manage_lifecycle=False,
-        )
-        finish_run(correlation_id, result["status"], result, config, result.get("error"))
-        logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_collector(
+                source_id,
+                config=config,
+                correlation_id=correlation_id,
+                manage_lifecycle=False,
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+                worker_id=worker_id,
+                run_kind="collector",
+                component=source_id,
+            )
+            if finalized:
+                logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
-        finish_run(
+        finalize_run_safely(
             correlation_id,
             "failed",
             _failed_run_summary(exc),
             config,
             str(exc),
+            worker_id=worker_id,
+            run_kind="collector",
+            component=source_id,
         )
 
 
@@ -419,30 +444,47 @@ def trigger_collector(
 
 def _run_processor_task(processor_id: str, correlation_id: str):
     config = _get_config()
+    worker_id = f"api:{uuid4()}"
     started = _start_http_run(
-        config, correlation_id, f"api:{uuid4()}", "processor", processor_id
+        config, correlation_id, worker_id, "processor", processor_id
     )
     if started is not True:
         if started is False:
             logger.info("processor_start_lost", processor_id=processor_id, correlation_id=correlation_id)
         return
     try:
-        result = run_processor(
-            processor_id,
-            config=config,
-            correlation_id=correlation_id,
-            manage_lifecycle=False,
-        )
-        finish_run(correlation_id, result["status"], result, config, result.get("error"))
-        logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_processor(
+                processor_id,
+                config=config,
+                correlation_id=correlation_id,
+                manage_lifecycle=False,
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+                worker_id=worker_id,
+                run_kind="processor",
+                component=processor_id,
+            )
+            if finalized:
+                logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))
-        finish_run(
+        finalize_run_safely(
             correlation_id,
             "failed",
             _failed_run_summary(exc),
             config,
             str(exc),
+            worker_id=worker_id,
+            run_kind="processor",
+            component=processor_id,
         )
 
 

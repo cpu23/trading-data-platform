@@ -1,6 +1,8 @@
 import json
+import threading
 import time
 import traceback
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -16,6 +18,7 @@ logger = get_logger("orchestrator")
 
 DEFAULT_ACCEPTED_TIMEOUT = timedelta(minutes=15)
 DEFAULT_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 class RunAcceptanceConflict(RuntimeError):
@@ -178,6 +181,66 @@ def heartbeat_run(
         return result.rowcount == 1
 
 
+def _heartbeat_interval_seconds(config: dict) -> float:
+    jobs = config.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    try:
+        interval = float(
+            jobs.get("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
+        )
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    return interval if interval > 0 else DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+
+
+@contextmanager
+def maintain_run_heartbeat(
+    config: dict,
+    correlation_id: str,
+    worker_id: str,
+    *,
+    event_factory=threading.Event,
+    thread_factory=threading.Thread,
+):
+    """Maintain an owned running row without sharing caller DB sessions."""
+    stop_event = event_factory()
+    interval = _heartbeat_interval_seconds(config)
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(interval):
+            try:
+                owned = heartbeat_run(config, correlation_id, worker_id)
+            except Exception:
+                logger.error(
+                    "run_heartbeat_failed",
+                    action="heartbeat_run",
+                    correlation_id=correlation_id,
+                    worker_id=worker_id,
+                )
+                continue
+            if not owned:
+                logger.warning(
+                    "run_heartbeat_lost_ownership",
+                    action="heartbeat_run",
+                    correlation_id=correlation_id,
+                    worker_id=worker_id,
+                )
+                return
+
+    thread = thread_factory(
+        target=heartbeat_loop,
+        name=f"run-heartbeat-{correlation_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join()
+
+
 def ensure_run(
     correlation_id: str,
     config: dict,
@@ -203,16 +266,18 @@ def finish_run(
     summary: dict,
     config: dict,
     error_message: str | None = None,
+    worker_id: str | None = None,
 ) -> bool:
     lifecycle_status = "failed" if result_status == "failed" else "completed"
     allowed_from = "('running', 'accepted')" if lifecycle_status == "failed" else "('running')"
+    owner_clause = " AND worker_id = :worker_id" if worker_id is not None else ""
     with get_session(config) as session:
         result = session.execute(
             text(
                 "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
                 "summary = CAST(:summary AS JSONB), completed_at = :completed_at, "
                 "heartbeat_at = :completed_at, error_message = :error_message "
-                f"WHERE correlation_id = :cid AND status IN {allowed_from}"
+                f"WHERE correlation_id = :cid AND status IN {allowed_from}" + owner_clause
             ),
             {
                 "cid": correlation_id,
@@ -221,9 +286,54 @@ def finish_run(
                 "summary": json.dumps(summary),
                 "completed_at": datetime.now(timezone.utc),
                 "error_message": error_message,
+                "worker_id": worker_id,
             },
         )
         return result.rowcount == 1
+
+
+def finalize_run_safely(
+    correlation_id: str,
+    result_status: str,
+    summary: dict,
+    config: dict,
+    error_message: str | None = None,
+    *,
+    worker_id: str | None = None,
+    run_kind: str,
+    component: str | None = None,
+) -> bool:
+    """Finalize durably without masking the work outcome or exception."""
+    try:
+        finalized = finish_run(
+            correlation_id,
+            result_status,
+            summary,
+            config,
+            error_message,
+            worker_id,
+        )
+    except Exception:
+        logger.error(
+            "run_finalization_failed",
+            action="finish_run",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+            worker_id=worker_id,
+        )
+        return False
+    if not finalized:
+        logger.warning(
+            "run_finalization_lost_ownership",
+            action="finish_run",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+            worker_id=worker_id,
+        )
+        return False
+    return True
 
 
 def update_run_progress(
@@ -397,13 +507,16 @@ def _run_collector_impl(
     }
 
     logger.info(
-        "collector_completed",
+        "collector_work_finished",
         action="run_collector",
         **result,
     )
 
     if manage_lifecycle:
-        finish_run(correlation_id, status, result, config, error_message)
+        finalize_run_safely(
+            correlation_id, status, result, config, error_message,
+            run_kind="collector", component=source_id,
+        )
 
     return result
 
@@ -417,30 +530,52 @@ def run_collector(
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
     lifecycle_created = False
+    worker_id: str | None = None
     try:
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "collector", source_id)
             lifecycle_created = True
-            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, worker_id):
                 return None
-        with advisory_lock(f"collector:{source_id}", config):
-            result = _run_collector_impl(
-                source_id, config, correlation_id, manage_lifecycle=False
-            )
-        if manage_lifecycle and result is not None:
-            finish_run(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-            )
-        return result
+        heartbeat = (
+            maintain_run_heartbeat(config, correlation_id, worker_id)
+            if worker_id is not None
+            else nullcontext()
+        )
+        with heartbeat:
+            with advisory_lock(f"collector:{source_id}", config):
+                result = _run_collector_impl(
+                    source_id, config, correlation_id, manage_lifecycle=False
+                )
+            if manage_lifecycle and result is not None:
+                finalized = finalize_run_safely(
+                    correlation_id,
+                    result["status"],
+                    result,
+                    config,
+                    result.get("error"),
+                    worker_id=worker_id,
+                    run_kind="collector",
+                    component=source_id,
+                )
+                if finalized:
+                    logger.info("collector_completed", action="run_collector", **result)
+            return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
-            finish_run(correlation_id, "failed", {}, config, str(exc))
+            finalize_run_safely(
+                correlation_id,
+                "failed",
+                {},
+                config,
+                str(exc),
+                worker_id=worker_id,
+                run_kind="collector",
+                component=source_id,
+            )
         raise
 
 
@@ -448,6 +583,7 @@ def _run_full_cycle_impl(
     config: dict | None = None,
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
+    worker_id: str | None = None,
 ) -> dict | None:
     if config is None:
         from config_loader import load_config
@@ -533,9 +669,9 @@ def _run_full_cycle_impl(
             )
             progress["current_stage"] = None
             progress["current_kind"] = None
-        update_run_progress(correlation_id, progress, config)
+        update_run_progress(correlation_id, progress, config, worker_id)
 
-    update_run_progress(correlation_id, progress, config)
+    update_run_progress(correlation_id, progress, config, worker_id)
 
     for source_id in enabled_collectors:
         record_progress(source_id, "collector", "running")
@@ -574,7 +710,7 @@ def _run_full_cycle_impl(
     }
 
     logger.info(
-        "full_cycle_completed",
+        "full_cycle_work_finished",
         action="run_full_cycle",
         overall_status=overall_status,
         collectors_run=list(collector_results.keys()),
@@ -583,7 +719,10 @@ def _run_full_cycle_impl(
     )
 
     if manage_lifecycle:
-        finish_run(correlation_id, overall_status, cycle_result, config)
+        finalize_run_safely(
+            correlation_id, overall_status, cycle_result, config,
+            worker_id=worker_id, run_kind="cycle",
+        )
     return cycle_result
 
 
@@ -595,24 +734,57 @@ def run_full_cycle(
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
     lifecycle_created = False
+    worker_id: str | None = None
     try:
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "cycle")
             lifecycle_created = True
-            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, worker_id):
                 return None
-        with advisory_lock("cycle", config):
-            result = _run_full_cycle_impl(
-                config, correlation_id, manage_lifecycle=False
-            )
-        if manage_lifecycle and result is not None:
-            finish_run(correlation_id, result["status"], result, config)
-        return result
+        heartbeat = (
+            maintain_run_heartbeat(config, correlation_id, worker_id)
+            if worker_id is not None
+            else nullcontext()
+        )
+        with heartbeat:
+            with advisory_lock("cycle", config):
+                result = _run_full_cycle_impl(
+                    config,
+                    correlation_id,
+                    manage_lifecycle=False,
+                    worker_id=worker_id,
+                )
+            if manage_lifecycle and result is not None:
+                finalized = finalize_run_safely(
+                    correlation_id,
+                    result["status"],
+                    result,
+                    config,
+                    worker_id=worker_id,
+                    run_kind="cycle",
+                )
+                if finalized:
+                    logger.info(
+                        "full_cycle_completed",
+                        action="run_full_cycle",
+                        overall_status=result["status"],
+                        correlation_id=correlation_id,
+                    )
+            return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
-            finish_run(correlation_id, "failed", {}, config, str(exc))
+            finalize_run_safely(
+                correlation_id,
+                "failed",
+                {},
+                config,
+                str(exc),
+                worker_id=worker_id,
+                run_kind="cycle",
+            )
         raise
 
 
@@ -931,9 +1103,12 @@ def _run_processor_impl(
         else None,
     }
 
-    logger.info("processor_completed", action="run_processor", **result)
+    logger.info("processor_work_finished", action="run_processor", **result)
     if manage_lifecycle:
-        finish_run(correlation_id, status, result, config, error_message)
+        finalize_run_safely(
+            correlation_id, status, result, config, error_message,
+            run_kind="processor", component=processor_id,
+        )
     return result
 
 
@@ -946,30 +1121,52 @@ def run_processor(
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
     lifecycle_created = False
+    worker_id: str | None = None
     try:
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "processor", processor_id)
             lifecycle_created = True
-            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, worker_id):
                 return None
-        with advisory_lock(f"processor:{processor_id}", config):
-            result = _run_processor_impl(
-                processor_id, config, correlation_id, manage_lifecycle=False
-            )
-        if manage_lifecycle and result is not None:
-            finish_run(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-            )
-        return result
+        heartbeat = (
+            maintain_run_heartbeat(config, correlation_id, worker_id)
+            if worker_id is not None
+            else nullcontext()
+        )
+        with heartbeat:
+            with advisory_lock(f"processor:{processor_id}", config):
+                result = _run_processor_impl(
+                    processor_id, config, correlation_id, manage_lifecycle=False
+                )
+            if manage_lifecycle and result is not None:
+                finalized = finalize_run_safely(
+                    correlation_id,
+                    result["status"],
+                    result,
+                    config,
+                    result.get("error"),
+                    worker_id=worker_id,
+                    run_kind="processor",
+                    component=processor_id,
+                )
+                if finalized:
+                    logger.info("processor_completed", action="run_processor", **result)
+            return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
-            finish_run(correlation_id, "failed", {}, config, str(exc))
+            finalize_run_safely(
+                correlation_id,
+                "failed",
+                {},
+                config,
+                str(exc),
+                worker_id=worker_id,
+                run_kind="processor",
+                component=processor_id,
+            )
         raise
 
 

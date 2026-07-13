@@ -5,7 +5,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from logging_config import get_logger
-from orchestrator import accept_run, finish_run, run_collector, run_processor, start_run
+from orchestrator import (
+    accept_run,
+    finalize_run_safely,
+    maintain_run_heartbeat,
+    run_collector,
+    run_processor,
+    start_run,
+)
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
@@ -25,21 +32,15 @@ def _start_scheduled_run(
             run_kind=run_kind,
             component=component,
         )
-        try:
-            finish_run(
-                correlation_id,
-                "failed",
-                {"status": "failed", "reason": reason},
-                config,
-                reason,
-            )
-        except Exception:
-            logger.error(
-                "scheduled_run_start_failure_finalize_failed",
-                correlation_id=correlation_id,
-                run_kind=run_kind,
-                component=component,
-            )
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {"status": "failed", "reason": reason},
+            config,
+            reason,
+            run_kind=run_kind,
+            component=component,
+        )
         return None
 
 
@@ -50,16 +51,32 @@ def _build_cron_trigger(schedule: str) -> CronTrigger:
 def _scheduled_collector(source_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
     accept_run(config, correlation_id, "scheduler", "collector", source_id)
+    worker_id = f"scheduler:{uuid4()}"
     if _start_scheduled_run(
-        config, correlation_id, f"scheduler:{uuid4()}", "collector", source_id
+        config, correlation_id, worker_id, "collector", source_id
     ) is not True:
         return
     try:
-        stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
-        overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
-            "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
-        )
-        finish_run(correlation_id, overall, {"stages": stages}, config)
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
+            overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
+                "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
+            )
+            finalized = finalize_run_safely(
+                correlation_id,
+                overall,
+                {"stages": stages},
+                config,
+                worker_id=worker_id,
+                run_kind="collector",
+                component=source_id,
+            )
+            if finalized:
+                logger.info(
+                    "scheduled_collector_completed",
+                    source_id=source_id,
+                    correlation_id=correlation_id,
+                )
     except Exception as exc:
         logger.error(
             "scheduled_collector_failed",
@@ -67,7 +84,16 @@ def _scheduled_collector(source_id: str, config: dict) -> None:
             correlation_id=correlation_id,
             error=str(exc),
         )
-        finish_run(correlation_id, "failed", {}, config, str(exc))
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {},
+            config,
+            str(exc),
+            worker_id=worker_id,
+            run_kind="collector",
+            component=source_id,
+        )
 
 
 def _run_scheduled_collector_stages(
@@ -100,18 +126,37 @@ def _run_scheduled_collector_stages(
 def _scheduled_processor(processor_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
     accept_run(config, correlation_id, "scheduler", "processor", processor_id)
+    worker_id = f"scheduler:{uuid4()}"
     if _start_scheduled_run(
-        config, correlation_id, f"scheduler:{uuid4()}", "processor", processor_id
+        config, correlation_id, worker_id, "processor", processor_id
     ) is not True:
         return
     try:
-        result = run_processor(
-            processor_id,
-            config=config,
-            correlation_id=correlation_id,
-            manage_lifecycle=False,
-        )
-        finish_run(correlation_id, result["status"], result, config, result.get("error"))
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_processor(
+                processor_id,
+                config=config,
+                correlation_id=correlation_id,
+                manage_lifecycle=False,
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+                worker_id=worker_id,
+                run_kind="processor",
+                component=processor_id,
+            )
+            if finalized:
+                logger.info(
+                    "scheduled_processor_completed",
+                    processor_id=processor_id,
+                    correlation_id=correlation_id,
+                )
     except Exception as exc:
         logger.error(
             "scheduled_processor_failed",
@@ -119,7 +164,16 @@ def _scheduled_processor(processor_id: str, config: dict) -> None:
             correlation_id=correlation_id,
             error=str(exc),
         )
-        finish_run(correlation_id, "failed", {}, config, str(exc))
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {},
+            config,
+            str(exc),
+            worker_id=worker_id,
+            run_kind="processor",
+            component=processor_id,
+        )
 
 
 def start_scheduler(config: dict) -> None:
