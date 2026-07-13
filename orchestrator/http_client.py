@@ -1,42 +1,41 @@
 import time
+from collections.abc import Callable
 
 import httpx
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 
 from logging_config import get_logger
 
 logger = get_logger("http_client")
 
+DEFAULT_SOURCE_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRY_DELAY_SECONDS = 60.0
+_MAX_BACKOFF_SECONDS = 10.0
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    retry=retry_if_exception_type((httpx.ConnectError, httpx.TimeoutException)),
-    reraise=True,
-)
-def _do_request(
-    method: str,
-    url: str,
-    params: dict | None,
-    headers: dict | None,
-    json_body: dict | None,
-    timeout: float,
-    follow_redirects: bool,
-) -> httpx.Response:
-    with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
-        response = client.request(
-            method=method.upper(),
-            url=url,
-            params=params,
-            headers=headers,
-            json=json_body,
-        )
-    return response
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(float(2 ** (attempt - 1)), _MAX_BACKOFF_SECONDS)
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    fallback = _backoff_seconds(attempt)
+    if response is None or response.status_code != 429:
+        return fallback
+
+    raw_value = response.headers.get("Retry-After")
+    if raw_value is None:
+        return fallback
+    try:
+        seconds = float(raw_value.strip())
+    except (TypeError, ValueError):
+        return fallback
+    if seconds < 0:
+        return fallback
+    return min(seconds, _MAX_RETRY_DELAY_SECONDS)
+
+
+def _duration_ms(clock: Callable[[], float], started_at: float) -> int:
+    return max(0, int((clock() - started_at) * 1000))
 
 
 def make_request(
@@ -45,42 +44,101 @@ def make_request(
     params: dict | None = None,
     headers: dict | None = None,
     json_body: dict | None = None,
-    timeout: float = 30.0,
+    timeout: httpx.Timeout | float = DEFAULT_SOURCE_TIMEOUT,
     max_retries: int = 3,
     correlation_id: str | None = None,
     follow_redirects: bool = False,
+    *,
+    client: httpx.Client | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> httpx.Response:
-    start_ms = time.monotonic() * 1000
+    """Make an HTTP request, with ``max_retries`` interpreted as total attempts."""
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1 (it is the total attempt count)")
+
+    started_at = clock()
+    request_method = method.upper()
+    owned_client = client is None
+    request_client = client or httpx.Client()
 
     try:
-        response = _do_request(
-            method, url, params, headers, json_body, timeout, follow_redirects
-        )
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        duration_ms = int(time.monotonic() * 1000 - start_ms)
-        logger.error(
-            "http_request_failed",
-            action="http_request",
-            method=method.upper(),
-            url=url,
-            error=str(exc),
-            duration_ms=duration_ms,
-            correlation_id=correlation_id or "none",
-        )
-        raise
+        for attempt in range(1, max_retries + 1):
+            response = None
+            category = "network"
+            try:
+                response = request_client.request(
+                    method=request_method,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                    json=json_body,
+                    timeout=timeout,
+                    follow_redirects=follow_redirects,
+                )
+            except httpx.TransportError as exc:
+                if attempt == max_retries:
+                    logger.error(
+                        "http_request_failed",
+                        action="http_request",
+                        method=request_method,
+                        attempt=attempt,
+                        max_attempts=max_retries,
+                        category=category,
+                        error_type=type(exc).__name__,
+                        total_duration_ms=_duration_ms(clock, started_at),
+                        correlation_id=correlation_id or "none",
+                    )
+                    raise
+            else:
+                if response.status_code not in _RETRYABLE_STATUS_CODES:
+                    response_size = len(response.content) if response.content else 0
+                    logger.info(
+                        "http_request_completed",
+                        action="http_request",
+                        method=request_method,
+                        attempt=attempt,
+                        max_attempts=max_retries,
+                        status_code=response.status_code,
+                        category="success" if response.is_success else "non_transient_status",
+                        total_duration_ms=_duration_ms(clock, started_at),
+                        response_size=response_size,
+                        correlation_id=correlation_id or "none",
+                    )
+                    return response
 
-    duration_ms = int(time.monotonic() * 1000 - start_ms)
-    response_size = len(response.content) if response.content else 0
+                category = "http_status"
+                if attempt == max_retries:
+                    logger.error(
+                        "http_request_failed",
+                        action="http_request",
+                        method=request_method,
+                        attempt=attempt,
+                        max_attempts=max_retries,
+                        status_code=response.status_code,
+                        category=category,
+                        total_duration_ms=_duration_ms(clock, started_at),
+                        correlation_id=correlation_id or "none",
+                    )
+                    response.raise_for_status()
 
-    logger.info(
-        "http_request_completed",
-        action="http_request",
-        method=method.upper(),
-        url=url,
-        status_code=response.status_code,
-        duration_ms=duration_ms,
-        response_size=response_size,
-        correlation_id=correlation_id or "none",
-    )
+            delay = _retry_delay(response, attempt)
+            retry_fields = {
+                "action": "http_request",
+                "method": request_method,
+                "attempt": attempt,
+                "max_attempts": max_retries,
+                "category": category,
+                "delay_seconds": delay,
+                "total_duration_ms": _duration_ms(clock, started_at),
+                "correlation_id": correlation_id or "none",
+            }
+            if response is not None:
+                retry_fields["status_code"] = response.status_code
+            logger.warning("http_request_retrying", **retry_fields)
+            sleep(delay)
+    finally:
+        if owned_client:
+            request_client.close()
 
-    return response
+    raise RuntimeError("HTTP request loop exited unexpectedly")
