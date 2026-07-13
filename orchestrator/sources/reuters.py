@@ -156,15 +156,24 @@ def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
     logger.info("reuters_scanning", pages=pages_to_scan)
 
     all_items: list[dict[str, Any]] = []
+    page_errors: list[str] = []
     for page_url in sitemap_urls[:pages_to_scan]:
-        items = _parse_sitemap_page(page_url, seen_urls, reuters_config)
+        try:
+            items = _parse_sitemap_page(page_url, seen_urls, reuters_config)
+        except ET.ParseError as exc:
+            error = f"Malformed sitemap XML at {page_url}: {exc}"
+            logger.warning(
+                "reuters_sitemap_parse_failed", url=page_url, error=str(exc)
+            )
+            page_errors.append(error)
+            continue
         all_items.extend(items)
         seen_urls.update(i["url"] for i in items)
 
     state["last_seen_urls"] = sorted(seen_urls)[-5000:]
     state["last_poll"] = datetime.now(timezone.utc).isoformat()
-    state["status"] = "ok"
-    state["error"] = None
+    state["status"] = "error" if page_errors else "ok"
+    state["error"] = "; ".join(page_errors) if page_errors else None
     atomic_write_json(state_path, state)
 
     if all_items:

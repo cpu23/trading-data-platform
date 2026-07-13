@@ -7,18 +7,22 @@ _config_cache: dict | None = None
 _config_cache_path: str | None = None
 _config_cache_mtime_ns: int | None = None
 
-_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_ENV_VAR_PATTERN = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
+)
 
 
 def _substitute_env_vars(value: str) -> str:
     def _replace(match: re.Match) -> str:
         var_name = match.group(1)
-        env_value = os.environ.get(var_name)
-        if env_value is None:
-            raise ValueError(
-                f"Environment variable '{var_name}' referenced in config but not set"
-            )
-        return env_value
+        if var_name in os.environ:
+            return os.environ[var_name]
+        default = match.group(2)
+        if default is not None:
+            return default
+        raise ValueError(
+            f"Environment variable '{var_name}' referenced in config but not set"
+        )
 
     return _ENV_VAR_PATTERN.sub(_replace, value)
 

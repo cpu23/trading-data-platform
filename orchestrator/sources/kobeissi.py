@@ -73,7 +73,7 @@ def run_kobeissi(config: dict, count: int = 20) -> list[dict[str, Any]]:
 
     if not api_key:
         logger.error("kobeissi_no_api_key")
-        return []
+        raise ValueError("TWITTERAPI_KEY is required to collect Kobeissi news")
 
     state = read_json(state_path, {"last_seen_id": None, "last_poll": None})
     if not isinstance(state, dict):

@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -31,6 +33,77 @@ class RuntimeFeatureTests(unittest.TestCase):
             resolve_model(config, processor_id="briefing", model="explicit/model"),
             "explicit/model",
         )
+
+    def test_config_env_substitution_supports_defaults_and_explicit_empty_values(self):
+        from config_loader import reload_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                "required: ${REQUIRED_VALUE}\n"
+                "defaulted: ${ABSENT_VALUE:-fallback}\n"
+                "explicit_empty: ${EMPTY_VALUE:-fallback}\n"
+            )
+            with patch.dict(
+                os.environ,
+                {"REQUIRED_VALUE": "configured", "EMPTY_VALUE": ""},
+                clear=True,
+            ):
+                config = reload_config(str(config_path))
+
+        self.assertEqual(config["required"], "configured")
+        self.assertEqual(config["defaulted"], "fallback")
+        self.assertEqual(config["explicit_empty"], "")
+
+    def test_config_env_substitution_names_missing_required_variable(self):
+        from config_loader import reload_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text("required: ${TRULY_REQUIRED}\n")
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "TRULY_REQUIRED"):
+                    reload_config(str(config_path))
+
+    def test_demo_config_loads_without_twitter_credential(self):
+        from config_loader import reload_config
+
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        demo_env = {
+            "DB_USER": "demo",
+            "DB_PASSWORD": "demo",
+            "FRED_API_KEY": "demo-disabled",
+            "OPENROUTER_API_KEY": "demo-disabled",
+            "OPENROUTER_MODEL": "demo/model",
+            "OANDA_API_KEY": "demo-disabled",
+            "DASHBOARD_USER": "demo",
+            "DASHBOARD_PASSWORD": "demo",
+            "DEMO_MODE": "true",
+        }
+        with patch.dict(os.environ, demo_env, clear=True):
+            config = reload_config(str(config_path))
+
+        self.assertTrue(config["demo"]["enabled"])
+        self.assertEqual(config["kobeissi"]["api_key"], "")
+        self.assertEqual(config["database"]["name"], "trading_data")
+
+    def test_enabled_production_source_missing_credential_fails_closed(self):
+        from config_loader import reload_config
+
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        production_env = {
+            "DB_USER": "trading",
+            "DB_PASSWORD": "password",
+            "OPENROUTER_API_KEY": "key",
+            "OPENROUTER_MODEL": "provider/model",
+            "OANDA_API_KEY": "key",
+            "TWITTERAPI_KEY": "",
+            "DASHBOARD_USER": "admin",
+            "DASHBOARD_PASSWORD": "password",
+        }
+        with patch.dict(os.environ, production_env, clear=True):
+            with self.assertRaisesRegex(ValueError, "FRED_API_KEY"):
+                reload_config(str(config_path))
 
     @patch("collectors.oanda.make_request")
     def test_oanda_filters_unsupported_instruments(self, make_request):

@@ -111,8 +111,9 @@ derived outputs inspectable without mixing raw source data with analysis.
   LLM spend are available through both the API and dashboard.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
-- **News feed** — Polls Reuters news sitemaps and TwitterAPI.io for Kobeissi
-  posts, then publishes a normalized, deduplicated feed. See
+- **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
+  Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
+  FastAPI news endpoints. See
   [docs/news-sources.md](docs/news-sources.md).
 
 ## Dashboard
@@ -141,7 +142,11 @@ FastAPI exposes JSON endpoints for:
 - Watchlist context and structured opinions
 - System health, logs, and cycle status
 - Manually triggered collectors, processors, and full cycles
-- Reuters and Kobeissi on-demand news collection
+- Read-only Reuters and Kobeissi feed and source-state views
+
+Reuters and Kobeissi collection is currently operator-triggered through the
+orchestrator CLI, not FastAPI. News collection trigger, scheduling, and lineage
+endpoints remain deferred roadmap work.
 
 When the API service is running, interactive OpenAPI documentation is available
 at `/docs`.
@@ -207,6 +212,18 @@ docker compose exec orchestrator python cli.py collect fred
 docker compose exec orchestrator python cli.py collect oanda
 docker compose exec orchestrator python cli.py db-check
 ```
+
+On-demand news collection also runs through the orchestrator CLI:
+
+```bash
+docker compose exec orchestrator python cli.py news reuters
+docker compose exec orchestrator python cli.py news kobeissi
+docker compose exec orchestrator python cli.py news all
+```
+
+Kobeissi collection requires `TWITTERAPI_KEY`; Reuters and the read-only news
+API do not. Leaving `TWITTERAPI_KEY` empty keeps optional Kobeissi collection
+unconfigured until it is invoked with a credential.
 
 ## Local Verification
 

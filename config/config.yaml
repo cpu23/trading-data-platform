@@ -1,7 +1,7 @@
 database:
   host: postgres
   port: 5432
-  name: trading_data
+  name: ${DB_NAME:-trading_data}
   user: ${DB_USER}
   password: ${DB_PASSWORD}
 
@@ -219,7 +219,7 @@ reuters:
 kobeissi:
   enabled: true
   on_demand_only: true
-  api_key: ${TWITTERAPI_KEY}
+  api_key: ${TWITTERAPI_KEY:-}
   user_id: "3316376038"
   api_base: "https://api.twitterapi.io"
   count: 20

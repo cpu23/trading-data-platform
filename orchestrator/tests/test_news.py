@@ -32,6 +32,73 @@ class NewsTests(unittest.TestCase):
             self.assertEqual(state["last_seen_urls"], [item["url"]])
             self.assertEqual(state["status"], "ok")
 
+    def test_reuters_malformed_page_records_error_and_preserves_valid_page_items(self):
+        from sources.reuters import run_reuters
+
+        valid_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+                xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+          <url>
+            <loc>https://www.reuters.com/markets/global-markets-test-2026-07-13/</loc>
+            <news:news>
+              <news:publication_date>2026-07-13T12:00:00Z</news:publication_date>
+              <news:title>Global markets test</news:title>
+              <news:keywords>stocks, dollar</news:keywords>
+            </news:news>
+          </url>
+        </urlset>"""
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return self.payload
+
+        def urlopen(request, timeout=30):
+            payload = (
+                b"<urlset><url>"
+                if request.full_url == "https://example.test/malformed.xml"
+                else valid_xml
+            )
+            return Response(payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {
+                "reuters": {
+                    "enabled": True,
+                    "state_path": f"{tmp}/reuters/state.json",
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with patch(
+                "sources.reuters._fetch_sitemap_index",
+                return_value=[
+                    "https://example.test/malformed.xml",
+                    "https://example.test/valid.xml",
+                ],
+            ), patch("urllib.request.urlopen", side_effect=urlopen):
+                items = run_reuters(cfg, max_pages=2)
+
+            state = json.loads(Path(tmp, "reuters/state.json").read_text())
+
+        self.assertEqual([item["id"] for item in items], ["reuters:global-markets-test-2026-07-13"])
+        self.assertEqual(items[0]["title"], "Global markets test")
+        self.assertEqual(state["status"], "error")
+        self.assertIn("malformed", state["error"])
+
+    def test_kobeissi_rejects_empty_api_key_clearly(self):
+        from sources.kobeissi import run_kobeissi
+
+        with self.assertRaisesRegex(ValueError, "TWITTERAPI_KEY"):
+            run_kobeissi({"kobeissi": {"enabled": True, "api_key": ""}})
+
     def test_kobeissi_compares_tweet_ids_numerically_and_deduplicates_snapshot(self):
         from sources.kobeissi import run_kobeissi
         payload = {"status": "success", "data": {"tweets": [
