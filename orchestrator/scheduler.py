@@ -5,7 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from logging_config import get_logger
-from orchestrator import finish_run, run_collector, run_processor
+from orchestrator import accept_run, finish_run, run_collector, run_processor, start_run
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
@@ -17,7 +17,34 @@ def _build_cron_trigger(schedule: str) -> CronTrigger:
 
 def _scheduled_collector(source_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
-    result = run_collector(source_id, config=config, correlation_id=correlation_id)
+    accept_run(config, correlation_id, "scheduler", "collector", source_id)
+    if not start_run(config, correlation_id, f"scheduler:{uuid4()}"):
+        return
+    try:
+        stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
+        overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
+            "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
+        )
+        finish_run(correlation_id, overall, {"stages": stages}, config)
+    except Exception as exc:
+        logger.error(
+            "scheduled_collector_failed",
+            source_id=source_id,
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
+        finish_run(correlation_id, "failed", {}, config, str(exc))
+
+
+def _run_scheduled_collector_stages(
+    source_id: str, config: dict, correlation_id: str
+) -> dict:
+    result = run_collector(
+        source_id,
+        config=config,
+        correlation_id=correlation_id,
+        manage_lifecycle=False,
+    )
     stages = {source_id: result}
     if result["status"] in ("success", "partial"):
         for processor_id, processor_config in config.get("processors", {}).items():
@@ -28,18 +55,35 @@ def _scheduled_collector(source_id: str, config: dict) -> None:
             from processors import get_processor
             if source_id in get_processor(processor_id).get_depends_on():
                 stages[processor_id] = run_processor(
-                    processor_id, config=config, correlation_id=correlation_id
+                    processor_id,
+                    config=config,
+                    correlation_id=correlation_id,
+                    manage_lifecycle=False,
                 )
-    overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
-        "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
-    )
-    finish_run(correlation_id, overall, {"stages": stages}, config)
+    return stages
 
 
 def _scheduled_processor(processor_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
-    result = run_processor(processor_id, config=config, correlation_id=correlation_id)
-    finish_run(correlation_id, result["status"], result, config, result.get("error"))
+    accept_run(config, correlation_id, "scheduler", "processor", processor_id)
+    if not start_run(config, correlation_id, f"scheduler:{uuid4()}"):
+        return
+    try:
+        result = run_processor(
+            processor_id,
+            config=config,
+            correlation_id=correlation_id,
+            manage_lifecycle=False,
+        )
+        finish_run(correlation_id, result["status"], result, config, result.get("error"))
+    except Exception as exc:
+        logger.error(
+            "scheduled_processor_failed",
+            processor_id=processor_id,
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
+        finish_run(correlation_id, "failed", {}, config, str(exc))
 
 
 def start_scheduler(config: dict) -> None:

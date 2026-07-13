@@ -16,7 +16,16 @@ except ImportError:
     def run_quality_checks(config):
         return {}
 from logging_config import get_logger, setup_logging
-from orchestrator import ensure_run, finish_run, run_full_cycle, run_collector, run_processor, get_last_collection_runs
+from orchestrator import (
+    RunAcceptanceConflict,
+    accept_run,
+    finish_run,
+    get_last_collection_runs,
+    run_collector,
+    run_full_cycle,
+    run_processor,
+    start_run,
+)
 
 from price_stream import quote_stream
 from scheduler import scheduler_status, start_scheduler, stop_scheduler
@@ -141,48 +150,61 @@ def _correlation_id_from_body(body: dict | None) -> str:
     return str(uuid4())
 
 
-def _write_cycle_run(
+def _idempotency_key_from_body(body: dict | None) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    value = body.get("idempotency_key")
+    return str(value) if value else None
+
+
+def _accept_http_run(
     correlation_id: str,
-    status: str,
-    error_message: str | None = None,
-    result_status: str | None = None,
-    summary: dict | None = None,
-):
-    config = _get_config()
+    run_kind: str,
+    requested_component: str | None,
+    body: dict | None,
+) -> datetime:
     try:
-        if status == "running":
-            ensure_run(correlation_id, config, triggered_by="api")
-        else:
-            finish_run(
-                correlation_id,
-                result_status or ("failed" if status == "failed" else "success"),
-                summary or {},
-                config,
-                error_message,
-            )
+        return accept_run(
+            _get_config(),
+            correlation_id,
+            "api",
+            run_kind,
+            requested_component,
+            _idempotency_key_from_body(body),
+        )
+    except RunAcceptanceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        logger.error("cycle_run_write_failed", correlation_id=correlation_id, status=status, error=str(exc))
+        logger.error(
+            "run_acceptance_failed",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
 
 
 def _run_cycle_task(correlation_id: str):
     global _cycle_correlation_id
-    _write_cycle_run(correlation_id, "running")
+    config = _get_config()
+    worker_id = f"api:{uuid4()}"
+    if not start_run(config, correlation_id, worker_id):
+        logger.info("cycle_start_lost", correlation_id=correlation_id)
+        return
     try:
-        config = _get_config()
-        result = run_full_cycle(config=config, correlation_id=correlation_id)
-        logger.info("cycle_completed", correlation_id=correlation_id, result=result)
-        _write_cycle_run(
-            correlation_id,
-            "completed",
-            result_status=result["status"],
-            summary=result,
+        result = run_full_cycle(
+            config=config,
+            correlation_id=correlation_id,
+            manage_lifecycle=False,
         )
+        finish_run(correlation_id, result["status"], result, config)
+        logger.info("cycle_completed", correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
-        _write_cycle_run(correlation_id, "failed", error_message=str(exc))
+        finish_run(correlation_id, "failed", {}, config, str(exc))
     finally:
         _cycle_correlation_id = None
-        if _cycle_lock:
+        if _cycle_lock and _cycle_lock.locked():
             _cycle_lock.release()
 
 
@@ -200,6 +222,7 @@ def trigger_cycle(
         raise HTTPException(status_code=409, detail=f"Cycle already running: {running_id}")
 
     try:
+        accepted_at = _accept_http_run(correlation_id, "cycle", None, body)
         _cycle_correlation_id = correlation_id
         background_tasks.add_task(_run_cycle_task, correlation_id)
     except Exception:
@@ -207,10 +230,7 @@ def trigger_cycle(
         _cycle_lock.release()
         raise
 
-    return {
-        "job_id": correlation_id,
-        "accepted_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 
 @app.get("/cycle_status")
@@ -222,13 +242,22 @@ def get_cycle_status():
 
 
 def _run_collector_task(source_id: str, correlation_id: str):
+    config = _get_config()
+    if not start_run(config, correlation_id, f"api:{uuid4()}"):
+        logger.info("collector_start_lost", source_id=source_id, correlation_id=correlation_id)
+        return
     try:
-        config = _get_config()
-        result = run_collector(source_id, config=config, correlation_id=correlation_id)
+        result = run_collector(
+            source_id,
+            config=config,
+            correlation_id=correlation_id,
+            manage_lifecycle=False,
+        )
         finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
+        finish_run(correlation_id, "failed", {}, config, str(exc))
 
 
 @app.post("/run_collector/{source_id}", status_code=202)
@@ -239,26 +268,32 @@ def trigger_collector(
 ):
     from collectors import get_all_collectors
 
-    valid_ids = get_all_collectors()
-    if source_id not in valid_ids:
+    if source_id not in get_all_collectors():
         raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
 
     correlation_id = _correlation_id_from_body(body)
+    accepted_at = _accept_http_run(correlation_id, "collector", source_id, body)
     background_tasks.add_task(_run_collector_task, source_id, correlation_id)
-    return {
-        "job_id": correlation_id,
-        "accepted_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 
 def _run_processor_task(processor_id: str, correlation_id: str):
+    config = _get_config()
+    if not start_run(config, correlation_id, f"api:{uuid4()}"):
+        logger.info("processor_start_lost", processor_id=processor_id, correlation_id=correlation_id)
+        return
     try:
-        config = _get_config()
-        result = run_processor(processor_id, config=config, correlation_id=correlation_id)
+        result = run_processor(
+            processor_id,
+            config=config,
+            correlation_id=correlation_id,
+            manage_lifecycle=False,
+        )
         finish_run(correlation_id, result["status"], result, config, result.get("error"))
         logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))
+        finish_run(correlation_id, "failed", {}, config, str(exc))
 
 
 @app.post("/run_processor/{processor_id}", status_code=202)
@@ -269,16 +304,13 @@ def trigger_processor(
 ):
     from processors import get_all_processors
 
-    valid_ids = get_all_processors()
-    if processor_id not in valid_ids:
+    if processor_id not in get_all_processors():
         raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
 
     correlation_id = _correlation_id_from_body(body)
+    accepted_at = _accept_http_run(correlation_id, "processor", processor_id, body)
     background_tasks.add_task(_run_processor_task, processor_id, correlation_id)
-    return {
-        "job_id": correlation_id,
-        "accepted_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 
 

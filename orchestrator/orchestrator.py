@@ -14,6 +14,94 @@ from sqlalchemy import text
 logger = get_logger("orchestrator")
 
 
+class RunAcceptanceConflict(RuntimeError):
+    """A correlation or idempotency key already owns a durable run."""
+
+
+class RunStartConflict(RuntimeError):
+    """A synchronously invoked run could not claim its accepted row."""
+
+
+def accept_run(
+    config: dict,
+    correlation_id: str,
+    triggered_by: str,
+    run_kind: str,
+    requested_component: str | None = None,
+    idempotency_key: str | None = None,
+) -> datetime:
+    """Persist durable acceptance, raising a typed conflict on unique-key races."""
+    from sqlalchemy.exc import IntegrityError
+
+    accepted_at = datetime.now(timezone.utc)
+    try:
+        with get_session(config) as session:
+            session.execute(
+                text(
+                    "INSERT INTO cycle_runs "
+                    "(correlation_id, status, accepted_at, triggered_by, run_kind, "
+                    "requested_component, idempotency_key) "
+                    "VALUES (:cid, 'accepted', :accepted_at, :triggered_by, :run_kind, "
+                    ":component, :idempotency_key)"
+                ),
+                {
+                    "cid": correlation_id,
+                    "accepted_at": accepted_at,
+                    "triggered_by": triggered_by,
+                    "run_kind": run_kind,
+                    "component": requested_component,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+    except IntegrityError as exc:
+        logger.info(
+            "run_acceptance_conflict",
+            action="accept_run",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+        )
+        raise RunAcceptanceConflict("run correlation or idempotency key already exists") from exc
+    return accepted_at
+
+
+def start_run(config: dict, correlation_id: str, worker_id: str) -> bool:
+    now = datetime.now(timezone.utc)
+    with get_session(config) as session:
+        result = session.execute(
+            text(
+                "UPDATE cycle_runs SET status = 'running', started_at = :started_at, "
+                "heartbeat_at = :heartbeat_at, worker_id = :worker_id "
+                "WHERE correlation_id = :cid AND status = 'accepted'"
+            ),
+            {
+                "cid": correlation_id,
+                "started_at": now,
+                "heartbeat_at": now,
+                "worker_id": worker_id,
+            },
+        )
+        return result.rowcount == 1
+
+
+def heartbeat_run(
+    config: dict, correlation_id: str, worker_id: str | None = None
+) -> bool:
+    owner_clause = " AND worker_id = :worker_id" if worker_id is not None else ""
+    with get_session(config) as session:
+        result = session.execute(
+            text(
+                "UPDATE cycle_runs SET heartbeat_at = :heartbeat_at "
+                "WHERE correlation_id = :cid AND status = 'running'" + owner_clause
+            ),
+            {
+                "cid": correlation_id,
+                "heartbeat_at": datetime.now(timezone.utc),
+                "worker_id": worker_id,
+            },
+        )
+        return result.rowcount == 1
+
+
 def ensure_run(
     correlation_id: str,
     config: dict,
@@ -21,22 +109,16 @@ def ensure_run(
     requested_component: str | None = None,
     triggered_by: str = "internal",
 ) -> None:
-    with get_session(config) as session:
-        session.execute(
-            text(
-                "INSERT INTO cycle_runs "
-                "(correlation_id, status, started_at, triggered_by, run_kind, requested_component) "
-                "VALUES (:cid, 'running', :started_at, :triggered_by, :run_kind, :component) "
-                "ON CONFLICT (correlation_id) DO NOTHING"
-            ),
-            {
-                "cid": correlation_id,
-                "started_at": datetime.now(timezone.utc),
-                "triggered_by": triggered_by,
-                "run_kind": run_kind,
-                "component": requested_component,
-            },
-        )
+    """Compatibility helper for callers that need an immediate accepted→running run."""
+    accept_run(
+        config,
+        correlation_id,
+        triggered_by,
+        run_kind,
+        requested_component=requested_component,
+    )
+    if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+        raise RunStartConflict("accepted run could not be started")
 
 
 def finish_run(
@@ -45,14 +127,16 @@ def finish_run(
     summary: dict,
     config: dict,
     error_message: str | None = None,
-) -> None:
+) -> bool:
     lifecycle_status = "failed" if result_status == "failed" else "completed"
+    allowed_from = "('running', 'accepted')" if lifecycle_status == "failed" else "('running')"
     with get_session(config) as session:
-        session.execute(
+        result = session.execute(
             text(
                 "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
                 "summary = CAST(:summary AS JSONB), completed_at = :completed_at, "
-                "error_message = :error_message WHERE correlation_id = :cid"
+                "heartbeat_at = :completed_at, error_message = :error_message "
+                f"WHERE correlation_id = :cid AND status IN {allowed_from}"
             ),
             {
                 "cid": correlation_id,
@@ -63,21 +147,32 @@ def finish_run(
                 "error_message": error_message,
             },
         )
+        return result.rowcount == 1
 
 
-def update_run_progress(correlation_id: str, progress: dict, config: dict) -> None:
+def update_run_progress(
+    correlation_id: str,
+    progress: dict,
+    config: dict,
+    worker_id: str | None = None,
+) -> bool:
+    owner_clause = " AND worker_id = :worker_id" if worker_id is not None else ""
     try:
         with get_session(config) as session:
-            session.execute(
+            result = session.execute(
                 text(
-                    "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
-                    "WHERE correlation_id = :cid AND status = 'running'"
+                    "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB), "
+                    "heartbeat_at = :heartbeat_at "
+                    "WHERE correlation_id = :cid AND status = 'running'" + owner_clause
                 ),
                 {
                     "cid": correlation_id,
                     "summary": json.dumps({"progress": progress}),
+                    "heartbeat_at": datetime.now(timezone.utc),
+                    "worker_id": worker_id,
                 },
             )
+            return result.rowcount == 1
     except Exception as exc:
         logger.error(
             "cycle_progress_write_failed",
@@ -85,25 +180,25 @@ def update_run_progress(correlation_id: str, progress: dict, config: dict) -> No
             correlation_id=correlation_id,
             error=str(exc),
         )
+        return False
 
 
-def run_collector(
-    source_id: str, config: dict | None = None, correlation_id: str | None = None
-) -> dict:
+def _run_collector_impl(
+    source_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
     if config is None:
         from config_loader import load_config
 
         config = load_config()
 
-    standalone = correlation_id is None
-    if standalone:
-        correlation_id = str(uuid4())
-    ensure_run(
-        correlation_id,
-        config,
-        run_kind="collector",
-        requested_component=source_id,
-    )
+    correlation_id = correlation_id or str(uuid4())
+    if manage_lifecycle:
+        accept_run(config, correlation_id, "internal", "collector", source_id)
+        if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            return None
 
     import structlog.contextvars
 
@@ -231,23 +326,46 @@ def run_collector(
         **result,
     )
 
-    if standalone:
+    if manage_lifecycle:
         finish_run(correlation_id, status, result, config, error_message)
 
     return result
 
 
-def run_full_cycle(
-    config: dict | None = None, correlation_id: str | None = None
-) -> dict:
+def run_collector(
+    source_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
+    correlation_id = correlation_id or str(uuid4())
+    try:
+        return _run_collector_impl(
+            source_id, config, correlation_id, manage_lifecycle
+        )
+    except RunAcceptanceConflict:
+        raise
+    except Exception as exc:
+        if manage_lifecycle and config is not None:
+            finish_run(correlation_id, "failed", {}, config, str(exc))
+        raise
+
+
+def _run_full_cycle_impl(
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
     if config is None:
         from config_loader import load_config
 
         config = load_config()
 
-    if correlation_id is None:
-        correlation_id = str(uuid4())
-    ensure_run(correlation_id, config, run_kind="cycle")
+    correlation_id = correlation_id or str(uuid4())
+    if manage_lifecycle:
+        accept_run(config, correlation_id, "internal", "cycle")
+        if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            return None
 
     logger.info(
         "full_cycle_started",
@@ -328,7 +446,12 @@ def run_full_cycle(
 
     for source_id in enabled_collectors:
         record_progress(source_id, "collector", "running")
-        result = run_collector(source_id, config=config, correlation_id=correlation_id)
+        result = run_collector(
+            source_id,
+            config=config,
+            correlation_id=correlation_id,
+            manage_lifecycle=False,
+        )
         collector_results[source_id] = result
         record_progress(source_id, "collector", result["status"], result)
         if result["status"] in ("success", "partial"):
@@ -366,8 +489,25 @@ def run_full_cycle(
         correlation_id=correlation_id,
     )
 
-    finish_run(correlation_id, overall_status, cycle_result, config)
+    if manage_lifecycle:
+        finish_run(correlation_id, overall_status, cycle_result, config)
     return cycle_result
+
+
+def run_full_cycle(
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
+    correlation_id = correlation_id or str(uuid4())
+    try:
+        return _run_full_cycle_impl(config, correlation_id, manage_lifecycle)
+    except RunAcceptanceConflict:
+        raise
+    except Exception as exc:
+        if manage_lifecycle and config is not None:
+            finish_run(correlation_id, "failed", {}, config, str(exc))
+        raise
 
 
 def _estimate_api_calls(source_id: str, records_fetched: int, config: dict) -> int:
@@ -441,7 +581,12 @@ def _resolve_and_run_processors(
         for pid in this_pass:
             if progress_callback:
                 progress_callback(pid, "processor", "running")
-            result = run_processor(pid, config=config, correlation_id=correlation_id)
+            result = run_processor(
+                pid,
+                config=config,
+                correlation_id=correlation_id,
+                manage_lifecycle=False,
+            )
             processor_results[pid] = result
             if progress_callback:
                 progress_callback(pid, "processor", result["status"], result)
@@ -536,23 +681,22 @@ def get_last_collection_runs(config: dict | None = None) -> list[dict]:
         return []
 
 
-def run_processor(
-    processor_id: str, config: dict | None = None, correlation_id: str | None = None
-) -> dict:
+def _run_processor_impl(
+    processor_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
     if config is None:
         from config_loader import load_config
 
         config = load_config()
 
-    standalone = correlation_id is None
-    if standalone:
-        correlation_id = str(uuid4())
-    ensure_run(
-        correlation_id,
-        config,
-        run_kind="processor",
-        requested_component=processor_id,
-    )
+    correlation_id = correlation_id or str(uuid4())
+    if manage_lifecycle:
+        accept_run(config, correlation_id, "internal", "processor", processor_id)
+        if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+            return None
 
     import structlog.contextvars
 
@@ -682,9 +826,28 @@ def run_processor(
     }
 
     logger.info("processor_completed", action="run_processor", **result)
-    if standalone:
+    if manage_lifecycle:
         finish_run(correlation_id, status, result, config, error_message)
     return result
+
+
+def run_processor(
+    processor_id: str,
+    config: dict | None = None,
+    correlation_id: str | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
+    correlation_id = correlation_id or str(uuid4())
+    try:
+        return _run_processor_impl(
+            processor_id, config, correlation_id, manage_lifecycle
+        )
+    except RunAcceptanceConflict:
+        raise
+    except Exception as exc:
+        if manage_lifecycle and config is not None:
+            finish_run(correlation_id, "failed", {}, config, str(exc))
+        raise
 
 
 def _write_processing_log(

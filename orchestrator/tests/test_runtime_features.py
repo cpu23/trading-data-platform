@@ -64,6 +64,161 @@ class ComponentIdValidationTests(unittest.TestCase):
                          "No cycle_runs INSERT should occur for invalid processor ID")
 
 
+class DurableRunLifecycleTests(unittest.TestCase):
+    """Phase 5 Task 15: durable acceptance and single-owner lifecycle."""
+
+    def test_accept_run_inserts_accepted_state_and_metadata(self):
+        from orchestrator import accept_run
+
+        session = Mock()
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            accepted_at = accept_run(
+                {}, "run-id", "api", "collector", "fred", "request-1"
+            )
+
+        sql, params = session.execute.call_args.args
+        self.assertIn("INSERT INTO cycle_runs", str(sql))
+        self.assertIn("'accepted'", str(sql))
+        self.assertEqual(params["cid"], "run-id")
+        self.assertEqual(params["component"], "fred")
+        self.assertEqual(params["idempotency_key"], "request-1")
+        self.assertEqual(params["accepted_at"], accepted_at)
+
+    def test_start_run_is_conditional_and_reports_lost_race(self):
+        from orchestrator import start_run
+
+        session = Mock()
+        session.execute.return_value.rowcount = 0
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            started = start_run({}, "run-id", "worker-1")
+
+        self.assertFalse(started)
+        sql, params = session.execute.call_args.args
+        self.assertIn("status = 'accepted'", str(sql))
+        self.assertIn("status = 'running'", str(sql))
+        self.assertEqual(params["worker_id"], "worker-1")
+
+    def test_heartbeat_and_progress_are_running_and_owner_conditional(self):
+        from orchestrator import heartbeat_run
+
+        session = Mock()
+        session.execute.return_value.rowcount = 1
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            self.assertTrue(heartbeat_run({}, "run-id", "worker-1"))
+            update_run_progress("run-id", {"stage": "fred"}, {}, "worker-1")
+
+        heartbeat_sql = str(session.execute.call_args_list[0].args[0])
+        progress_sql = str(session.execute.call_args_list[1].args[0])
+        self.assertIn("status = 'running'", heartbeat_sql)
+        self.assertIn("worker_id = :worker_id", heartbeat_sql)
+        self.assertIn("heartbeat_at", progress_sql)
+        self.assertIn("status = 'running'", progress_sql)
+
+    def test_finish_run_does_not_overwrite_terminal_or_abandoned_state(self):
+        from orchestrator import finish_run
+
+        session = Mock()
+        session.execute.return_value.rowcount = 0
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            changed = finish_run("run-id", "success", {}, {}, None)
+
+        self.assertFalse(changed)
+        self.assertIn("status IN ('running')", str(session.execute.call_args.args[0]))
+
+    @patch("orchestrator.get_collector")
+    @patch("orchestrator.start_run", return_value=False)
+    @patch("orchestrator.accept_run")
+    def test_lost_start_race_prevents_collector_work(self, accept, start, get_collector):
+        from orchestrator import run_collector
+
+        result = run_collector("fred", config={})
+
+        accept.assert_called_once()
+        start.assert_called_once()
+        get_collector.assert_not_called()
+        self.assertIsNone(result)
+
+    @patch("orchestrator.run_collector")
+    @patch("orchestrator.get_all_processors", return_value={})
+    @patch("orchestrator.get_all_collectors", return_value={"fred": Mock()})
+    def test_full_cycle_children_have_lifecycle_disabled(
+        self, _collectors, _processors, run_collector
+    ):
+        from orchestrator import run_full_cycle
+
+        run_collector.return_value = {"status": "success"}
+        with patch("orchestrator.accept_run"), patch(
+            "orchestrator.start_run", return_value=True
+        ), patch("orchestrator.finish_run"), patch("orchestrator.update_run_progress"):
+            run_full_cycle(config={"collectors": {"fred": {"enabled": True}}})
+
+        self.assertFalse(run_collector.call_args.kwargs["manage_lifecycle"])
+
+    def test_endpoint_accepts_before_enqueue_for_each_run_kind(self):
+        import main
+
+        cases = [
+            (main.trigger_cycle, (), "cycle"),
+            (main.trigger_collector, ("fred",), "collector"),
+            (main.trigger_processor, ("briefing",), "processor"),
+        ]
+        for endpoint, positional, run_kind in cases:
+            with self.subTest(run_kind=run_kind):
+                events = []
+                background = Mock()
+                background.add_task.side_effect = lambda *args: events.append("enqueue")
+                with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=lambda *args, **kwargs: events.append("accept") or datetime.now(timezone.utc)), patch(
+                    "collectors.get_all_collectors", return_value={"fred": Mock()}
+                ), patch("processors.get_all_processors", return_value={"briefing": Mock()}), patch.object(
+                    main, "_cycle_lock", Mock(acquire=Mock(return_value=True), release=Mock())
+                ):
+                    endpoint(*positional, background, body={})
+                self.assertEqual(events, ["accept", "enqueue"])
+
+    def test_duplicate_acceptance_returns_409_without_enqueue(self):
+        import main
+        from fastapi import HTTPException
+        from orchestrator import RunAcceptanceConflict
+
+        background = Mock()
+        with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=RunAcceptanceConflict("duplicate")), patch(
+            "collectors.get_all_collectors", return_value={"fred": Mock()}
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.trigger_collector("fred", background, body={})
+        self.assertEqual(raised.exception.status_code, 409)
+        background.add_task.assert_not_called()
+
+    def test_acceptance_failure_returns_controlled_error_without_enqueue(self):
+        import main
+        from fastapi import HTTPException
+
+        background = Mock()
+        with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=RuntimeError("db unavailable")), patch(
+            "processors.get_all_processors", return_value={"briefing": Mock()}
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.trigger_processor("briefing", background, body={})
+        self.assertEqual(raised.exception.status_code, 503)
+        background.add_task.assert_not_called()
+
+    def test_background_wrapper_finalizes_escaped_exception(self):
+        import main
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", return_value=True
+        ), patch("main.run_collector", side_effect=RuntimeError("boom")), patch(
+            "main.finish_run"
+        ) as finish:
+            main._run_collector_task("fred", "run-id")
+
+        self.assertEqual(finish.call_args.args[1], "failed")
+
+
 class CollectionFailureStatusTests(unittest.TestCase):
     """Task 9: Propagate collection and persistence failures into run status."""
 
@@ -108,7 +263,9 @@ class CollectionFailureStatusTests(unittest.TestCase):
         get_collector.return_value = mock_collector
 
         from orchestrator import run_collector
-        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        result = run_collector(
+            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+        )
 
         self.assertEqual(result["status"], "failed",
                          "All series failed → status should be 'failed'")
@@ -144,7 +301,9 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
-        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        result = run_collector(
+            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+        )
         self.assertEqual(result["status"], "partial",
                          "Partial collection failure → status should be 'partial'")
 
@@ -173,7 +332,9 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
-        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        result = run_collector(
+            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+        )
         self.assertEqual(result["status"], "failed",
                          "Status should be 'failed' when records fetched but none written")
 
@@ -203,7 +364,9 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
-        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        result = run_collector(
+            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+        )
         self.assertEqual(result["status"], "partial",
                          "Status should be 'partial' when some but not all records written")
 
