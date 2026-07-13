@@ -2,13 +2,17 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from config import load_config
 from db import query_many, query_one
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
+from logging_config import get_logger
 
 router = APIRouter()
+
+logger = get_logger("system.health")
 
 
 def _fmt(value):
@@ -24,29 +28,47 @@ def get_system_health():
     config = load_config()
     thresholds = get_staleness_config(config)
 
-    collector_sql = """
-        SELECT DISTINCT ON (collector)
-            collector, started_at, status, duration_ms
-        FROM collection_log
-        ORDER BY collector, started_at DESC
-    """
-    collector_rows = query_many(collector_sql, config=config)
+    # ── DB queries (wrapped — failure → readiness "unready", HTTP 503) ──
+    try:
+        collector_rows = query_many(
+            """SELECT DISTINCT ON (collector)
+                   collector, started_at, status, duration_ms, error_message
+               FROM collection_log
+               ORDER BY collector, started_at DESC""",
+            config=config,
+        )
 
-    processor_sql = """
-        SELECT DISTINCT ON (processor)
-            processor, started_at, status, model_used, cost_usd, duration_ms
-        FROM processing_log
-        ORDER BY processor, started_at DESC
-    """
-    processor_rows = query_many(processor_sql, config=config)
+        processor_rows = query_many(
+            """SELECT DISTINCT ON (processor)
+                   processor, started_at, status, model_used, cost_usd, duration_ms
+               FROM processing_log
+               ORDER BY processor, started_at DESC""",
+            config=config,
+        )
 
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-
-    cost_rows = query_many(
-        "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, COALESCE(SUM(tokens_input + tokens_output), 0) as total_tokens FROM processing_log WHERE started_at >= :today_start",
-        params={"today_start": today_start},
-        config=config,
-    )
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        cost_rows = query_many(
+            "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, "
+            "COALESCE(SUM(tokens_input + tokens_output), 0) as total_tokens "
+            "FROM processing_log WHERE started_at >= :today_start",
+            params={"today_start": today_start},
+            config=config,
+        )
+    except Exception as db_exc:
+        logger.error("db_unavailable", error=str(db_exc))
+        return JSONResponse(
+            status_code=503,
+            content={
+                "liveness": "ok",
+                "readiness": "unready",
+                "data_health": "degraded",
+                "components": [],
+                "today_llm_cost_usd": 0.0,
+                "today_token_count": 0,
+                "quality": {},
+                "error": "Database unavailable",
+            },
+        )
 
     today_cost = 0.0
     today_tokens = 0
@@ -56,36 +78,75 @@ def get_system_health():
 
     components = []
     schedule_map = {}
+    stream_info = {}
+
+    # ── Initialize quality_warn_map BEFORE using it ──
+    quality = {}
+    quality_warn_map = {}
+
+    # ── Fetch orchestrator health (schedule + stream) ──
+    orc_health_error = None
     try:
         orchestration = httpx.get("http://orchestrator:8000/health", timeout=2.0).json()
         schedule_map = {
             job["id"].split(":", 1)[-1]: job.get("next_due_at")
             for job in orchestration.get("scheduler", {}).get("jobs", [])
         }
-        stream = orchestration.get("stream", {})
-        components.append({
-            "name": "live_prices",
-            "kind": "stream",
-            "last_run_at": stream.get("last_heartbeat"),
-            "last_status": stream.get("status", "stopped"),
-            "next_due_at": None,
-            "stale": stream.get("status") not in ("connected", "simulated"),
-            "quality_warn": quality_warn_map.get("live_prices", False),
-        })
-    except Exception:
-        pass
+        stream_info = orchestration.get("stream", {})
+    except Exception as exc:
+        logger.warning("orchestrator_health_unavailable", error=str(exc))
+        orc_health_error = str(exc)
 
-    quality = {}
-    quality_warn_map = {}
+    # ── Fetch orchestrator quality checks ──
+    orc_quality_error = None
     try:
         quality = httpx.get("http://orchestrator:8000/quality", timeout=5.0).json()
-        for check in quality.get("checks", []):
-            source_id = check.get("source_id", "")
-            if source_id and not check.get("healthy", True):
-                quality_warn_map[source_id] = True
-    except Exception:
-        pass
+        # Orchestrator returns checks as a dict {check_id: {healthy, detail, ...}}
+        raw_checks = quality.get("checks", {})
+        if isinstance(raw_checks, dict):
+            for check_id, check_data in raw_checks.items():
+                source_id = check_data.get("source_id", "")
+                if source_id and not check_data.get("healthy", True):
+                    quality_warn_map[source_id] = True
+        elif isinstance(raw_checks, list):
+            for check in raw_checks:
+                source_id = check.get("source_id", "")
+                if source_id and not check.get("healthy", True):
+                    quality_warn_map[source_id] = True
+    except Exception as exc:
+        logger.warning("orchestrator_quality_unavailable", error=str(exc))
+        orc_quality_error = str(exc)
 
+    # ── Add live_prices stream component AFTER quality_warn_map is populated ──
+    stream_stale = True
+    if stream_info:
+        stream_stale = stream_info.get("status") not in ("connected", "simulated")
+    components.append({
+        "name": "live_prices",
+        "kind": "stream",
+        "last_run_at": stream_info.get("last_heartbeat") if stream_info else None,
+        "last_status": stream_info.get("status", "stopped") if stream_info else "unknown",
+        "next_due_at": None,
+        "stale": stream_stale,
+        "quality_warn": quality_warn_map.get("live_prices", False),
+        "error_message": orc_health_error if orc_health_error and stream_stale else None,
+    })
+
+    # ── Expose orchestrator errors as degraded components ──
+    if orc_quality_error:
+        logger.warning("quality_contract_degraded", error=orc_quality_error)
+        components.append({
+            "name": "quality_checks",
+            "kind": "service",
+            "last_run_at": None,
+            "last_status": "error",
+            "next_due_at": None,
+            "stale": True,
+            "quality_warn": False,
+            "error_message": orc_quality_error,
+        })
+
+    # ── Build collector/processor components ──
     enabled_collectors = config.get("collectors", {})
     collector_map = {r["collector"]: r for r in collector_rows}
 
@@ -151,6 +212,30 @@ def get_system_health():
                 "quality_warn": quality_warn_map.get(proc_id, False),
             })
 
+    # ── Compute separate liveness/readiness/data_health ──
+    liveness = "ok"
+
+    any_stale = any(c.get("stale") for c in components)
+    any_error = any(
+        c.get("last_status") in ("failed", "partial", "error", "never_run", "unknown")
+        for c in components
+    )
+    any_quality_warn = any(c.get("quality_warn") for c in components)
+    has_components = len(components) > 0
+
+    if not has_components:
+        readiness = "degraded"
+    elif any_stale or any_error:
+        readiness = "degraded"
+    else:
+        readiness = "ready"
+
+    if any_quality_warn or any_stale or not has_components:
+        data_health = "degraded"
+    else:
+        data_health = "healthy"
+
+    # Keep backward-compatible overall for any consumers
     all_ok = all(
         not c.get("stale")
         and c["last_status"] in ("success", "connected", "simulated")
@@ -159,6 +244,9 @@ def get_system_health():
     overall = "healthy" if all_ok else "degraded"
 
     return {
+        "liveness": liveness,
+        "readiness": readiness,
+        "data_health": data_health,
         "overall": overall,
         "components": components,
         "today_llm_cost_usd": round(today_cost, 4),

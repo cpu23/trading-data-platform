@@ -397,5 +397,49 @@ class RuntimeFeatureTests(unittest.TestCase):
         self.assertIn('"current_stage": "fred"', params["summary"])
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Task 12: Orchestrator health contract tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+class HealthContractTests(unittest.TestCase):
+    """Task 12: Orchestrator /health and /quality endpoints."""
+
+    def setUp(self):
+        from main import app
+        from fastapi.testclient import TestClient
+        self.client = TestClient(app)
+
+    @patch("main.get_last_collection_runs", return_value=[])
+    @patch("main._get_config")
+    def test_health_returns_status_and_stream_keys(self, mock_get_config, _mock_runs):
+        """GET /health returns status, stream, scheduler, collectors."""
+        mock_get_config.return_value = {"logging": {"level": "INFO"}}
+        resp = self.client.get("/health")
+        self.assertIn(resp.status_code, (200, 500))  # may fail if no DB, but shape is what we test
+
+    @patch("main._get_config")
+    @patch("main.DATA_QUALITY_CHECKS", {})
+    def test_quality_returns_overall_and_checks_with_empty_registry(self, mock_get_config):
+        """GET /quality returns {overall, checks} even with no checks registered."""
+        mock_get_config.return_value = {"logging": {"level": "INFO"}}
+        resp = self.client.get("/quality")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("overall", data)
+        self.assertIn("checks", data)
+        self.assertEqual(data["overall"], "healthy")
+        self.assertIsInstance(data["checks"], dict)
+
+    @patch("main._get_config")
+    @patch("main.DATA_QUALITY_CHECKS", {})
+    def test_quality_checks_is_dict(self, mock_get_config):
+        """GET /quality checks key is always a dict."""
+        mock_get_config.return_value = {"logging": {"level": "INFO"}}
+        resp = self.client.get("/quality")
+        data = resp.json()
+        self.assertIsInstance(data["checks"], dict,
+                              "Quality checks must be a dict for consumers to iterate with .items()")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,11 @@
-import logging
+from logging_config import get_logger
 
 import httpx
 from fastapi import APIRouter, Request
 
 router = APIRouter()
 
-logger = logging.getLogger("quality.view")
+logger = get_logger("quality.view")
 
 
 def _get_templates(request: Request):

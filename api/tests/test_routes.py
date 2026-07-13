@@ -89,15 +89,36 @@ class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    def test_health_returns_200(self, _mock_qm):
-        """GET /api/system/health with empty DB should return 200 + 'overall' key."""
+    @patch("routes.json.system.httpx.get")
+    def test_health_returns_200(self, mock_httpx_get, _mock_qm):
+        """GET /api/system/health with empty DB should return 200 + contract keys."""
+        # Mock orchestrator health response
+        mock_health_resp = MagicMock()
+        mock_health_resp.json.return_value = {
+            "status": "ok",
+            "scheduler": {"jobs": []},
+            "stream": {"status": "connected", "last_heartbeat": "2026-01-01T00:00:00Z"},
+        }
+        # Mock orchestrator quality response
+        mock_quality_resp = MagicMock()
+        mock_quality_resp.json.return_value = {
+            "overall": "healthy",
+            "checks": {},
+        }
+        mock_httpx_get.side_effect = [mock_health_resp, mock_quality_resp]
+
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertIn("overall", data)
-        self.assertEqual(data["overall"], "healthy")  # no collectors → all ok
+        self.assertIn("liveness", data)
+        self.assertEqual(data["liveness"], "ok")
+        self.assertIn("readiness", data)
+        self.assertIn("data_health", data)
         self.assertIn("components", data)
         self.assertIsInstance(data["components"], list)
+        # With healthy stream and no stale components, should be ready/healthy
+        self.assertEqual(data["readiness"], "ready")
+        self.assertEqual(data["data_health"], "healthy")
 
     def test_health_requires_auth(self):
         """GET /api/system/health without Basic-Auth header returns 401."""
@@ -227,3 +248,74 @@ class TestNewsRoutes(unittest.TestCase):
         reuters = next(x for x in resp.json()["sources"] if x["name"] == "reuters")
         self.assertEqual(reuters["status"], "error")
         self.assertEqual(reuters["error"], "state file is invalid")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Task 11: Quality page fix
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestQualityPage(unittest.TestCase):
+    """Task 11: Quality page returns 200 with mocked orchestrator response."""
+
+    @patch("routes.views.quality.httpx.Client")
+    def test_quality_page_returns_200_with_orchestrator_response(self, mock_client_cls):
+        """GET /quality returns 200 when orchestrator quality is healthy."""
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+        mock_client.is_success = True
+        mock_client.json.return_value = {
+            "overall": "healthy",
+            "checks": {
+                "fred_freshness": {"healthy": True, "detail": "fresh"},
+                "oanda_freshness": {"healthy": True, "detail": "fresh"},
+            },
+        }
+        mock_client_cls.return_value = mock_client
+
+        resp = client.get("/quality", headers=AUTH)
+        self.assertEqual(resp.status_code, 200,
+                         "Quality page should return 200 with mocked orchestrator")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Task 12: Health contract tests
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestHealthContract(unittest.TestCase):
+    """Task 12: Separate liveness/readiness/data-health contract."""
+
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_health_returns_contract_shape(self, _mock_qm):
+        """GET /api/system/health returns liveness, readiness, data_health keys."""
+        resp = client.get("/api/system/health", headers=AUTH)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        self.assertIn("liveness", data,
+                      "Response must include liveness key")
+        self.assertIn("readiness", data,
+                      "Response must include readiness key")
+        self.assertIn("data_health", data,
+                      "Response must include data_health key")
+        self.assertIn("components", data,
+                      "Response must include components key")
+
+        self.assertEqual(data["liveness"], "ok",
+                         "Liveness should be 'ok' when application is running")
+        self.assertIn(data["readiness"], ("ready", "degraded", "unready"),
+                      "Readiness should be one of: ready, degraded, unready")
+        self.assertIn(data["data_health"], ("healthy", "degraded"),
+                      "Data health should be one of: healthy, degraded")
+        self.assertIsInstance(data["components"], list)
+
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_stale_data_yields_liveness_ok_data_health_degraded(self, _mock_qm):
+        """Stale data keeps liveness 'ok' but degrades data_health."""
+        resp = client.get("/api/system/health", headers=AUTH)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        # With no collectors/processors configured, all components are empty
+        # but liveness should still be 'ok' (the app is alive)
+        self.assertEqual(data["liveness"], "ok",
+                         "Liveness stays 'ok' even when no data available")
