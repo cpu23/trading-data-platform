@@ -84,12 +84,13 @@ class NewsTests(unittest.TestCase):
                     "https://example.test/valid.xml",
                 ],
             ), patch("urllib.request.urlopen", side_effect=urlopen):
-                items = run_reuters(cfg, max_pages=2)
+                result = run_reuters(cfg, max_pages=2)
 
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
-        self.assertEqual([item["id"] for item in items], ["reuters:global-markets-test-2026-07-13"])
-        self.assertEqual(items[0]["title"], "Global markets test")
+        self.assertEqual([item["id"] for item in result.items], ["reuters:global-markets-test-2026-07-13"])
+        self.assertEqual(result.items[0]["title"], "Global markets test")
+        self.assertEqual(result.status, "error")
         self.assertEqual(state["status"], "error")
         self.assertIn("malformed", state["error"])
 
@@ -134,10 +135,11 @@ class NewsTests(unittest.TestCase):
                     "https://example.test/failed.xml",
                 ],
             ), patch("urllib.request.urlopen", side_effect=urlopen):
-                items = run_reuters(cfg, max_pages=2)
+                result = run_reuters(cfg, max_pages=2)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
-        self.assertEqual([item["id"] for item in items], ["reuters:valid-item"])
+        self.assertEqual([item["id"] for item in result.items], ["reuters:valid-item"])
+        self.assertEqual(result.status, "error")
         self.assertEqual(state["status"], "error")
         self.assertIn("failed.xml", state["error"])
         self.assertIn("TimeoutError", state["error"])
@@ -158,10 +160,11 @@ class NewsTests(unittest.TestCase):
                 "urllib.request.urlopen",
                 side_effect=ConnectionError("credential=private"),
             ):
-                items = run_reuters(cfg, max_pages=1)
+                result = run_reuters(cfg, max_pages=1)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
-        self.assertEqual(items, [])
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "error")
         self.assertEqual(state["status"], "error")
         self.assertIn("failed.xml", state["error"])
         self.assertIn("ConnectionError", state["error"])
@@ -191,10 +194,11 @@ class NewsTests(unittest.TestCase):
                 "sources.reuters._fetch_sitemap_index",
                 return_value=["https://example.test/empty.xml"],
             ), patch("urllib.request.urlopen", return_value=Response()):
-                items = run_reuters(cfg, max_pages=1)
+                result = run_reuters(cfg, max_pages=1)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
-        self.assertEqual(items, [])
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "ok")
         self.assertEqual(state["status"], "ok")
         self.assertIsNone(state["error"])
 
@@ -219,8 +223,10 @@ class NewsTests(unittest.TestCase):
             cfg = {"kobeissi": {"enabled": True, "api_key": "key", "state_path": str(state), "output_path": f"{tmp}/kobeissi"}}
             with patch("urllib.request.urlopen", return_value=Response()):
                 first = run_kobeissi(cfg); second = run_kobeissi(cfg)
-            self.assertEqual([x["id"] for x in first], ["kobeissi:10"])
-            self.assertEqual(second, [])
+            self.assertEqual([x["id"] for x in first.items], ["kobeissi:10"])
+            self.assertEqual(first.status, "ok")
+            self.assertEqual(second.items, [])
+            self.assertEqual(second.status, "ok")
             daily = next(Path(tmp, "kobeissi").glob("kobeissi_*.json"))
             self.assertEqual(len(json.loads(daily.read_text())), 1)
 
@@ -248,6 +254,149 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Reuters: disabled", result.output)
         self.assertIn("Kobeissi: disabled", result.output)
+
+
+    def test_kobeissi_failure_replaces_stale_ok_state_with_typed_error(self):
+        from sources.kobeissi import run_kobeissi
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "kobeissi/state.json")
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps({
+                "last_seen_id": "42", "last_poll": "2026-01-01T00:00:00+00:00",
+                "status": "ok", "error": None,
+            }))
+            cfg = {"kobeissi": {"api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
+            with patch("urllib.request.urlopen", side_effect=ConnectionError("token=private")), patch("sources.kobeissi.logger") as mocked_logger:
+                result = run_kobeissi(cfg)
+            state = json.loads(state_path.read_text())
+
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.error, "Kobeissi fetch failed: ConnectionError")
+        self.assertEqual(state["status"], "error")
+        self.assertNotEqual(state["last_poll"], "2026-01-01T00:00:00+00:00")
+        self.assertNotIn("private", json.dumps(state))
+        self.assertNotIn("private", str(mocked_logger.method_calls))
+
+    def test_kobeissi_successful_empty_is_typed_ok_and_updates_state(self):
+        from sources.kobeissi import run_kobeissi
+        payload = {"status": "success", "data": {"tweets": []}}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return json.dumps(payload).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "kobeissi/state.json")
+            cfg = {"kobeissi": {"api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
+            with patch("urllib.request.urlopen", return_value=Response()):
+                result = run_kobeissi(cfg)
+            state = json.loads(state_path.read_text())
+
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "ok")
+        self.assertIsNone(result.error)
+        self.assertEqual(state["status"], "ok")
+        self.assertIsNotNone(state["last_poll"])
+
+    def test_kobeissi_upstream_api_error_is_typed_failure(self):
+        from sources.kobeissi import run_kobeissi
+        payload = {"status": "error", "msg": "api_key=secret"}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return json.dumps(payload).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "kobeissi/state.json")
+            cfg = {"kobeissi": {"api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
+            with patch("urllib.request.urlopen", return_value=Response()):
+                result = run_kobeissi(cfg)
+            state_text = state_path.read_text()
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.error, "Kobeissi upstream API returned an error")
+        self.assertNotIn("secret", state_text)
+
+    def test_reuters_index_failure_is_sanitized_in_state_result_and_logs(self):
+        from sources.reuters import run_reuters
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "reuters/state.json")
+            cfg = {"reuters": {"state_path": str(state_path), "output_path": f"{tmp}/reuters"}}
+            with patch("sources.reuters._fetch_sitemap_index", side_effect=RuntimeError("https://index.test/list.xml?token=private#secret")), patch("sources.reuters.logger") as mocked_logger:
+                result = run_reuters(cfg)
+            state_text = state_path.read_text()
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.error, "Reuters sitemap index failed: RuntimeError")
+        self.assertNotIn("private", state_text)
+        self.assertNotIn("secret", state_text)
+        self.assertNotIn("private", str(mocked_logger.method_calls))
+        self.assertNotIn("secret", str(mocked_logger.method_calls))
+
+    def test_reuters_malformed_xml_strips_query_and_parser_details(self):
+        import xml.etree.ElementTree as ET
+        from sources.reuters import run_reuters
+
+        page_url = "https://example.test/malformed.xml?api_key=secret#token=private"
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "reuters/state.json")
+            cfg = {"reuters": {"state_path": str(state_path), "output_path": f"{tmp}/reuters"}}
+            with patch("sources.reuters._fetch_sitemap_index", return_value=[page_url]), patch("sources.reuters._parse_sitemap_page", side_effect=ET.ParseError("token=private at line 1")), patch("sources.reuters.logger") as mocked_logger:
+                result = run_reuters(cfg)
+            state_text = state_path.read_text()
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("https://example.test/malformed.xml", result.error)
+        self.assertIn("ParseError", result.error)
+        self.assertNotIn("private", state_text)
+        self.assertNotIn("secret", state_text)
+        self.assertNotIn("private", str(mocked_logger.method_calls))
+        self.assertNotIn("secret", str(mocked_logger.method_calls))
+
+    def test_news_source_cli_exits_nonzero_and_does_not_report_zero_success(self):
+        from cli import cli
+        from sources.news_result import NewsCollectionResult
+
+        cfg = {"reuters": {"enabled": True}}
+        failure = NewsCollectionResult([], "error", "Reuters sitemap index failed: TimeoutError")
+        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure):
+            result = CliRunner().invoke(cli, ["news", "reuters"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Reuters collection failed", result.output)
+        self.assertNotIn("Found 0", result.output)
+
+    def test_news_all_exits_nonzero_when_any_source_fails(self):
+        from cli import cli
+        from sources.news_result import NewsCollectionResult
+
+        cfg = {"reuters": {"enabled": True}, "kobeissi": {"enabled": False}, "news_feed": {"output_path": "unused"}}
+        failure = NewsCollectionResult([], "error", "Reuters sitemap index failed: TimeoutError")
+        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure), patch("sources.news_feed.build_feed", return_value={"count": 0, "sources": [], "items": []}):
+            result = CliRunner().invoke(cli, ["news", "all"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Reuters: failed", result.output)
+        self.assertNotIn("Reuters: 0 articles", result.output)
+
+    def test_news_cli_uses_configured_defaults_when_options_are_omitted(self):
+        from cli import cli
+        from sources.news_result import NewsCollectionResult
+
+        cfg = {"reuters": {"enabled": True, "max_pages": 8}, "kobeissi": {"enabled": True, "count": 35}, "news_feed": {"output_path": "unused", "history_days": 12}}
+        success = NewsCollectionResult([], "ok", None)
+        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=success) as reuters, patch("sources.kobeissi.run_kobeissi", return_value=success) as kobeissi, patch("sources.news_feed.build_feed", return_value={"count": 0, "sources": [], "items": []}) as feed:
+            result = CliRunner().invoke(cli, ["news", "all"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        reuters.assert_called_once_with(cfg, max_pages=8)
+        kobeissi.assert_called_once_with(cfg, count=35)
+        feed.assert_called_once_with(cfg, days=12)
 
 
 if __name__ == "__main__":

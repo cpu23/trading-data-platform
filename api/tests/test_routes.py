@@ -6,6 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import unittest
+import json
+import tempfile
 import httpx
 from unittest.mock import MagicMock, patch
 
@@ -158,3 +160,23 @@ class TestBudgetRoute(unittest.TestCase):
         self.assertIn("today_cost_usd", data)
         self.assertIn("budget_cap_usd", data)
         self.assertIn("usage_pct", data)
+
+
+class TestNewsRoutes(unittest.TestCase):
+    def test_sources_handles_non_dictionary_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "reuters/state.json")
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps([]))
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {"enabled": True},
+                "kobeissi": {"enabled": False},
+            }
+            with patch("config.load_config", return_value=cfg):
+                resp = client.get("/api/news/sources", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        reuters = next(x for x in resp.json()["sources"] if x["name"] == "reuters")
+        self.assertEqual(reuters["status"], "error")
+        self.assertEqual(reuters["error"], "state file is invalid")

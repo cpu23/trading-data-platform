@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from logging_config import get_logger
+from sources.news_result import NewsCollectionResult
 from sources.news_storage import atomic_write_json, merge_items, read_json
 
 logger = get_logger("reuters")
@@ -140,11 +141,11 @@ def _page_error_context(url: str, error_type: str) -> str:
     return f"Reuters sitemap page failed at {safe_url}: {error_type}"
 
 
-def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
+def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
     """
     Poll Reuters news sitemap for new market-relevant articles.
 
-    Returns normalised feed items.
+    Returns a typed outcome; failed pages may coexist with successful-page items.
     """
     reuters_config = config.get("reuters", {})
     state_path = Path(reuters_config.get("state_path", "var/news/reuters/state.json"))
@@ -159,11 +160,12 @@ def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
 
     try:
         sitemap_urls = _fetch_sitemap_index()
-    except Exception as e:
-        logger.error("reuters_index_failed", error=str(e))
-        state.update({"last_poll": datetime.now(timezone.utc).isoformat(), "status": "error", "error": str(e)})
+    except Exception as exc:
+        error = f"Reuters sitemap index failed: {type(exc).__name__}"
+        logger.error("reuters_index_failed", error=error)
+        state.update({"last_poll": datetime.now(timezone.utc).isoformat(), "status": "error", "error": error})
         atomic_write_json(state_path, state)
-        return []
+        return NewsCollectionResult([], "error", error)
 
     pages_to_scan = min(max_pages, len(sitemap_urls))
     logger.info("reuters_scanning", pages=pages_to_scan)
@@ -173,11 +175,9 @@ def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
     for page_url in sitemap_urls[:pages_to_scan]:
         try:
             items = _parse_sitemap_page(page_url, seen_urls, reuters_config)
-        except ET.ParseError as exc:
-            error = f"Malformed sitemap XML at {page_url}: {exc}"
-            logger.warning(
-                "reuters_sitemap_parse_failed", url=page_url, error=str(exc)
-            )
+        except ET.ParseError:
+            error = _page_error_context(page_url, "ParseError")
+            logger.warning("reuters_sitemap_parse_failed", error=error)
             page_errors.append(error)
             continue
         except _SitemapPageFetchError as exc:
@@ -203,4 +203,5 @@ def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
     else:
         logger.info("reuters_poll_complete", new_items=0)
 
-    return all_items
+    error = state["error"]
+    return NewsCollectionResult(all_items, state["status"], error)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from logging_config import get_logger
+from sources.news_result import NewsCollectionResult
 from sources.news_storage import atomic_write_json, merge_items, read_json
 
 logger = get_logger("kobeissi")
@@ -18,7 +19,6 @@ def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalise a raw twitterapi.io tweet into a feed item."""
     entities = raw.get("entities", {})
     symbols = [s.get("text", "") for s in entities.get("symbols", [])]
-    urls = [u.get("expanded_url", u.get("url", "")) for u in entities.get("urls", [])]
     hashtags = [h.get("text", "") for h in entities.get("hashtags", [])]
 
     media = []
@@ -58,11 +58,11 @@ def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_kobeissi(config: dict, count: int = 20) -> list[dict[str, Any]]:
+def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
     """
     Fetch recent Kobeissi Letter tweets via twitterapi.io.
 
-    Returns normalised feed items.
+    Returns a typed outcome that distinguishes empty success from failure.
     """
     kobeissi_config = config.get("kobeissi", {})
     api_key = kobeissi_config.get("api_key", "")
@@ -91,18 +91,40 @@ def run_kobeissi(config: dict, count: int = 20) -> list[dict[str, Any]]:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-    except Exception as e:
-        logger.error("kobeissi_fetch_failed", error=str(e))
-        return []
+    except Exception as exc:
+        error = f"Kobeissi fetch failed: {type(exc).__name__}"
+        logger.error("kobeissi_fetch_failed", error=error)
+        state.update({
+            "last_poll": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": error,
+        })
+        atomic_write_json(state_path, state)
+        return NewsCollectionResult([], "error", error)
 
-    if data.get("status") != "success":
-        logger.error("kobeissi_api_error", msg=data.get("msg", "unknown"))
-        return []
+    if not isinstance(data, dict) or data.get("status") != "success":
+        error = "Kobeissi upstream API returned an error"
+        logger.error("kobeissi_api_error", error=error)
+        state.update({
+            "last_poll": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": error,
+        })
+        atomic_write_json(state_path, state)
+        return NewsCollectionResult([], "error", error)
 
-    raw_tweets = data.get("data", {}).get("tweets", [])
-    if not raw_tweets:
-        logger.info("kobeissi_no_tweets")
-        return []
+    response_data = data.get("data", {})
+    raw_tweets = response_data.get("tweets", []) if isinstance(response_data, dict) else None
+    if not isinstance(raw_tweets, list):
+        error = "Kobeissi upstream API returned an invalid response"
+        logger.error("kobeissi_api_error", error=error)
+        state.update({
+            "last_poll": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": error,
+        })
+        atomic_write_json(state_path, state)
+        return NewsCollectionResult([], "error", error)
 
     new_items: list[dict[str, Any]] = []
     for raw in raw_tweets:
@@ -130,4 +152,4 @@ def run_kobeissi(config: dict, count: int = 20) -> list[dict[str, Any]]:
     else:
         logger.info("kobeissi_fetch_complete", new_items=0)
 
-    return new_items
+    return NewsCollectionResult(new_items, "ok")

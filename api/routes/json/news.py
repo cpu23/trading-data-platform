@@ -50,6 +50,8 @@ def get_news_sources():
                 state = json.loads(state_file.read_text())
             except (OSError, json.JSONDecodeError):
                 state = {"status": "error", "error": "state file is invalid"}
+            if not isinstance(state, dict):
+                state = {"status": "error", "error": "state file is invalid"}
 
         sources.append({
             "name": name,

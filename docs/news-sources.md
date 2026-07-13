@@ -42,7 +42,8 @@ A feed item always includes `id`, `source`, `source_label`, `title`, `summary`,
 ## Reliability and recovery
 
 State and daily snapshots are replaced atomically. IDs are deduplicated, Reuters
-keeps a bounded ordered URL cursor, and Twitter IDs are compared numerically.
+keeps a bounded lexicographically sorted set of seen URLs, and Twitter IDs are
+compared numerically.
 Malformed state is treated as empty state and rewritten on the next successful
 poll. Malformed snapshots are skipped with a warning; malformed or invalid
 `feed.json` returns HTTP 503 rather than an application error. Deleting only a
