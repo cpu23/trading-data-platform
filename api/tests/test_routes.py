@@ -195,6 +195,102 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(resp.json()["readiness"], "unready")
         self.assertIn("invalid orchestrator health contract", resp.json()["components"][0]["error_message"])
 
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch("routes.json.system.httpx.get")
+    def test_malformed_complete_orchestrator_health_contract_returns_503(
+        self, mock_get, _query
+    ):
+        malformed_payloads = {
+            "invalid data_health": {
+                "liveness": "ok", "readiness": "ready", "data_health": "nonsense",
+                "components": [],
+            },
+            "null components": {
+                "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                "components": None,
+            },
+            "non-list components": {
+                "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                "components": {},
+            },
+            "non-dict component": {
+                "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                "components": ["database"],
+            },
+            "component missing name": {
+                "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                "components": [{"status": "available"}],
+            },
+            "component missing status": {
+                "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                "components": [{"name": "database"}],
+            },
+            "invalid readiness": {
+                "liveness": "ok", "readiness": "unknown", "data_health": "healthy",
+                "components": [],
+            },
+            "non-string liveness": {
+                "liveness": True, "readiness": "ready", "data_health": "healthy",
+                "components": [],
+            },
+        }
+
+        valid_quality = MagicMock()
+        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
+
+        for case, payload in malformed_payloads.items():
+            with self.subTest(case=case):
+                health = MagicMock()
+                health.json.return_value = payload
+                mock_get.reset_mock(side_effect=True)
+                mock_get.side_effect = [health, valid_quality]
+
+                resp = client.get("/api/system/health", headers=AUTH)
+
+                self.assertEqual(resp.status_code, 503)
+                data = resp.json()
+                self.assertEqual(data["liveness"], "ok")
+                self.assertEqual(data["readiness"], "unready")
+                self.assertEqual(data["data_health"], "degraded")
+                component = next(
+                    item for item in data["components"]
+                    if item["name"] == "orchestrator"
+                )
+                self.assertEqual(component["last_status"], "error")
+                self.assertIn("invalid orchestrator health contract", component["error_message"])
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch("routes.json.system.httpx.get")
+    def test_malformed_nested_orchestrator_quality_contract_returns_503(
+        self, mock_get, _query
+    ):
+        health = MagicMock()
+        health.json.return_value = {
+            "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+            "components": [], "scheduler": {"jobs": []},
+            "stream": {"status": "connected"},
+        }
+
+        malformed_checks = {
+            "non-dict list entry": ["fresh"],
+            "non-dict mapping value": {"fred_freshness": "fresh"},
+        }
+        for case, checks in malformed_checks.items():
+            with self.subTest(case=case):
+                quality = MagicMock()
+                quality.json.return_value = {"overall": "healthy", "checks": checks}
+                mock_get.reset_mock(side_effect=True)
+                mock_get.side_effect = [health, quality]
+
+                resp = client.get("/api/system/health", headers=AUTH)
+
+                self.assertEqual(resp.status_code, 503)
+                component = next(
+                    item for item in resp.json()["components"]
+                    if item["name"] == "orchestrator"
+                )
+                self.assertIn("invalid orchestrator quality contract", component["error_message"])
+
     def test_health_requires_auth(self):
         """GET /api/system/health without Basic-Auth header returns 401."""
         resp = client.get("/api/system/health")

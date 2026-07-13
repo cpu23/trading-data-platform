@@ -23,6 +23,76 @@ def _fmt(value):
     return str(value)
 
 
+def _validate_orchestrator_health_contract(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("invalid orchestrator health contract: payload must be an object")
+    if payload.get("liveness") != "ok":
+        raise ValueError("invalid orchestrator health contract: liveness must be 'ok'")
+    if payload.get("readiness") not in {"ready", "degraded", "unready"}:
+        raise ValueError("invalid orchestrator health contract: invalid readiness")
+    if payload.get("data_health") not in {"healthy", "degraded"}:
+        raise ValueError("invalid orchestrator health contract: invalid data_health")
+
+    components = payload.get("components")
+    if not isinstance(components, list):
+        raise ValueError("invalid orchestrator health contract: components must be a list")
+    for index, component in enumerate(components):
+        if not isinstance(component, dict):
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} must be an object"
+            )
+        if not isinstance(component.get("name"), str) or not component["name"]:
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} has invalid name"
+            )
+        if not isinstance(component.get("status"), str) or not component["status"]:
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} has invalid status"
+            )
+        if "kind" in component and not isinstance(component["kind"], str):
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} has invalid kind"
+            )
+        if "critical" in component and not isinstance(component["critical"], bool):
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} has invalid critical flag"
+            )
+        if "reason" in component and component["reason"] is not None and not isinstance(
+            component["reason"], str
+        ):
+            raise ValueError(
+                f"invalid orchestrator health contract: component {index} has invalid reason"
+            )
+
+
+def _validate_orchestrator_quality_contract(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("invalid orchestrator quality contract: payload must be an object")
+    if payload.get("overall") not in {"healthy", "degraded", "unhealthy"}:
+        raise ValueError("invalid orchestrator quality contract: invalid overall status")
+
+    checks = payload.get("checks")
+    if not isinstance(checks, (dict, list)):
+        raise ValueError("invalid orchestrator quality contract: checks must be an object or list")
+    entries = checks.items() if isinstance(checks, dict) else enumerate(checks)
+    for check_id, check in entries:
+        if isinstance(checks, dict) and not isinstance(check_id, str):
+            raise ValueError("invalid orchestrator quality contract: check names must be strings")
+        if not isinstance(check, dict):
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} must be an object"
+            )
+        if "healthy" in check and not isinstance(check["healthy"], bool):
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} has invalid healthy flag"
+            )
+        for field in ("name", "status", "freshness", "detail", "source_id"):
+            if field in check and not isinstance(check[field], str):
+                raise ValueError(
+                    f"invalid orchestrator quality contract: check {check_id} has invalid {field}"
+                )
+
+
 @router.get("/system/health")
 def get_system_health():
     config = load_config()
@@ -89,23 +159,16 @@ def get_system_health():
         health_response = httpx.get("http://orchestrator:8000/health", timeout=2.0)
         health_response.raise_for_status()
         orchestration = health_response.json()
-        required_health = {"liveness", "readiness", "data_health", "components"}
-        if not isinstance(orchestration, dict) or not required_health.issubset(orchestration):
-            raise ValueError("invalid orchestrator health contract")
-        if orchestration["liveness"] != "ok" or orchestration["readiness"] not in {"ready", "degraded"}:
+        _validate_orchestrator_health_contract(orchestration)
+        if orchestration["readiness"] == "unready":
             raise ValueError(
-                f"orchestrator is not ready ({orchestration.get('readiness')})"
+                f"orchestrator is not ready ({orchestration['readiness']})"
             )
 
         quality_response = httpx.get("http://orchestrator:8000/quality", timeout=5.0)
         quality_response.raise_for_status()
         quality = quality_response.json()
-        if (
-            not isinstance(quality, dict)
-            or quality.get("overall") not in {"healthy", "degraded", "unhealthy"}
-            or not isinstance(quality.get("checks"), (dict, list))
-        ):
-            raise ValueError("invalid orchestrator quality contract")
+        _validate_orchestrator_quality_contract(quality)
     except Exception as exc:
         reason = str(exc) or type(exc).__name__
         logger.warning("orchestrator_contract_unavailable", error=reason)
