@@ -275,6 +275,22 @@ def retry_abandoned_run(
         raise HTTPException(status_code=409, detail="Run kind cannot be retried")
     if run_kind in {"collector", "processor"} and not component:
         raise HTTPException(status_code=409, detail="Run is missing its requested component")
+    if run_kind == "collector":
+        from collectors import get_all_collectors
+
+        if component not in get_all_collectors():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Requested collector is no longer available: {component}",
+            )
+    elif run_kind == "processor":
+        from processors import get_all_processors
+
+        if component not in get_all_processors():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Requested processor is no longer available: {component}",
+            )
 
     new_correlation_id = str(uuid4())
     try:

@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import traceback
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -27,6 +28,16 @@ class RunAcceptanceConflict(RuntimeError):
 
 class RunStartConflict(RuntimeError):
     """A synchronously invoked run could not claim its accepted row."""
+
+
+def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
+    """Combine stage outcomes; no planned stages is a successful no-op."""
+    values = list(statuses)
+    if not values or all(status == "success" for status in values):
+        return "success"
+    if all(status == "failed" for status in values):
+        return "failed"
+    return "partial"
 
 
 def _resolved_config(config: dict | None) -> dict:
@@ -693,14 +704,10 @@ def _run_full_cycle_impl(
         progress_callback=record_progress,
     )
 
-    overall_status = "success"
     all_results = {**collector_results, **processor_results}
-    if any(r["status"] == "failed" for r in all_results.values()):
-        overall_status = (
-            "partial"
-            if any(r["status"] in ("success", "partial") for r in all_results.values())
-            else "failed"
-        )
+    overall_status = aggregate_stage_statuses(
+        result["status"] for result in all_results.values()
+    )
 
     cycle_result = {
         "status": overall_status,

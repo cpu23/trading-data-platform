@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 from logging_config import get_logger
 from orchestrator import (
     accept_run,
+    aggregate_stage_statuses,
     finalize_run_safely,
     maintain_run_heartbeat,
     run_collector,
@@ -45,6 +47,31 @@ def _start_scheduled_run(
 
 
 def _build_cron_trigger(schedule: str) -> CronTrigger:
+    fields = schedule.split()
+    if len(fields) == 5:
+        day_of_week = fields[4]
+        if day_of_week.isdigit():
+            posix_weekdays = {
+                "0": "sun",
+                "1": "mon",
+                "2": "tue",
+                "3": "wed",
+                "4": "thu",
+                "5": "fri",
+                "6": "sat",
+                "7": "sun",
+            }
+            if day_of_week not in posix_weekdays:
+                raise ValueError(
+                    "POSIX numeric weekday must be 0 through 7; use named weekdays"
+                )
+            fields[4] = posix_weekdays[day_of_week]
+            schedule = " ".join(fields)
+        elif re.search(r"\d", day_of_week):
+            raise ValueError(
+                "Complex numeric weekday expressions are unsupported; use named weekdays "
+                "such as mon-fri or sun"
+            )
     return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
 
 
@@ -59,8 +86,8 @@ def _scheduled_collector(source_id: str, config: dict) -> None:
     try:
         with maintain_run_heartbeat(config, correlation_id, worker_id):
             stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
-            overall = "failed" if all(item["status"] == "failed" for item in stages.values()) else (
-                "partial" if any(item["status"] == "failed" for item in stages.values()) else "success"
+            overall = aggregate_stage_statuses(
+                item["status"] for item in stages.values()
             )
             finalized = finalize_run_safely(
                 correlation_id,

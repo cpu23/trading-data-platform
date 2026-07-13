@@ -537,6 +537,85 @@ class DurableRunLifecycleTests(unittest.TestCase):
             scheduler._scheduled_processor("briefing", {})
         guard.assert_called_once_with({}, "run-id", "scheduler:worker-id")
 
+    def test_scheduled_collector_aggregates_every_stage_status_truthfully(self):
+        import scheduler
+
+        cases = [
+            ({"fred": {"status": "partial"}}, "partial"),
+            ({"fred": {"status": "success"}, "briefing": {"status": "failed"}}, "partial"),
+            ({"fred": {"status": "failed"}, "briefing": {"status": "failed"}}, "failed"),
+            ({"fred": {"status": "success"}, "briefing": {"status": "success"}}, "success"),
+        ]
+        for stages, expected in cases:
+            with self.subTest(stages=stages), patch(
+                "scheduler.uuid4", return_value="run-id"
+            ), patch("scheduler.accept_run"), patch(
+                "scheduler.start_run", return_value=True
+            ), patch(
+                "scheduler.maintain_run_heartbeat", return_value=nullcontext()
+            ), patch(
+                "scheduler._run_scheduled_collector_stages", return_value=stages
+            ), patch("scheduler.finalize_run_safely", return_value=True) as finalize:
+                scheduler._scheduled_collector("fred", {})
+
+            self.assertEqual(finalize.call_args.args[1], expected)
+
+    def test_full_cycle_returns_and_finalizes_truthful_aggregate_status(self):
+        import orchestrator
+
+        cases = [
+            (["partial"], "partial"),
+            (["success", "failed"], "partial"),
+            (["failed", "failed"], "failed"),
+            (["success", "success"], "success"),
+        ]
+        for statuses, expected in cases:
+            collector_ids = [f"collector-{index}" for index in range(len(statuses))]
+            config = {
+                "collectors": {
+                    collector_id: {"enabled": True} for collector_id in collector_ids
+                },
+                "processors": {},
+            }
+            results = [{"status": status} for status in statuses]
+            with self.subTest(statuses=statuses), patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={collector_id: Mock() for collector_id in collector_ids},
+            ), patch.object(
+                orchestrator, "get_all_processors", return_value={}
+            ), patch.object(
+                orchestrator, "run_collector", side_effect=results
+            ), patch.object(orchestrator, "accept_run"), patch.object(
+                orchestrator, "start_run", return_value=True
+            ), patch.object(
+                orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+            ), patch.object(
+                orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
+            ), patch.object(
+                orchestrator, "update_run_progress"
+            ), patch.object(
+                orchestrator, "finalize_run_safely", return_value=True
+            ) as finalize:
+                result = orchestrator.run_full_cycle(config=config, correlation_id="run-id")
+
+            self.assertEqual(result["status"], expected)
+            self.assertEqual(finalize.call_args.args[1], expected)
+
+    def test_empty_full_cycle_is_a_successful_no_op(self):
+        import orchestrator
+
+        with patch.object(orchestrator, "get_all_collectors", return_value={}), patch.object(
+            orchestrator, "get_all_processors", return_value={}
+        ), patch.object(orchestrator, "update_run_progress"):
+            result = orchestrator._run_full_cycle_impl(
+                config={"collectors": {}, "processors": {}},
+                correlation_id="run-id",
+                manage_lifecycle=False,
+            )
+
+        self.assertEqual(result["status"], "success")
+
 
 class AbandonedRunRecoveryTests(unittest.TestCase):
     """Phase 5 Task 17: restart reconciliation and explicit-only replay."""
@@ -620,6 +699,8 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         with patch("main._get_config", return_value={}), patch(
             "main.get_run_for_retry", return_value=old
         ), patch(
+            "collectors.get_all_collectors", return_value={"fred": Mock()}
+        ), patch(
             "main.accept_run", side_effect=lambda *args, **kwargs: events.append(("accept", args[1])) or datetime.now(timezone.utc)
         ):
             response = main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
@@ -627,6 +708,58 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         self.assertNotEqual(response["job_id"], "11111111-1111-4111-8111-111111111111")
         self.assertEqual(events[0], ("accept", response["job_id"]))
         self.assertEqual(events[1], ("enqueue", main._run_collector_task))
+
+    def test_retry_removed_component_is_rejected_before_acceptance_or_enqueue(self):
+        import main
+        from fastapi import HTTPException
+
+        cases = [("collector", "collectors"), ("processor", "processors")]
+        for run_kind, registry_module in cases:
+            old = {
+                "status": "abandoned",
+                "run_kind": run_kind,
+                "requested_component": "removed-component",
+            }
+            background = Mock()
+            with self.subTest(run_kind=run_kind), patch(
+                "main._get_config", return_value={}
+            ), patch("main.get_run_for_retry", return_value=old), patch(
+                f"{registry_module}.get_all_{registry_module}", return_value={}
+            ), patch("main.accept_run") as accept:
+                with self.assertRaises(HTTPException) as raised:
+                    main.retry_abandoned_run(
+                        "11111111-1111-4111-8111-111111111111", background
+                    )
+
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertIn("no longer available", raised.exception.detail)
+            accept.assert_not_called()
+            background.add_task.assert_not_called()
+
+    def test_retry_registered_processor_is_accepted_and_enqueued(self):
+        import main
+
+        background = Mock()
+        old = {
+            "status": "abandoned",
+            "run_kind": "processor",
+            "requested_component": "briefing",
+        }
+        with patch("main._get_config", return_value={}), patch(
+            "main.get_run_for_retry", return_value=old
+        ), patch(
+            "processors.get_all_processors", return_value={"briefing": Mock()}
+        ) as registry, patch(
+            "main.accept_run", return_value=datetime.now(timezone.utc)
+        ) as accept:
+            main.retry_abandoned_run(
+                "11111111-1111-4111-8111-111111111111", background
+            )
+
+        registry.assert_called_once_with()
+        accept.assert_called_once()
+        self.assertIs(background.add_task.call_args.args[0], main._run_processor_task)
+        self.assertEqual(background.add_task.call_args.args[1], "briefing")
 
     def test_retry_invalid_states_do_not_accept_or_enqueue(self):
         import main
@@ -993,6 +1126,46 @@ class RuntimeFeatureTests(unittest.TestCase):
             trigger.get_next_fire_time(None, monday),
             datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc),
         )
+
+    def test_legacy_numeric_sunday_schedules_fire_on_sunday_utc(self):
+        from scheduler import _build_cron_trigger
+
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        expected = datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc)
+        for weekday in ("0", "7"):
+            with self.subTest(weekday=weekday):
+                trigger = _build_cron_trigger(f"0 20 * * {weekday}")
+                self.assertEqual(trigger.get_next_fire_time(None, monday), expected)
+
+    def test_simple_posix_numeric_weekday_is_mapped_explicitly(self):
+        from scheduler import _build_cron_trigger
+
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        trigger = _build_cron_trigger("0 20 * * 1")
+
+        self.assertEqual(
+            trigger.get_next_fire_time(None, monday),
+            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+        )
+
+    def test_wildcard_and_named_weekdays_are_preserved(self):
+        from scheduler import _build_cron_trigger
+
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            _build_cron_trigger("0 20 * * *").get_next_fire_time(None, monday),
+            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            _build_cron_trigger("0 20 * * mon").get_next_fire_time(None, monday),
+            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+        )
+
+    def test_complex_numeric_weekday_expression_is_rejected_actionably(self):
+        from scheduler import _build_cron_trigger
+
+        with self.assertRaisesRegex(ValueError, "named weekdays"):
+            _build_cron_trigger("0 20 * * 0,1")
 
     def test_scheduler_registers_configured_cron_jobs(self):
         config = {
