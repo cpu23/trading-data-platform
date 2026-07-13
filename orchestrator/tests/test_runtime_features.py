@@ -219,6 +219,117 @@ class DurableRunLifecycleTests(unittest.TestCase):
         self.assertEqual(finish.call_args.args[1], "failed")
 
 
+class AbandonedRunRecoveryTests(unittest.TestCase):
+    """Phase 5 Task 17: restart reconciliation and explicit-only replay."""
+
+    def test_reconciliation_uses_deterministic_stale_cutoffs_and_preserves_fresh_runs(self):
+        from datetime import timedelta
+        from orchestrator import reconcile_abandoned_runs
+
+        now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+        session = Mock()
+        accepted_result = Mock()
+        accepted_result.scalars.return_value.all.return_value = ["stale-accepted"]
+        running_result = Mock()
+        running_result.scalars.return_value.all.return_value = ["stale-running"]
+        session.execute.side_effect = [accepted_result, running_result]
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            report = reconcile_abandoned_runs(
+                {},
+                now=now,
+                accepted_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=2),
+            )
+
+        accepted_sql, accepted_params = session.execute.call_args_list[0].args
+        running_sql, running_params = session.execute.call_args_list[1].args
+        self.assertIn("status = 'accepted'", str(accepted_sql))
+        self.assertIn("accepted_at < :cutoff", str(accepted_sql))
+        self.assertIn("status = 'running'", str(running_sql))
+        self.assertIn("COALESCE(heartbeat_at, started_at) < :cutoff", str(running_sql))
+        self.assertEqual(accepted_params["cutoff"], now - timedelta(minutes=10))
+        self.assertEqual(running_params["cutoff"], now - timedelta(minutes=2))
+        self.assertEqual(report["accepted_ids"], ["stale-accepted"])
+        self.assertEqual(report["running_ids"], ["stale-running"])
+        self.assertEqual(report["total"], 2)
+
+    def test_reconciliation_updates_only_nonterminal_states_with_stable_reason(self):
+        from orchestrator import reconcile_abandoned_runs
+
+        session = Mock()
+        result = Mock()
+        result.scalars.return_value.all.return_value = []
+        session.execute.side_effect = [result, result]
+        with patch("orchestrator.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            reconcile_abandoned_runs({}, now=datetime(2026, 7, 13, tzinfo=timezone.utc))
+
+        for execute_call in session.execute.call_args_list:
+            sql, params = execute_call.args
+            self.assertIn("status = :abandoned", str(sql))
+            self.assertNotIn("completed", str(sql).split("WHERE")[-1])
+            self.assertIn("restart reconciliation", params["reason"])
+
+    def test_startup_reconciles_before_scheduler_starts(self):
+        import main
+
+        events = []
+        with patch("main._get_config", return_value={}), patch(
+            "main.setup_logging"
+        ), patch("main.check_connection", return_value=True), patch(
+            "main.reconcile_abandoned_runs", side_effect=lambda *a, **k: events.append("reconcile") or {}
+        ), patch("main.start_scheduler", side_effect=lambda config: events.append("scheduler")), patch.object(
+            main.quote_stream, "start"
+        ):
+            main.on_startup()
+
+        self.assertEqual(events, ["reconcile", "scheduler"])
+
+    def test_retry_abandoned_accepts_new_run_before_enqueue(self):
+        import main
+
+        events = []
+        background = Mock()
+        background.add_task.side_effect = lambda *args: events.append(("enqueue", args[0]))
+        old = {
+            "correlation_id": "old-id",
+            "status": "abandoned",
+            "run_kind": "collector",
+            "requested_component": "fred",
+        }
+        with patch("main._get_config", return_value={}), patch(
+            "main.get_run_for_retry", return_value=old
+        ), patch(
+            "main.accept_run", side_effect=lambda *args, **kwargs: events.append(("accept", args[1])) or datetime.now(timezone.utc)
+        ):
+            response = main.retry_abandoned_run("old-id", background)
+
+        self.assertNotEqual(response["job_id"], "old-id")
+        self.assertEqual(events[0], ("accept", response["job_id"]))
+        self.assertEqual(events[1], ("enqueue", main._run_collector_task))
+
+    def test_retry_invalid_states_do_not_accept_or_enqueue(self):
+        import main
+        from fastapi import HTTPException
+
+        cases = [
+            (None, 404),
+            ({"status": "completed", "run_kind": "cycle", "requested_component": None}, 409),
+            ({"status": "abandoned", "run_kind": "mystery", "requested_component": None}, 409),
+        ]
+        for old, expected in cases:
+            background = Mock()
+            with self.subTest(old=old), patch("main._get_config", return_value={}), patch(
+                "main.get_run_for_retry", return_value=old
+            ), patch("main.accept_run") as accept:
+                with self.assertRaises(HTTPException) as raised:
+                    main.retry_abandoned_run("old-id", background)
+                self.assertEqual(raised.exception.status_code, expected)
+                accept.assert_not_called()
+                background.add_task.assert_not_called()
+
+
 class CollectionFailureStatusTests(unittest.TestCase):
     """Task 9: Propagate collection and persistence failures into run status."""
 

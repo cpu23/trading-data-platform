@@ -1,7 +1,7 @@
 import json
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
@@ -12,6 +12,9 @@ from processors import get_all_processors, get_processor
 from sqlalchemy import text
 
 logger = get_logger("orchestrator")
+
+DEFAULT_ACCEPTED_TIMEOUT = timedelta(minutes=15)
+DEFAULT_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
 
 
 class RunAcceptanceConflict(RuntimeError):
@@ -62,6 +65,70 @@ def accept_run(
         )
         raise RunAcceptanceConflict("run correlation or idempotency key already exists") from exc
     return accepted_at
+
+
+def reconcile_abandoned_runs(
+    config: dict,
+    now: datetime | None = None,
+    accepted_timeout: timedelta = DEFAULT_ACCEPTED_TIMEOUT,
+    heartbeat_timeout: timedelta = DEFAULT_HEARTBEAT_TIMEOUT,
+) -> dict:
+    """Mark jobs that could not have survived a process restart as abandoned."""
+    completed_at = now or datetime.now(timezone.utc)
+    accepted_reason = "abandoned by restart reconciliation: acceptance timeout exceeded"
+    running_reason = "abandoned by restart reconciliation: heartbeat timeout exceeded"
+
+    with get_session(config) as session:
+        accepted_result = session.execute(
+            text(
+                "UPDATE cycle_runs SET status = :abandoned, result_status = :abandoned, "
+                "completed_at = :completed_at, error_message = :reason "
+                "WHERE status = 'accepted' AND accepted_at < :cutoff "
+                "RETURNING correlation_id"
+            ),
+            {
+                "abandoned": "abandoned",
+                "completed_at": completed_at,
+                "reason": accepted_reason,
+                "cutoff": completed_at - accepted_timeout,
+            },
+        )
+        running_result = session.execute(
+            text(
+                "UPDATE cycle_runs SET status = :abandoned, result_status = :abandoned, "
+                "completed_at = :completed_at, error_message = :reason "
+                "WHERE status = 'running' "
+                "AND COALESCE(heartbeat_at, started_at) < :cutoff "
+                "RETURNING correlation_id"
+            ),
+            {
+                "abandoned": "abandoned",
+                "completed_at": completed_at,
+                "reason": running_reason,
+                "cutoff": completed_at - heartbeat_timeout,
+            },
+        )
+        accepted_ids = list(accepted_result.scalars().all())
+        running_ids = list(running_result.scalars().all())
+
+    return {
+        "accepted_ids": accepted_ids,
+        "running_ids": running_ids,
+        "total": len(accepted_ids) + len(running_ids),
+    }
+
+
+def get_run_for_retry(config: dict, correlation_id: str) -> dict | None:
+    """Return the immutable dispatch metadata needed for an explicit retry."""
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT correlation_id, status, run_kind, requested_component, triggered_by "
+                "FROM cycle_runs WHERE correlation_id = :cid"
+            ),
+            {"cid": correlation_id},
+        ).fetchone()
+    return dict(row._mapping) if row is not None else None
 
 
 def start_run(config: dict, correlation_id: str, worker_id: str) -> bool:

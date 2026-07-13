@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, BackgroundTasks, Body, HTTPException
@@ -17,10 +17,14 @@ except ImportError:
         return {}
 from logging_config import get_logger, setup_logging
 from orchestrator import (
+    DEFAULT_ACCEPTED_TIMEOUT,
+    DEFAULT_HEARTBEAT_TIMEOUT,
     RunAcceptanceConflict,
     accept_run,
     finish_run,
     get_last_collection_runs,
+    get_run_for_retry,
+    reconcile_abandoned_runs,
     run_collector,
     run_full_cycle,
     run_processor,
@@ -42,6 +46,20 @@ def _get_config():
     return load_config()
 
 
+def _job_timeout(config: dict, key: str, default: timedelta) -> timedelta:
+    jobs = config.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return default
+    value = jobs.get(key)
+    if value is None:
+        return default
+    try:
+        timeout = timedelta(minutes=float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return timeout if timeout.total_seconds() >= 0 else default
+
+
 @app.on_event("startup")
 def on_startup():
     global _cycle_lock
@@ -53,6 +71,21 @@ def on_startup():
 
     if not check_connection(config):
         raise RuntimeError("Database connection failed")
+    reconciliation = reconcile_abandoned_runs(
+        config,
+        accepted_timeout=_job_timeout(
+            config, "accepted_timeout_minutes", DEFAULT_ACCEPTED_TIMEOUT
+        ),
+        heartbeat_timeout=_job_timeout(
+            config, "heartbeat_timeout_minutes", DEFAULT_HEARTBEAT_TIMEOUT
+        ),
+    )
+    logger.info(
+        "abandoned_runs_reconciled",
+        accepted=len(reconciliation.get("accepted_ids", [])),
+        running=len(reconciliation.get("running_ids", [])),
+        total=reconciliation.get("total", 0),
+    )
     start_scheduler(config)
     quote_stream.start(config)
     logger.info("orchestrator_http_started", action="startup")
@@ -182,6 +215,59 @@ def _accept_http_run(
             error=str(exc),
         )
         raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
+
+
+@app.post("/runs/{correlation_id}/retry", status_code=202)
+def retry_abandoned_run(
+    correlation_id: str,
+    background_tasks: BackgroundTasks,
+):
+    config = _get_config()
+    previous = get_run_for_retry(config, correlation_id)
+    if previous is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if previous.get("status") != "abandoned":
+        raise HTTPException(status_code=409, detail="Only abandoned runs can be retried")
+
+    run_kind = previous.get("run_kind")
+    component = previous.get("requested_component")
+    if run_kind not in {"cycle", "collector", "processor"}:
+        raise HTTPException(status_code=409, detail="Run kind cannot be retried")
+    if run_kind in {"collector", "processor"} and not component:
+        raise HTTPException(status_code=409, detail="Run is missing its requested component")
+
+    new_correlation_id = str(uuid4())
+    try:
+        accepted_at = accept_run(
+            config,
+            new_correlation_id,
+            "retry",
+            run_kind,
+            component,
+        )
+    except RunAcceptanceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "run_retry_acceptance_failed",
+            prior_correlation_id=correlation_id,
+            correlation_id=new_correlation_id,
+            error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
+
+    if run_kind == "cycle":
+        background_tasks.add_task(_run_cycle_task, new_correlation_id)
+    elif run_kind == "collector":
+        background_tasks.add_task(_run_collector_task, str(component), new_correlation_id)
+    else:
+        background_tasks.add_task(_run_processor_task, str(component), new_correlation_id)
+
+    return {
+        "job_id": new_correlation_id,
+        "prior_job_id": correlation_id,
+        "accepted_at": accepted_at.isoformat(),
+    }
 
 
 def _run_cycle_task(correlation_id: str):
