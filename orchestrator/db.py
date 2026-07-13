@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
@@ -7,6 +8,25 @@ from sqlalchemy.orm import Session, sessionmaker
 from logging_config import get_logger
 
 logger = get_logger("db")
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """Outcome of a batch write operation (insert or upsert)."""
+
+    attempted: int
+    written: int
+    failed: int
+    errors: tuple[str, ...]
+
+    @property
+    def status(self) -> str:
+        """``"success"``, ``"partial"``, or ``"failed"``."""
+        if self.failed == 0:
+            return "success"
+        if self.written == 0:
+            return "failed"
+        return "partial"
 
 _engine = None
 _SessionFactory = None
@@ -59,14 +79,15 @@ def upsert_records(
     records: list[dict],
     conflict_columns: list[str],
     config: dict | None = None,
-) -> int:
+) -> WriteResult:
     if not records:
-        return 0
+        return WriteResult(attempted=0, written=0, failed=0, errors=())
 
     import json as _json
 
     start_ms = _now_ms()
     written = 0
+    errors: list[str] = []
 
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
@@ -103,6 +124,7 @@ def upsert_records(
                 written += 1
             except Exception as exc:
                 nested.rollback()
+                errors.append(str(exc))
                 logger.error(
                     "upsert_record_failed",
                     action="upsert_record",
@@ -121,7 +143,13 @@ def upsert_records(
         duration_ms=duration_ms,
     )
 
-    return written
+    attempted = len(records)
+    return WriteResult(
+        attempted=attempted,
+        written=written,
+        failed=attempted - written,
+        errors=tuple(errors),
+    )
 
 
 def query_latest(
@@ -179,14 +207,15 @@ def insert_records(
     table_name: str,
     records: list[dict],
     config: dict | None = None,
-) -> int:
+) -> WriteResult:
     if not records:
-        return 0
+        return WriteResult(attempted=0, written=0, failed=0, errors=())
 
     import json as _json
 
     start_ms = _now_ms()
     written = 0
+    errors: list[str] = []
 
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
@@ -210,6 +239,7 @@ def insert_records(
                 written += 1
             except Exception as exc:
                 nested.rollback()
+                errors.append(str(exc))
                 logger.error(
                     "insert_record_failed",
                     action="insert_record",
@@ -228,7 +258,13 @@ def insert_records(
         duration_ms=duration_ms,
     )
 
-    return written
+    attempted = len(records)
+    return WriteResult(
+        attempted=attempted,
+        written=written,
+        failed=attempted - written,
+        errors=tuple(errors),
+    )
 
 
 def _now_ms() -> float:
