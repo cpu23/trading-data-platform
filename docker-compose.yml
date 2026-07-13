@@ -23,6 +23,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
+      - ./db/migrations:/app/db/migrations:ro
       - ./data/news:/var/lib/trading-data/news
       - ./logs:/var/log/trading-data
     depends_on:

@@ -8,10 +8,7 @@ from sqlalchemy import text
 
 logger = get_logger("migrate")
 
-MIGRATIONS_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "db", "migrations"
-)
+MIGRATIONS_DIR = os.environ.get("MIGRATIONS_DIR", "/app/db/migrations")
 
 _MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 
@@ -73,13 +70,14 @@ def run_migrations(config):
 
     Returns a list of version strings that were applied in this run.
     """
-    ensure_tracking_table(config)
-    applied = get_applied_versions(config)
-
     migrations_dir = os.path.normpath(MIGRATIONS_DIR)
     if not os.path.isdir(migrations_dir):
-        logger.warning("migrations_dir_not_found", path=migrations_dir)
-        return []
+        raise FileNotFoundError(
+            f"Migration inventory directory does not exist: {migrations_dir}"
+        )
+
+    ensure_tracking_table(config)
+    applied = get_applied_versions(config)
 
     files = sorted(os.listdir(migrations_dir))
     pending = []
