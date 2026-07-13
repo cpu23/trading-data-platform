@@ -22,3 +22,4 @@ pgdata/
 *.sqlite3
 *.db
 data/
+var/

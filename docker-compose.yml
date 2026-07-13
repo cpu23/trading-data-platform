@@ -23,7 +23,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./data/financial_times:/var/lib/trading-data/financial_times
+      - ./data/news:/var/lib/trading-data/news
       - ./logs:/var/log/trading-data
     depends_on:
       postgres:
@@ -48,6 +48,7 @@ services:
       - ./api/static:/app/static:ro
       - ./api/templates:/app/templates:ro
       - ./api/routes:/app/routes:ro
+      - ./data/news:/var/lib/trading-data/news:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -417,145 +417,105 @@ def migrate():
         click.echo("No pending migrations.")
 
 
-def _parse_since(since_str: str):
-    """Parse --since argument: '24h', '7d', or ISO date."""
-    from datetime import datetime, timedelta, timezone
-    import re
-    m = re.match(r"^(\d+)(h|d)$", since_str)
-    if m:
-        amount = int(m.group(1))
-        unit = m.group(2)
-        delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
-        return datetime.now(timezone.utc) - delta
-    try:
-        return datetime.fromisoformat(since_str)
-    except ValueError:
-        raise click.BadParameter(f"Invalid --since value: {since_str}. Use '24h', '7d', or ISO date.")
-
-
-VALID_SECTIONS = {"homepage", "lex", "unhedged"}
-
+# ── News feed commands ────────────────────────────────────────────────────
 
 @cli.group()
-def ft():
-    """Financial Times on-demand ingestion."""
+def news():
+    """News feed: Reuters sitemap, Kobeissi tweets, unified feed."""
     pass
 
 
-@ft.command("discover")
-@click.option("--sections", default="homepage,lex,unhedged", help="Comma-separated feed sections")
-@click.option("--since", default="24h", help="Time window (e.g. 24h, 7d, or ISO date)")
-@click.option("--json", "output_json", is_flag=True, help="Machine-readable JSON output")
-def ft_discover(sections, since, output_json):
-    """Discover FT articles from RSS without archive ingestion."""
-    from sources.financial_times import run_financial_times
-    from uuid import uuid4
+@news.command("reuters")
+@click.option("--pages", type=int, default=3, help="Max sitemap pages to scan")
+@click.option("--json", "output_json", is_flag=True)
+def news_reuters(pages, output_json):
+    """Poll Reuters sitemap for market-relevant articles."""
+    from sources.reuters import run_reuters
     config = load_config()
-    section_list = [s.strip() for s in sections.split(",")]
-    invalid = [s for s in section_list if s not in VALID_SECTIONS]
-    if invalid:
-        click.echo(f"Invalid sections: {', '.join(invalid)}. Valid: {', '.join(sorted(VALID_SECTIONS))}", err=True)
+    if not config.get("reuters", {}).get("enabled"):
+        click.echo("Reuters source is disabled in config.", err=True)
         raise SystemExit(1)
-    since_dt = _parse_since(since)
-    result = run_financial_times(
-        config=config,
-        correlation_id=str(uuid4()),
-        sections=tuple(section_list),
-        since=since_dt,
-        ingest=False,
-    )
+    articles = run_reuters(config, max_pages=pages)
     if output_json:
         import json as json_mod
-        click.echo(json_mod.dumps(result, indent=2, default=str))
+        click.echo(json_mod.dumps(articles, indent=2, default=str))
     else:
-        click.echo(f"Discovered {result['articles_discovered']} articles")
-        for art in result.get("articles", []):
-            click.echo(f"  {art.get('content_id', '?')}: {art.get('canonical_url', '?')}")
+        click.echo(f"Found {len(articles)} new market-relevant articles:")
+        for a in articles[:15]:
+            kws = ", ".join(a.get("matched_keywords", []))
+            click.echo(f"  {a['title'][:80]}")
+            click.echo(f"    {kws} | {a['url']}")
+        if len(articles) > 15:
+            click.echo(f"  ... and {len(articles) - 15} more")
 
 
-@ft.command("run")
-@click.option("--sections", default="homepage,lex,unhedged")
-@click.option("--since", default="24h")
-@click.option("--until", default=None)
-@click.option("--max-articles", type=int, default=None)
-@click.option("--no-ingest", is_flag=True, help="Discovery only, no archive submission")
-@click.option("--wait/--no-wait", default=True, help="Wait for archive captures")
+@news.command("kobeissi")
+@click.option("--count", type=int, default=20, help="Number of tweets to fetch")
 @click.option("--json", "output_json", is_flag=True)
-def ft_run(sections, since, until, max_articles, no_ingest, wait, output_json):
-    """Run full FT collection (discover + archive)."""
-    from sources.financial_times import run_financial_times
-    from uuid import uuid4
+def news_kobeissi(count, output_json):
+    """Fetch Kobeissi Letter tweets."""
+    from sources.kobeissi import run_kobeissi
     config = load_config()
-    section_list = [s.strip() for s in sections.split(",")]
-    invalid = [s for s in section_list if s not in VALID_SECTIONS]
-    if invalid:
-        click.echo(f"Invalid sections: {', '.join(invalid)}. Valid: {', '.join(sorted(VALID_SECTIONS))}", err=True)
+    if not config.get("kobeissi", {}).get("enabled"):
+        click.echo("Kobeissi source is disabled in config.", err=True)
         raise SystemExit(1)
-    since_dt = _parse_since(since)
-    until_dt = _parse_since(until) if until else None
-    result = run_financial_times(
-        config=config,
-        correlation_id=str(uuid4()),
-        sections=tuple(section_list),
-        since=since_dt,
-        until=until_dt,
-        max_articles=max_articles,
-        ingest=not no_ingest,
-        wait_for_capture=wait,
-    )
+    tweets = run_kobeissi(config, count=count)
     if output_json:
         import json as json_mod
-        click.echo(json_mod.dumps(result, indent=2, default=str))
+        click.echo(json_mod.dumps(tweets, indent=2, default=str))
     else:
-        symbol = _status_symbol(result["status"])
-        click.echo(f"{symbol} Discovered: {result['articles_discovered']}, Captured: {result['articles_captured']}, Failed: {result['articles_failed']}")
-        for art in result.get("articles", []):
-            status = art.get("status", "?")
-            click.echo(f"  [{status}] {art.get('content_id', '?')}: {art.get('canonical_url', '?')}")
+        click.echo(f"Found {len(tweets)} new tweets:")
+        for t in tweets[:10]:
+            syms = f"  ${'  $'.join(t.get('symbols', []))}" if t.get("symbols") else ""
+            click.echo(f"  {t['title'][:100]}...{syms}")
+        if len(tweets) > 10:
+            click.echo(f"  ... and {len(tweets) - 10} more")
 
 
-@ft.command("resume")
-@click.argument("run_id")
+@news.command("feed")
+@click.option("--days", type=int, default=7, help="Days of history to include")
 @click.option("--json", "output_json", is_flag=True)
-def ft_resume(run_id, output_json):
-    """Resume a failed/partial FT collection run."""
-    from sources.financial_times import resume_ft_captures
-    from uuid import uuid4
+def news_feed_cmd(days, output_json):
+    """Build unified feed.json from all sources."""
+    from sources.news_feed import build_feed
     config = load_config()
-    result = resume_ft_captures(config=config, correlation_id=str(uuid4()))
+    feed = build_feed(config, days=days)
     if output_json:
         import json as json_mod
-        click.echo(json_mod.dumps(result, indent=2, default=str))
+        click.echo(json_mod.dumps(feed, indent=2, default=str))
     else:
-        click.echo(f"Resumed {result['captures_resumed']} captures: {result['captures_succeeded']} succeeded, {result['captures_failed']} failed")
+        click.echo(f"Feed built: {feed['count']} items from {len(feed['sources'])} sources")
+        for item in feed["items"][:10]:
+            click.echo(f"  [{item['source']}] {item['title'][:80]}")
+        if feed["count"] > 10:
+            click.echo(f"  ... and {feed['count'] - 10} more")
 
 
-@ft.command("status")
-@click.argument("run_id", required=False)
-@click.option("--json", "output_json", is_flag=True)
-def ft_status(run_id, output_json):
-    """Show status of FT collection run(s)."""
-    from sources.financial_times_repository import get_ft_run, get_recent_ft_runs
+@news.command("all")
+@click.option("--pages", type=int, default=3, help="Max Reuters sitemap pages")
+@click.option("--count", type=int, default=20, help="Kobeissi tweets to fetch")
+@click.option("--days", type=int, default=7, help="Feed history days")
+def news_all(pages, count, days):
+    """Run all news sources and build feed."""
+    from sources.reuters import run_reuters
+    from sources.kobeissi import run_kobeissi
+    from sources.news_feed import build_feed
     config = load_config()
-    with get_session(config) as session:
-        if run_id:
-            run = get_ft_run(session, run_id)
-            if not run:
-                click.echo(f"Run not found: {run_id}", err=True)
-                raise SystemExit(1)
-            runs = [run]
-        else:
-            runs = get_recent_ft_runs(session)
-    if output_json:
-        import json as json_mod
-        click.echo(json_mod.dumps(runs, indent=2, default=str))
+
+    if config.get("reuters", {}).get("enabled", False):
+        r = run_reuters(config, max_pages=pages)
+        click.echo(f"Reuters: {len(r)} articles")
     else:
-        if not runs:
-            click.echo("No FT collection runs found.")
-            return
-        for run in runs:
-            symbol = _status_symbol(run.get("status", "unknown"))
-            click.echo(f"  {symbol} {run['run_id']}: {run.get('status')} — discovered: {run.get('articles_discovered', 0)}, captured: {run.get('articles_captured', 0)}, failed: {run.get('articles_failed', 0)}")
+        click.echo("Reuters: disabled")
+
+    if config.get("kobeissi", {}).get("enabled", False):
+        k = run_kobeissi(config, count=count)
+        click.echo(f"Kobeissi: {len(k)} tweets")
+    else:
+        click.echo("Kobeissi: disabled")
+
+    feed = build_feed(config, days=days)
+    click.echo(f"Feed: {feed['count']} items total")
 
 
 def _status_symbol(status: str) -> str:
