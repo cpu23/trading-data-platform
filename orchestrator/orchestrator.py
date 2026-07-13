@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
+from collectors.base import CollectionResult
 from db import get_session, insert_records, upsert_records
 from logging_config import get_logger
 from processors import get_all_processors, get_processor
@@ -127,20 +128,60 @@ def run_collector(
     status = "success"
     error_message = None
     error_traceback = None
+    collection_errors: list[dict] = []
 
     try:
-        records = collector.collect(config, correlation_id)
+        raw_result = collector.collect(config, correlation_id)
+
+        # Normalise: accept both CollectionResult and plain list[dict]
+        if isinstance(raw_result, CollectionResult):
+            records = raw_result.records
+            collection_errors = raw_result.errors
+            # Derive collection-level status from structured result
+            if raw_result.all_failed:
+                status = "failed"
+                error_message = (
+                    f"All {raw_result.total_series} series failed: "
+                    + "; ".join(
+                        f"{e['series_id']}: {e['error']}" for e in raw_result.errors[:3]
+                    )
+                )
+            elif raw_result.partial_failure:
+                status = "partial"
+        else:
+            records = raw_result
+            # Backward compat: try collector.last_errors
+            collection_errors = getattr(collector, "last_errors", [])
+
         records_fetched = len(records)
 
         if records:
             table_name = collector.get_target_table()
             conflict_columns = collector.get_conflict_columns()
-            records_written = upsert_records(
+            write_result = upsert_records(
                 table_name=table_name,
                 records=records,
                 conflict_columns=conflict_columns,
                 config=config,
             )
+            records_written = write_result.written
+
+            # Derive write-level status using WriteResult.status (Task 8)
+            write_status = write_result.status
+            if write_status == "failed":
+                status = "failed"
+                if not error_message:
+                    error_message = (
+                        f"All {write_result.attempted} DB writes failed "
+                        f"for table {table_name}"
+                    )
+            elif write_status == "partial":
+                if status == "success":
+                    status = "partial"
+                error_message = error_message or (
+                    f"Partial DB write: {write_result.written}/{write_result.attempted} "
+                    f"records written to {table_name}"
+                )
 
         api_calls_made = _estimate_api_calls(source_id, records_fetched, config)
 

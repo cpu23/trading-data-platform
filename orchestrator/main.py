@@ -186,6 +186,12 @@ def trigger_collector(
     background_tasks: BackgroundTasks,
     body: dict | None = Body(default=None),
 ):
+    from collectors import get_all_collectors
+
+    valid_ids = get_all_collectors()
+    if source_id not in valid_ids:
+        raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
+
     correlation_id = _correlation_id_from_body(body)
     background_tasks.add_task(_run_collector_task, source_id, correlation_id)
     return {
@@ -210,6 +216,12 @@ def trigger_processor(
     background_tasks: BackgroundTasks,
     body: dict | None = Body(default=None),
 ):
+    from processors import get_all_processors
+
+    valid_ids = get_all_processors()
+    if processor_id not in valid_ids:
+        raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
+
     correlation_id = _correlation_id_from_body(body)
     background_tasks.add_task(_run_processor_task, processor_id, correlation_id)
     return {

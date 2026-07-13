@@ -13,6 +13,200 @@ from orchestrator import update_run_progress
 from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
 
+class ComponentIdValidationTests(unittest.TestCase):
+    """Task 10: Validate component IDs before accepting background work."""
+
+    def setUp(self):
+        from main import app
+        from fastapi.testclient import TestClient
+        self.client = TestClient(app)
+
+    def test_run_collector_invalid_id_returns_404(self):
+        """POST /run_collector/not-real returns 404."""
+        resp = self.client.post("/run_collector/not-real")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_run_processor_invalid_id_returns_404(self):
+        """POST /run_processor/not-real returns 404."""
+        resp = self.client.post("/run_processor/not-real")
+        self.assertEqual(resp.status_code, 404)
+
+    @patch("main.get_session")
+    def test_no_cycle_runs_row_created_for_invalid_collector(self, get_session):
+        """No cycle_runs row is created for invalid collector IDs."""
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        resp = self.client.post("/run_collector/invalid-collector-id")
+        self.assertEqual(resp.status_code, 404)
+        # ensure_run should never have been called, so no INSERT into cycle_runs
+        insert_calls = [
+            call for call in session.execute.call_args_list
+            if "INSERT INTO cycle_runs" in str(call)
+        ]
+        self.assertEqual(len(insert_calls), 0,
+                         "No cycle_runs INSERT should occur for invalid collector ID")
+
+    @patch("main.get_session")
+    def test_no_cycle_runs_row_created_for_invalid_processor(self, get_session):
+        """No cycle_runs row is created for invalid processor IDs."""
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        resp = self.client.post("/run_processor/invalid-processor-id")
+        self.assertEqual(resp.status_code, 404)
+        insert_calls = [
+            call for call in session.execute.call_args_list
+            if "INSERT INTO cycle_runs" in str(call)
+        ]
+        self.assertEqual(len(insert_calls), 0,
+                         "No cycle_runs INSERT should occur for invalid processor ID")
+
+
+class CollectionFailureStatusTests(unittest.TestCase):
+    """Task 9: Propagate collection and persistence failures into run status."""
+
+    def setUp(self):
+        from main import app
+        from fastapi.testclient import TestClient
+        self.client = TestClient(app)
+        self.config = {
+            "database": {"host": "localhost", "port": 5432, "name": "test",
+                         "user": "test", "password": "test"},
+            "collectors": {"fred": {"enabled": True, "schedule": "0 6 * * *",
+                                     "api_key": "test", "series": [
+                                         {"id": "GDP", "frequency": "quarterly"},
+                                         {"id": "CPI", "frequency": "monthly"},
+                                     ]}},
+            "processors": {},
+        }
+
+    @patch("orchestrator.get_collector")
+    @patch("orchestrator.get_session")
+    def test_all_series_fail_yields_failed_status(self, get_session, get_collector):
+        """All FRED series fail → collector status 'failed'."""
+        from collectors.base import CollectionResult
+
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+        session.execute.return_value = None
+
+        mock_collector = Mock()
+        mock_collector.get_target_table.return_value = "macro_series"
+        mock_collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+        # Return CollectionResult with all series failed (Task 9)
+        mock_collector.collect.return_value = CollectionResult(
+            records=[],
+            errors=[
+                {"series_id": "GDP", "error": "Connection refused", "frequency": "quarterly"},
+                {"series_id": "CPI", "error": "Connection refused", "frequency": "monthly"},
+            ],
+            total_series=2,
+            successful_series=0,
+        )
+        get_collector.return_value = mock_collector
+
+        from orchestrator import run_collector
+        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+
+        self.assertEqual(result["status"], "failed",
+                         "All series failed → status should be 'failed'")
+
+    @patch("orchestrator.get_collector")
+    @patch("orchestrator.upsert_records")
+    @patch("orchestrator.get_session")
+    def test_some_series_fail_yields_partial_status(self, get_session,
+                                                     upsert_records,
+                                                     get_collector):
+        """Some FRED series fail → collector status 'partial'."""
+        from collectors.base import CollectionResult
+        from db import WriteResult
+
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        mock_collector = Mock()
+        mock_collector.get_target_table.return_value = "macro_series"
+        mock_collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+        # Return CollectionResult with partial failure (GDP succeeded, CPI failed)
+        mock_collector.collect.return_value = CollectionResult(
+            records=[{"series_id": "GDP", "value": 1.0}],
+            errors=[{"series_id": "CPI", "error": "Connection refused", "frequency": "monthly"}],
+            total_series=2,
+            successful_series=1,
+        )
+        get_collector.return_value = mock_collector
+
+        # DB writes succeed for the fetched records
+        upsert_records.return_value = WriteResult(
+            attempted=1, written=1, failed=0, errors=()
+        )
+
+        from orchestrator import run_collector
+        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        self.assertEqual(result["status"], "partial",
+                         "Partial collection failure → status should be 'partial'")
+
+    @patch("orchestrator.get_collector")
+    @patch("orchestrator.upsert_records")
+    @patch("orchestrator.get_session")
+    def test_records_fetched_but_all_writes_fail_yields_failed(self, get_session,
+                                                                upsert_records,
+                                                                get_collector):
+        """Records fetched but every DB write fails → status 'failed'."""
+        from db import WriteResult
+
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        mock_collector = Mock()
+        mock_collector.get_target_table.return_value = "macro_series"
+        mock_collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+        mock_collector.collect.return_value = [
+            {"series_id": "GDP", "observed_at": "2024-01-01", "value": 1.0}
+        ]
+        get_collector.return_value = mock_collector
+
+        upsert_records.return_value = WriteResult(
+            attempted=1, written=0, failed=1, errors=("write error",)
+        )
+
+        from orchestrator import run_collector
+        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        self.assertEqual(result["status"], "failed",
+                         "Status should be 'failed' when records fetched but none written")
+
+    @patch("orchestrator.get_collector")
+    @patch("orchestrator.upsert_records")
+    @patch("orchestrator.get_session")
+    def test_some_writes_fail_yields_partial_status(self, get_session,
+                                                     upsert_records,
+                                                     get_collector):
+        """Some DB writes fail → status 'partial'."""
+        from db import WriteResult
+
+        session = Mock()
+        get_session.return_value.__enter__.return_value = session
+
+        mock_collector = Mock()
+        mock_collector.get_target_table.return_value = "macro_series"
+        mock_collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+        mock_collector.collect.return_value = [
+            {"series_id": "GDP", "observed_at": "2024-01-01", "value": 1.0},
+            {"series_id": "CPI", "observed_at": "2024-01-01", "value": 2.0},
+        ]
+        get_collector.return_value = mock_collector
+
+        upsert_records.return_value = WriteResult(
+            attempted=2, written=1, failed=1, errors=("write error",)
+        )
+
+        from orchestrator import run_collector
+        result = run_collector("fred", config=self.config, correlation_id="test-cid")
+        self.assertEqual(result["status"], "partial",
+                         "Status should be 'partial' when some but not all records written")
+
+
 class RuntimeFeatureTests(unittest.TestCase):
     def tearDown(self):
         stop_scheduler()

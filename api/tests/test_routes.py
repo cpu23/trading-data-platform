@@ -64,6 +64,24 @@ AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}  # test:test
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Task 10: Validate component IDs
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestComponentIdValidation(unittest.TestCase):
+    """Task 10: API validates component IDs before forwarding to orchestrator."""
+
+    def test_collect_invalid_id_returns_404(self):
+        """POST /api/triggers/collect/not-real returns 404."""
+        resp = client.post("/api/triggers/collect/not-real", headers=AUTH)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_process_invalid_id_returns_404(self):
+        """POST /api/triggers/process/not-real returns 404."""
+        resp = client.post("/api/triggers/process/not-real", headers=AUTH)
+        self.assertEqual(resp.status_code, 404)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Test cases
 # ═════════════════════════════════════════════════════════════════════════════
 

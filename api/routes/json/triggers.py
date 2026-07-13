@@ -11,6 +11,11 @@ logger = get_logger("api.triggers")
 
 ORCHESTRATOR_URL = "http://orchestrator:8000"
 
+# Component ID registries — keep in sync with orchestrator/collectors/__init__.py
+# and orchestrator/processors/__init__.py
+_VALID_COLLECTORS = frozenset({"fred", "forex_factory", "oanda"})
+_VALID_PROCESSORS = frozenset({"macro_regime", "event_impact", "briefing"})
+
 
 def _orchestrator_job_payload(response: httpx.Response, fallback_id: str, now: str) -> dict:
     payload = response.json()
@@ -23,6 +28,9 @@ def _orchestrator_job_payload(response: httpx.Response, fallback_id: str, now: s
 
 @router.post("/collect/{source_id}", status_code=202)
 async def trigger_collect(source_id: str):
+    if source_id not in _VALID_COLLECTORS:
+        raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
+
     correlation_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
@@ -47,6 +55,9 @@ async def trigger_collect(source_id: str):
 
 @router.post("/process/{processor_id}", status_code=202)
 async def trigger_process(processor_id: str):
+    if processor_id not in _VALID_PROCESSORS:
+        raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
+
     correlation_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 

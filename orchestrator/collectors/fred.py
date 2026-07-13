@@ -2,6 +2,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from collectors.base import CollectionResult
 from db import query_latest
 from http_client import make_request
 from logging_config import get_logger
@@ -26,8 +27,9 @@ class FredCollector:
 
     def __init__(self):
         self._metadata_cache = {}
+        self.last_errors: list[dict] = []
 
-    def collect(self, config: dict, correlation_id: str) -> list[dict]:
+    def collect(self, config: dict, correlation_id: str) -> CollectionResult:
         fred_config = config["collectors"]["fred"]
         api_key = fred_config["api_key"]
         series_list = fred_config["series"]
@@ -40,6 +42,9 @@ class FredCollector:
         }
 
         all_records: list[dict] = []
+        errors: list[dict] = []
+        total_series = len(series_list)
+        successful_series = 0
 
         for series_entry in series_list:
             series_id = series_entry["id"]
@@ -55,6 +60,7 @@ class FredCollector:
                     config=config,
                 )
                 all_records.extend(records)
+                successful_series += 1
                 logger.info(
                     "series_collected",
                     action="collect_series",
@@ -63,6 +69,12 @@ class FredCollector:
                     correlation_id=correlation_id,
                 )
             except Exception as exc:
+                error_entry = {
+                    "series_id": series_id,
+                    "error": str(exc),
+                    "frequency": frequency,
+                }
+                errors.append(error_entry)
                 logger.error(
                     "series_collection_failed",
                     action="collect_series",
@@ -71,7 +83,26 @@ class FredCollector:
                     correlation_id=correlation_id,
                 )
 
-        return all_records
+        self.last_errors = errors
+
+        result = CollectionResult(
+            records=all_records,
+            errors=errors,
+            total_series=total_series,
+            successful_series=successful_series,
+        )
+
+        if errors:
+            logger.warning(
+                "fred_collection_partial",
+                action="collect",
+                total_series=total_series,
+                successful_series=successful_series,
+                failed_series=len(errors),
+                correlation_id=correlation_id,
+            )
+
+        return result
 
     def _collect_series(
         self,
