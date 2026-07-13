@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
@@ -170,7 +171,7 @@ def setup_logging(level: str = "INFO", correlation_id: str | None = None):
         foreign_pre_chain=shared_processors,
     )
 
-    stdout_handler = logging.StreamHandler()
+    stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)
     stdout_handler.setLevel(stdlib_level)
 

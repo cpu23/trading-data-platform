@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import logging
+import sys
 import unittest
 
 import structlog
@@ -93,16 +94,21 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertIn("unserializable", rendered)
 
     def test_rendered_structlog_output_is_redacted_and_keeps_structured_fields(self):
+        stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             logging_config.setup_logging("INFO", correlation_id="corr-21")
+            handler = logging.getLogger().handlers[0]
+            self.assertIsInstance(handler, logging.StreamHandler)
+            self.assertIs(handler.stream, sys.stdout)
             structlog.get_logger().info(
                 "request https://example.test/path?token=query-secret-93&view=full",
                 headers={"Authorization": "Bearer header-secret-96"},
                 nested={"password": "nested-secret-92"},
             )
 
-        output = stderr.getvalue()
+        output = stdout.getvalue()
+        self.assertEqual(stderr.getvalue(), "")
         payload = json.loads(output.strip().splitlines()[-1])
         self.assertEqual(payload["correlation_id"], "corr-21")
         self.assertEqual(payload["headers"]["Authorization"], "[REDACTED]")

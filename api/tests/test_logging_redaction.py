@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import logging
+import sys
 import unittest
 
 import structlog
@@ -36,16 +37,21 @@ class ApiLoggingRedactionTests(unittest.TestCase):
             self.assertNotIn(secret, rendered)
 
     def test_api_rendered_output_redacts_credentials_and_quiets_dependencies(self):
+        stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             logging_config.setup_logging("INFO")
+            handler = logging.getLogger().handlers[0]
+            self.assertIsInstance(handler, logging.StreamHandler)
+            self.assertIs(handler.stream, sys.stdout)
             structlog.get_logger().info(
                 "upstream https://api.test/data?access_token=api-access-secret&format=json",
                 cookie="api-cookie-secret",
                 correlation_id="api-corr-21",
             )
 
-        output = stderr.getvalue()
+        output = stdout.getvalue()
+        self.assertEqual(stderr.getvalue(), "")
         payload = json.loads(output.strip().splitlines()[-1])
         self.assertEqual(payload["correlation_id"], "api-corr-21")
         self.assertEqual(payload["cookie"], "[REDACTED]")
