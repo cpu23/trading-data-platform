@@ -55,7 +55,7 @@ class RuntimeFeatureTests(unittest.TestCase):
         self.assertEqual(config["defaulted"], "fallback")
         self.assertEqual(config["explicit_empty"], "")
 
-    def test_config_env_substitution_names_missing_required_variable(self):
+    def test_config_env_substitution_names_absent_required_variable(self):
         from config_loader import reload_config
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,6 +63,16 @@ class RuntimeFeatureTests(unittest.TestCase):
             config_path.write_text("required: ${TRULY_REQUIRED}\n")
             with patch.dict(os.environ, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "TRULY_REQUIRED"):
+                    reload_config(str(config_path))
+
+    def test_config_env_substitution_rejects_blank_required_variable(self):
+        from config_loader import reload_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text("required: ${BLANK_REQUIRED}\n")
+            with patch.dict(os.environ, {"BLANK_REQUIRED": ""}, clear=True):
+                with self.assertRaisesRegex(ValueError, "BLANK_REQUIRED"):
                     reload_config(str(config_path))
 
     def test_demo_config_loads_without_twitter_credential(self):
@@ -104,6 +114,28 @@ class RuntimeFeatureTests(unittest.TestCase):
         with patch.dict(os.environ, production_env, clear=True):
             with self.assertRaisesRegex(ValueError, "FRED_API_KEY"):
                 reload_config(str(config_path))
+
+    def test_enabled_production_sources_blank_credentials_fail_closed(self):
+        from config_loader import reload_config
+
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        base_env = {
+            "DB_USER": "trading",
+            "DB_PASSWORD": "password",
+            "FRED_API_KEY": "configured-fred",
+            "OPENROUTER_API_KEY": "configured-openrouter",
+            "OPENROUTER_MODEL": "provider/model",
+            "OANDA_API_KEY": "configured-oanda",
+            "TWITTERAPI_KEY": "",
+            "DASHBOARD_USER": "admin",
+            "DASHBOARD_PASSWORD": "password",
+        }
+        for variable in ("FRED_API_KEY", "OANDA_API_KEY", "OPENROUTER_API_KEY"):
+            with self.subTest(variable=variable):
+                env = {**base_env, variable: ""}
+                with patch.dict(os.environ, env, clear=True):
+                    with self.assertRaisesRegex(ValueError, variable):
+                        reload_config(str(config_path))
 
     @patch("collectors.oanda.make_request")
     def test_oanda_filters_unsupported_instruments(self, make_request):

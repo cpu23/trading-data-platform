@@ -15,9 +15,14 @@ _ENV_VAR_PATTERN = re.compile(
 def _substitute_env_vars(value: str) -> str:
     def _replace(match: re.Match) -> str:
         var_name = match.group(1)
-        if var_name in os.environ:
-            return os.environ[var_name]
         default = match.group(2)
+        if var_name in os.environ:
+            value = os.environ[var_name]
+            if value or default is not None:
+                return value
+            raise ValueError(
+                f"Environment variable '{var_name}' referenced in config must not be empty"
+            )
         if default is not None:
             return default
         raise ValueError(

@@ -93,6 +93,111 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(state["status"], "error")
         self.assertIn("malformed", state["error"])
 
+    def test_reuters_mixed_fetch_failure_preserves_items_and_records_error(self):
+        from sources.reuters import run_reuters
+
+        valid_xml = b"""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+            xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+          <url>
+            <loc>https://www.reuters.com/markets/valid-item/</loc>
+            <news:news>
+              <news:publication_date>2026-07-13T12:00:00Z</news:publication_date>
+              <news:title>Valid markets item</news:title>
+            </news:news>
+          </url>
+        </urlset>"""
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return valid_xml
+
+        def urlopen(request, timeout=30):
+            if request.full_url == "https://example.test/failed.xml":
+                raise TimeoutError("private upstream detail")
+            return Response()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"reuters": {
+                "state_path": f"{tmp}/reuters/state.json",
+                "output_path": f"{tmp}/reuters",
+            }}
+            with patch(
+                "sources.reuters._fetch_sitemap_index",
+                return_value=[
+                    "https://example.test/valid.xml",
+                    "https://example.test/failed.xml",
+                ],
+            ), patch("urllib.request.urlopen", side_effect=urlopen):
+                items = run_reuters(cfg, max_pages=2)
+            state = json.loads(Path(tmp, "reuters/state.json").read_text())
+
+        self.assertEqual([item["id"] for item in items], ["reuters:valid-item"])
+        self.assertEqual(state["status"], "error")
+        self.assertIn("failed.xml", state["error"])
+        self.assertIn("TimeoutError", state["error"])
+        self.assertNotIn("private upstream detail", state["error"])
+
+    def test_reuters_all_page_fetches_fail_without_escaping_and_record_error(self):
+        from sources.reuters import run_reuters
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"reuters": {
+                "state_path": f"{tmp}/reuters/state.json",
+                "output_path": f"{tmp}/reuters",
+            }}
+            with patch(
+                "sources.reuters._fetch_sitemap_index",
+                return_value=["https://example.test/failed.xml?token=private"],
+            ), patch(
+                "urllib.request.urlopen",
+                side_effect=ConnectionError("credential=private"),
+            ):
+                items = run_reuters(cfg, max_pages=1)
+            state = json.loads(Path(tmp, "reuters/state.json").read_text())
+
+        self.assertEqual(items, [])
+        self.assertEqual(state["status"], "error")
+        self.assertIn("failed.xml", state["error"])
+        self.assertIn("ConnectionError", state["error"])
+        self.assertNotIn("private", state["error"])
+
+    def test_reuters_successful_empty_page_records_ok(self):
+        from sources.reuters import run_reuters
+
+        empty_xml = b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" />'
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return empty_xml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"reuters": {
+                "state_path": f"{tmp}/reuters/state.json",
+                "output_path": f"{tmp}/reuters",
+            }}
+            with patch(
+                "sources.reuters._fetch_sitemap_index",
+                return_value=["https://example.test/empty.xml"],
+            ), patch("urllib.request.urlopen", return_value=Response()):
+                items = run_reuters(cfg, max_pages=1)
+            state = json.loads(Path(tmp, "reuters/state.json").read_text())
+
+        self.assertEqual(items, [])
+        self.assertEqual(state["status"], "ok")
+        self.assertIsNone(state["error"])
+
     def test_kobeissi_rejects_empty_api_key_clearly(self):
         from sources.kobeissi import run_kobeissi
 

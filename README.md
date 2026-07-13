@@ -177,14 +177,21 @@ an in-memory simulated quote stream. It makes no external or paid API calls.
 
 - Docker and Docker Compose v2
 - A free [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html)
-- An OpenRouter API key for analytical processors
-- Optional: an OANDA personal access token for watchlist price snapshots
+- An OpenRouter API key for the enabled analytical processors
+- An OANDA personal access token for the enabled watchlist price collector
+
+The production configuration treats those three credentials as required because
+the corresponding sources/processors are enabled. Empty values fail startup
+configuration validation; replace every placeholder before starting. The demo
+Compose file remains credential-free by supplying non-secret demo placeholders
+and disabling external collection.
 
 ### Start The Platform
 
 ```bash
 cp .env.example .env
-# Add your API keys and replace the example passwords.
+# Populate every required FRED, OpenRouter, and OANDA credential and replace
+# the example passwords. Required values left blank are rejected at startup.
 docker compose up -d
 ```
 

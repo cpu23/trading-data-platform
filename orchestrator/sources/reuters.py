@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from logging_config import get_logger
 from sources.news_storage import atomic_write_json, merge_items, read_json
@@ -23,6 +24,12 @@ _NS = {
 }
 
 _LANG_PREFIXES = ("es", "fr", "pt", "de", "it", "ja", "zh", "ar", "ko")
+
+
+class _SitemapPageFetchError(Exception):
+    def __init__(self, cause: Exception):
+        super().__init__(type(cause).__name__)
+        self.error_type = type(cause).__name__
 
 
 def _extract_section(url: str) -> str:
@@ -75,9 +82,8 @@ def _parse_sitemap_page(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             xml_data = resp.read()
-    except Exception as e:
-        logger.warning("reuters_sitemap_fetch_failed", url=url, error=str(e))
-        return []
+    except Exception as exc:
+        raise _SitemapPageFetchError(exc) from exc
 
     root = ET.fromstring(xml_data)
     items = []
@@ -127,6 +133,13 @@ def _parse_sitemap_page(
     return items
 
 
+def _page_error_context(url: str, error_type: str) -> str:
+    """Describe a page failure without persisting query strings or exception details."""
+    parsed = urlsplit(url)
+    safe_url = urlunsplit((parsed.scheme, parsed.hostname or "", parsed.path, "", ""))
+    return f"Reuters sitemap page failed at {safe_url}: {error_type}"
+
+
 def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
     """
     Poll Reuters news sitemap for new market-relevant articles.
@@ -165,6 +178,11 @@ def run_reuters(config: dict, max_pages: int = 3) -> list[dict[str, Any]]:
             logger.warning(
                 "reuters_sitemap_parse_failed", url=page_url, error=str(exc)
             )
+            page_errors.append(error)
+            continue
+        except _SitemapPageFetchError as exc:
+            error = _page_error_context(page_url, exc.error_type)
+            logger.warning("reuters_sitemap_fetch_failed", error=error)
             page_errors.append(error)
             continue
         all_items.extend(items)
