@@ -143,6 +143,80 @@ class DurableRunLifecycleTests(unittest.TestCase):
         get_collector.assert_not_called()
         self.assertIsNone(result)
 
+    def test_direct_collector_start_failure_finalizes_accepted_run_without_owner(self):
+        import orchestrator
+
+        original = RuntimeError("secret db failure")
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", side_effect=original
+        ), patch.object(orchestrator, "_run_collector_impl") as work, patch.object(
+            orchestrator, "finalize_run_safely"
+        ) as finalize:
+            with self.assertRaises(RuntimeError) as raised:
+                orchestrator.run_collector("fred", config={}, correlation_id="run-id")
+
+        self.assertIs(raised.exception, original)
+        work.assert_not_called()
+        finalize.assert_called_once_with(
+            "run-id",
+            "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {},
+            "run start unavailable",
+            worker_id=None,
+            run_kind="collector",
+            component="fred",
+        )
+
+    def test_direct_cycle_start_failure_finalizes_accepted_run_without_owner(self):
+        import orchestrator
+
+        original = RuntimeError("secret db failure")
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", side_effect=original
+        ), patch.object(orchestrator, "_run_full_cycle_impl") as work, patch.object(
+            orchestrator, "finalize_run_safely"
+        ) as finalize:
+            with self.assertRaises(RuntimeError) as raised:
+                orchestrator.run_full_cycle(config={}, correlation_id="run-id")
+
+        self.assertIs(raised.exception, original)
+        work.assert_not_called()
+        finalize.assert_called_once_with(
+            "run-id",
+            "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {},
+            "run start unavailable",
+            worker_id=None,
+            run_kind="cycle",
+        )
+
+    def test_direct_processor_start_failure_finalizes_accepted_run_without_owner(self):
+        import orchestrator
+
+        original = RuntimeError("secret db failure")
+        with patch.object(orchestrator, "accept_run"), patch.object(
+            orchestrator, "start_run", side_effect=original
+        ), patch.object(orchestrator, "_run_processor_impl") as work, patch.object(
+            orchestrator, "finalize_run_safely"
+        ) as finalize:
+            with self.assertRaises(RuntimeError) as raised:
+                orchestrator.run_processor("briefing", config={}, correlation_id="run-id")
+
+        self.assertIs(raised.exception, original)
+        work.assert_not_called()
+        finalize.assert_called_once_with(
+            "run-id",
+            "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {},
+            "run start unavailable",
+            worker_id=None,
+            run_kind="processor",
+            component="briefing",
+        )
+
     @patch("orchestrator.run_collector")
     @patch("orchestrator.get_all_processors", return_value={})
     @patch("orchestrator.get_all_collectors", return_value={"fred": Mock()})

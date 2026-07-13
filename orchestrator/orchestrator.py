@@ -546,9 +546,10 @@ def run_collector(
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "collector", source_id)
             lifecycle_created = True
-            worker_id = f"sync:{uuid4()}"
-            if not start_run(config, correlation_id, worker_id):
+            claim_worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
+            worker_id = claim_worker_id
         heartbeat = (
             maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
@@ -577,12 +578,18 @@ def run_collector(
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
+            error_message = str(exc) if worker_id is not None else "run start unavailable"
+            result = (
+                {}
+                if worker_id is not None
+                else {"status": "failed", "reason": error_message}
+            )
             finalize_run_safely(
                 correlation_id,
                 "failed",
-                {},
+                result,
                 config,
-                str(exc),
+                error_message,
                 worker_id=worker_id,
                 run_kind="collector",
                 component=source_id,
@@ -746,9 +753,10 @@ def run_full_cycle(
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "cycle")
             lifecycle_created = True
-            worker_id = f"sync:{uuid4()}"
-            if not start_run(config, correlation_id, worker_id):
+            claim_worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
+            worker_id = claim_worker_id
         heartbeat = (
             maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
@@ -783,12 +791,18 @@ def run_full_cycle(
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
+            error_message = str(exc) if worker_id is not None else "run start unavailable"
+            result = (
+                {}
+                if worker_id is not None
+                else {"status": "failed", "reason": error_message}
+            )
             finalize_run_safely(
                 correlation_id,
                 "failed",
-                {},
+                result,
                 config,
-                str(exc),
+                error_message,
                 worker_id=worker_id,
                 run_kind="cycle",
             )
@@ -1133,9 +1147,10 @@ def run_processor(
         if manage_lifecycle:
             accept_run(config, correlation_id, "internal", "processor", processor_id)
             lifecycle_created = True
-            worker_id = f"sync:{uuid4()}"
-            if not start_run(config, correlation_id, worker_id):
+            claim_worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
+            worker_id = claim_worker_id
         heartbeat = (
             maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
@@ -1164,12 +1179,18 @@ def run_processor(
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
+            error_message = str(exc) if worker_id is not None else "run start unavailable"
+            result = (
+                {}
+                if worker_id is not None
+                else {"status": "failed", "reason": error_message}
+            )
             finalize_run_safely(
                 correlation_id,
                 "failed",
-                {},
+                result,
                 config,
-                str(exc),
+                error_message,
                 worker_id=worker_id,
                 run_kind="processor",
                 component=processor_id,
