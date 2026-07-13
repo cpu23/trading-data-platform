@@ -18,6 +18,33 @@ from orchestrator import (
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
+_POSIX_WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _normalize_posix_weekdays(day_of_week: str) -> str:
+    if not re.search(r"\d", day_of_week):
+        return day_of_week
+
+    named_weekdays: list[str] = []
+    for item in day_of_week.split(","):
+        match = re.fullmatch(r"([0-7])(?:-([0-7]))?", item)
+        if not match:
+            raise ValueError(
+                "Unsupported POSIX numeric weekday expression; use numeric values or "
+                "non-wrapping ranges (for example 1-5), or named weekdays such as mon-fri"
+            )
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if end < start:
+            raise ValueError(
+                "Wrapping POSIX numeric weekday ranges are unsupported; use an explicit "
+                "comma-separated list of named weekdays"
+            )
+        for weekday in range(start, end + 1):
+            name = _POSIX_WEEKDAYS[weekday]
+            if name not in named_weekdays:
+                named_weekdays.append(name)
+    return ",".join(named_weekdays)
 
 
 def _start_scheduled_run(
@@ -49,29 +76,8 @@ def _start_scheduled_run(
 def _build_cron_trigger(schedule: str) -> CronTrigger:
     fields = schedule.split()
     if len(fields) == 5:
-        day_of_week = fields[4]
-        if day_of_week.isdigit():
-            posix_weekdays = {
-                "0": "sun",
-                "1": "mon",
-                "2": "tue",
-                "3": "wed",
-                "4": "thu",
-                "5": "fri",
-                "6": "sat",
-                "7": "sun",
-            }
-            if day_of_week not in posix_weekdays:
-                raise ValueError(
-                    "POSIX numeric weekday must be 0 through 7; use named weekdays"
-                )
-            fields[4] = posix_weekdays[day_of_week]
-            schedule = " ".join(fields)
-        elif re.search(r"\d", day_of_week):
-            raise ValueError(
-                "Complex numeric weekday expressions are unsupported; use named weekdays "
-                "such as mon-fri or sun"
-            )
+        fields[4] = _normalize_posix_weekdays(fields[4])
+        schedule = " ".join(fields)
     return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
 
 

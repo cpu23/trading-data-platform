@@ -102,7 +102,7 @@ collectors:
     stream_enabled: true
     api_key: ${OANDA_API_KEY}
     environment: practice
-    schedule: "0 6,12,18 * * 1-5"
+    schedule: "0 6,12,18 * * mon-fri"
     snapshot_timeframe: PRICE
     instruments:
       - symbol: EURUSD

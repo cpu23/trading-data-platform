@@ -1222,6 +1222,17 @@ class RuntimeFeatureTests(unittest.TestCase):
             datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
         )
 
+    def test_legacy_posix_numeric_weekday_range_maps_to_monday_through_friday(self):
+        from scheduler import _build_cron_trigger
+
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        trigger = _build_cron_trigger("0 6,12,18 * * 1-5")
+
+        self.assertEqual(
+            trigger.get_next_fire_time(None, monday),
+            datetime(2026, 7, 13, 6, 0, tzinfo=timezone.utc),
+        )
+
     def test_wildcard_and_named_weekdays_are_preserved(self):
         from scheduler import _build_cron_trigger
 
@@ -1230,16 +1241,55 @@ class RuntimeFeatureTests(unittest.TestCase):
             _build_cron_trigger("0 20 * * *").get_next_fire_time(None, monday),
             datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
         )
-        self.assertEqual(
-            _build_cron_trigger("0 20 * * mon").get_next_fire_time(None, monday),
-            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
-        )
+        for weekday in ("mon", "mon-fri"):
+            with self.subTest(weekday=weekday):
+                self.assertEqual(
+                    _build_cron_trigger(
+                        f"0 20 * * {weekday}"
+                    ).get_next_fire_time(None, monday),
+                    datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+                )
 
-    def test_complex_numeric_weekday_expression_is_rejected_actionably(self):
+    def test_comma_separated_posix_numeric_weekdays_are_mapped_explicitly(self):
         from scheduler import _build_cron_trigger
 
-        with self.assertRaisesRegex(ValueError, "named weekdays"):
-            _build_cron_trigger("0 20 * * 0,1")
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        trigger = _build_cron_trigger("0 20 * * 2,4,6")
+
+        self.assertEqual(
+            trigger.get_next_fire_time(None, monday),
+            datetime(2026, 7, 14, 20, 0, tzinfo=timezone.utc),
+        )
+
+    def test_unsafe_numeric_weekday_expressions_are_rejected_actionably(self):
+        from scheduler import _build_cron_trigger
+
+        for weekday in ("*/2", "1-5/2", "5-1", "1-", "mon,1"):
+            with self.subTest(weekday=weekday):
+                with self.assertRaisesRegex(ValueError, "named weekdays|named weekday"):
+                    _build_cron_trigger(f"0 20 * * {weekday}")
+
+    def test_active_enabled_config_schedules_build_and_oanda_uses_named_weekdays(self):
+        import yaml
+
+        from scheduler import _build_cron_trigger
+
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+
+        self.assertEqual(
+            config["collectors"]["oanda"]["schedule"],
+            "0 6,12,18 * * mon-fri",
+        )
+        for section in ("collectors", "processors"):
+            for component, component_config in config.get(section, {}).items():
+                schedule = component_config.get("schedule")
+                enabled = component_config.get("enabled", section == "collectors")
+                if enabled and schedule and schedule != "after_dependency":
+                    with self.subTest(
+                        section=section, component=component, schedule=schedule
+                    ):
+                        _build_cron_trigger(schedule)
 
     def test_scheduler_registers_configured_cron_jobs(self):
         config = {
