@@ -279,6 +279,84 @@ class NewsTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(state))
         self.assertNotIn("private", str(mocked_logger.method_calls))
 
+    def test_kobeissi_malformed_tweet_entry_replaces_stale_ok_with_sanitized_typed_error(self):
+        from sources.kobeissi import run_kobeissi
+        from sources.news_result import NewsCollectionResult
+
+        payload = {
+            "status": "success",
+            "data": {"tweets": [None, "RAW_PAYLOAD_SENTINEL"]},
+        }
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return json.dumps(payload).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "kobeissi/state.json")
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps({
+                "last_seen_id": "42",
+                "last_poll": "2026-01-01T00:00:00+00:00",
+                "status": "ok",
+                "error": None,
+            }))
+            cfg = {"kobeissi": {
+                "api_key": "TOKEN_SENTINEL",
+                "state_path": str(state_path),
+                "output_path": f"{tmp}/kobeissi",
+            }}
+            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+                result = run_kobeissi(cfg)
+            state = json.loads(state_path.read_text())
+
+        self.assertIsInstance(result, NewsCollectionResult)
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "error")
+        self.assertEqual(state["status"], "error")
+        self.assertEqual(state["error"], result.error)
+        self.assertIn("invalid response", state["error"])
+        self.assertNotEqual(state["last_poll"], "2026-01-01T00:00:00+00:00")
+        exposed = json.dumps({"result_error": result.error, "state": state, "logs": str(mocked_logger.method_calls)})
+        self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
+        self.assertNotIn("TOKEN_SENTINEL", exposed)
+
+    def test_kobeissi_malformed_required_tweet_field_is_sanitized_typed_error(self):
+        from sources.kobeissi import run_kobeissi
+        from sources.news_result import NewsCollectionResult
+
+        payload = {
+            "status": "success",
+            "data": {"tweets": [{"id": "43", "text": ["RAW_PAYLOAD_SENTINEL"]}]},
+        }
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return json.dumps(payload).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "kobeissi/state.json")
+            cfg = {"kobeissi": {
+                "api_key": "TOKEN_SENTINEL",
+                "state_path": str(state_path),
+                "output_path": f"{tmp}/kobeissi",
+            }}
+            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+                result = run_kobeissi(cfg)
+            state = json.loads(state_path.read_text())
+
+        self.assertIsInstance(result, NewsCollectionResult)
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "error")
+        self.assertEqual(state["status"], "error")
+        self.assertEqual(state["error"], result.error)
+        self.assertIn("invalid response", state["error"])
+        exposed = json.dumps({"result_error": result.error, "state": state, "logs": str(mocked_logger.method_calls)})
+        self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
+        self.assertNotIn("TOKEN_SENTINEL", exposed)
+
     def test_kobeissi_successful_empty_is_typed_ok_and_updates_state(self):
         from sources.kobeissi import run_kobeissi
         payload = {"status": "success", "data": {"tweets": []}}

@@ -75,7 +75,7 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
         logger.error("kobeissi_no_api_key")
         raise ValueError("TWITTERAPI_KEY is required to collect Kobeissi news")
 
-    state = read_json(state_path, {"last_seen_id": None, "last_poll": None})
+    state: dict[str, Any] = read_json(state_path, {"last_seen_id": None, "last_poll": None})
     if not isinstance(state, dict):
         state = {"last_seen_id": None, "last_poll": None}
     since_id = state.get("last_seen_id")
@@ -127,14 +127,31 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
         return NewsCollectionResult([], "error", error)
 
     new_items: list[dict[str, Any]] = []
-    for raw in raw_tweets:
-        try:
-            already_seen = since_id is not None and int(raw["id"]) <= int(since_id)
-        except (TypeError, ValueError):
-            already_seen = since_id is not None and str(raw.get("id", "")) == str(since_id)
-        if already_seen:
-            break
-        new_items.append(_normalise_tweet(raw))
+    try:
+        for raw in raw_tweets:
+            if not isinstance(raw, dict):
+                raise TypeError("tweet entry must be an object")
+            if not isinstance(raw.get("id"), (str, int)) or not str(raw["id"]).strip():
+                raise ValueError("tweet id is required")
+            if not isinstance(raw.get("text"), str):
+                raise TypeError("tweet text must be a string")
+            try:
+                already_seen = since_id is not None and int(raw["id"]) <= int(since_id)
+            except (TypeError, ValueError):
+                already_seen = since_id is not None and str(raw.get("id", "")) == str(since_id)
+            if already_seen:
+                break
+            new_items.append(_normalise_tweet(raw))
+    except Exception as exc:
+        error = f"Kobeissi upstream API returned an invalid response: {type(exc).__name__}"
+        logger.error("kobeissi_api_error", error=error)
+        state.update({
+            "last_poll": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": error,
+        })
+        atomic_write_json(state_path, state)
+        return NewsCollectionResult([], "error", error)
 
     if new_items:
         state["last_seen_id"] = new_items[0]["id"].split(":")[1]
