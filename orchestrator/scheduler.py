@@ -11,6 +11,10 @@ logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
 
 
+def _build_cron_trigger(schedule: str) -> CronTrigger:
+    return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
+
+
 def _scheduled_collector(source_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
     result = run_collector(source_id, config=config, correlation_id=correlation_id)
@@ -48,7 +52,7 @@ def start_scheduler(config: dict) -> None:
         if source_config.get("enabled", True) and schedule and schedule != "after_dependency":
             _scheduler.add_job(
                 _scheduled_collector,
-                CronTrigger.from_crontab(schedule, timezone=timezone.utc),
+                _build_cron_trigger(schedule),
                 args=[source_id, config],
                 id=f"collector:{source_id}",
                 replace_existing=True,
@@ -60,7 +64,7 @@ def start_scheduler(config: dict) -> None:
         if processor_config.get("enabled", False) and schedule and schedule != "after_dependency":
             _scheduler.add_job(
                 _scheduled_processor,
-                CronTrigger.from_crontab(schedule, timezone=timezone.utc),
+                _build_cron_trigger(schedule),
                 args=[processor_id, config],
                 id=f"processor:{processor_id}",
                 replace_existing=True,

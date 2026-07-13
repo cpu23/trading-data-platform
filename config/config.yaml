@@ -89,7 +89,7 @@ collectors:
 
   forex_factory:
     enabled: true
-    schedule: "0 20 * * 0"  # Sunday 20:00 UTC
+    schedule: "0 20 * * sun"  # Sunday 20:00 UTC
     source_url: "https://www.forexfactory.com/calendar"
     weekly_export_base_url: "https://nfs.faireconomy.media"
     currencies: ["USD", "EUR", "GBP", "JPY", "AUD", "CNY"]

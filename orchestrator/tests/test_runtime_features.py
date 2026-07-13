@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -351,6 +352,17 @@ class RuntimeFeatureTests(unittest.TestCase):
 
         self.assertEqual([item["symbol"] for item in result], ["EURUSD"])
         self.assertTrue(make_request.call_args.kwargs["follow_redirects"])
+
+    def test_named_sunday_schedule_fires_on_sunday_utc(self):
+        from scheduler import _build_cron_trigger
+
+        trigger = _build_cron_trigger("0 20 * * sun")
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            trigger.get_next_fire_time(None, monday),
+            datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc),
+        )
 
     def test_scheduler_registers_configured_cron_jobs(self):
         config = {
