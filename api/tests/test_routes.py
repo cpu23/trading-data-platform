@@ -163,6 +163,35 @@ class TestBudgetRoute(unittest.TestCase):
 
 
 class TestNewsRoutes(unittest.TestCase):
+    def test_feed_handles_invalid_utf8_as_temporarily_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "feed.json").write_bytes(b'\xff\xfe{"items": []}')
+            cfg = {"news_feed": {"output_path": tmp}}
+            with patch("config.load_config", return_value=cfg):
+                resp = client.get("/api/news/feed", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json(), {"error": "News feed is temporarily unavailable."})
+
+    def test_sources_handles_invalid_utf8_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "reuters/state.json")
+            state_path.parent.mkdir(parents=True)
+            state_path.write_bytes(b"\xff\xfeRAW_STATE_SENTINEL")
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {"enabled": True},
+                "kobeissi": {"enabled": False},
+            }
+            with patch("config.load_config", return_value=cfg):
+                resp = client.get("/api/news/sources", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        reuters = next(x for x in resp.json()["sources"] if x["name"] == "reuters")
+        self.assertEqual(reuters["status"], "error")
+        self.assertEqual(reuters["error"], "state file is invalid")
+        self.assertNotIn("RAW_STATE_SENTINEL", json.dumps(resp.json()))
+
     def test_sources_handles_non_dictionary_state_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "reuters/state.json")

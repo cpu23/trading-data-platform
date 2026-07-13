@@ -25,7 +25,7 @@ def get_news_feed():
 
     try:
         payload = json.loads(feed_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return JSONResponse({"error": "News feed is temporarily unavailable."}, status_code=503)
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         return JSONResponse({"error": "News feed is invalid."}, status_code=503)
@@ -48,7 +48,7 @@ def get_news_sources():
         if state_file.exists():
             try:
                 state = json.loads(state_file.read_text())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 state = {"status": "error", "error": "state file is invalid"}
             if not isinstance(state, dict):
                 state = {"status": "error", "error": "state file is invalid"}

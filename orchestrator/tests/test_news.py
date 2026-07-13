@@ -32,6 +32,40 @@ class NewsTests(unittest.TestCase):
             self.assertEqual(state["last_seen_urls"], [item["url"]])
             self.assertEqual(state["status"], "ok")
 
+    def test_reuters_recovers_and_repairs_invalid_last_seen_url_cursors(self):
+        from sources.reuters import run_reuters
+
+        cursor_cases = (
+            (None, set()),
+            (["https://www.reuters.com/markets/seen/", ["nested"], 7, {"raw": "value"}], {
+                "https://www.reuters.com/markets/seen/",
+            }),
+        )
+
+        for stored_cursor, expected_seen in cursor_cases:
+            with self.subTest(stored_cursor=stored_cursor), tempfile.TemporaryDirectory() as tmp:
+                state_path = Path(tmp, "reuters/state.json")
+                state_path.parent.mkdir(parents=True)
+                state_path.write_text(json.dumps({"last_seen_urls": stored_cursor}))
+                cfg = {"reuters": {
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/reuters",
+                }}
+                captured_seen = []
+
+                def parse_page(_url, seen_urls, _config):
+                    captured_seen.append(set(seen_urls))
+                    return []
+
+                with patch("sources.reuters._fetch_sitemap_index", return_value=["https://example.test/page.xml"]), patch("sources.reuters._parse_sitemap_page", side_effect=parse_page):
+                    result = run_reuters(cfg, max_pages=1)
+                state = json.loads(state_path.read_text())
+
+                self.assertEqual(result.status, "ok")
+                self.assertEqual(captured_seen, [expected_seen])
+                self.assertEqual(state["last_seen_urls"], sorted(expected_seen))
+                self.assertTrue(all(isinstance(url, str) for url in state["last_seen_urls"]))
+
     def test_reuters_malformed_page_records_error_and_preserves_valid_page_items(self):
         from sources.reuters import run_reuters
 
@@ -169,6 +203,65 @@ class NewsTests(unittest.TestCase):
         self.assertIn("failed.xml", state["error"])
         self.assertIn("ConnectionError", state["error"])
         self.assertNotIn("private", state["error"])
+
+    def test_reuters_index_rejects_well_formed_non_sitemap_xml(self):
+        from sources.reuters import run_reuters
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return b"<html><body>RAW_CONTENT_SENTINEL</body></html>"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp, "reuters/state.json")
+            cfg = {"reuters": {
+                "state_path": str(state_path),
+                "output_path": f"{tmp}/reuters",
+            }}
+            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.reuters.logger") as mocked_logger:
+                result = run_reuters(cfg)
+            state_text = state_path.read_text()
+
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.error, "Reuters sitemap index failed: SitemapSchemaError")
+        exposed = f"{result.error} {state_text} {mocked_logger.method_calls}"
+        self.assertNotIn("RAW_CONTENT_SENTINEL", exposed)
+
+    def test_reuters_pages_reject_well_formed_wrong_roots_and_sanitize_url(self):
+        from sources.reuters import run_reuters
+
+        wrong_roots = (
+            b"<html><body>RAW_CONTENT_SENTINEL</body></html>",
+            b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" />',
+            b"<challenge>RAW_CONTENT_SENTINEL</challenge>",
+        )
+        page_url = "https://example.test/not-a-urlset.xml?token=QUERY_SENTINEL#FRAGMENT_SENTINEL"
+
+        for payload in wrong_roots:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+                class Response:
+                    def __enter__(self): return self
+                    def __exit__(self, *args): return None
+                    def read(self): return payload
+
+                state_path = Path(tmp, "reuters/state.json")
+                cfg = {"reuters": {
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/reuters",
+                }}
+                with patch("sources.reuters._fetch_sitemap_index", return_value=[page_url]), patch("urllib.request.urlopen", return_value=Response()), patch("sources.reuters.logger") as mocked_logger:
+                    result = run_reuters(cfg)
+                state_text = state_path.read_text()
+
+                self.assertEqual(result.items, [])
+                self.assertEqual(result.status, "error")
+                self.assertIn("https://example.test/not-a-urlset.xml", result.error)
+                self.assertIn("SitemapSchemaError", result.error)
+                exposed = f"{result.error} {state_text} {mocked_logger.method_calls}"
+                self.assertNotIn("QUERY_SENTINEL", exposed)
+                self.assertNotIn("FRAGMENT_SENTINEL", exposed)
+                self.assertNotIn("RAW_CONTENT_SENTINEL", exposed)
 
     def test_reuters_successful_empty_page_records_ok(self):
         from sources.reuters import run_reuters
@@ -356,6 +449,53 @@ class NewsTests(unittest.TestCase):
         exposed = json.dumps({"result_error": result.error, "state": state, "logs": str(mocked_logger.method_calls)})
         self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
         self.assertNotIn("TOKEN_SENTINEL", exposed)
+
+    def test_kobeissi_success_requires_explicit_data_and_tweets_schema(self):
+        from sources.kobeissi import run_kobeissi
+
+        malformed_payloads = (
+            {"status": "success", "raw": "RAW_PAYLOAD_SENTINEL"},
+            {"status": "success", "data": {}, "raw": "RAW_PAYLOAD_SENTINEL"},
+            {"status": "success", "data": None, "raw": "RAW_PAYLOAD_SENTINEL"},
+        )
+
+        for payload in malformed_payloads:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+                class Response:
+                    def __enter__(self): return self
+                    def __exit__(self, *args): return None
+                    def read(self): return json.dumps(payload).encode()
+
+                state_path = Path(tmp, "kobeissi/state.json")
+                state_path.parent.mkdir(parents=True)
+                state_path.write_text(json.dumps({
+                    "last_seen_id": "42",
+                    "last_poll": "2026-01-01T00:00:00+00:00",
+                    "status": "ok",
+                    "error": None,
+                }))
+                cfg = {"kobeissi": {
+                    "api_key": "TOKEN_SENTINEL",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                }}
+                with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+                    result = run_kobeissi(cfg)
+                state = json.loads(state_path.read_text())
+
+                self.assertEqual(result.items, [])
+                self.assertEqual(result.status, "error")
+                self.assertEqual(result.error, "Kobeissi upstream API returned an invalid response")
+                self.assertEqual(state["status"], "error")
+                self.assertEqual(state["error"], result.error)
+                self.assertNotEqual(state["last_poll"], "2026-01-01T00:00:00+00:00")
+                exposed = json.dumps({
+                    "result_error": result.error,
+                    "state": state,
+                    "logs": str(mocked_logger.method_calls),
+                })
+                self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
+                self.assertNotIn("TOKEN_SENTINEL", exposed)
 
     def test_kobeissi_successful_empty_is_typed_ok_and_updates_state(self):
         from sources.kobeissi import run_kobeissi

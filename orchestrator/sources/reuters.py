@@ -33,6 +33,16 @@ class _SitemapPageFetchError(Exception):
         self.error_type = type(cause).__name__
 
 
+class SitemapSchemaError(Exception):
+    """Raised when well-formed XML is not the expected sitemap document type."""
+
+
+def _require_sitemap_root(root: ET.Element, expected_local_name: str) -> None:
+    expected_tag = f"{{{_NS['sm']}}}{expected_local_name}"
+    if root.tag != expected_tag:
+        raise SitemapSchemaError("unexpected sitemap root")
+
+
 def _extract_section(url: str) -> str:
     m = re.match(r"https://www\.reuters\.com/([^/]+)/", url)
     return m.group(1) if m else ""
@@ -64,6 +74,7 @@ def _fetch_sitemap_index() -> list[str]:
     with urllib.request.urlopen(req, timeout=30) as resp:
         xml_data = resp.read()
     root = ET.fromstring(xml_data)
+    _require_sitemap_root(root, "sitemapindex")
     return [
         sm.findtext("sm:loc", "", _NS)
         for sm in root.findall("sm:sitemap", _NS)
@@ -87,6 +98,7 @@ def _parse_sitemap_page(
         raise _SitemapPageFetchError(exc) from exc
 
     root = ET.fromstring(xml_data)
+    _require_sitemap_root(root, "urlset")
     items = []
     now = datetime.now(timezone.utc).isoformat()
 
@@ -154,7 +166,10 @@ def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
     state = read_json(state_path, {"last_seen_urls": [], "last_poll": None})
     if not isinstance(state, dict):
         state = {"last_seen_urls": [], "last_poll": None}
-    seen_urls = set(state.get("last_seen_urls", []))
+    stored_urls = state.get("last_seen_urls", [])
+    if not isinstance(stored_urls, list):
+        stored_urls = []
+    seen_urls = {url for url in stored_urls if isinstance(url, str)}
 
     logger.info("reuters_poll_started", max_pages=max_pages)
 
@@ -175,8 +190,8 @@ def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
     for page_url in sitemap_urls[:pages_to_scan]:
         try:
             items = _parse_sitemap_page(page_url, seen_urls, reuters_config)
-        except ET.ParseError:
-            error = _page_error_context(page_url, "ParseError")
+        except (ET.ParseError, SitemapSchemaError) as exc:
+            error = _page_error_context(page_url, type(exc).__name__)
             logger.warning("reuters_sitemap_parse_failed", error=error)
             page_errors.append(error)
             continue

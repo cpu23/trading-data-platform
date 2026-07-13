@@ -113,8 +113,8 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
         atomic_write_json(state_path, state)
         return NewsCollectionResult([], "error", error)
 
-    response_data = data.get("data", {})
-    raw_tweets = response_data.get("tweets", []) if isinstance(response_data, dict) else None
+    response_data = data.get("data")
+    raw_tweets = response_data.get("tweets") if isinstance(response_data, dict) else None
     if not isinstance(raw_tweets, list):
         error = "Kobeissi upstream API returned an invalid response"
         logger.error("kobeissi_api_error", error=error)
