@@ -9,7 +9,7 @@ import unittest
 import json
 import tempfile
 import httpx
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── Environment (auth) ──────────────────────────────────────────────────────
 os.environ["DASHBOARD_USER"] = "test"
@@ -58,6 +58,11 @@ from main import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(app)
+client.__enter__()
+
+
+def tearDownModule():
+    client.__exit__(None, None, None)
 
 # ── Auth helpers ────────────────────────────────────────────────────────────
 AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}  # test:test
@@ -89,7 +94,7 @@ class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_health_returns_200(self, mock_httpx_get, _mock_qm):
         """GET /api/system/health with empty DB should return 200 + contract keys."""
         # Mock orchestrator health response
@@ -125,7 +130,7 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(data["data_health"], "healthy")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_degraded_quality_without_source_id_degrades_api_health(self, mock_get, _query):
         health = MagicMock()
         health.json.return_value = {
@@ -152,7 +157,10 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIn("fred_freshness", quality_component["error_message"])
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get", side_effect=httpx.ConnectError("connection refused"))
+    @patch.object(
+        app.state.orchestrator_client, "get", new_callable=AsyncMock,
+        side_effect=httpx.ConnectError("connection refused"),
+    )
     def test_orchestrator_network_failure_returns_503(self, _get, _query):
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -166,7 +174,7 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIn("connection refused", component["error_message"])
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_orchestrator_http_500_returns_503(self, mock_get, _query):
         request = httpx.Request("GET", "http://orchestrator:8000/health")
         response = httpx.Response(500, request=request)
@@ -183,7 +191,7 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertTrue(any(c["name"] == "orchestrator" for c in resp.json()["components"]))
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_invalid_orchestrator_contract_returns_503(self, mock_get, _query):
         invalid = MagicMock()
         invalid.json.return_value = {"status": "ok"}
@@ -196,7 +204,7 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIn("invalid orchestrator health contract", resp.json()["components"][0]["error_message"])
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_malformed_complete_orchestrator_health_contract_returns_503(
         self, mock_get, _query
     ):
@@ -260,7 +268,7 @@ class TestSystemRoutes(unittest.TestCase):
                 self.assertIn("invalid orchestrator health contract", component["error_message"])
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_invalid_component_enums_return_controlled_503(self, mock_get, _query):
         malformed_components = {
             "invalid status": {"name": "database", "kind": "service", "status": "nonsense"},
@@ -294,7 +302,7 @@ class TestSystemRoutes(unittest.TestCase):
                 )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_invalid_scheduler_and_stream_contracts_return_controlled_503(
         self, mock_get, _query
     ):
@@ -334,7 +342,7 @@ class TestSystemRoutes(unittest.TestCase):
                 )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_malformed_nested_orchestrator_quality_contract_returns_503(
         self, mock_get, _query
     ):
@@ -509,12 +517,9 @@ class TestNewsRoutes(unittest.TestCase):
 class TestQualityPage(unittest.TestCase):
     """Task 11: Quality page returns 200 with mocked orchestrator response."""
 
-    @patch("routes.views.quality.httpx.Client")
-    def test_quality_page_returns_200_with_orchestrator_response(self, mock_client_cls):
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    def test_quality_page_returns_200_with_orchestrator_response(self, mock_get):
         """GET /quality returns 200 when orchestrator quality is healthy."""
-        mock_client = MagicMock()
-        mock_client.__enter__.return_value = mock_client
-        mock_client.__exit__.return_value = None
         orchestrator_response = MagicMock()
         orchestrator_response.is_success = True
         orchestrator_response.json.return_value = {
@@ -524,8 +529,7 @@ class TestQualityPage(unittest.TestCase):
                 "oanda_freshness": {"healthy": True, "detail": "fresh"},
             },
         }
-        mock_client.get.return_value = orchestrator_response
-        mock_client_cls.return_value = mock_client
+        mock_get.return_value = orchestrator_response
 
         resp = client.get("/quality", headers=AUTH)
         self.assertEqual(resp.status_code, 200,
@@ -542,7 +546,7 @@ class TestHealthContract(unittest.TestCase):
     """Task 12: Separate liveness/readiness/data-health contract."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_health_returns_contract_shape(self, mock_get, _mock_qm):
         """GET /api/system/health returns liveness, readiness, data_health keys."""
         health = MagicMock()
@@ -576,7 +580,7 @@ class TestHealthContract(unittest.TestCase):
         self.assertIsInstance(data["components"], list)
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch("routes.json.system.httpx.get")
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_stale_data_yields_liveness_ok_data_health_degraded(self, mock_get, _mock_qm):
         """Stale data keeps liveness 'ok' but degrades data_health."""
         health = MagicMock()

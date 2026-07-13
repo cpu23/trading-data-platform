@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from config import load_config
@@ -174,7 +174,7 @@ def _validate_orchestrator_quality_contract(payload):
 
 
 @router.get("/system/health")
-def get_system_health():
+async def get_system_health(request: Request):
     config = load_config()
     thresholds = get_staleness_config(config)
 
@@ -236,7 +236,9 @@ def get_system_health():
 
     # ── Fetch and validate orchestrator contracts ──
     try:
-        health_response = httpx.get("http://orchestrator:8000/health", timeout=2.0)
+        health_response = await request.app.state.orchestrator_client.get(
+            "http://orchestrator:8000/health", timeout=2.0,
+        )
         health_response.raise_for_status()
         orchestration = health_response.json()
         _validate_orchestrator_health_contract(orchestration)
@@ -245,7 +247,9 @@ def get_system_health():
                 f"orchestrator is not ready ({orchestration['readiness']})"
             )
 
-        quality_response = httpx.get("http://orchestrator:8000/quality", timeout=5.0)
+        quality_response = await request.app.state.orchestrator_client.get(
+            "http://orchestrator:8000/quality", timeout=5.0,
+        )
         quality_response.raise_for_status()
         quality = quality_response.json()
         _validate_orchestrator_quality_contract(quality)

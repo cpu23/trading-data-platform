@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from logging_config import get_logger
 
@@ -27,7 +27,7 @@ def _orchestrator_job_payload(response: httpx.Response, fallback_id: str, now: s
 
 
 @router.post("/collect/{source_id}", status_code=202)
-async def trigger_collect(source_id: str):
+async def trigger_collect(source_id: str, request: Request):
     if source_id not in _VALID_COLLECTORS:
         raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
 
@@ -35,12 +35,11 @@ async def trigger_collect(source_id: str):
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{ORCHESTRATOR_URL}/run_collector/{source_id}",
-                json={"correlation_id": correlation_id},
-            )
-    except httpx.ConnectError as exc:
+        response = await request.app.state.orchestrator_client.post(
+            f"{ORCHESTRATOR_URL}/run_collector/{source_id}",
+            json={"correlation_id": correlation_id}, timeout=10.0,
+        )
+    except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Orchestrator unavailable")
 
@@ -54,7 +53,7 @@ async def trigger_collect(source_id: str):
 
 
 @router.post("/process/{processor_id}", status_code=202)
-async def trigger_process(processor_id: str):
+async def trigger_process(processor_id: str, request: Request):
     if processor_id not in _VALID_PROCESSORS:
         raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
 
@@ -62,12 +61,11 @@ async def trigger_process(processor_id: str):
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{ORCHESTRATOR_URL}/run_processor/{processor_id}",
-                json={"correlation_id": correlation_id},
-            )
-    except httpx.ConnectError as exc:
+        response = await request.app.state.orchestrator_client.post(
+            f"{ORCHESTRATOR_URL}/run_processor/{processor_id}",
+            json={"correlation_id": correlation_id}, timeout=10.0,
+        )
+    except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Orchestrator unavailable")
 
@@ -81,17 +79,16 @@ async def trigger_process(processor_id: str):
 
 
 @router.post("/cycle", status_code=202)
-async def trigger_cycle():
+async def trigger_cycle(request: Request):
     correlation_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{ORCHESTRATOR_URL}/run_cycle",
-                json={"correlation_id": correlation_id},
-            )
-    except httpx.ConnectError as exc:
+        response = await request.app.state.orchestrator_client.post(
+            f"{ORCHESTRATOR_URL}/run_cycle",
+            json={"correlation_id": correlation_id}, timeout=10.0,
+        )
+    except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Orchestrator unavailable")
 

@@ -16,6 +16,7 @@ except ImportError:
     def run_quality_checks(config):
         return {}
 from logging_config import get_logger, setup_logging
+from http_client import close_shared_client
 from locks import RunConflict
 from orchestrator import (
     DEFAULT_ACCEPTED_TIMEOUT,
@@ -93,6 +94,7 @@ def on_startup():
 def on_shutdown():
     quote_stream.stop()
     stop_scheduler()
+    close_shared_client()
 
 
 @app.get("/health")

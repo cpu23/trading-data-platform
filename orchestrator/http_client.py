@@ -1,4 +1,5 @@
 import time
+import threading
 from collections.abc import Callable
 
 import httpx
@@ -11,6 +12,27 @@ DEFAULT_SOURCE_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRY_DELAY_SECONDS = 60.0
 _MAX_BACKOFF_SECONDS = 10.0
+_shared_client: httpx.Client | None = None
+_shared_client_lock = threading.Lock()
+
+
+def get_shared_client() -> httpx.Client:
+    """Return the process-wide connection-pooled client."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None:
+            _shared_client = httpx.Client()
+        return _shared_client
+
+
+def close_shared_client() -> None:
+    """Close and clear the shared client exactly once."""
+    global _shared_client
+    with _shared_client_lock:
+        client = _shared_client
+        _shared_client = None
+    if client is not None:
+        client.close()
 
 
 def _backoff_seconds(attempt: int) -> float:
@@ -59,8 +81,7 @@ def make_request(
 
     started_at = clock()
     request_method = method.upper()
-    owned_client = client is None
-    request_client = client or httpx.Client()
+    request_client = client or get_shared_client()
 
     try:
         for attempt in range(1, max_retries + 1):
@@ -138,7 +159,5 @@ def make_request(
             logger.warning("http_request_retrying", **retry_fields)
             sleep(delay)
     finally:
-        if owned_client:
-            request_client.close()
-
+        pass
     raise RuntimeError("HTTP request loop exited unexpectedly")

@@ -14,6 +14,7 @@ class ScriptedClient:
     def __init__(self, outcomes):
         self.outcomes = iter(outcomes)
         self.requests = []
+        self.close = Mock()
 
     def request(self, **kwargs):
         self.requests.append(kwargs)
@@ -187,6 +188,34 @@ class ConfigurableRetryTests(unittest.TestCase):
         self.assertEqual(retry_kwargs["status_code"], 503)
         self.assertEqual(retry_kwargs["category"], "http_status")
         self.assertIn("total_duration_ms", retry_kwargs)
+
+
+class SharedClientLifecycleTests(unittest.TestCase):
+    def tearDown(self):
+        close = getattr(http_client, "close_shared_client", None)
+        if close is not None:
+            close()
+
+    @patch.object(http_client.httpx, "Client")
+    def test_repeated_requests_reuse_one_client_until_shutdown(self, client_class):
+        shared = ScriptedClient([response(200), response(200)])
+        client_class.return_value = shared
+
+        first = http_client.make_request(
+            "GET", "https://example.test/one", max_retries=1,
+        )
+        second = http_client.make_request(
+            "GET", "https://example.test/two", max_retries=1,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        client_class.assert_called_once()
+        shared.close.assert_not_called()
+
+        http_client.close_shared_client()
+        http_client.close_shared_client()
+        shared.close.assert_called_once()
 
 
 if __name__ == "__main__":
