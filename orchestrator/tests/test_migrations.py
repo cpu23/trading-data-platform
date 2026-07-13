@@ -6,6 +6,11 @@ from unittest.mock import MagicMock, patch
 import migrate
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DURABLE_JOBS_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "011_durable_jobs.sql"
+CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
+
+
 class AppliedMigrationTests(unittest.TestCase):
     def test_get_applied_migrations_returns_checksums_including_null(self):
         session = MagicMock()
@@ -73,6 +78,19 @@ class MigrationApplicationTests(unittest.TestCase):
 
 
 class MigrationInventoryTests(unittest.TestCase):
+    def test_repository_inventory_includes_011_in_numeric_order(self):
+        migrations = sorted(
+            (REPOSITORY_ROOT / "db" / "migrations").glob("*.sql"),
+            key=lambda path: int(path.name.split("_", 1)[0]),
+        )
+        versions = [path.name.split("_", 1)[0] for path in migrations]
+
+        self.assertIn("011", versions)
+        self.assertEqual(
+            [int(version) for version in versions],
+            sorted(int(version) for version in versions),
+        )
+
     def test_duplicate_disk_versions_fail_clearly(self):
         with tempfile.TemporaryDirectory() as migrations_dir:
             Path(migrations_dir, "001_first.sql").write_text("SELECT 1;\n")
@@ -318,6 +336,83 @@ class AllOrNothingValidationTests(unittest.TestCase):
             apply_migration.assert_not_called()
             self.assertIn("002", str(ctx.exception))
             self.assertIn("Checksum mismatch", str(ctx.exception))
+
+
+class DurableJobsSchemaTests(unittest.TestCase):
+    @staticmethod
+    def _sql(path: Path) -> str:
+        return " ".join(path.read_text().lower().split())
+
+    def test_clean_bootstrap_has_durable_job_columns_and_lifecycle_statuses(self):
+        sql = self._sql(CYCLE_RUNS_INIT)
+
+        self.assertIn("accepted_at timestamptz not null", sql)
+        self.assertIn("started_at timestamptz,", sql)
+        self.assertIn("heartbeat_at timestamptz,", sql)
+        self.assertIn("worker_id text,", sql)
+        self.assertIn("idempotency_key text,", sql)
+        self.assertIn(
+            "status in ('accepted', 'running', 'completed', 'failed', 'abandoned')",
+            sql,
+        )
+        self.assertIn(
+            "create unique index if not exists idx_cycle_runs_idempotency_key "
+            "on cycle_runs (idempotency_key) where idempotency_key is not null",
+            sql,
+        )
+
+    def test_upgrade_adds_and_backfills_columns_before_enforcing_nullability(self):
+        sql = self._sql(DURABLE_JOBS_MIGRATION)
+
+        add_columns = sql.index("add column if not exists accepted_at timestamptz")
+        accepted_backfill = sql.index(
+            "set accepted_at = coalesce(started_at, current_timestamp) "
+            "where accepted_at is null"
+        )
+        heartbeat_backfill = sql.index(
+            "set heartbeat_at = started_at where status = 'running' "
+            "and heartbeat_at is null"
+        )
+        accepted_not_null = sql.index("alter column accepted_at set not null")
+        started_nullable = sql.index("alter column started_at drop not null")
+
+        self.assertLess(add_columns, accepted_backfill)
+        self.assertLess(accepted_backfill, accepted_not_null)
+        self.assertLess(heartbeat_backfill, accepted_not_null)
+        self.assertLess(accepted_not_null, started_nullable)
+        for column in ("heartbeat_at timestamptz", "worker_id text", "idempotency_key text"):
+            self.assertIn(f"add column if not exists {column}", sql)
+
+    def test_upgrade_replaces_status_constraint_without_unconstrained_window(self):
+        sql = self._sql(DURABLE_JOBS_MIGRATION)
+        expanded = (
+            "add constraint cycle_runs_status_check_expanded check "
+            "(status in ('accepted', 'running', 'completed', 'failed', 'abandoned')) not valid"
+        )
+
+        add_expanded = sql.index(expanded)
+        validate_expanded = sql.index(
+            "validate constraint cycle_runs_status_check_expanded"
+        )
+        drop_old = sql.index("drop constraint cycle_runs_status_check")
+        rename_expanded = sql.index(
+            "rename constraint cycle_runs_status_check_expanded to cycle_runs_status_check"
+        )
+
+        self.assertLess(add_expanded, validate_expanded)
+        self.assertLess(validate_expanded, drop_old)
+        self.assertLess(drop_old, rename_expanded)
+
+    def test_upgrade_creates_partial_unique_idempotency_index_without_data_deletion(self):
+        sql = self._sql(DURABLE_JOBS_MIGRATION)
+
+        self.assertIn(
+            "create unique index if not exists idx_cycle_runs_idempotency_key "
+            "on cycle_runs (idempotency_key) where idempotency_key is not null",
+            sql,
+        )
+        for destructive_statement in ("drop table", "drop column", "delete from", "truncate"):
+            self.assertNotIn(destructive_statement, sql)
 
 
 if __name__ == "__main__":
