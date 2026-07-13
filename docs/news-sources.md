@@ -3,6 +3,10 @@
 The production news feed contains two sources only: Reuters news sitemaps and
 Kobeissi Letter posts fetched from TwitterAPI.io.
 
+Financial Times ingestion was retired; see migration 010
+(`db/migrations/010_retire_financial_times.sql`). FT-prefixed tables are
+retained for historical lineage but no longer populated.
+
 ## Configuration and credentials
 
 `config/config.yaml` controls each source. `reuters.enabled` and
