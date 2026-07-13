@@ -7,13 +7,58 @@ mock ``config`` dict.
 """
 
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from db import get_session
 from logging_config import get_logger
 from sqlalchemy import text
 
 logger = get_logger("data_quality")
+
+
+# ---------------------------------------------------------------------------
+# Business-day helpers — simple weekday calendar (no holiday package)
+# ---------------------------------------------------------------------------
+
+def _is_business_day(d: date) -> bool:
+    """Return True for Monday–Friday."""
+    return d.weekday() < 5  # Mon=0 … Fri=4
+
+
+def _count_business_days(start: date, end: date) -> int:
+    """Count business days in [start, end] inclusive."""
+    count = 0
+    cur = start
+    while cur <= end:
+        if _is_business_day(cur):
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
+def _resolve_grace_hours(
+    config: dict,
+    source_id: str,
+    frequency: str | None,
+    fallback_hours: float,
+) -> float:
+    """Resolve the effective max-age in **hours** from config.
+
+    When *frequency* is given, looks up
+    ``config.data_quality.<source_id>.grace_periods.<frequency>`` and
+    treats the value as **days** (converted to hours).  Falls back to
+    *fallback_hours* when config is missing or *frequency* is None.
+    """
+    if not frequency:
+        return fallback_hours
+
+    dq = config.get("data_quality", {})
+    src_cfg = dq.get(source_id, {})
+    grace = src_cfg.get("grace_periods", {})
+    days = grace.get(frequency)
+    if days is not None:
+        return float(days) * 24.0
+    return fallback_hours
 
 
 # ---------------------------------------------------------------------------
@@ -26,21 +71,45 @@ def check_freshness(
     timestamp_column: str,
     max_age_hours: float,
     config: dict,
+    *,
+    frequency: str | None = None,
+    series_id: str | None = None,
 ) -> dict:
     """Verify the most recent row for *source_id* is not too old.
 
-    Returns
-    -------
-    dict
-        ``healthy``, ``detail``, ``latest_at`` (ISO str | None),
-        ``age_hours`` (float | None).
+    Parameters
+    ----------
+    frequency : str or None
+        One of ``"daily"``, ``"weekly"``, ``"monthly"``, ``"quarterly"``.
+        When provided the grace period is read from *config* and business-day
+        logic is applied for ``"daily"``.
+    series_id : str or None
+        If given, the SQL query is scoped to a single FRED series.
     """
-    logger.info("check_freshness_running", source_id=source_id, table=table, max_age_hours=max_age_hours)
+    grace_hours = _resolve_grace_hours(
+        config, source_id, frequency, max_age_hours,
+    )
+    logger.info(
+        "check_freshness_running",
+        source_id=source_id,
+        table=table,
+        max_age_hours=grace_hours,
+        frequency=frequency,
+        series_id=series_id,
+    )
+
+    # Build WHERE clause — always filter by source; optionally by series_id
+    where = "WHERE source = :source_id"
+    params: dict = {"source_id": source_id}
+    if series_id:
+        where += " AND series_id = :series_id"
+        params["series_id"] = series_id
+
     sql = text(
-        f"SELECT MAX({timestamp_column}) FROM {table} WHERE source = :source_id"
+        f"SELECT MAX({timestamp_column}) FROM {table} {where}"
     )
     with get_session(config) as session:
-        result = session.execute(sql, {"source_id": source_id})
+        result = session.execute(sql, params)
         row = result.fetchone()
 
     if row is None or row[0] is None:
@@ -60,14 +129,67 @@ def check_freshness(
     if latest_at.tzinfo is None:
         latest_at = latest_at.replace(tzinfo=timezone.utc)
 
+    # ── future timestamp → mark as "future" ────────────────────────────
+    if latest_at > now:
+        logger.warning(
+            "check_freshness_future",
+            source_id=source_id,
+            latest_at=latest_at.isoformat(),
+        )
+        return {
+            "healthy": False,
+            "detail": f"future timestamp ({latest_at.isoformat()})",
+            "latest_at": latest_at.isoformat(),
+            "age_hours": 0.0,
+        }
+
+    # ── business-day age for daily-frequency series ────────────────────
+    if frequency == "daily":
+        # Count business days between latest date and today
+        latest_date = latest_at.date()
+        today = now.date()
+        bdays = _count_business_days(latest_date, today) - 1  # same day → 0
+        if bdays < 0:
+            bdays = 0
+        # Convert grace from hours back to business days for comparison
+        grace_bdays = grace_hours / 24.0
+        if bdays > grace_bdays:
+            logger.warning(
+                "check_freshness_unhealthy",
+                source_id=source_id,
+                business_days=bdays,
+                grace_bdays=grace_bdays,
+            )
+            return {
+                "healthy": False,
+                "detail": (
+                    f"stale ({bdays} business day(s) old, "
+                    f"max {grace_bdays:.0f})"
+                ),
+                "latest_at": latest_at.isoformat(),
+                "age_hours": round(float(bdays) * 24.0, 2),
+            }
+        return {
+            "healthy": True,
+            "detail": "fresh",
+            "latest_at": latest_at.isoformat(),
+            "age_hours": round(float(bdays) * 24.0, 2),
+        }
+
+    # ── default absolute-hours check ───────────────────────────────────
     age = now - latest_at
     age_hours = age.total_seconds() / 3600.0
 
-    if age_hours > max_age_hours:
-        logger.warning("check_freshness_unhealthy", source_id=source_id, age_hours=round(age_hours, 2), max_age_hours=max_age_hours)
+    if age_hours > grace_hours:
+        logger.warning(
+            "check_freshness_unhealthy",
+            source_id=source_id,
+            age_hours=round(age_hours, 2),
+            max_age_hours=grace_hours,
+        )
         return {
             "healthy": False,
-            "detail": f"stale ({age_hours:.1f}h old, max {max_age_hours}h)",
+            "detail": f"stale ({age_hours:.1f}h old, max {grace_hours:.0f}h)",
             "latest_at": latest_at.isoformat(),
             "age_hours": round(age_hours, 2),
         }
@@ -87,32 +209,44 @@ def check_gaps(
     expected_interval: str,
     config: dict,
     max_gap_days: int = 3,
+    *,
+    frequency: str | None = None,
+    series_id: str | None = None,
 ) -> dict:
-    """Detect missing days in a daily time-series.
+    """Detect missing days in a time-series.
 
-    Queries distinct dates for the last 14 days and reports gaps larger
-    than *expected_interval* (e.g. ``"1 day"``).
-
-    Returns
-    -------
-    dict
-        ``healthy``, ``detail``, ``gaps`` (list of gap descriptions).
+    When *frequency* is ``"daily"`` weekends are excluded from the expected
+    date set.  When *series_id* is provided the query is scoped to a single
+    series.
     """
-    logger.info("check_gaps_running", source_id=source_id, table=table)
+    logger.info(
+        "check_gaps_running",
+        source_id=source_id,
+        table=table,
+        frequency=frequency,
+        series_id=series_id,
+    )
     now = datetime.now(timezone.utc).date()
     cutoff = now - timedelta(days=14)
 
+    where = "WHERE source = :source_id"
+    params: dict = {"source_id": source_id, "cutoff": cutoff}
+    if series_id:
+        where += " AND series_id = :series_id"
+        params["series_id"] = series_id
+
     sql = text(
         f"SELECT DISTINCT {date_column}::date FROM {table} "
-        f"WHERE source = :source_id AND {date_column} >= :cutoff "
+        f"{where} "
+        f"AND {date_column} >= :cutoff "
         f"ORDER BY {date_column}::date DESC"
     )
     with get_session(config) as session:
-        result = session.execute(sql, {"source_id": source_id, "cutoff": cutoff})
+        result = session.execute(sql, params)
         rows = result.fetchall()
 
     # Build a set of dates that have data.
-    present_dates = set()
+    present_dates: set[date] = set()
     for row in rows:
         d = row[0]
         if isinstance(d, str):
@@ -121,14 +255,17 @@ def check_gaps(
             d = d.date()
         present_dates.add(d)
 
-    # Walk the 14-day window and find gaps.
-    gaps = []
-    expected = set()
+    # Build the expected set — skip weekends for daily frequency
+    expected: set[date] = set()
     for i in range(15):  # inclusive of today
-        expected.add(now - timedelta(days=i))
+        d = now - timedelta(days=i)
+        if frequency == "daily" and not _is_business_day(d):
+            continue
+        expected.add(d)
 
     missing = sorted(expected - present_dates)
     # Group consecutive missing days into gap descriptions.
+    gaps = []
     if missing:
         start = missing[0]
         prev = missing[0]
@@ -137,15 +274,24 @@ def check_gaps(
                 prev = d
             else:
                 days = (start - prev).days + 1
-                gaps.append(f"{start.isoformat()} → {prev.isoformat()} ({days} day" + ("s" if days != 1 else "") + ")")
+                gaps.append(
+                    f"{start.isoformat()} → {prev.isoformat()} "
+                    f"({days} day" + ("s" if days != 1 else "") + ")"
+                )
                 start = d
                 prev = d
         days = (start - prev).days + 1
-        gaps.append(f"{start.isoformat()} → {prev.isoformat()} ({days} day" + ("s" if days != 1 else "") + ")")
+        gaps.append(
+            f"{start.isoformat()} → {prev.isoformat()} "
+            f"({days} day" + ("s" if days != 1 else "") + ")"
+        )
 
-    # Report all gaps found
     if gaps:
-        logger.warning("check_gaps_unhealthy", source_id=source_id, gap_count=len(gaps))
+        logger.warning(
+            "check_gaps_unhealthy",
+            source_id=source_id,
+            gap_count=len(gaps),
+        )
         return {
             "healthy": False,
             "detail": f"gap(s) found: {len(gaps)} missing period(s)",
@@ -222,29 +368,38 @@ def check_anomalies(
     timestamp_column: str,
     config: dict,
     z_threshold: float = 5.0,
+    *,
+    series_id: str | None = None,
 ) -> dict:
     """Flag value outliers using simple z-score on the last 30 days.
 
-    Computes mean and stdev over the full 30-day window, then checks
-    the most-recent 5 values against *z_threshold*.
-
-    Returns
-    -------
-    dict
-        ``healthy``, ``detail``, ``anomalies`` (list of descriptions),
-        ``mean``, ``stdev``.
+    When *series_id* is given the query is scoped so values from different
+    series are never mixed in the same z-score calculation.
     """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=30)
-    logger.info("check_anomalies_running", source_id=source_id, table=table, z_threshold=z_threshold)
+    logger.info(
+        "check_anomalies_running",
+        source_id=source_id,
+        table=table,
+        z_threshold=z_threshold,
+        series_id=series_id,
+    )
+
+    where = "WHERE source = :source_id"
+    params: dict = {"source_id": source_id, "cutoff": cutoff}
+    if series_id:
+        where += " AND series_id = :series_id"
+        params["series_id"] = series_id
 
     sql = text(
         f"SELECT {value_column} FROM {table} "
-        f"WHERE source = :source_id AND {timestamp_column} >= :cutoff "
+        f"{where} "
+        f"AND {timestamp_column} >= :cutoff "
         f"ORDER BY {timestamp_column} DESC"
     )
     with get_session(config) as session:
-        result = session.execute(sql, {"source_id": source_id, "cutoff": cutoff})
+        result = session.execute(sql, params)
         rows = result.fetchall()
 
     values = [float(row[0]) for row in rows if row[0] is not None]

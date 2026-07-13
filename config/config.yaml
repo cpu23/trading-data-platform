@@ -333,6 +333,14 @@ dashboard:
       precision: 2
       category: inflation
 
+data_quality:
+  fred:
+    grace_periods:
+      daily_business: 2     # business days
+      weekly: 10            # days
+      monthly: 45           # days
+      quarterly: 120        # days
+
 budgets:
   daily_llm_usd: 2.00
   warn_at_pct: 80

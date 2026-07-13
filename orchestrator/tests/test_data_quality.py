@@ -273,6 +273,242 @@ class DataQualityTests(unittest.TestCase):
         self.assertIn("healthy", result)
 
     # ------------------------------------------------------------------
+    # Frequency-aware freshness — business-day logic
+    # ------------------------------------------------------------------
+    @patch("data_quality.get_session")
+    def test_friday_observation_fresh_on_monday_business_day(self, get_session):
+        """Friday observation is fresh on Monday morning for daily business-day series."""
+        from data_quality import check_freshness
+
+        # Friday 2026-07-10 17:00 UTC
+        friday_5pm = datetime(2026, 7, 10, 17, 0, 0, tzinfo=timezone.utc)
+        session = self._make_session(fetchone=(friday_5pm.isoformat(),))
+        get_session.return_value.__enter__.return_value = session
+
+        # Monday 2026-07-13 09:00 UTC
+        monday_9am = datetime(2026, 7, 13, 9, 0, 0, tzinfo=timezone.utc)
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = monday_9am
+            mock_dt.timezone = timezone
+            mock_dt.timedelta = timedelta
+            mock_dt.fromisoformat = datetime.fromisoformat
+
+            result = check_freshness(
+                source_id="fred",
+                table="macro_series",
+                timestamp_column="observed_at",
+                max_age_hours=30,
+                config={
+                    "data_quality": {
+                        "fred": {"grace_periods": {"daily_business": 2}}
+                    }
+                },
+                frequency="daily",
+            )
+
+        self.assertTrue(
+            result["healthy"],
+            f"Friday→Monday (1 business day) should be fresh; got {result}",
+        )
+
+    @patch("data_quality.get_session")
+    def test_monthly_freshness_uses_monthly_threshold(self, get_session):
+        """Monthly series freshness uses a monthly threshold (45 days), not generic hours."""
+        from data_quality import check_freshness
+
+        # 40 days ago — within 45-day monthly grace
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        session = self._make_session(fetchone=(old_ts,))
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_freshness(
+            source_id="fred",
+            table="macro_series",
+            timestamp_column="observed_at",
+            max_age_hours=30,  # generic — should be ignored when frequency provided
+            config={
+                "data_quality": {
+                    "fred": {"grace_periods": {"monthly": 45}}
+                }
+            },
+            frequency="monthly",
+        )
+
+        self.assertTrue(
+            result["healthy"],
+            f"40-day-old monthly data should be fresh with 45-day grace; got {result}",
+        )
+
+    @patch("data_quality.get_session")
+    def test_monthly_freshness_stale_beyond_threshold(self, get_session):
+        """50-day-old data exceeds 45-day monthly grace — should be stale."""
+        from data_quality import check_freshness
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=50)).isoformat()
+        session = self._make_session(fetchone=(old_ts,))
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_freshness(
+            source_id="fred",
+            table="macro_series",
+            timestamp_column="observed_at",
+            max_age_hours=30,
+            config={
+                "data_quality": {
+                    "fred": {"grace_periods": {"monthly": 45}}
+                }
+            },
+            frequency="monthly",
+        )
+
+        self.assertFalse(
+            result["healthy"],
+            f"50-day-old monthly data should be stale; got {result}",
+        )
+        self.assertIn("stale", result["detail"].lower())
+
+    # ------------------------------------------------------------------
+    # Frequency-aware freshness — future timestamps
+    # ------------------------------------------------------------------
+    @patch("data_quality.get_session")
+    def test_future_timestamp_marked_future_not_negative_age(self, get_session):
+        """Future event timestamps are marked 'future', not assigned negative age."""
+        from data_quality import check_freshness
+
+        future_ts = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        session = self._make_session(fetchone=(future_ts,))
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_freshness(
+            source_id="fred",
+            table="macro_series",
+            timestamp_column="observed_at",
+            max_age_hours=30,
+            config={},
+        )
+
+        # Future should be reported but NOT as stale/old
+        self.assertFalse(result["healthy"])
+        self.assertIn("future", result["detail"].lower())
+        # age_hours should be 0 or None for future, never negative
+        if result["age_hours"] is not None:
+            self.assertGreaterEqual(result["age_hours"], 0)
+
+    # ------------------------------------------------------------------
+    # Frequency-aware gaps — weekend exclusion
+    # ------------------------------------------------------------------
+    @patch("data_quality.get_session")
+    def test_gap_check_excludes_weekends_daily_frequency(self, get_session):
+        """Gap check excludes weekends for daily business-day series."""
+        from data_quality import check_gaps
+
+        # Simulate: all business days present, weekends missing
+        # Monday 2026-07-13 through Friday 2026-07-17 present
+        # But Sat/Sun (July 11-12) missing — shouldn't be flagged as gaps
+        today = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+        rows = []
+        # Only include business days in the last 14-day window
+        for i in range(15):
+            d = (today - timedelta(days=i)).date()
+            if d.weekday() < 5:  # Mon-Fri
+                rows.append((d.isoformat(),))
+        # So weekends are "missing" but shouldn't count as gaps
+
+        session = self._make_session(fetchall=rows)
+        get_session.return_value.__enter__.return_value = session
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = today
+            mock_dt.timezone = timezone
+            mock_dt.timedelta = timedelta
+            mock_dt.fromisoformat = datetime.fromisoformat
+
+            result = check_gaps(
+                source_id="fred",
+                table="macro_series",
+                date_column="observed_at",
+                expected_interval="1 day",
+                config={
+                    "data_quality": {
+                        "fred": {"grace_periods": {"daily_business": 2}}
+                    }
+                },
+                frequency="daily",
+            )
+
+        self.assertTrue(
+            result["healthy"],
+            f"Weekend gaps should be excluded for daily frequency; got {result}",
+        )
+        self.assertEqual(len(result.get("gaps", [])), 0)
+
+    # ------------------------------------------------------------------
+    # Frequency-aware gaps — per-series filtering
+    # ------------------------------------------------------------------
+    @patch("data_quality.get_session")
+    def test_gap_check_operates_per_series(self, get_session):
+        """Gap check operates per series — SQL includes series_id filter."""
+        from data_quality import check_gaps
+
+        today = datetime.now(timezone.utc)
+        rows = [(today - timedelta(days=i)).isoformat() for i in range(15)]
+        rows = [(r,) for r in rows]
+        session = self._make_session(fetchall=rows)
+        get_session.return_value.__enter__.return_value = session
+
+        check_gaps(
+            source_id="fred",
+            table="macro_series",
+            date_column="observed_at",
+            expected_interval="1 day",
+            config={},
+            series_id="GDP",
+        )
+
+        # Verify the session.execute was called with a query containing series_id
+        call_args = session.execute.call_args
+        sql_text = str(call_args[0][0]).lower() if call_args else ""
+        params = call_args[0][1] if call_args and len(call_args[0]) > 1 else {}
+        self.assertIn("series_id", sql_text,
+                      f"SQL should filter by series_id; got: {sql_text}")
+        self.assertIn("series_id", params,
+                      f"SQL params should include series_id; got: {params}")
+
+    # ------------------------------------------------------------------
+    # Series-aware anomalies — no cross-series mixing
+    # ------------------------------------------------------------------
+    @patch("data_quality.get_session")
+    def test_anomaly_check_never_mixes_series(self, get_session):
+        """Anomaly check never mixes values from two series."""
+        from data_quality import check_anomalies
+
+        # 30 values — simulating a single series
+        rows = [(100.0 + i * 0.1,) for i in range(30)]
+        session = self._make_session(fetchall=rows)
+        get_session.return_value.__enter__.return_value = session
+
+        check_anomalies(
+            source_id="fred",
+            table="macro_series",
+            value_column="value",
+            timestamp_column="observed_at",
+            config={},
+            series_id="UNRATE",
+        )
+
+        # Verify SQL includes series_id filter
+        call_args = session.execute.call_args
+        sql_text = str(call_args[0][0]).lower() if call_args else ""
+        params = call_args[0][1] if call_args and len(call_args[0]) > 1 else {}
+        self.assertIn("series_id", sql_text,
+                      f"SQL should filter by series_id; got: {sql_text}")
+        self.assertIn("series_id", params,
+                      f"SQL params should include series_id; got: {params}")
+        # Verify the series_id value is correct
+        self.assertEqual(params.get("series_id"), "UNRATE")
+
+    # ------------------------------------------------------------------
     # DATA_QUALITY_CHECKS registry
     # ------------------------------------------------------------------
     def test_all_checks_registered(self):
