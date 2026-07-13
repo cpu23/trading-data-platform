@@ -25,14 +25,12 @@ timezone:
     label: NY
 
 logging:
-  level: DEBUG
+  level: ${LOG_LEVEL:-INFO}
   format: structured_json
+  # Production logs are stdout-only. Historical logs and exposed keys require
+  # an explicit operator cleanup/rotation decision; startup never rewrites them.
   output:
     - stdout
-    - file: /var/log/trading-data/app.log
-  rotate:
-    max_size_mb: 100
-    keep_files: 30
 
 collectors:
   fred:

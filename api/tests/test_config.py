@@ -61,6 +61,34 @@ class ConfigLoadingTests(unittest.TestCase):
 
         self.assertEqual(config["kobeissi"]["api_key"], "")
 
+    def test_production_logging_defaults_to_info_stdout_and_allows_log_level_override(self):
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        env = {
+            "DB_USER": "trading",
+            "DB_PASSWORD": "password",
+            "FRED_API_KEY": "configured-fred",
+            "OPENROUTER_API_KEY": "configured-openrouter",
+            "OPENROUTER_MODEL": "provider/model",
+            "OANDA_API_KEY": "configured-oanda",
+            "TWITTERAPI_KEY": "",
+            "DASHBOARD_USER": "admin",
+            "DASHBOARD_PASSWORD": "password",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            default_config = _load_config(str(config_path))
+        self.assertEqual(default_config["logging"]["level"], "INFO")
+        self.assertEqual(default_config["logging"]["output"], ["stdout"])
+        self.assertNotIn("rotate", default_config["logging"])
+
+        # A distinct path bypasses the production config cache and remains
+        # isolated from the module-level load_config patches in route tests.
+        with tempfile.TemporaryDirectory() as tmp:
+            debug_path = Path(tmp) / "config.yaml"
+            debug_path.write_text(config_path.read_text())
+            with patch.dict(os.environ, {**env, "LOG_LEVEL": "DEBUG"}, clear=True):
+                debug_config = _load_config(str(debug_path))
+        self.assertEqual(debug_config["logging"]["level"], "DEBUG")
+
 
 if __name__ == "__main__":
     unittest.main()
