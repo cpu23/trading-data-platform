@@ -27,13 +27,18 @@ def ensure_tracking_table(config):
     logger.info("tracking_table_ensured")
 
 
-def get_applied_versions(config):
-    """Return a set of already-applied migration version strings."""
+def get_applied_migrations(config) -> dict[str, str | None]:
+    """Return applied migration versions mapped to their stored checksums."""
     with get_session(config) as session:
         result = session.execute(
-            text("SELECT version FROM schema_migrations")
+            text("SELECT version, checksum FROM schema_migrations")
         )
-        return {row[0] for row in result}
+        return {row[0]: row[1] for row in result}
+
+
+def get_applied_versions(config):
+    """Return a set of already-applied migration version strings."""
+    return set(get_applied_migrations(config))
 
 
 def compute_checksum(filepath):
@@ -43,6 +48,25 @@ def compute_checksum(filepath):
         for chunk in iter(lambda: f.read(8192), b""):
             hasher.update(chunk)
     return hasher.hexdigest()[:16]
+
+
+def backfill_checksum(version, filepath, config):
+    """Populate a missing historical checksum in its own transaction."""
+    checksum = compute_checksum(filepath)
+    with get_session(config) as session:
+        session.execute(
+            text(
+                "UPDATE schema_migrations SET checksum = :checksum "
+                "WHERE version = :version AND checksum IS NULL"
+            ),
+            {"version": version, "checksum": checksum},
+        )
+    logger.info(
+        "migration_checksum_backfilled",
+        version=version,
+        path=filepath,
+        checksum=checksum,
+    )
 
 
 def apply_migration(version, filepath, config):
@@ -65,8 +89,11 @@ def apply_migration(version, filepath, config):
     logger.info("migration_applied", version=version, checksum=checksum)
 
 
-def run_migrations(config):
-    """Apply all pending migrations in sorted order.
+def run_migrations(config, allow_checksum_backfill: bool = False):
+    """Verify migration history and apply pending migrations in sorted order.
+
+    Historical null checksums are rejected unless ``allow_checksum_backfill``
+    is explicitly enabled for this invocation.
 
     Returns a list of version strings that were applied in this run.
     """
@@ -77,21 +104,49 @@ def run_migrations(config):
         )
 
     ensure_tracking_table(config)
-    applied = get_applied_versions(config)
+    applied = get_applied_migrations(config)
 
     files = sorted(os.listdir(migrations_dir))
-    pending = []
+    inventory = {}
     for filename in files:
         match = _MIGRATION_FILE_RE.match(filename)
         if not match:
             continue
         version = match.group(1)
+        filepath = os.path.join(migrations_dir, filename)
+        if version in inventory:
+            raise RuntimeError(
+                f"duplicate migration version {version}: "
+                f"{inventory[version]} and {filepath}"
+            )
+        inventory[version] = filepath
+
+    for version, stored_checksum in applied.items():
+        if version not in inventory:
+            raise RuntimeError(
+                f"Applied migration version {version} is missing from {migrations_dir}"
+            )
+        filepath = inventory[version]
+        if stored_checksum is None:
+            if not allow_checksum_backfill:
+                raise RuntimeError(
+                    f"Applied migration {version} at {filepath} has a null checksum"
+                )
+            backfill_checksum(version, filepath, config)
+        else:
+            disk_checksum = compute_checksum(filepath)
+            if stored_checksum != disk_checksum:
+                raise RuntimeError(
+                    f"Checksum mismatch for applied migration {version} at {filepath}"
+                )
+
+    pending = []
+    for version, filepath in inventory.items():
         if version not in applied:
-            pending.append((version, filename))
+            pending.append((version, filepath))
 
     applied_now = []
-    for version, filename in pending:
-        filepath = os.path.join(migrations_dir, filename)
+    for version, filepath in pending:
         apply_migration(version, filepath, config)
         applied_now.append(version)
 
