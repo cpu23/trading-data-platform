@@ -194,6 +194,42 @@ def _failed_run_summary(exc: Exception) -> dict:
     return summary
 
 
+def _start_http_run(
+    config: dict,
+    correlation_id: str,
+    worker_id: str,
+    run_kind: str,
+    component: str | None = None,
+) -> bool | None:
+    """Claim an accepted run, finalizing it safely when the claim errors."""
+    try:
+        return start_run(config, correlation_id, worker_id)
+    except Exception:
+        reason = "run start unavailable"
+        logger.error(
+            "run_start_failed",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+        )
+        try:
+            finish_run(
+                correlation_id,
+                "failed",
+                {"status": "failed", "reason": reason},
+                config,
+                reason,
+            )
+        except Exception:
+            logger.error(
+                "run_start_failure_finalize_failed",
+                correlation_id=correlation_id,
+                run_kind=run_kind,
+                component=component,
+            )
+        return None
+
+
 def _accept_http_run(
     correlation_id: str,
     run_kind: str,
@@ -223,11 +259,16 @@ def _accept_http_run(
 
 @app.post("/runs/{correlation_id}/retry", status_code=202)
 def retry_abandoned_run(
-    correlation_id: str,
+    correlation_id: UUID,
     background_tasks: BackgroundTasks,
 ):
     config = _get_config()
-    previous = get_run_for_retry(config, correlation_id)
+    correlation_id_str = str(correlation_id)
+    try:
+        previous = get_run_for_retry(config, correlation_id_str)
+    except Exception as exc:
+        logger.error("run_retry_lookup_failed", correlation_id=correlation_id_str)
+        raise HTTPException(status_code=503, detail="Run lookup unavailable") from exc
     if previous is None:
         raise HTTPException(status_code=404, detail="Run not found")
     if previous.get("status") != "abandoned":
@@ -254,7 +295,7 @@ def retry_abandoned_run(
     except Exception as exc:
         logger.error(
             "run_retry_acceptance_failed",
-            prior_correlation_id=correlation_id,
+            prior_correlation_id=correlation_id_str,
             correlation_id=new_correlation_id,
             error=str(exc),
         )
@@ -269,7 +310,7 @@ def retry_abandoned_run(
 
     return {
         "job_id": new_correlation_id,
-        "prior_job_id": correlation_id,
+        "prior_job_id": correlation_id_str,
         "accepted_at": accepted_at.isoformat(),
     }
 
@@ -278,8 +319,12 @@ def _run_cycle_task(correlation_id: str):
     global _cycle_correlation_id
     config = _get_config()
     worker_id = f"api:{uuid4()}"
-    if not start_run(config, correlation_id, worker_id):
-        logger.info("cycle_start_lost", correlation_id=correlation_id)
+    started = _start_http_run(config, correlation_id, worker_id, "cycle")
+    if started is not True:
+        if started is False:
+            logger.info("cycle_start_lost", correlation_id=correlation_id)
+        if _cycle_correlation_id == correlation_id:
+            _cycle_correlation_id = None
         return
     try:
         result = run_full_cycle(
@@ -328,8 +373,12 @@ def get_cycle_status():
 
 def _run_collector_task(source_id: str, correlation_id: str):
     config = _get_config()
-    if not start_run(config, correlation_id, f"api:{uuid4()}"):
-        logger.info("collector_start_lost", source_id=source_id, correlation_id=correlation_id)
+    started = _start_http_run(
+        config, correlation_id, f"api:{uuid4()}", "collector", source_id
+    )
+    if started is not True:
+        if started is False:
+            logger.info("collector_start_lost", source_id=source_id, correlation_id=correlation_id)
         return
     try:
         result = run_collector(
@@ -370,8 +419,12 @@ def trigger_collector(
 
 def _run_processor_task(processor_id: str, correlation_id: str):
     config = _get_config()
-    if not start_run(config, correlation_id, f"api:{uuid4()}"):
-        logger.info("processor_start_lost", processor_id=processor_id, correlation_id=correlation_id)
+    started = _start_http_run(
+        config, correlation_id, f"api:{uuid4()}", "processor", processor_id
+    )
+    if started is not True:
+        if started is False:
+            logger.info("processor_start_lost", processor_id=processor_id, correlation_id=correlation_id)
         return
     try:
         result = run_processor(

@@ -11,6 +11,38 @@ logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
 
 
+def _start_scheduled_run(
+    config: dict, correlation_id: str, worker_id: str, run_kind: str, component: str
+) -> bool | None:
+    """Claim an accepted scheduled run, finalizing it when the claim errors."""
+    try:
+        return start_run(config, correlation_id, worker_id)
+    except Exception:
+        reason = "run start unavailable"
+        logger.error(
+            "scheduled_run_start_failed",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+        )
+        try:
+            finish_run(
+                correlation_id,
+                "failed",
+                {"status": "failed", "reason": reason},
+                config,
+                reason,
+            )
+        except Exception:
+            logger.error(
+                "scheduled_run_start_failure_finalize_failed",
+                correlation_id=correlation_id,
+                run_kind=run_kind,
+                component=component,
+            )
+        return None
+
+
 def _build_cron_trigger(schedule: str) -> CronTrigger:
     return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
 
@@ -18,7 +50,9 @@ def _build_cron_trigger(schedule: str) -> CronTrigger:
 def _scheduled_collector(source_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
     accept_run(config, correlation_id, "scheduler", "collector", source_id)
-    if not start_run(config, correlation_id, f"scheduler:{uuid4()}"):
+    if _start_scheduled_run(
+        config, correlation_id, f"scheduler:{uuid4()}", "collector", source_id
+    ) is not True:
         return
     try:
         stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
@@ -66,7 +100,9 @@ def _run_scheduled_collector_stages(
 def _scheduled_processor(processor_id: str, config: dict) -> None:
     correlation_id = str(uuid4())
     accept_run(config, correlation_id, "scheduler", "processor", processor_id)
-    if not start_run(config, correlation_id, f"scheduler:{uuid4()}"):
+    if _start_scheduled_run(
+        config, correlation_id, f"scheduler:{uuid4()}", "processor", processor_id
+    ) is not True:
         return
     try:
         result = run_processor(

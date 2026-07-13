@@ -237,6 +237,100 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         self.assertEqual(finish.call_args.args[1], "failed")
 
+    def test_cycle_start_failure_finalizes_accepted_run_without_work(self):
+        import main
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", side_effect=RuntimeError("secret db failure")
+        ), patch("main.run_full_cycle") as work, patch("main.finish_run") as finish:
+            main._run_cycle_task("run-id")
+
+        work.assert_not_called()
+        finish.assert_called_once_with(
+            "run-id", "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {}, "run start unavailable",
+        )
+
+    def test_collector_start_failure_finalizes_accepted_run_without_work(self):
+        import main
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", side_effect=RuntimeError("secret db failure")
+        ), patch("main.run_collector") as work, patch("main.finish_run") as finish:
+            main._run_collector_task("fred", "run-id")
+
+        work.assert_not_called()
+        finish.assert_called_once_with(
+            "run-id", "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {}, "run start unavailable",
+        )
+
+    def test_processor_start_failure_finalizes_accepted_run_without_work(self):
+        import main
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", side_effect=RuntimeError("secret db failure")
+        ), patch("main.run_processor") as work, patch("main.finish_run") as finish:
+            main._run_processor_task("briefing", "run-id")
+
+        work.assert_not_called()
+        finish.assert_called_once_with(
+            "run-id", "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {}, "run start unavailable",
+        )
+
+    def test_lost_start_race_does_not_finish_accepted_run(self):
+        import main
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", return_value=False
+        ), patch("main.run_collector") as work, patch("main.finish_run") as finish:
+            main._run_collector_task("fred", "run-id")
+
+        work.assert_not_called()
+        finish.assert_not_called()
+
+    def test_scheduler_collector_start_failure_finalizes_without_work(self):
+        import scheduler
+
+        with patch("scheduler.uuid4", return_value="run-id"), patch(
+            "scheduler.accept_run"
+        ), patch(
+            "scheduler.start_run", side_effect=RuntimeError("secret db failure")
+        ), patch("scheduler._run_scheduled_collector_stages") as work, patch(
+            "scheduler.finish_run"
+        ) as finish:
+            scheduler._scheduled_collector("fred", {})
+
+        work.assert_not_called()
+        finish.assert_called_once_with(
+            "run-id", "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {}, "run start unavailable",
+        )
+
+    def test_scheduler_processor_start_failure_finalizes_without_work(self):
+        import scheduler
+
+        with patch("scheduler.uuid4", return_value="run-id"), patch(
+            "scheduler.accept_run"
+        ), patch(
+            "scheduler.start_run", side_effect=RuntimeError("secret db failure")
+        ), patch("scheduler.run_processor") as work, patch(
+            "scheduler.finish_run"
+        ) as finish:
+            scheduler._scheduled_processor("briefing", {})
+
+        work.assert_not_called()
+        finish.assert_called_once_with(
+            "run-id", "failed",
+            {"status": "failed", "reason": "run start unavailable"},
+            {}, "run start unavailable",
+        )
+
     def test_background_lock_conflict_finalizes_stable_failed_result(self):
         import main
         from locks import RunConflict
@@ -333,7 +427,7 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         background = Mock()
         background.add_task.side_effect = lambda *args: events.append(("enqueue", args[0]))
         old = {
-            "correlation_id": "old-id",
+            "correlation_id": "11111111-1111-4111-8111-111111111111",
             "status": "abandoned",
             "run_kind": "collector",
             "requested_component": "fred",
@@ -343,9 +437,9 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         ), patch(
             "main.accept_run", side_effect=lambda *args, **kwargs: events.append(("accept", args[1])) or datetime.now(timezone.utc)
         ):
-            response = main.retry_abandoned_run("old-id", background)
+            response = main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
 
-        self.assertNotEqual(response["job_id"], "old-id")
+        self.assertNotEqual(response["job_id"], "11111111-1111-4111-8111-111111111111")
         self.assertEqual(events[0], ("accept", response["job_id"]))
         self.assertEqual(events[1], ("enqueue", main._run_collector_task))
 
@@ -364,10 +458,42 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
                 "main.get_run_for_retry", return_value=old
             ), patch("main.accept_run") as accept:
                 with self.assertRaises(HTTPException) as raised:
-                    main.retry_abandoned_run("old-id", background)
+                    main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
                 self.assertEqual(raised.exception.status_code, expected)
                 accept.assert_not_called()
                 background.add_task.assert_not_called()
+
+    def test_retry_lookup_failure_returns_503_without_accept_or_enqueue(self):
+        import main
+        from fastapi import HTTPException
+
+        background = Mock()
+        with patch("main._get_config", return_value={}), patch(
+            "main.get_run_for_retry", side_effect=RuntimeError("secret db failure")
+        ) as lookup, patch("main.accept_run") as accept:
+            with self.assertRaises(HTTPException) as raised:
+                main.retry_abandoned_run(
+                    "11111111-1111-4111-8111-111111111111", background
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.detail, "Run lookup unavailable")
+        lookup.assert_called_once()
+        accept.assert_not_called()
+        background.add_task.assert_not_called()
+
+    def test_retry_malformed_uuid_returns_422_without_lookup_or_accept(self):
+        import main
+        from fastapi.testclient import TestClient
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.get_run_for_retry"
+        ) as lookup, patch("main.accept_run") as accept:
+            response = TestClient(main.app).post("/runs/not-a-uuid/retry")
+
+        self.assertEqual(response.status_code, 422)
+        lookup.assert_not_called()
+        accept.assert_not_called()
 
 
 class CollectionFailureStatusTests(unittest.TestCase):
