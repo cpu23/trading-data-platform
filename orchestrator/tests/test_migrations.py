@@ -199,5 +199,126 @@ class MigrationInventoryTests(unittest.TestCase):
                     migrate.run_migrations({})
 
 
+class NumericOrderingTests(unittest.TestCase):
+    def test_pending_migrations_applied_in_numeric_not_lexicographic_order(self):
+        with tempfile.TemporaryDirectory() as migrations_dir:
+            Path(migrations_dir, "2_second.sql").write_text("SELECT 2;\n")
+            Path(migrations_dir, "10_tenth.sql").write_text("SELECT 10;\n")
+            with (
+                patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
+                patch.object(migrate, "ensure_tracking_table"),
+                patch.object(
+                    migrate, "get_applied_migrations", return_value={}
+                ),
+                patch.object(migrate, "apply_migration") as apply_migration,
+            ):
+                result = migrate.run_migrations({})
+
+            self.assertEqual(result, ["2", "10"])
+            calls = apply_migration.call_args_list
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0].args[0], "2")
+            self.assertEqual(calls[1].args[0], "10")
+
+    def test_ambiguous_zero_padded_versions_rejected(self):
+        with tempfile.TemporaryDirectory() as migrations_dir:
+            Path(migrations_dir, "1_one.sql").write_text("SELECT 1;\n")
+            Path(migrations_dir, "001_padded.sql").write_text("SELECT 1;\n")
+            with (
+                patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
+                patch.object(migrate, "ensure_tracking_table"),
+                patch.object(
+                    migrate, "get_applied_migrations", return_value={}
+                ),
+                patch.object(migrate, "apply_migration") as apply_migration,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "ambiguous"
+                ):
+                    migrate.run_migrations({})
+
+            apply_migration.assert_not_called()
+
+    def test_zero_padded_migrations_accepted_when_consistent(self):
+        with tempfile.TemporaryDirectory() as migrations_dir:
+            Path(migrations_dir, "001_first.sql").write_text("SELECT 1;\n")
+            Path(migrations_dir, "002_second.sql").write_text("SELECT 2;\n")
+            Path(migrations_dir, "010_tenth.sql").write_text("SELECT 10;\n")
+            with (
+                patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
+                patch.object(migrate, "ensure_tracking_table"),
+                patch.object(
+                    migrate, "get_applied_migrations", return_value={}
+                ),
+                patch.object(migrate, "apply_migration") as apply_migration,
+            ):
+                result = migrate.run_migrations({})
+
+            self.assertEqual(result, ["001", "002", "010"])
+            calls = apply_migration.call_args_list
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(
+                [c.args[0] for c in calls], ["001", "002", "010"]
+            )
+
+
+class AllOrNothingValidationTests(unittest.TestCase):
+    def test_null_checksum_backfill_deferred_when_later_mismatch_exists(self):
+        with tempfile.TemporaryDirectory() as migrations_dir:
+            applied_path_1 = Path(migrations_dir, "001_applied.sql")
+            applied_path_1.write_text("SELECT 1;\n")
+            applied_path_2 = Path(migrations_dir, "002_applied.sql")
+            applied_path_2.write_text("SELECT 2;\n")
+            with (
+                patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
+                patch.object(migrate, "ensure_tracking_table"),
+                patch.object(
+                    migrate,
+                    "get_applied_migrations",
+                    return_value={"001": None, "002": "wrong-checksum"},
+                ),
+                patch.object(migrate, "apply_migration") as apply_migration,
+                patch.object(migrate, "backfill_checksum") as backfill_checksum,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "(?i)checksum mismatch.*002"
+                ) as ctx:
+                    migrate.run_migrations({}, allow_checksum_backfill=True)
+
+            # No backfill of 001 occurred — the 002 mismatch blocked it
+            backfill_checksum.assert_not_called()
+            apply_migration.assert_not_called()
+            # The combined error should contain the 002 issue but not an
+            # error about 001 (which is a backfill candidate, not a violation).
+            self.assertIn("002", str(ctx.exception))
+            self.assertIn("Checksum mismatch", str(ctx.exception))
+
+    def test_all_or_nothing_fails_combined_with_missing_file_and_mismatch(self):
+        with tempfile.TemporaryDirectory() as migrations_dir:
+            applied_path_2 = Path(migrations_dir, "002_applied.sql")
+            applied_path_2.write_text("SELECT 2;\n")
+            # version "001" is applied but missing from disk
+            with (
+                patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
+                patch.object(migrate, "ensure_tracking_table"),
+                patch.object(
+                    migrate,
+                    "get_applied_migrations",
+                    return_value={"001": "old-checksum", "002": "wrong-checksum"},
+                ),
+                patch.object(migrate, "apply_migration") as apply_migration,
+                patch.object(migrate, "backfill_checksum") as backfill_checksum,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "001.*missing"
+                ) as ctx:
+                    migrate.run_migrations({})
+
+            backfill_checksum.assert_not_called()
+            apply_migration.assert_not_called()
+            self.assertIn("002", str(ctx.exception))
+            self.assertIn("Checksum mismatch", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

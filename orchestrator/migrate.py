@@ -89,11 +89,55 @@ def apply_migration(version, filepath, config):
     logger.info("migration_applied", version=version, checksum=checksum)
 
 
+def _version_int(version: str) -> int:
+    """Parse a version string to its canonical integer."""
+    return int(version)
+
+
+def _build_inventory(migrations_dir: str) -> dict[str, str]:
+    """Scan migrations_dir for *.sql files, build a version->filepath inventory.
+
+    Validates:
+    - No duplicate version strings (same filename prefix).
+    - No ambiguous aliases (e.g. ``1_`` and ``001_`` both encoding version 1).
+    """
+    inventory: dict[str, str] = {}
+    version_str_by_int: dict[int, str] = {}
+
+    for filename in sorted(os.listdir(migrations_dir)):
+        match = _MIGRATION_FILE_RE.match(filename)
+        if not match:
+            continue
+        version = match.group(1)
+        filepath = os.path.join(migrations_dir, filename)
+
+        if version in inventory:
+            raise RuntimeError(
+                f"duplicate migration version {version}: "
+                f"{inventory[version]} and {filepath}"
+            )
+
+        int_version = _version_int(version)
+        existing = version_str_by_int.get(int_version)
+        if existing is not None and existing != version:
+            raise RuntimeError(
+                f"ambiguous migration version: {version} and {existing} "
+                f"both encode version {int_version} — use consistent naming"
+            )
+
+        version_str_by_int[int_version] = version
+        inventory[version] = filepath
+
+    return inventory
+
+
 def run_migrations(config, allow_checksum_backfill: bool = False):
-    """Verify migration history and apply pending migrations in sorted order.
+    """Verify migration history and apply pending migrations in numeric order.
 
     Historical null checksums are rejected unless ``allow_checksum_backfill``
-    is explicitly enabled for this invocation.
+    is explicitly enabled for this invocation.  When backfill is enabled
+    ALL validation errors are collected before any row is mutated — no
+    partial backfills.
 
     Returns a list of version strings that were applied in this run.
     """
@@ -105,45 +149,59 @@ def run_migrations(config, allow_checksum_backfill: bool = False):
 
     ensure_tracking_table(config)
     applied = get_applied_migrations(config)
+    inventory = _build_inventory(migrations_dir)
 
-    files = sorted(os.listdir(migrations_dir))
-    inventory = {}
-    for filename in files:
-        match = _MIGRATION_FILE_RE.match(filename)
-        if not match:
-            continue
-        version = match.group(1)
-        filepath = os.path.join(migrations_dir, filename)
-        if version in inventory:
-            raise RuntimeError(
-                f"duplicate migration version {version}: "
-                f"{inventory[version]} and {filepath}"
-            )
-        inventory[version] = filepath
+    # ------------------------------------------------------------------
+    # Phase 1 — collect *every* validation error before any mutation
+    # ------------------------------------------------------------------
+    errors: list[str] = []
+    backfill_candidates: list[tuple[str, str]] = []  # (version, filepath)
 
-    for version, stored_checksum in applied.items():
+    for version in sorted(applied, key=_version_int):
+        stored_checksum = applied[version]
+
         if version not in inventory:
-            raise RuntimeError(
-                f"Applied migration version {version} is missing from {migrations_dir}"
+            errors.append(
+                f"Applied migration version {version} is missing "
+                f"from {migrations_dir}"
             )
+            continue
+
         filepath = inventory[version]
+
         if stored_checksum is None:
             if not allow_checksum_backfill:
-                raise RuntimeError(
-                    f"Applied migration {version} at {filepath} has a null checksum"
+                errors.append(
+                    f"Applied migration {version} at {filepath} "
+                    f"has a null checksum"
                 )
-            backfill_checksum(version, filepath, config)
+            else:
+                backfill_candidates.append((version, filepath))
         else:
             disk_checksum = compute_checksum(filepath)
             if stored_checksum != disk_checksum:
-                raise RuntimeError(
-                    f"Checksum mismatch for applied migration {version} at {filepath}"
+                errors.append(
+                    f"Checksum mismatch for applied migration "
+                    f"{version} at {filepath}"
                 )
 
+    if errors:
+        raise RuntimeError(
+            f"Migration validation failed ({len(errors)} error(s)): "
+            + "; ".join(errors)
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 2 — safe mutations (only when no errors exist)
+    # ------------------------------------------------------------------
+    for version, filepath in backfill_candidates:
+        backfill_checksum(version, filepath, config)
+
+    # Determine pending in numeric order
     pending = []
-    for version, filepath in inventory.items():
+    for version in sorted(inventory, key=_version_int):
         if version not in applied:
-            pending.append((version, filepath))
+            pending.append((version, inventory[version]))
 
     applied_now = []
     for version, filepath in pending:
