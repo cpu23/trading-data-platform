@@ -261,6 +261,80 @@ class TestSystemRoutes(unittest.TestCase):
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch("routes.json.system.httpx.get")
+    def test_invalid_component_enums_return_controlled_503(self, mock_get, _query):
+        malformed_components = {
+            "invalid status": {"name": "database", "kind": "service", "status": "nonsense"},
+            "invalid kind": {"name": "database", "kind": "nonsense", "status": "available"},
+            "blank name": {"name": "   ", "kind": "service", "status": "available"},
+        }
+        valid_quality = MagicMock()
+        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
+
+        for case, component in malformed_components.items():
+            with self.subTest(case=case):
+                health = MagicMock()
+                health.json.return_value = {
+                    "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                    "components": [component], "scheduler": {"jobs": []},
+                    "stream": {"status": "connected"},
+                }
+                mock_get.reset_mock(side_effect=True)
+                mock_get.side_effect = [health, valid_quality]
+
+                resp = client.get("/api/system/health", headers=AUTH)
+
+                self.assertEqual(resp.status_code, 503)
+                data = resp.json()
+                self.assertEqual(data["liveness"], "ok")
+                self.assertEqual(data["readiness"], "unready")
+                self.assertEqual(data["data_health"], "degraded")
+                self.assertIn(
+                    "invalid orchestrator health contract",
+                    data["components"][0]["error_message"],
+                )
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch("routes.json.system.httpx.get")
+    def test_invalid_scheduler_and_stream_contracts_return_controlled_503(
+        self, mock_get, _query
+    ):
+        malformed_fields = {
+            "scalar scheduler": {"scheduler": "broken", "stream": {"status": "connected"}},
+            "scalar scheduler jobs": {"scheduler": {"jobs": "broken"}, "stream": {"status": "connected"}},
+            "non-object scheduler job": {"scheduler": {"jobs": ["broken"]}, "stream": {"status": "connected"}},
+            "scheduler job missing id": {"scheduler": {"jobs": [{"next_due_at": None}]}, "stream": {"status": "connected"}},
+            "scalar stream": {"scheduler": {"jobs": []}, "stream": "broken"},
+            "list stream": {"scheduler": {"jobs": []}, "stream": []},
+            "invalid stream status type": {"scheduler": {"jobs": []}, "stream": {"status": ["connected"]}},
+            "invalid stream heartbeat type": {"scheduler": {"jobs": []}, "stream": {"status": "connected", "last_heartbeat": []}},
+        }
+        valid_quality = MagicMock()
+        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
+
+        for case, fields in malformed_fields.items():
+            with self.subTest(case=case):
+                health = MagicMock()
+                health.json.return_value = {
+                    "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                    "components": [], **fields,
+                }
+                mock_get.reset_mock(side_effect=True)
+                mock_get.side_effect = [health, valid_quality]
+
+                resp = client.get("/api/system/health", headers=AUTH)
+
+                self.assertEqual(resp.status_code, 503)
+                data = resp.json()
+                self.assertEqual(data["liveness"], "ok")
+                self.assertEqual(data["readiness"], "unready")
+                self.assertEqual(data["data_health"], "degraded")
+                self.assertIn(
+                    "invalid orchestrator health contract",
+                    data["components"][0]["error_message"],
+                )
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch("routes.json.system.httpx.get")
     def test_malformed_nested_orchestrator_quality_contract_returns_503(
         self, mock_get, _query
     ):
@@ -274,6 +348,13 @@ class TestSystemRoutes(unittest.TestCase):
         malformed_checks = {
             "non-dict list entry": ["fresh"],
             "non-dict mapping value": {"fred_freshness": "fresh"},
+            "invalid status enum": {
+                "fred_freshness": {"healthy": True, "detail": "fresh", "status": "nonsense"}
+            },
+            "invalid freshness enum": {
+                "fred_freshness": {"healthy": True, "detail": "fresh", "freshness": "nonsense"}
+            },
+            "empty mapping entry": {"fred_freshness": {}},
         }
         for case, checks in malformed_checks.items():
             with self.subTest(case=case):

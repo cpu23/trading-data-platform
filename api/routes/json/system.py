@@ -14,6 +14,21 @@ router = APIRouter()
 
 logger = get_logger("system.health")
 
+# Explicit enums mirror the values emitted by orchestrator/main.py,
+# scheduler.py, price_stream.py, and data_quality.py. Keep these contracts
+# narrow so malformed upstream data cannot reach downstream ``.get()`` calls.
+ORCHESTRATOR_COMPONENT_STATUSES = {"available", "unavailable", "degraded"}
+ORCHESTRATOR_COMPONENT_KINDS = {"service", "data"}
+ORCHESTRATOR_SCHEDULER_STATUSES = {"running", "stopped"}
+ORCHESTRATOR_STREAM_STATUSES = {"stopped", "simulated", "connected", "reconnecting"}
+ORCHESTRATOR_QUALITY_STATUSES = {
+    "healthy", "degraded", "unhealthy", "fresh", "stale", "future",
+    "future-invalid", "future_invalid",
+}
+ORCHESTRATOR_FRESHNESS_STATUSES = {
+    "fresh", "stale", "future", "future-invalid", "future_invalid",
+}
+
 
 def _fmt(value):
     if value is None:
@@ -41,15 +56,18 @@ def _validate_orchestrator_health_contract(payload):
             raise ValueError(
                 f"invalid orchestrator health contract: component {index} must be an object"
             )
-        if not isinstance(component.get("name"), str) or not component["name"]:
+        if not isinstance(component.get("name"), str) or not component["name"].strip():
             raise ValueError(
                 f"invalid orchestrator health contract: component {index} has invalid name"
             )
-        if not isinstance(component.get("status"), str) or not component["status"]:
+        if not isinstance(component.get("status"), str) or component["status"] not in ORCHESTRATOR_COMPONENT_STATUSES:
             raise ValueError(
                 f"invalid orchestrator health contract: component {index} has invalid status"
             )
-        if "kind" in component and not isinstance(component["kind"], str):
+        if "kind" in component and (
+            not isinstance(component["kind"], str)
+            or component["kind"] not in ORCHESTRATOR_COMPONENT_KINDS
+        ):
             raise ValueError(
                 f"invalid orchestrator health contract: component {index} has invalid kind"
             )
@@ -63,6 +81,50 @@ def _validate_orchestrator_health_contract(payload):
             raise ValueError(
                 f"invalid orchestrator health contract: component {index} has invalid reason"
             )
+
+    if "scheduler" in payload:
+        scheduler = payload["scheduler"]
+        if not isinstance(scheduler, dict):
+            raise ValueError("invalid orchestrator health contract: scheduler must be an object")
+        if "status" in scheduler and (
+            not isinstance(scheduler["status"], str)
+            or scheduler["status"] not in ORCHESTRATOR_SCHEDULER_STATUSES
+        ):
+            raise ValueError("invalid orchestrator health contract: scheduler has invalid status")
+        if "checked_at" in scheduler and scheduler["checked_at"] is not None and not isinstance(
+            scheduler["checked_at"], str
+        ):
+            raise ValueError("invalid orchestrator health contract: scheduler has invalid checked_at")
+        jobs = scheduler.get("jobs")
+        if not isinstance(jobs, list):
+            raise ValueError("invalid orchestrator health contract: scheduler jobs must be a list")
+        for index, job in enumerate(jobs):
+            if not isinstance(job, dict):
+                raise ValueError(
+                    f"invalid orchestrator health contract: scheduler job {index} must be an object"
+                )
+            if not isinstance(job.get("id"), str) or not job["id"].strip():
+                raise ValueError(
+                    f"invalid orchestrator health contract: scheduler job {index} has invalid id"
+                )
+            if "next_due_at" in job and job["next_due_at"] is not None and not isinstance(
+                job["next_due_at"], str
+            ):
+                raise ValueError(
+                    f"invalid orchestrator health contract: scheduler job {index} has invalid next_due_at"
+                )
+
+    if "stream" in payload:
+        stream = payload["stream"]
+        if not isinstance(stream, dict):
+            raise ValueError("invalid orchestrator health contract: stream must be an object")
+        if not isinstance(stream.get("status"), str) or stream["status"] not in ORCHESTRATOR_STREAM_STATUSES:
+            raise ValueError("invalid orchestrator health contract: stream has invalid status")
+        for field in ("last_heartbeat", "error"):
+            if field in stream and stream[field] is not None and not isinstance(stream[field], str):
+                raise ValueError(
+                    f"invalid orchestrator health contract: stream has invalid {field}"
+                )
 
 
 def _validate_orchestrator_quality_contract(payload):
@@ -82,7 +144,11 @@ def _validate_orchestrator_quality_contract(payload):
             raise ValueError(
                 f"invalid orchestrator quality contract: check {check_id} must be an object"
             )
-        if "healthy" in check and not isinstance(check["healthy"], bool):
+        if not check:
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} must not be empty"
+            )
+        if not isinstance(check.get("healthy"), bool):
             raise ValueError(
                 f"invalid orchestrator quality contract: check {check_id} has invalid healthy flag"
             )
@@ -91,6 +157,20 @@ def _validate_orchestrator_quality_contract(payload):
                 raise ValueError(
                     f"invalid orchestrator quality contract: check {check_id} has invalid {field}"
                 )
+        if not any(isinstance(check.get(field), str) and check[field].strip() for field in (
+            "status", "freshness", "detail",
+        )):
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} has no meaningful result"
+            )
+        if "status" in check and check["status"].lower() not in ORCHESTRATOR_QUALITY_STATUSES:
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} has invalid status"
+            )
+        if "freshness" in check and check["freshness"].lower() not in ORCHESTRATOR_FRESHNESS_STATUSES:
+            raise ValueError(
+                f"invalid orchestrator quality contract: check {check_id} has invalid freshness"
+            )
 
 
 @router.get("/system/health")
