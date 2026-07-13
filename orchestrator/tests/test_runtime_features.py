@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -153,7 +154,11 @@ class DurableRunLifecycleTests(unittest.TestCase):
         run_collector.return_value = {"status": "success"}
         with patch("orchestrator.accept_run"), patch(
             "orchestrator.start_run", return_value=True
-        ), patch("orchestrator.finish_run"), patch("orchestrator.update_run_progress"):
+        ), patch("orchestrator.finish_run"), patch(
+            "orchestrator.update_run_progress"
+        ), patch(
+            "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
+        ):
             run_full_cycle(config={"collectors": {"fred": {"enabled": True}}})
 
         self.assertFalse(run_collector.call_args.kwargs["manage_lifecycle"])
@@ -173,11 +178,25 @@ class DurableRunLifecycleTests(unittest.TestCase):
                 background.add_task.side_effect = lambda *args: events.append("enqueue")
                 with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=lambda *args, **kwargs: events.append("accept") or datetime.now(timezone.utc)), patch(
                     "collectors.get_all_collectors", return_value={"fred": Mock()}
-                ), patch("processors.get_all_processors", return_value={"briefing": Mock()}), patch.object(
-                    main, "_cycle_lock", Mock(acquire=Mock(return_value=True), release=Mock())
-                ):
+                ), patch("processors.get_all_processors", return_value={"briefing": Mock()}):
                     endpoint(*positional, background, body={})
                 self.assertEqual(events, ["accept", "enqueue"])
+
+    def test_process_local_lock_no_longer_decides_cycle_acceptance(self):
+        import main
+
+        self.assertFalse(hasattr(main, "_cycle_lock"))
+        background = Mock()
+        accepted_at = datetime.now(timezone.utc)
+        with patch("main._get_config", return_value={}), patch(
+            "main.accept_run", return_value=accepted_at
+        ) as accept:
+            first = main.trigger_cycle(background, body={})
+            second = main.trigger_cycle(background, body={})
+
+        self.assertEqual(accept.call_count, 2)
+        self.assertEqual(background.add_task.call_count, 2)
+        self.assertNotEqual(first["job_id"], second["job_id"])
 
     def test_duplicate_acceptance_returns_409_without_enqueue(self):
         import main
@@ -217,6 +236,27 @@ class DurableRunLifecycleTests(unittest.TestCase):
             main._run_collector_task("fred", "run-id")
 
         self.assertEqual(finish.call_args.args[1], "failed")
+
+    def test_background_lock_conflict_finalizes_stable_failed_result(self):
+        import main
+        from locks import RunConflict
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", return_value=True
+        ), patch(
+            "main.run_collector", side_effect=RunConflict("collector:fred")
+        ), patch("main.finish_run") as finish:
+            main._run_collector_task("fred", "run-id")
+
+        self.assertEqual(
+            finish.call_args.args[2],
+            {
+                "status": "failed",
+                "reason": "run conflict: collector:fred",
+                "conflict": "collector:fred",
+            },
+        )
+        self.assertEqual(finish.call_args.args[4], "run conflict: collector:fred")
 
 
 class AbandonedRunRecoveryTests(unittest.TestCase):
@@ -337,6 +377,11 @@ class CollectionFailureStatusTests(unittest.TestCase):
         from main import app
         from fastapi.testclient import TestClient
         self.client = TestClient(app)
+        self.lock_patcher = patch(
+            "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
+        )
+        self.lock_patcher.start()
+        self.addCleanup(self.lock_patcher.stop)
         self.config = {
             "database": {"host": "localhost", "port": 5432, "name": "test",
                          "user": "test", "password": "test"},

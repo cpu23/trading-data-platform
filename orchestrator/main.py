@@ -16,6 +16,7 @@ except ImportError:
     def run_quality_checks(config):
         return {}
 from logging_config import get_logger, setup_logging
+from locks import RunConflict
 from orchestrator import (
     DEFAULT_ACCEPTED_TIMEOUT,
     DEFAULT_HEARTBEAT_TIMEOUT,
@@ -37,7 +38,7 @@ from scheduler import scheduler_status, start_scheduler, stop_scheduler
 app = FastAPI(title="Trading Data Orchestrator")
 logger = get_logger("orchestrator.api")
 
-_cycle_lock = None
+# Status compatibility only; PostgreSQL advisory locks provide coordination.
 _cycle_correlation_id: str | None = None
 
 
@@ -62,10 +63,6 @@ def _job_timeout(config: dict, key: str, default: timedelta) -> timedelta:
 
 @app.on_event("startup")
 def on_startup():
-    global _cycle_lock
-    _cycle_lock = __import__("threading").Lock()
-
-
     config = _get_config()
     setup_logging(level=config.get("logging", {}).get("level", "INFO"))
 
@@ -190,6 +187,13 @@ def _idempotency_key_from_body(body: dict | None) -> str | None:
     return str(value) if value else None
 
 
+def _failed_run_summary(exc: Exception) -> dict:
+    summary = {"status": "failed", "reason": str(exc)}
+    if isinstance(exc, RunConflict):
+        summary["conflict"] = exc.lock_name
+    return summary
+
+
 def _accept_http_run(
     correlation_id: str,
     run_kind: str,
@@ -287,11 +291,16 @@ def _run_cycle_task(correlation_id: str):
         logger.info("cycle_completed", correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
-        finish_run(correlation_id, "failed", {}, config, str(exc))
+        finish_run(
+            correlation_id,
+            "failed",
+            _failed_run_summary(exc),
+            config,
+            str(exc),
+        )
     finally:
-        _cycle_correlation_id = None
-        if _cycle_lock and _cycle_lock.locked():
-            _cycle_lock.release()
+        if _cycle_correlation_id == correlation_id:
+            _cycle_correlation_id = None
 
 
 @app.post("/run_cycle", status_code=202)
@@ -302,19 +311,9 @@ def trigger_cycle(
     global _cycle_correlation_id
 
     correlation_id = _correlation_id_from_body(body)
-    acquired = _cycle_lock.acquire(blocking=False)
-    if not acquired:
-        running_id = _cycle_correlation_id or "unknown"
-        raise HTTPException(status_code=409, detail=f"Cycle already running: {running_id}")
-
-    try:
-        accepted_at = _accept_http_run(correlation_id, "cycle", None, body)
-        _cycle_correlation_id = correlation_id
-        background_tasks.add_task(_run_cycle_task, correlation_id)
-    except Exception:
-        _cycle_correlation_id = None
-        _cycle_lock.release()
-        raise
+    accepted_at = _accept_http_run(correlation_id, "cycle", None, body)
+    _cycle_correlation_id = correlation_id
+    background_tasks.add_task(_run_cycle_task, correlation_id)
 
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
@@ -343,7 +342,13 @@ def _run_collector_task(source_id: str, correlation_id: str):
         logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
-        finish_run(correlation_id, "failed", {}, config, str(exc))
+        finish_run(
+            correlation_id,
+            "failed",
+            _failed_run_summary(exc),
+            config,
+            str(exc),
+        )
 
 
 @app.post("/run_collector/{source_id}", status_code=202)
@@ -379,7 +384,13 @@ def _run_processor_task(processor_id: str, correlation_id: str):
         logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
     except Exception as exc:
         logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))
-        finish_run(correlation_id, "failed", {}, config, str(exc))
+        finish_run(
+            correlation_id,
+            "failed",
+            _failed_run_summary(exc),
+            config,
+            str(exc),
+        )
 
 
 @app.post("/run_processor/{processor_id}", status_code=202)

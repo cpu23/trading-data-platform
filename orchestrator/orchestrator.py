@@ -8,6 +8,7 @@ from collectors import get_all_collectors, get_collector
 from collectors.base import CollectionResult
 from db import get_session, insert_records, upsert_records
 from logging_config import get_logger
+from locks import RunConflict, advisory_lock
 from processors import get_all_processors, get_processor
 from sqlalchemy import text
 
@@ -23,6 +24,14 @@ class RunAcceptanceConflict(RuntimeError):
 
 class RunStartConflict(RuntimeError):
     """A synchronously invoked run could not claim its accepted row."""
+
+
+def _resolved_config(config: dict | None) -> dict:
+    if config is not None:
+        return config
+    from config_loader import load_config
+
+    return load_config()
 
 
 def accept_run(
@@ -405,15 +414,32 @@ def run_collector(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
 ) -> dict | None:
+    config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
+    lifecycle_created = False
     try:
-        return _run_collector_impl(
-            source_id, config, correlation_id, manage_lifecycle
-        )
+        if manage_lifecycle:
+            accept_run(config, correlation_id, "internal", "collector", source_id)
+            lifecycle_created = True
+            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+                return None
+        with advisory_lock(f"collector:{source_id}", config):
+            result = _run_collector_impl(
+                source_id, config, correlation_id, manage_lifecycle=False
+            )
+        if manage_lifecycle and result is not None:
+            finish_run(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+            )
+        return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
-        if manage_lifecycle and config is not None:
+        if manage_lifecycle and lifecycle_created:
             finish_run(correlation_id, "failed", {}, config, str(exc))
         raise
 
@@ -566,13 +592,26 @@ def run_full_cycle(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
 ) -> dict | None:
+    config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
+    lifecycle_created = False
     try:
-        return _run_full_cycle_impl(config, correlation_id, manage_lifecycle)
+        if manage_lifecycle:
+            accept_run(config, correlation_id, "internal", "cycle")
+            lifecycle_created = True
+            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+                return None
+        with advisory_lock("cycle", config):
+            result = _run_full_cycle_impl(
+                config, correlation_id, manage_lifecycle=False
+            )
+        if manage_lifecycle and result is not None:
+            finish_run(correlation_id, result["status"], result, config)
+        return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
-        if manage_lifecycle and config is not None:
+        if manage_lifecycle and lifecycle_created:
             finish_run(correlation_id, "failed", {}, config, str(exc))
         raise
 
@@ -904,15 +943,32 @@ def run_processor(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
 ) -> dict | None:
+    config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
+    lifecycle_created = False
     try:
-        return _run_processor_impl(
-            processor_id, config, correlation_id, manage_lifecycle
-        )
+        if manage_lifecycle:
+            accept_run(config, correlation_id, "internal", "processor", processor_id)
+            lifecycle_created = True
+            if not start_run(config, correlation_id, f"sync:{uuid4()}"):
+                return None
+        with advisory_lock(f"processor:{processor_id}", config):
+            result = _run_processor_impl(
+                processor_id, config, correlation_id, manage_lifecycle=False
+            )
+        if manage_lifecycle and result is not None:
+            finish_run(
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+            )
+        return result
     except RunAcceptanceConflict:
         raise
     except Exception as exc:
-        if manage_lifecycle and config is not None:
+        if manage_lifecycle and lifecycle_created:
             finish_run(correlation_id, "failed", {}, config, str(exc))
         raise
 
