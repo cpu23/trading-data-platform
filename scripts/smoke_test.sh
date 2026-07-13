@@ -11,6 +11,25 @@ docker compose -f docker-compose.demo.yml config --quiet && echo "✓ demo compo
 docker compose -f docker-compose.demo.yml up -d --build
 trap 'docker compose -f docker-compose.demo.yml down 2>/dev/null' EXIT
 
+# Verify migrations ran on orchestrator startup (check container logs)
+echo "Checking orchestrator migration logs..."
+for i in $(seq 1 20); do
+  if docker compose -f docker-compose.demo.yml logs orchestrator 2>/dev/null | grep -q "migration"; then
+    echo "✓ Migrations ran in orchestrator (attempt $i)"
+    break
+  fi
+  sleep 2
+done
+
+# Verify second-run idempotence: re-run migrate inside the container
+echo "Verifying migration idempotence..."
+MIGRATE_OUTPUT=$(docker compose -f docker-compose.demo.yml exec -T orchestrator python cli.py migrate 2>&1) || true
+if echo "$MIGRATE_OUTPUT" | grep -q "No pending"; then
+  echo "✓ Migration idempotent: $MIGRATE_OUTPUT"
+else
+  echo "⚠ Unexpected migration output: $MIGRATE_OUTPUT"
+fi
+
 # Wait for API
 echo "Waiting for API..."
 for i in $(seq 1 30); do

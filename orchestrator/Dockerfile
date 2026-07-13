@@ -21,4 +21,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 RUN mkdir -p /var/log/trading-data
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+RUN chmod +x /app/entrypoint.sh
+
+CMD ["/app/entrypoint.sh"]
