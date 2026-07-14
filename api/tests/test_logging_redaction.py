@@ -36,6 +36,38 @@ class ApiLoggingRedactionTests(unittest.TestCase):
         for secret in ("api-header-secret", "api-refresh-secret", "api-query-secret", "api-bearer-secret"):
             self.assertNotIn(secret, rendered)
 
+    def test_processor_redacts_serialized_credentials_and_url_userinfo(self):
+        sentinels = (
+            "json-secret-201", "json-spaced secret-202", "repr-secret-203",
+            "equals-secret-204", "userinfo-secret-205", "query-secret-206",
+            "encoded-user-secret-207",
+        )
+        message = (
+            'prefix {"token":"json-secret-201"} '
+            '{"password": "json-spaced secret-202"} '
+            "middle {'api_key': 'repr-secret-203'} "
+            "client_secret=equals-secret-204 suffix "
+            "https://alice:userinfo-secret-205@example.test/path "
+            "https://bob:userinfo-secret-205@example.test:8443/path?token=query-secret-206#frag "
+            "https://alice%40corp:encoded-user-secret-207@example.test/encoded "
+            "token_count=12 monkey=banana keyboard=qwerty"
+        )
+
+        sanitized = logging_config.redact_credentials(None, "error", {"event": message})
+        rendered = json.dumps(sanitized)
+        event = str(sanitized["event"])
+
+        self.assertIn('{"token":"[REDACTED]"}', event)
+        self.assertIn('{"password": "[REDACTED]"}', event)
+        self.assertIn("{'api_key': '[REDACTED]'}", event)
+        self.assertIn("client_secret=[REDACTED]", event)
+        self.assertIn("https://[REDACTED]@example.test/path", event)
+        self.assertIn("https://[REDACTED]@example.test:8443/path?token=[REDACTED]#frag", event)
+        self.assertIn("https://[REDACTED]@example.test/encoded", event)
+        self.assertIn("token_count=12 monkey=banana keyboard=qwerty", event)
+        for sentinel in sentinels:
+            self.assertNotIn(sentinel, rendered)
+
     def test_api_rendered_output_redacts_credentials_and_quiets_dependencies(self):
         stdout = io.StringIO()
         stderr = io.StringIO()

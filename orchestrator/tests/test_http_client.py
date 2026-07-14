@@ -1,5 +1,7 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -86,6 +88,62 @@ class ConfigurableRetryTests(unittest.TestCase):
                 )
 
                 sleeper.assert_called_once_with(expected)
+
+    def test_429_non_finite_retry_after_uses_fallback_and_retries(self):
+        for retry_after in ("NaN", "Infinity", "+inf", "-inf"):
+            with self.subTest(retry_after=retry_after):
+                client = ScriptedClient([
+                    response(429, headers={"Retry-After": retry_after}),
+                    response(200),
+                ])
+                delays = []
+
+                def finite_only_sleep(delay):
+                    if delay != delay or delay in (float("inf"), float("-inf")):
+                        raise ValueError("sleep length must be finite")
+                    delays.append(delay)
+
+                result = http_client.make_request(
+                    "GET", "https://example.test/resource", max_retries=2,
+                    client=client, sleep=finite_only_sleep,
+                )
+
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(delays, [1.0])
+
+    def test_429_future_http_date_is_respected_and_capped(self):
+        now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+        cases = ((timedelta(seconds=17), 17.0), (timedelta(minutes=5), 60.0))
+        for offset, expected in cases:
+            with self.subTest(offset=offset):
+                client = ScriptedClient([
+                    response(429, headers={"Retry-After": format_datetime(now + offset, usegmt=True)}),
+                    response(200),
+                ])
+                sleeper = Mock()
+
+                http_client.make_request(
+                    "GET", "https://example.test/resource", max_retries=2,
+                    client=client, sleep=sleeper, wall_clock=lambda: now,
+                )
+
+                sleeper.assert_called_once_with(expected)
+
+    def test_429_past_http_date_retries_with_zero_delay(self):
+        now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+        client = ScriptedClient([
+            response(429, headers={"Retry-After": format_datetime(now - timedelta(seconds=30), usegmt=True)}),
+            response(200),
+        ])
+        sleeper = Mock()
+
+        result = http_client.make_request(
+            "GET", "https://example.test/resource", max_retries=2,
+            client=client, sleep=sleeper, wall_clock=lambda: now,
+        )
+
+        self.assertEqual(result.status_code, 200)
+        sleeper.assert_called_once_with(0.0)
 
     def test_non_transient_4xx_is_returned_without_retry(self):
         client = ScriptedClient([response(400)])

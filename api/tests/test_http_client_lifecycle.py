@@ -121,6 +121,31 @@ class ApiClientLifecycleTests(unittest.TestCase):
         self.assertEqual(len(upstream.calls), 2)
         self.assertEqual(sleeps, [2])
 
+    def test_sse_cancellation_is_reraised_without_recreating_or_closing_shared_client(self):
+        upstream = FakeOrchestratorClient()
+
+        async def cancelled_get(_url, **_kwargs):
+            raise asyncio.CancelledError()
+
+        upstream.get = cancelled_get
+
+        class Request:
+            app = type("App", (), {"state": type("State", (), {"orchestrator_client": upstream})()})()
+
+            async def is_disconnected(self):
+                return False
+
+        generator = _quote_events(Request())
+
+        async def consume_one():
+            await anext(generator)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(consume_one())
+
+        self.assertIs(Request.app.state.orchestrator_client, upstream)
+        self.assertEqual(upstream.close_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

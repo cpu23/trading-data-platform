@@ -1,6 +1,9 @@
+import math
 import time
 import threading
 from collections.abc import Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -39,7 +42,11 @@ def _backoff_seconds(attempt: int) -> float:
     return min(float(2 ** (attempt - 1)), _MAX_BACKOFF_SECONDS)
 
 
-def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+def _retry_delay(
+    response: httpx.Response | None,
+    attempt: int,
+    wall_clock: Callable[[], datetime],
+) -> float:
     fallback = _backoff_seconds(attempt)
     if response is None or response.status_code != 429:
         return fallback
@@ -50,8 +57,20 @@ def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
     try:
         seconds = float(raw_value.strip())
     except (TypeError, ValueError):
-        return fallback
-    if seconds < 0:
+        try:
+            retry_at = parsedate_to_datetime(raw_value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            now = wall_clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            seconds = (
+                retry_at.astimezone(timezone.utc) - now.astimezone(timezone.utc)
+            ).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+        return min(max(seconds, 0.0), _MAX_RETRY_DELAY_SECONDS)
+    if not math.isfinite(seconds) or seconds < 0:
         return fallback
     return min(seconds, _MAX_RETRY_DELAY_SECONDS)
 
@@ -74,6 +93,7 @@ def make_request(
     client: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> httpx.Response:
     """Make an HTTP request, with ``max_retries`` interpreted as total attempts."""
     if max_retries < 1:
@@ -143,7 +163,7 @@ def make_request(
                     )
                     response.raise_for_status()
 
-            delay = _retry_delay(response, attempt)
+            delay = _retry_delay(response, attempt, wall_clock)
             retry_fields = {
                 "action": "http_request",
                 "method": request_method,

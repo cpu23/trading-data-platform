@@ -29,9 +29,16 @@ _AUTH_RE = re.compile(
     r"(?i)\b(authorization|proxy[-_ ]authorization)\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]+"
 )
 _SCHEME_CREDENTIAL_RE = re.compile(r"(?i)\b(bearer|basic)\s+[^\s,;]+")
+_SENSITIVE_KEY_PATTERN = "|".join(
+    re.escape(key).replace("_", "[-_]")
+    for key in sorted(_SENSITIVE_KEYS, key=len, reverse=True)
+)
 _NAMED_CREDENTIAL_RE = re.compile(
-    r"(?i)\b(api[_-]?key|token|access[_-]?token|refresh[_-]?token|key|password|passwd|secret|client[_-]?secret)"
-    r"(\s*[:=]\s*)([^\s,;&#]+)"
+    rf"(?i)(?<![\w-])(?P<key_quote>[\"']?)(?P<key>{_SENSITIVE_KEY_PATTERN})"
+    rf"(?P=key_quote)(?P<separator>\s*[:=]\s*)"
+    r'(?:(?:"(?P<double_value>(?:\\.|[^"\\])*)")|'
+    r"(?:'(?P<single_value>(?:\\.|[^'\\])*)')|"
+    r"(?P<unquoted_value>\[REDACTED\]|[^\s,;&#}\])\"']+))"
 )
 _DEPENDENCY_LOGGERS = ("httpx", "httpcore", "sqlalchemy", "sqlalchemy.engine")
 
@@ -49,8 +56,10 @@ def _redact_url(url: str) -> str:
         url = url[:-1]
     try:
         parts = urlsplit(url)
-        if not parts.query:
-            return url + trailing
+        netloc = parts.netloc
+        if "@" in netloc:
+            _userinfo, _separator, hostinfo = netloc.rpartition("@")
+            netloc = f"{_REDACTED}@{hostinfo}"
         query_parts = []
         for item in parts.query.split("&"):
             name, separator, value = item.partition("=")
@@ -58,7 +67,7 @@ def _redact_url(url: str) -> str:
                 query_parts.append(f"{name}{separator}{_REDACTED}" if separator else f"{name}={_REDACTED}")
             else:
                 query_parts.append(item)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, "&".join(query_parts), parts.fragment)) + trailing
+        return urlunsplit((parts.scheme, netloc, parts.path, "&".join(query_parts), parts.fragment)) + trailing
     except Exception:
         # Never return a raw query string when parsing fails.
         prefix, marker, _query = url.partition("?")
@@ -69,9 +78,20 @@ def _sanitize_string(value: str) -> str:
     value = _URL_RE.sub(lambda match: _redact_url(match.group(0)), value)
     value = _AUTH_RE.sub(lambda match: f"{match.group(1)}: {_REDACTED}", value)
     value = _SCHEME_CREDENTIAL_RE.sub(lambda match: f"{match.group(1)} {_REDACTED}", value)
-    return _NAMED_CREDENTIAL_RE.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}{_REDACTED}", value
-    )
+
+    def redact_named(match: re.Match[str]) -> str:
+        if match.group("double_value") is not None:
+            quote = '"'
+        elif match.group("single_value") is not None:
+            quote = "'"
+        else:
+            quote = ""
+        return (
+            f'{match.group("key_quote")}{match.group("key")}{match.group("key_quote")}'
+            f'{match.group("separator")}{quote}{_REDACTED}{quote}'
+        )
+
+    return _NAMED_CREDENTIAL_RE.sub(redact_named, value)
 
 
 def _safe_key(key: object) -> object:
