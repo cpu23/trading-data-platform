@@ -14,7 +14,9 @@ from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, insert_records, upsert_records
 from logging_config import get_logger
 from locks import RunConflict, advisory_lock
+from llm_client import resolve_model
 from processors import get_all_processors, get_processor
+from processors.base import canonical_fingerprint
 from sqlalchemy import text
 
 logger = get_logger("orchestrator")
@@ -35,8 +37,8 @@ class RunStartConflict(RuntimeError):
 
 
 def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
-    """Combine stage outcomes; no planned stages is a successful no-op."""
-    values = list(statuses)
+    """Combine stage outcomes; skipped analytical work is a healthy no-op."""
+    values = ["success" if status == "skipped" else status for status in statuses]
     if not values or all(status == "success" for status in values):
         return "success"
     if all(status == "failed" for status in values):
@@ -48,6 +50,39 @@ def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
         if all(status == "budget_blocked" for status in values):
             return "budget_blocked"
     return "partial"
+
+
+def build_processor_fingerprint(processor, config: dict) -> str | None:
+    """Hash bounded processor markers plus explicit prompt/model/code versions."""
+    input_builder = getattr(processor, "get_fingerprint_inputs", None)
+    schema_version = getattr(processor, "PROCESSOR_SCHEMA_VERSION", None)
+    if not callable(input_builder) or schema_version is None:
+        return None
+    payload = {
+        "processor_id": processor.processor_id,
+        "processor_schema_version": str(schema_version),
+        "prompt_version": processor.get_prompt_version(),
+        "model": resolve_model(config, processor_id=processor.processor_id),
+        "inputs": input_builder(config),
+    }
+    return canonical_fingerprint(payload)
+
+
+def _find_reusable_processor_output(
+    processor_id: str, fingerprint: str, config: dict
+) -> dict | None:
+    """Find a prior successful output; failed or blocked rows are never reusable."""
+    sql = text(
+        "SELECT output_id, completed_at FROM processing_log "
+        "WHERE processor = :processor AND input_fingerprint = :fingerprint "
+        "AND status = 'success' AND output_id IS NOT NULL "
+        "ORDER BY completed_at DESC LIMIT 1"
+    )
+    with get_session(config) as session:
+        row = session.execute(
+            sql, {"processor": processor_id, "fingerprint": fingerprint}
+        ).fetchone()
+    return dict(row._mapping) if row is not None else None
 
 
 def collector_worker_limit(config: dict, enabled_count: int) -> int:
@@ -1019,7 +1054,9 @@ def _resolve_and_run_processors(
             processor_results[pid] = result
             if progress_callback:
                 progress_callback(pid, "processor", result["status"], result)
-            if result["status"] in ("success", "partial"):
+            if result["status"] in ("success", "partial") or (
+                result["status"] == "skipped" and result.get("reusable_output", False)
+            ):
                 successful_processors.add(pid)
 
     return processor_results
@@ -1116,6 +1153,7 @@ def _run_processor_impl(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
     budget_context: BudgetContext | None = None,
+    force: bool = False,
 ) -> dict | None:
     if config is None:
         from config_loader import load_config
@@ -1149,11 +1187,40 @@ def _run_processor_impl(
     error_message = None
     result_payload = None
     failure_input_summary = None
+    input_fingerprint = None
+    reusable_output = None
 
     try:
-        result_payload = processor.process(
-            config, correlation_id, budget_context=budget_context
+        input_fingerprint = build_processor_fingerprint(processor, config)
+    except Exception:
+        logger.warning(
+            "processor_fingerprint_build_failed",
+            action="run_processor",
+            processor=processor_id,
+            correlation_id=correlation_id,
         )
+
+    if input_fingerprint and not force:
+        try:
+            reusable_output = _find_reusable_processor_output(
+                processor_id, input_fingerprint, config
+            )
+        except Exception:
+            logger.warning(
+                "processor_fingerprint_lookup_failed",
+                action="run_processor",
+                processor=processor_id,
+                fingerprint_prefix=input_fingerprint[:12],
+                correlation_id=correlation_id,
+            )
+        if reusable_output is not None:
+            status = "skipped"
+
+    try:
+        if status != "skipped":
+            result_payload = processor.process(
+                config, correlation_id, budget_context=budget_context
+            )
     except BudgetBlock as exc:
         status = (
             "budget_blocked" if isinstance(exc, BudgetExceeded) else "budget_unavailable"
@@ -1242,6 +1309,15 @@ def _run_processor_impl(
     if status == "success" and result_payload:
         processing_log = result_payload.get("processing_log")
     processing_log = processing_log or {}
+    if status == "skipped":
+        processing_log.update(
+            {
+                "status": "skipped",
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "cost_usd": 0.0,
+            }
+        )
     if failure_input_summary is not None:
         processing_log["input_summary"] = failure_input_summary
 
@@ -1269,6 +1345,9 @@ def _run_processor_impl(
         cost_usd=processing_log.get("cost_usd"),
         duration_ms=duration_ms,
         error_message=error_message,
+        input_fingerprint=input_fingerprint,
+        skip_reason="unchanged_inputs" if status == "skipped" else None,
+        forced=force,
         config=config,
         correlation_id=correlation_id,
     )
@@ -1282,9 +1361,15 @@ def _run_processor_impl(
         "opinion_id": result_payload["opinion"]["opinion_id"]
         if result_payload and status == "success"
         else None,
+        "skip_reason": "unchanged_inputs" if status == "skipped" else None,
+        "reusable_output": status == "skipped" and reusable_output is not None,
+        "forced": force,
     }
 
-    logger.info("processor_work_finished", action="run_processor", **result)
+    log_result = dict(result)
+    if input_fingerprint:
+        log_result["input_fingerprint"] = input_fingerprint[:12]
+    logger.info("processor_work_finished", action="run_processor", **log_result)
     if manage_lifecycle:
         finalize_run_safely(
             correlation_id, status, result, config, error_message,
@@ -1299,6 +1384,7 @@ def run_processor(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
     budget_context: BudgetContext | None = None,
+    force: bool = False,
 ) -> dict | None:
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
@@ -1325,6 +1411,7 @@ def run_processor(
                     correlation_id,
                     manage_lifecycle=False,
                     budget_context=budget_context,
+                    force=force,
                 )
             if manage_lifecycle and result is not None:
                 finalized = finalize_run_safely(
@@ -1338,7 +1425,10 @@ def run_processor(
                     component=processor_id,
                 )
                 if finalized:
-                    logger.info("processor_completed", action="run_processor", **result)
+                    completed_log = dict(result)
+                    if completed_log.get("input_fingerprint"):
+                        completed_log["input_fingerprint"] = completed_log["input_fingerprint"][:12]
+                    logger.info("processor_completed", action="run_processor", **completed_log)
             return result
     except RunAcceptanceConflict:
         raise
@@ -1378,6 +1468,9 @@ def _write_processing_log(
     cost_usd: float | None,
     duration_ms: int,
     error_message: str | None,
+    input_fingerprint: str | None,
+    skip_reason: str | None,
+    forced: bool,
     config: dict,
     correlation_id: str,
 ):
@@ -1396,6 +1489,9 @@ def _write_processing_log(
         "cost_usd": cost_usd,
         "duration_ms": duration_ms,
         "error_message": error_message,
+        "input_fingerprint": input_fingerprint,
+        "skip_reason": skip_reason,
+        "forced": forced,
         "correlation_id": correlation_id,
     }
 

@@ -9,8 +9,10 @@ import migrate
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DURABLE_JOBS_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "011_durable_jobs.sql"
 FRED_METADATA_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "012_macro_series_metadata.sql"
+PROCESSOR_FINGERPRINT_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "013_processor_input_fingerprints.sql"
 RAW_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "002_raw_tables.sql"
 CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
+SYSTEM_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "004_system_tables.sql"
 
 
 class AppliedMigrationTests(unittest.TestCase):
@@ -433,6 +435,32 @@ class FredMetadataSchemaTests(unittest.TestCase):
 
         self.assertIn(f"create table {expected}", init_sql)
         self.assertIn(f"create table if not exists {expected}", migration_sql)
+        for destructive in ("drop table", "drop column", "delete from", "truncate"):
+            self.assertNotIn(destructive, migration_sql)
+
+
+class ProcessorFingerprintSchemaTests(unittest.TestCase):
+    @staticmethod
+    def _sql(path: Path) -> str:
+        return " ".join(path.read_text().lower().split())
+
+    def test_bootstrap_and_upgrade_match_fingerprint_history_columns_and_index(self):
+        init_sql = self._sql(SYSTEM_TABLES_INIT)
+        migration_sql = self._sql(PROCESSOR_FINGERPRINT_MIGRATION)
+        for definition in (
+            "input_fingerprint text",
+            "skip_reason text",
+            "forced boolean not null default false",
+        ):
+            self.assertIn(definition, init_sql)
+            self.assertIn(f"add column if not exists {definition}", migration_sql)
+        index = (
+            "create index if not exists idx_processing_log_reusable_fingerprint "
+            "on processing_log (processor, completed_at desc) include (input_fingerprint, output_id) "
+            "where status = 'success' and input_fingerprint is not null"
+        )
+        self.assertIn(index, init_sql)
+        self.assertIn(index, migration_sql)
         for destructive in ("drop table", "drop column", "delete from", "truncate"):
             self.assertNotIn(destructive, migration_sql)
 

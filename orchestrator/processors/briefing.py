@@ -19,6 +19,7 @@ MAX_RETRIES = 1
 
 class DailyBriefingProcessor:
     processor_id = "briefing"
+    PROCESSOR_SCHEMA_VERSION = "1"
 
     def process(
         self,
@@ -188,6 +189,65 @@ class DailyBriefingProcessor:
 
     def get_depends_on(self) -> list[str]:
         return ["macro_regime"]
+
+    def get_fingerprint_inputs(self, config: dict) -> dict:
+        """Return bounded markers for the macro, calendar, and watchlist context consumed."""
+        window = self._calendar_window(config)
+        macro_sql = text("""
+            SELECT so.opinion_id, so.created_at AS opinion_created_at,
+                   rc.classification_id, rc.created_at AS classification_created_at
+            FROM regime_classifications rc
+            JOIN structured_opinions so ON rc.opinion_id = so.opinion_id
+            ORDER BY rc.created_at DESC
+            LIMIT 1
+        """)
+        calendar_sql = text("""
+            SELECT COUNT(*) AS event_count,
+                   MAX(updated_at) AS latest_updated_at,
+                   MAX(scheduled_at) AS latest_scheduled_at,
+                   MAX(event_id) AS max_event_id
+            FROM econ_events
+            WHERE scheduled_at >= :start
+              AND scheduled_at <= :end
+              AND lower(COALESCE(impact_level, '')) IN ('high', 'medium')
+              AND (
+                  country IN ('US', 'EU', 'GB', 'JP', 'AU', 'CN')
+                  OR metadata ->> 'currency' IN ('USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CNY')
+              )
+        """)
+        params = {
+            "start": window["period_start"].astimezone(timezone.utc),
+            "end": window["period_end"].astimezone(timezone.utc),
+        }
+        with get_session(config) as session:
+            macro_row = session.execute(macro_sql).fetchone()
+            calendar_row = session.execute(calendar_sql, params).fetchone()
+        macro = dict(macro_row._mapping) if macro_row is not None else None
+        calendar = dict(calendar_row._mapping) if calendar_row is not None else {
+            "event_count": 0,
+            "latest_updated_at": None,
+            "latest_scheduled_at": None,
+            "max_event_id": None,
+        }
+        watchlist = [
+            {"symbol": item.get("symbol"), "type": item.get("type")}
+            for item in config.get("watchlist", {}).get("trading", [])
+        ]
+        return {
+            "macro": macro,
+            "calendar": calendar,
+            "calendar_window": {
+                "today": window["today"],
+                "period_start": window["period_start"],
+                "period_end": window["period_end"],
+                "friday": window["friday"],
+                "london_label": window.get("london_label"),
+                "ny_label": window.get("ny_label"),
+                "london_timezone": str(window.get("london_tz", "")),
+                "ny_timezone": str(window.get("ny_tz", "")),
+            },
+            "watchlist": watchlist,
+        }
 
     def _validate_and_fix_sections(
         self,

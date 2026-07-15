@@ -69,6 +69,7 @@ DEFAULT_THRESHOLDS = {
 
 class MacroRegimeProcessor:
     processor_id = "macro_regime"
+    PROCESSOR_SCHEMA_VERSION = "1"
 
     def process(
         self,
@@ -219,6 +220,38 @@ class MacroRegimeProcessor:
 
     def get_depends_on(self) -> list[str]:
         return ["fred"]
+
+    def get_fingerprint_inputs(self, config: dict) -> dict:
+        """Return at most two revision-aware observations per consumed series."""
+        series_ids = sorted(set(SERIES_USED) | set(CROSS_INDICATOR_SERIES.values()))
+        sql = text("""
+            WITH ranked_observations AS (
+                SELECT series_id, observed_at, value, updated_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY series_id
+                           ORDER BY observed_at DESC
+                       ) AS observation_rank
+                FROM macro_series
+                WHERE series_id = ANY(:ids)
+            )
+            SELECT series_id, observed_at, value, updated_at
+            FROM ranked_observations
+            WHERE observation_rank <= 2
+            ORDER BY series_id ASC, observed_at ASC
+        """)
+        with get_session(config) as session:
+            rows = [dict(row._mapping) for row in session.execute(sql, {"ids": series_ids})]
+        rows.sort(key=lambda row: (str(row["series_id"]), str(row["observed_at"])))
+        thresholds = (
+            config.get("processors", {})
+            .get("macro_regime", {})
+            .get("thresholds", DEFAULT_THRESHOLDS)
+        )
+        return {
+            "series_ids": series_ids,
+            "observations": rows,
+            "thresholds": thresholds,
+        }
 
     def _fetch_macro_data(self, config: dict) -> dict:
         sql = text("""

@@ -642,6 +642,8 @@ class DurableRunLifecycleTests(unittest.TestCase):
             (["success", "failed"], "partial"),
             (["failed", "failed"], "failed"),
             (["success", "success"], "success"),
+            (["success", "skipped"], "success"),
+            (["skipped", "skipped"], "success"),
         ]
         for statuses, expected in cases:
             collector_ids = [f"collector-{index}" for index in range(len(statuses))]

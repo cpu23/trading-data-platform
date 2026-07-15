@@ -31,5 +31,13 @@ CREATE TABLE processing_log (
     cost_usd DOUBLE PRECISION,
     duration_ms INTEGER,
     error_message TEXT,
+    input_fingerprint TEXT,
+    skip_reason TEXT,
+    forced BOOLEAN NOT NULL DEFAULT FALSE,
     correlation_id UUID
 );
+
+CREATE INDEX IF NOT EXISTS idx_processing_log_reusable_fingerprint
+    ON processing_log (processor, completed_at DESC)
+    INCLUDE (input_fingerprint, output_id)
+    WHERE status = 'success' AND input_fingerprint IS NOT NULL;
