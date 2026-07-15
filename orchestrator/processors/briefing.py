@@ -6,7 +6,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from db import get_session
-from llm_client import call_llm, resolve_model
+from llm_client import LLMStage, LLMStageFailure, call_llm
 from logging_config import get_logger
 from processors._validators import validate_briefing_sections, coerce_briefing_fields
 from sqlalchemy import text
@@ -48,17 +48,31 @@ class DailyBriefingProcessor:
             watchlist=watchlist_str,
         )
 
-        model = resolve_model(config, processor_id=self.processor_id)
-
-        llm_result = call_llm(
-            prompt=prompt_text,
-            model=model,
-            correlation_id=correlation_id,
-            config=config,
-        )
+        stage = LLMStage(config, self.processor_id, correlation_id=correlation_id)
+        model = stage.policy.model
+        llm_result = stage.call(prompt_text)
 
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
+        try:
+            parsed = self._parse_llm_response(raw_response)
+        except ValueError as exc:
+            stage.add_validation_warnings(["response was not valid JSON"])
+            if stage.policy.validation_retries < 1:
+                raise LLMStageFailure("LLM response validation failed", stage.telemetry) from exc
+            retry_prompt = (
+                prompt_text
+                + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
+                "the exact schema above. Do not include markdown or commentary."
+            )
+            llm_result = stage.call(retry_prompt)
+            raw_response = llm_result["content"]
+            try:
+                parsed = self._parse_llm_response(raw_response)
+            except ValueError as retry_exc:
+                stage.add_validation_warnings(["final response was not valid JSON"])
+                raise LLMStageFailure(
+                    "LLM response validation failed after retry", stage.telemetry
+                ) from retry_exc
 
         sections = {
             "macro_trend": parsed.get("macro_trend", parsed.get("macro_summary", "")),
@@ -77,6 +91,7 @@ class DailyBriefingProcessor:
             model=model,
             config=config,
             correlation_id=correlation_id,
+            stage=stage,
         )
 
         opinion_id = str(uuid4())
@@ -140,6 +155,7 @@ class DailyBriefingProcessor:
                 "calendar_events_today": calendar_bundle["today_count"],
                 "calendar_events_this_week": calendar_bundle["week_count"],
                 "missing_context": missing_context,
+                **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
             "prompt_text": prompt_text,
@@ -172,6 +188,7 @@ class DailyBriefingProcessor:
         model: str,
         config: dict,
         correlation_id: str,
+        stage: LLMStage | None = None,
     ) -> dict:
         is_valid, warnings = validate_briefing_sections(sections, watchlist_config)
 
@@ -193,6 +210,8 @@ class DailyBriefingProcessor:
             )
 
         if not is_valid:
+            if stage is not None:
+                stage.add_validation_warnings(warnings)
             logger.warning(
                 "briefing_validation_failed_retrying",
                 action="validate_briefing",
@@ -206,11 +225,16 @@ class DailyBriefingProcessor:
             retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: Your previous response had format issues: " + "; ".join(warnings) + ". Please respond again with the correct JSON format, ensuring watchlist_notes is an array of objects, each with symbol, asset_class, bias, confidence, summary, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
 
             try:
-                retry_result = call_llm(
-                    prompt=retry_prompt,
-                    model=model,
-                    correlation_id=correlation_id,
-                    config=config,
+                retry_result = (
+                    stage.call(retry_prompt)
+                    if stage is not None
+                    else call_llm(
+                        prompt=retry_prompt,
+                        model=model,
+                        processor_id=self.processor_id,
+                        correlation_id=correlation_id,
+                        config=config,
+                    )
                 )
                 retry_parsed = self._parse_llm_response(retry_result["content"])
 
@@ -225,6 +249,8 @@ class DailyBriefingProcessor:
                 retry_valid, retry_warnings = validate_briefing_sections(
                     retry_sections, watchlist_config
                 )
+                if stage is not None:
+                    stage.add_validation_warnings(retry_warnings)
                 retry_coercion = coerce_briefing_fields(retry_sections)
 
                 for w in retry_warnings:
@@ -255,6 +281,8 @@ class DailyBriefingProcessor:
                     action="validate_briefing",
                     correlation_id=correlation_id,
                 )
+            except LLMStageFailure:
+                raise
             except Exception as exc:
                 logger.error(
                     "briefing_retry_failed",
@@ -640,11 +668,5 @@ class DailyBriefingProcessor:
             except json.JSONDecodeError:
                 pass
 
-        logger.error(
-            "llm_response_parse_failed",
-            action="parse_llm_response",
-            raw_response=response_text[:2000],
-        )
-        raise ValueError(
-            f"Could not parse LLM response as JSON. Raw text:\n{response_text[:500]}"
-        )
+        logger.error("llm_response_parse_failed", action="parse_llm_response")
+        raise ValueError("Could not parse LLM response as JSON")

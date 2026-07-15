@@ -1112,14 +1112,6 @@ class RuntimeFeatureTests(unittest.TestCase):
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         demo_env = {
-            "DB_USER": "demo",
-            "DB_PASSWORD": "demo",
-            "FRED_API_KEY": "demo-disabled",
-            "OPENROUTER_API_KEY": "demo-disabled",
-            "OPENROUTER_MODEL": "demo/model",
-            "OANDA_API_KEY": "demo-disabled",
-            "DASHBOARD_USER": "demo",
-            "DASHBOARD_PASSWORD": "demo",
             "DEMO_MODE": "true",
         }
         with patch.dict(os.environ, demo_env, clear=True):

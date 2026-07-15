@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from db import get_session
-from llm_client import call_llm, resolve_model
+from llm_client import LLMStage, LLMStageFailure
 from logging_config import get_logger
 from sqlalchemy import text
 
@@ -91,17 +91,31 @@ class MacroRegimeProcessor:
             cross_indicators=cross_indicators,
         )
 
-        model = resolve_model(config, processor_id=self.processor_id)
-
-        llm_result = call_llm(
-            prompt=prompt_text,
-            model=model,
-            correlation_id=correlation_id,
-            config=config,
-        )
-
+        stage = LLMStage(config, self.processor_id, correlation_id=correlation_id)
+        llm_result = stage.call(prompt_text)
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
+        try:
+            parsed = self._parse_llm_response(raw_response)
+        except ValueError as exc:
+            stage.add_validation_warnings(["response was not valid JSON"])
+            if stage.policy.validation_retries < 1:
+                raise LLMStageFailure("LLM response validation failed", stage.telemetry) from exc
+            retry_prompt = (
+                prompt_text
+                + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
+                "the exact schema above. Do not include markdown or commentary."
+            )
+            llm_result = stage.call(retry_prompt)
+            raw_response = llm_result["content"]
+            try:
+                parsed = self._parse_llm_response(raw_response)
+            except ValueError as retry_exc:
+                stage.add_validation_warnings(["final response was not valid JSON"])
+                raise LLMStageFailure(
+                    "LLM response validation failed after retry", stage.telemetry
+                ) from retry_exc
+
+        model = stage.policy.model
 
         opinion_id = str(uuid4())
         classification_id = str(uuid4())
@@ -172,6 +186,7 @@ class MacroRegimeProcessor:
                 "series_count": len(macro_data),
                 "latest_observation": max(dates) if dates else None,
                 "oldest_observation": min(dates) if dates else None,
+                **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
             "prompt_text": prompt_text,
@@ -470,11 +485,5 @@ class MacroRegimeProcessor:
             except json.JSONDecodeError:
                 pass
 
-        logger.error(
-            "llm_response_parse_failed",
-            action="parse_llm_response",
-            raw_response=response_text[:2000],
-        )
-        raise ValueError(
-            f"Could not parse LLM response as JSON. Raw text:\n{response_text[:500]}"
-        )
+        logger.error("llm_response_parse_failed", action="parse_llm_response")
+        raise ValueError("Could not parse LLM response as JSON")

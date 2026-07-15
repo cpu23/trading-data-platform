@@ -25,6 +25,8 @@ def _substitute_env_vars(value: str) -> str:
             )
         if default is not None:
             return default
+        if os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"):
+            return "demo-disabled"
         raise ValueError(
             f"Environment variable '{var_name}' referenced in config but not set"
         )

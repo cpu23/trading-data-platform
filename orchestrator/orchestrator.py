@@ -1128,12 +1128,16 @@ def _run_processor_impl(
     status = "success"
     error_message = None
     result_payload = None
+    failure_input_summary = None
 
     try:
         result_payload = processor.process(config, correlation_id)
     except Exception as exc:
         status = "failed"
         error_message = str(exc)
+        telemetry = getattr(exc, "telemetry", None)
+        if telemetry is not None and hasattr(telemetry, "as_dict"):
+            failure_input_summary = telemetry.as_dict()
         logger.error(
             "processor_failed",
             action="run_processor",
@@ -1195,6 +1199,8 @@ def _run_processor_impl(
     if status == "success" and result_payload:
         processing_log = result_payload.get("processing_log")
     processing_log = processing_log or {}
+    if failure_input_summary is not None:
+        processing_log["input_summary"] = failure_input_summary
 
     processing_log.setdefault("processor", processor_id)
     processing_log.setdefault("status", status)

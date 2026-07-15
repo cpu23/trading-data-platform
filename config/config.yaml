@@ -13,8 +13,21 @@ llm:
     macro_regime: ${OPENROUTER_MODEL}
     event_impact: ${OPENROUTER_MODEL}
     briefing: ${OPENROUTER_MODEL}
+  max_output_tokens:
+    macro_regime: 1800
+    briefing: 2600
+  temperatures:
+    macro_regime: 0.2
+    briefing: 0.2
+  structured_response:
+    macro_regime: true
+    briefing: true
+  stage_timeout_seconds: 90
+  validation_retries: 1
+  # LLM schema validation owns the single bounded retry; source HTTP retry defaults
+  # are deliberately separate and are not inherited by LLM calls.
+  max_retries: 1
   temperature: 0.2
-  max_retries: 3
 
 timezone:
   primary:
