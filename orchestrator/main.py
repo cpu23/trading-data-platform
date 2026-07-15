@@ -39,6 +39,7 @@ from orchestrator import (
     reconcile_abandoned_runs,
     run_collector,
     run_full_cycle,
+    run_news_source,
     run_processor,
     start_run,
 )
@@ -286,9 +287,9 @@ def retry_abandoned_run(
 
     run_kind = previous.get("run_kind")
     component = previous.get("requested_component")
-    if run_kind not in {"cycle", "collector", "processor"}:
+    if run_kind not in {"cycle", "collector", "processor", "news"}:
         raise HTTPException(status_code=409, detail="Run kind cannot be retried")
-    if run_kind in {"collector", "processor"} and not component:
+    if run_kind in {"collector", "processor", "news"} and not component:
         raise HTTPException(status_code=409, detail="Run is missing its requested component")
     if run_kind == "collector":
         from collectors import get_all_collectors
@@ -305,6 +306,14 @@ def retry_abandoned_run(
             raise HTTPException(
                 status_code=409,
                 detail=f"Requested processor is no longer available: {component}",
+            )
+    elif run_kind == "news":
+        from sources.news_registry import get_news_source_ids
+
+        if component not in get_news_source_ids():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Requested news source is no longer available: {component}",
             )
 
     new_correlation_id = str(uuid4())
@@ -352,8 +361,10 @@ def retry_abandoned_run(
         )
     elif run_kind == "collector":
         background_tasks.add_task(_run_collector_task, str(component), new_correlation_id)
-    else:
+    elif run_kind == "processor":
         background_tasks.add_task(_run_processor_task, str(component), new_correlation_id)
+    else:
+        background_tasks.add_task(_run_news_task, str(component), new_correlation_id)
 
     return {
         "job_id": new_correlation_id,
@@ -550,6 +561,74 @@ def trigger_collector(
     correlation_id = _correlation_id_from_body(body)
     accepted_at = _accept_http_run(correlation_id, "collector", source_id, body)
     background_tasks.add_task(_run_collector_task, source_id, correlation_id)
+    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
+
+
+def _news_failure_summary(exc: Exception, correlation_id: str) -> dict:
+    if isinstance(exc, RunConflict):
+        return {
+            "status": "failed", "state": "conflict", "error": str(exc),
+            "code": "news_run_conflict", "feed_published": False,
+            "new_item_count": 0, "duration_ms": 0,
+            "correlation_id": correlation_id,
+        }
+    return {
+        "status": "failed", "state": "failed", "error": "news run failed",
+        "code": "news_run_failed", "feed_published": False,
+        "new_item_count": 0, "duration_ms": 0,
+        "correlation_id": correlation_id,
+    }
+
+
+def _run_news_task(source_id: str, correlation_id: str):
+    config = _get_config()
+    worker_id = f"api:{uuid4()}"
+    started = _start_http_run(config, correlation_id, worker_id, "news", source_id)
+    if started is not True:
+        if started is False:
+            logger.info("news_start_lost", source_id=source_id, correlation_id=correlation_id)
+        return
+    try:
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_news_source(
+                source_id, correlation_id, config, manage_lifecycle=False
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id, result["status"], result, config, result.get("error"),
+                worker_id=worker_id, run_kind="news", component=source_id,
+            )
+            if finalized:
+                logger.info(
+                    "news_trigger_completed", source_id=source_id,
+                    correlation_id=correlation_id,
+                )
+    except Exception as exc:
+        summary = _news_failure_summary(exc, correlation_id)
+        logger.error(
+            "news_trigger_failed", source_id=source_id,
+            correlation_id=correlation_id, code=summary["code"],
+        )
+        finalize_run_safely(
+            correlation_id, "failed", summary, config, summary["error"],
+            worker_id=worker_id, run_kind="news", component=source_id,
+        )
+
+
+@app.post("/run_news/{source_id}", status_code=202)
+def trigger_news(
+    source_id: str,
+    background_tasks: BackgroundTasks,
+    body: dict | None = Body(default=None),
+):
+    from sources.news_registry import get_news_source_ids
+
+    if source_id not in get_news_source_ids():
+        raise HTTPException(status_code=404, detail=f"Unknown news source: {source_id}")
+    correlation_id = _correlation_id_from_body(body)
+    accepted_at = _accept_http_run(correlation_id, "news", source_id, body)
+    background_tasks.add_task(_run_news_task, source_id, correlation_id)
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 

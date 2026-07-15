@@ -18,6 +18,7 @@ ORCHESTRATOR_URL = "http://orchestrator:8000"
 # and orchestrator/processors/__init__.py
 _VALID_COLLECTORS = frozenset({"fred", "forex_factory", "oanda"})
 _VALID_PROCESSORS = frozenset({"macro_regime", "event_impact", "briefing"})
+_VALID_NEWS_SOURCES = frozenset({"reuters", "kobeissi"})
 
 
 class CycleRequest(BaseModel):
@@ -91,6 +92,37 @@ async def trigger_process(processor_id: str, request: Request):
 
     payload = _orchestrator_job_payload(response, correlation_id, now)
     payload["status_url"] = f"/api/system/logs?component={processor_id}"
+    return payload
+
+
+@router.post("/triggers/news/{source_id}", status_code=202)
+async def trigger_news(source_id: str, request: Request):
+    if source_id not in _VALID_NEWS_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown news source: {source_id}")
+
+    correlation_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        response = await request.app.state.orchestrator_client.post(
+            f"{ORCHESTRATOR_URL}/run_news/{source_id}",
+            json={"correlation_id": correlation_id}, timeout=10.0,
+        )
+    except httpx.TransportError as exc:
+        logger.error("orchestrator_connect_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
+
+    if response.status_code in {409, 503}:
+        try:
+            detail = response.json().get("detail", "News request rejected")
+        except (TypeError, ValueError):
+            detail = "News request rejected"
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    if response.status_code != 202:
+        logger.error("orchestrator_unexpected_response", status=response.status_code)
+        raise HTTPException(status_code=503, detail="Orchestrator unavailable")
+
+    payload = _orchestrator_job_payload(response, correlation_id, now)
+    payload["status_url"] = f"/api/system/logs?correlation_id={payload['job_id']}"
     return payload
 
 

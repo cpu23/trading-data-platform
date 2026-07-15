@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
   completed_at TIMESTAMPTZ,
   error_message TEXT,
   triggered_by TEXT NOT NULL DEFAULT 'manual',
-  run_kind TEXT NOT NULL DEFAULT 'cycle',
+  run_kind TEXT NOT NULL DEFAULT 'cycle'
+    CONSTRAINT cycle_runs_run_kind_check
+    CHECK (run_kind IN ('cycle', 'collector', 'processor', 'news')),
   requested_component TEXT,
   result_status TEXT,
   summary JSONB DEFAULT '{}'

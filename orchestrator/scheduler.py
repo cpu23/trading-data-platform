@@ -11,7 +11,9 @@ from orchestrator import (
     aggregate_stage_statuses,
     finalize_run_safely,
     maintain_run_heartbeat,
+    RunAcceptanceConflict,
     run_collector,
+    run_news_source,
     run_processor,
     start_run,
 )
@@ -176,6 +178,59 @@ def _scheduled_processor(processor_id: str, config: dict) -> None:
         )
 
 
+def _scheduled_news(source_id: str, config: dict) -> None:
+    correlation_id = str(uuid4())
+    try:
+        accept_run(config, correlation_id, "scheduler", "news", source_id)
+    except RunAcceptanceConflict:
+        logger.info("scheduled_news_acceptance_conflict", source_id=source_id)
+        return
+    except Exception:
+        logger.error("scheduled_news_acceptance_failed", source_id=source_id)
+        return
+    worker_id = f"scheduler:{uuid4()}"
+    if _start_scheduled_run(
+        config, correlation_id, worker_id, "news", source_id
+    ) is not True:
+        return
+    try:
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_news_source(
+                source_id, correlation_id, config, manage_lifecycle=False
+            )
+            if result is None:
+                raise RuntimeError("run returned no result after ownership was claimed")
+            finalized = finalize_run_safely(
+                correlation_id, result["status"], result, config, result.get("error"),
+                worker_id=worker_id, run_kind="news", component=source_id,
+            )
+            if finalized:
+                logger.info(
+                    "scheduled_news_completed", source_id=source_id,
+                    correlation_id=correlation_id,
+                )
+    except Exception as exc:
+        from locks import RunConflict
+
+        conflict = isinstance(exc, RunConflict)
+        reason = str(exc) if conflict else "news run failed"
+        summary = {
+            "status": "failed", "state": "conflict" if conflict else "failed",
+            "error": reason,
+            "code": "news_run_conflict" if conflict else "news_run_failed",
+            "feed_published": False, "new_item_count": 0, "duration_ms": 0,
+            "correlation_id": correlation_id,
+        }
+        logger.error(
+            "scheduled_news_failed", source_id=source_id,
+            correlation_id=correlation_id, code=summary["code"],
+        )
+        finalize_run_safely(
+            correlation_id, "failed", summary, config, reason,
+            worker_id=worker_id, run_kind="news", component=source_id,
+        )
+
+
 def start_scheduler(config: dict) -> None:
     global _scheduler
     if _scheduler and _scheduler.running:
@@ -201,6 +256,27 @@ def start_scheduler(config: dict) -> None:
                 _build_cron_trigger(schedule),
                 args=[processor_id, config],
                 id=f"processor:{processor_id}",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+    if not config.get("demo", {}).get("enabled", False):
+        from sources.news_registry import get_news_source_ids
+
+        for source_id in get_news_source_ids():
+            source_config = config.get(source_id, {})
+            schedule = source_config.get("schedule")
+            if not (
+                source_config.get("enabled", False)
+                and source_config.get("schedule_enabled", False)
+                and schedule
+            ):
+                continue
+            _scheduler.add_job(
+                _scheduled_news,
+                _build_cron_trigger(schedule),
+                args=[source_id, config],
+                id=f"news:{source_id}",
                 replace_existing=True,
                 coalesce=True,
                 max_instances=1,

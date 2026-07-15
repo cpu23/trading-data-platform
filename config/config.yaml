@@ -148,7 +148,9 @@ collectors:
 
 reuters:
   enabled: true
-  on_demand_only: true
+  on_demand_only: false
+  schedule_enabled: true
+  schedule: "15 */2 * * *"
   max_pages: 3
   state_path: "/var/lib/trading-data/news/reuters/state.json"
   output_path: "/var/lib/trading-data/news/reuters"
@@ -235,6 +237,8 @@ reuters:
 kobeissi:
   enabled: true
   on_demand_only: true
+  schedule_enabled: false
+  schedule: "20 */6 * * *"
   api_key: ${TWITTERAPI_KEY:-}
   user_id: "3316376038"
   api_base: "https://api.twitterapi.io"

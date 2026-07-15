@@ -10,6 +10,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DURABLE_JOBS_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "011_durable_jobs.sql"
 FRED_METADATA_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "012_macro_series_metadata.sql"
 PROCESSOR_FINGERPRINT_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "013_processor_input_fingerprints.sql"
+NEWS_RUN_LINEAGE_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "014_news_run_lineage.sql"
 RAW_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "002_raw_tables.sql"
 CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
 SYSTEM_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "004_system_tables.sql"
@@ -461,6 +462,19 @@ class ProcessorFingerprintSchemaTests(unittest.TestCase):
         )
         self.assertIn(index, init_sql)
         self.assertIn(index, migration_sql)
+        for destructive in ("drop table", "drop column", "delete from", "truncate"):
+            self.assertNotIn(destructive, migration_sql)
+
+
+class NewsRunLineageSchemaTests(unittest.TestCase):
+    def test_bootstrap_and_idempotent_upgrade_allow_news_run_kind(self):
+        init_sql = " ".join(CYCLE_RUNS_INIT.read_text().lower().split())
+        migration_sql = " ".join(NEWS_RUN_LINEAGE_MIGRATION.read_text().lower().split())
+        expected = "run_kind in ('cycle', 'collector', 'processor', 'news')"
+        self.assertIn(expected, init_sql)
+        self.assertIn(expected, migration_sql)
+        self.assertIn("not valid", migration_sql)
+        self.assertIn("validate constraint", migration_sql)
         for destructive in ("drop table", "drop column", "delete from", "truncate"):
             self.assertNotIn(destructive, migration_sql)
 

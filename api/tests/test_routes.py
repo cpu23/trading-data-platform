@@ -85,6 +85,35 @@ class TestComponentIdValidation(unittest.TestCase):
         resp = client.post("/api/triggers/process/not-real", headers=AUTH)
         self.assertEqual(resp.status_code, 404)
 
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_news_validates_exact_source_before_forwarding(self, post):
+        response = client.post("/api/triggers/news/not-real", headers=AUTH)
+        self.assertEqual(response.status_code, 404)
+        post.assert_not_awaited()
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_news_forwards_with_shared_client_and_status_url(self, post):
+        upstream = MagicMock(status_code=202)
+        upstream.json.return_value = {"job_id": "news-job", "accepted_at": "now"}
+        post.return_value = upstream
+
+        response = client.post("/api/triggers/news/reuters", headers=AUTH)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(post.await_args.args[0], "http://orchestrator:8000/run_news/reuters")
+        self.assertEqual(response.json()["status_url"], "/api/system/logs?correlation_id=news-job")
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_news_maps_safe_orchestrator_statuses(self, post):
+        for status in (409, 503):
+            with self.subTest(status=status):
+                upstream = MagicMock(status_code=status)
+                upstream.json.return_value = {"detail": "safe rejection"}
+                post.return_value = upstream
+                response = client.post("/api/triggers/news/kobeissi", headers=AUTH)
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.json()["detail"], "safe rejection")
+
 
 class TestCycleModes(unittest.TestCase):
     def _accepted(self):

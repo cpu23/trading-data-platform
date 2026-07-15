@@ -33,6 +33,40 @@ class ComponentIdValidationTests(unittest.TestCase):
         resp = self.client.post("/run_processor/not-real")
         self.assertEqual(resp.status_code, 404)
 
+    def test_run_news_validates_before_durable_acceptance(self):
+        with patch("main.accept_run") as accept:
+            response = self.client.post("/run_news/not-real")
+        self.assertEqual(response.status_code, 404)
+        accept.assert_not_called()
+
+    def test_run_news_accepts_before_enqueue(self):
+        import main
+
+        events = []
+        background = Mock()
+        background.add_task.side_effect = lambda *args: events.append("enqueue")
+        with patch("main._get_config", return_value={}), patch(
+            "main.accept_run",
+            side_effect=lambda *args, **kwargs: events.append("accept") or datetime.now(timezone.utc),
+        ):
+            response = main.trigger_news("reuters", background, body={})
+        self.assertEqual(events, ["accept", "enqueue"])
+        self.assertIn("job_id", response)
+
+    def test_run_news_duplicate_acceptance_returns_409_without_enqueue(self):
+        import main
+        from fastapi import HTTPException
+        from orchestrator import RunAcceptanceConflict
+
+        background = Mock()
+        with patch("main._get_config", return_value={}), patch(
+            "main.accept_run", side_effect=RunAcceptanceConflict("duplicate")
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.trigger_news("reuters", background, body={})
+        self.assertEqual(raised.exception.status_code, 409)
+        background.add_task.assert_not_called()
+
     @patch("main.get_session")
     def test_no_cycle_runs_row_created_for_invalid_collector(self, get_session):
         """No cycle_runs row is created for invalid collector IDs."""
@@ -839,6 +873,29 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         self.assertIs(background.add_task.call_args.args[0], main._run_processor_task)
         self.assertEqual(background.add_task.call_args.args[1], "briefing")
 
+    def test_retry_registered_news_source_is_accepted_and_enqueued(self):
+        import main
+
+        background = Mock()
+        old = {
+            "status": "abandoned",
+            "run_kind": "news",
+            "requested_component": "reuters",
+        }
+        with patch("main._get_config", return_value={}), patch(
+            "main.get_run_for_retry", return_value=old
+        ), patch(
+            "main.accept_run", return_value=datetime.now(timezone.utc)
+        ) as accept:
+            response = main.retry_abandoned_run(
+                "11111111-1111-4111-8111-111111111111", background
+            )
+
+        accept.assert_called_once()
+        self.assertIn("job_id", response)
+        self.assertIs(background.add_task.call_args.args[0], main._run_news_task)
+        self.assertEqual(background.add_task.call_args.args[1], "reuters")
+
     def test_retry_invalid_states_do_not_accept_or_enqueue(self):
         import main
         from fastapi import HTTPException
@@ -1300,6 +1357,58 @@ class RuntimeFeatureTests(unittest.TestCase):
         ids = {job["id"] for job in scheduler_status()["jobs"]}
 
         self.assertEqual(ids, {"collector:fred", "processor:briefing"})
+
+    def test_scheduler_registers_enabled_news_but_not_disabled_paid_source(self):
+        config = {
+            "collectors": {}, "processors": {},
+            "reuters": {"enabled": True, "schedule_enabled": True, "schedule": "15 */6 * * *"},
+            "kobeissi": {"enabled": True, "schedule_enabled": False, "schedule": "20 */6 * * *"},
+        }
+        start_scheduler(config)
+        ids = {job["id"] for job in scheduler_status()["jobs"]}
+        self.assertEqual(ids, {"news:reuters"})
+
+    def test_demo_mode_registers_no_news_jobs(self):
+        config = {
+            "demo": {"enabled": True}, "collectors": {}, "processors": {},
+            "reuters": {"enabled": True, "schedule_enabled": True, "schedule": "15 */2 * * *"},
+            "kobeissi": {"enabled": True, "schedule_enabled": True, "schedule": "20 */6 * * *"},
+        }
+        start_scheduler(config)
+        ids = {job["id"] for job in scheduler_status()["jobs"]}
+        self.assertEqual(ids, set())
+
+    def test_run_news_source_returns_truthful_safe_summary(self):
+        from sources.news_result import NewsCollectionResult
+        from orchestrator import run_news_source
+
+        config = {"news_feed": {"output_path": "unused"}, "reuters": {"enabled": True}}
+        with patch("orchestrator.advisory_lock", return_value=nullcontext()) as lock, patch(
+            "sources.news_feed.collect_and_publish",
+            return_value=NewsCollectionResult([{"id": "one"}], "ok"),
+        ):
+            result = run_news_source("reuters", "cid-1", config, manage_lifecycle=False)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["new_item_count"], 1)
+        self.assertEqual(result["correlation_id"], "cid-1")
+        self.assertEqual(result["state"], "published")
+        self.assertTrue(result["feed_published"])
+        lock.assert_called_once_with("news:reuters", config)
+
+    def test_background_news_lock_conflict_finalizes_failed(self):
+        import main
+        from locks import RunConflict
+
+        with patch("main._get_config", return_value={}), patch(
+            "main.start_run", return_value=True
+        ), patch("main.maintain_run_heartbeat", return_value=nullcontext()), patch(
+            "main.run_news_source", side_effect=RunConflict("news:reuters")
+        ), patch("main.finalize_run_safely") as finalize:
+            main._run_news_task("reuters", "run-id")
+
+        self.assertEqual(finalize.call_args.args[1], "failed")
+        self.assertEqual(finalize.call_args.args[2]["code"], "news_run_conflict")
+        self.assertEqual(finalize.call_args.kwargs["run_kind"], "news")
 
     def test_demo_fixture_is_public_safe_and_deterministic(self):
         seed_path = (

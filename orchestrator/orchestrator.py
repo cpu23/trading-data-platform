@@ -708,6 +708,91 @@ def run_collector(
         raise
 
 
+def run_news_source(
+    source_id: str,
+    correlation_id: str | None = None,
+    config: dict | None = None,
+    manage_lifecycle: bool = True,
+) -> dict | None:
+    """Collect and atomically publish one registered news source with safe lineage."""
+    from sources.news_feed import collect_and_publish
+    from sources.news_registry import get_news_collector
+
+    config = _resolved_config(config)
+    correlation_id = correlation_id or str(uuid4())
+    # Resolve before durable acceptance so removed or misspelled sources create no row.
+    collector = get_news_collector(source_id, config)
+    lifecycle_created = False
+    worker_id: str | None = None
+    try:
+        if manage_lifecycle:
+            accept_run(config, correlation_id, "internal", "news", source_id)
+            lifecycle_created = True
+            claim_worker_id = f"sync:{uuid4()}"
+            if not start_run(config, correlation_id, claim_worker_id):
+                return None
+            worker_id = claim_worker_id
+        heartbeat = (
+            maintain_run_heartbeat(config, correlation_id, worker_id)
+            if worker_id is not None else nullcontext()
+        )
+        with heartbeat:
+            with advisory_lock(f"news:{source_id}", config):
+                started = time.monotonic()
+                try:
+                    outcome = collect_and_publish(source_id, config, collector)
+                    if outcome.succeeded:
+                        status, state, error, code = "success", "published", None, None
+                    else:
+                        publication_failed = bool(
+                            outcome.error and outcome.error.startswith("News feed publication failed:")
+                        )
+                        state = "publication_failed" if publication_failed else "collection_failed"
+                        code = "news_publication_failed" if publication_failed else "news_collection_failed"
+                        status, error = "failed", outcome.error or "news collection failed"
+                    item_count = len(outcome.items)
+                except Exception as exc:
+                    status, state, item_count = "failed", "collection_failed", 0
+                    code = "news_collection_failed"
+                    error = f"news collection failed: {type(exc).__name__}"
+                result = {
+                    "status": status,
+                    "new_item_count": item_count,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "state": state,
+                    "error": error,
+                    "code": code,
+                    "feed_published": state == "published",
+                    "correlation_id": correlation_id,
+                }
+            if manage_lifecycle:
+                finalized = finalize_run_safely(
+                    correlation_id, status, result, config, error,
+                    worker_id=worker_id, run_kind="news", component=source_id,
+                )
+                if finalized:
+                    logger.info(
+                        "news_source_completed", action="run_news_source",
+                        source_id=source_id, **result,
+                    )
+            return result
+    except RunAcceptanceConflict:
+        raise
+    except Exception:
+        if manage_lifecycle and lifecycle_created:
+            reason = "run start unavailable" if worker_id is None else "news run failed"
+            finalize_run_safely(
+                correlation_id, "failed",
+                {"status": "failed", "state": "failed", "error": reason,
+                 "code": "news_run_failed", "feed_published": False,
+                 "new_item_count": 0, "duration_ms": 0,
+                 "correlation_id": correlation_id},
+                config, reason, worker_id=worker_id,
+                run_kind="news", component=source_id,
+            )
+        raise
+
+
 def _run_full_cycle_impl(
     config: dict | None = None,
     correlation_id: str | None = None,
