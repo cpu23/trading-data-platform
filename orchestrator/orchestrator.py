@@ -64,6 +64,7 @@ def build_processor_fingerprint(processor, config: dict) -> str | None:
         "processor_id": processor.processor_id,
         "processor_schema_version": str(schema_version),
         "prompt_version": processor.get_prompt_version(),
+        "prompt_identity": processor.get_prompt_identity(config),
         "model": resolve_model(config, processor_id=processor.processor_id),
         "inputs": input_builder(config),
     }
@@ -826,16 +827,17 @@ def _run_full_cycle_impl(
             continue
         else:
             reason = "not_due"
-        try:
-            if _last_successful_collection(source_id, config) is not None:
-                historical_available.add(source_id)
-        except Exception:
-            logger.warning(
-                "collector_history_lookup_failed",
-                action="select_cycle_collectors",
-                collector=source_id,
-                safe_code="collector_history_unavailable",
-            )
+        if mode != "analyze":
+            try:
+                if _last_successful_collection(source_id, config) is not None:
+                    historical_available.add(source_id)
+            except Exception:
+                logger.warning(
+                    "collector_history_lookup_failed",
+                    action="select_cycle_collectors",
+                    collector=source_id,
+                    safe_code="collector_history_unavailable",
+                )
         skipped = {
             "collector": source_id,
             "status": "skipped",
@@ -911,6 +913,7 @@ def _run_full_cycle_impl(
         progress_callback=record_progress,
         budget_context=budget_context,
         force=mode == "force_full",
+        analyze_existing_data=mode == "analyze",
     )
 
     all_results = {**collector_results, **processor_results}
@@ -1095,8 +1098,12 @@ def _resolve_and_run_processors(
     progress_callback=None,
     budget_context: BudgetContext | None = None,
     force: bool = False,
+    analyze_existing_data: bool = False,
 ) -> dict:
     all_processors = get_all_processors()
+    collector_dependencies = (
+        set(get_all_collectors()) if analyze_existing_data else set()
+    )
     processor_results = {}
     successful_processors = set()
     remaining = {}
@@ -1116,7 +1123,9 @@ def _resolve_and_run_processors(
         for pid, proc in remaining.items():
             depends_on = proc.get_depends_on()
             deps_satisfied = all(
-                dep in successful_collectors or dep in successful_processors
+                dep in successful_collectors
+                or dep in successful_processors
+                or (analyze_existing_data and dep in collector_dependencies)
                 for dep in depends_on
             )
             if deps_satisfied:

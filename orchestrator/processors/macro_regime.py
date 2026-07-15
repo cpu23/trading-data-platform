@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import time
 import traceback
@@ -10,6 +9,7 @@ from budgets import BudgetContext
 from db import get_session
 from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
+from processors.base import load_prompt_template
 from sqlalchemy import text
 
 logger = get_logger("processor.macro_regime")
@@ -217,6 +217,14 @@ class MacroRegimeProcessor:
 
     def get_prompt_version(self) -> str:
         return "macro_regime_v1"
+
+    def get_prompt_identity(self, config: dict) -> dict[str, str]:
+        processor_config = config.get("processors", {}).get("macro_regime", {})
+        template_path = processor_config.get(
+            "prompt_template", "prompts/macro_regime_v1.txt"
+        )
+        _, identity = load_prompt_template(template_path)
+        return identity
 
     def get_depends_on(self) -> list[str]:
         return ["fred"]
@@ -484,16 +492,7 @@ class MacroRegimeProcessor:
         changes_table: str,
         cross_indicators: dict[str, str],
     ) -> str:
-        template_path = template_path
-        if not os.path.isabs(template_path):
-            config_dir = os.environ.get("CONFIG_DIR", "/app")
-            template_path = os.path.join(config_dir, template_path)
-
-        if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Prompt template not found: {template_path}")
-
-        with open(template_path) as f:
-            template = f.read()
+        template, _ = load_prompt_template(template_path)
 
         result = template
         result = result.replace("{{indicator_table}}", indicator_table)

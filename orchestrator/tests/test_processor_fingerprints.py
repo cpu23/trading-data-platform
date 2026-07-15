@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import unittest
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -34,6 +36,12 @@ class FingerprintedProcessor:
     def get_prompt_version(self):
         return "prompt-v1"
 
+    def get_prompt_identity(self, config):
+        return config.get(
+            "prompt_identity",
+            {"path": "prompts/test.txt", "sha256": "a" * 64},
+        )
+
     def get_fingerprint_inputs(self, config):
         return self.inputs
 
@@ -62,6 +70,94 @@ class CanonicalFingerprintTests(unittest.TestCase):
         processor.PROCESSOR_SCHEMA_VERSION = "macro-schema-1"
         processor.inputs = {"series": [{"series_id": "GDP", "value": 2.0}]}
         self.assertNotEqual(fingerprint, orchestrator.build_processor_fingerprint(processor, base))
+
+    def test_prompt_path_and_content_identity_change_fingerprint_without_exposing_text(self):
+        processor = FingerprintedProcessor()
+        base = {"llm": {"default_model": "provider/a"}}
+        first = orchestrator.build_processor_fingerprint(processor, base)
+
+        same_content_new_path = {
+            **base,
+            "prompt_identity": {"path": "prompts/alternate.txt", "sha256": "a" * 64},
+        }
+        changed_content_same_path = {
+            **base,
+            "prompt_identity": {"path": "prompts/test.txt", "sha256": "b" * 64},
+        }
+        self.assertNotEqual(
+            first,
+            orchestrator.build_processor_fingerprint(processor, same_content_new_path),
+        )
+        self.assertNotEqual(
+            first,
+            orchestrator.build_processor_fingerprint(processor, changed_content_same_path),
+        )
+
+        with patch.object(
+            orchestrator, "canonical_fingerprint", wraps=canonical_fingerprint
+        ) as canonical:
+            self.assertEqual(first, orchestrator.build_processor_fingerprint(processor, base))
+        payload = canonical.call_args.args[0]
+        self.assertEqual(payload["prompt_identity"]["path"], "prompts/test.txt")
+        self.assertNotIn("raw prompt sentinel", str(payload))
+
+
+class PromptIdentityTests(unittest.TestCase):
+    def test_macro_and_briefing_identity_uses_runtime_resolution_and_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as config_dir:
+            root = Path(config_dir)
+            (root / "prompts").mkdir()
+            raw = b"raw prompt sentinel\r\n{{value}}\n"
+            (root / "prompts" / "one.txt").write_bytes(raw)
+            (root / "prompts" / "two.txt").write_bytes(raw)
+
+            with patch.dict(os.environ, {"CONFIG_DIR": config_dir}):
+                for processor, processor_id in (
+                    (MacroRegimeProcessor(), "macro_regime"),
+                    (DailyBriefingProcessor(), "briefing"),
+                ):
+                    with self.subTest(processor=processor_id):
+                        first_config = {
+                            "processors": {
+                                processor_id: {"prompt_template": "prompts/one.txt"}
+                            }
+                        }
+                        second_config = {
+                            "processors": {
+                                processor_id: {"prompt_template": "prompts/two.txt"}
+                            }
+                        }
+                        first = processor.get_prompt_identity(first_config)
+                        self.assertEqual(first["path"], "prompts/one.txt")
+                        self.assertEqual(
+                            first["sha256"],
+                            __import__("hashlib").sha256(raw).hexdigest(),
+                        )
+                        self.assertEqual(first, processor.get_prompt_identity(first_config))
+                        self.assertNotEqual(
+                            first, processor.get_prompt_identity(second_config)
+                        )
+
+                        (root / "prompts" / "one.txt").write_bytes(raw + b"changed")
+                        self.assertNotEqual(
+                            first, processor.get_prompt_identity(first_config)
+                        )
+                        self.assertNotIn("raw prompt sentinel", str(first))
+                        (root / "prompts" / "one.txt").write_bytes(raw)
+
+    def test_absolute_prompt_identity_does_not_expose_home_path(self):
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as config_dir:
+            prompt = Path(config_dir) / "private-prompt.txt"
+            prompt.write_bytes(b"safe")
+            config = {
+                "processors": {
+                    "macro_regime": {"prompt_template": str(prompt)}
+                }
+            }
+            with patch.dict(os.environ, {"CONFIG_DIR": "/app"}):
+                identity = MacroRegimeProcessor().get_prompt_identity(config)
+        self.assertNotIn(str(Path.home()), str(identity))
+        self.assertNotIn(config_dir, str(identity))
 
 
 class ProcessorSkipRuntimeTests(unittest.TestCase):
@@ -125,6 +221,22 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
                 "macro_regime", self.config, "cid", manage_lifecycle=False
             )
         self.assertEqual(result["status"], "success")
+        self.processor.process.assert_called_once()
+
+    def test_missing_prompt_fails_fingerprint_safe_without_reuse_lookup(self):
+        self.processor.get_prompt_identity = Mock(
+            side_effect=FileNotFoundError("Prompt template not found")
+        )
+        with patch.object(
+            orchestrator, "get_processor", return_value=self.processor
+        ), patch.object(orchestrator, "_find_reusable_processor_output") as lookup, patch.object(
+            orchestrator, "_write_processing_log"
+        ):
+            result = orchestrator._run_processor_impl(
+                "macro_regime", self.config, "cid", manage_lifecycle=False
+            )
+        self.assertEqual(result["status"], "success")
+        lookup.assert_not_called()
         self.processor.process.assert_called_once()
 
     def test_only_success_rows_are_queried_for_reuse(self):

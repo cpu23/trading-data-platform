@@ -1,5 +1,4 @@
 import json
-import os
 import re
 from datetime import datetime, time as dt_time, timedelta, timezone
 from uuid import uuid4
@@ -10,6 +9,7 @@ from db import get_session
 from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
 from processors._validators import validate_briefing_sections, coerce_briefing_fields
+from processors.base import load_prompt_template
 from sqlalchemy import text
 
 logger = get_logger("processor.briefing")
@@ -186,6 +186,14 @@ class DailyBriefingProcessor:
 
     def get_prompt_version(self) -> str:
         return "briefing_v3"
+
+    def get_prompt_identity(self, config: dict) -> dict[str, str]:
+        processor_config = config.get("processors", {}).get("briefing", {})
+        template_path = processor_config.get(
+            "prompt_template", "prompts/briefing_v3.txt"
+        )
+        _, identity = load_prompt_template(template_path)
+        return identity
 
     def get_depends_on(self) -> list[str]:
         return ["macro_regime"]
@@ -671,15 +679,7 @@ class DailyBriefingProcessor:
         this_week_events: str,
         watchlist: str,
     ) -> str:
-        if not os.path.isabs(template_path):
-            config_dir = os.environ.get("CONFIG_DIR", "/app")
-            template_path = os.path.join(config_dir, template_path)
-
-        if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Prompt template not found: {template_path}")
-
-        with open(template_path) as f:
-            template = f.read()
+        template, _ = load_prompt_template(template_path)
 
         result = template
         result = result.replace("{{current_date}}", current_date)

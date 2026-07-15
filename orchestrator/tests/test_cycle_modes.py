@@ -250,17 +250,15 @@ class CycleExecutionModeTests(unittest.TestCase):
 
         self.assertEqual(seen["successful_collectors"], set())
 
-    def test_analyze_runs_no_collectors_and_uses_only_historical_availability(self):
+    def test_analyze_runs_no_collectors_or_history_lookups_and_bypasses_collector_gate(self):
         import orchestrator
 
         seen = {}
         with patch.object(
             orchestrator, "get_all_collectors", return_value={"old": Mock(), "empty": Mock()}
         ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator,
-            "_last_successful_collection",
-            side_effect=lambda source, _config: datetime.now(timezone.utc) if source == "old" else None,
-        ), patch.object(orchestrator, "run_collector") as collect, patch.object(
+            orchestrator, "_last_successful_collection"
+        ) as history, patch.object(orchestrator, "run_collector") as collect, patch.object(
             orchestrator,
             "_resolve_and_run_processors",
             side_effect=lambda **kwargs: seen.update(kwargs) or {},
@@ -276,8 +274,62 @@ class CycleExecutionModeTests(unittest.TestCase):
             )
 
         collect.assert_not_called()
-        self.assertEqual(seen["successful_collectors"], {"old"})
+        history.assert_not_called()
+        self.assertEqual(seen["successful_collectors"], set())
+        self.assertTrue(seen["analyze_existing_data"])
+        self.assertEqual(result["collectors"]["empty"]["status"], "skipped")
         self.assertEqual(result["collectors"]["empty"]["reason"], "analyze_mode_no_collection")
+        self.assertEqual(result["collectors"]["empty"]["mode"], "analyze")
+        self.assertTrue(result["collectors"]["empty"]["no_change"])
+
+    def test_analyze_attempts_raw_data_processors_then_preserves_processor_order(self):
+        import orchestrator
+
+        macro = Mock()
+        macro.get_depends_on.return_value = ["fred"]
+        event = Mock()
+        event.get_depends_on.return_value = ["forex_factory"]
+        briefing = Mock()
+        briefing.get_depends_on.return_value = ["macro_regime"]
+        config = {
+            "processors": {
+                "macro_regime": {"enabled": True},
+                "event_impact": {"enabled": True},
+                "briefing": {"enabled": True},
+            }
+        }
+
+        with patch.object(
+            orchestrator,
+            "get_all_processors",
+            return_value={
+                "macro_regime": macro,
+                "event_impact": event,
+                "briefing": briefing,
+            },
+        ), patch.object(
+            orchestrator,
+            "run_processor",
+            side_effect=[
+                {"processor": "macro_regime", "status": "success"},
+                {"processor": "event_impact", "status": "success"},
+                {"processor": "briefing", "status": "success"},
+            ],
+        ) as run:
+            results = orchestrator._resolve_and_run_processors(
+                config,
+                "cycle",
+                set(),
+                analyze_existing_data=True,
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            ["macro_regime", "event_impact", "briefing"],
+        )
+        self.assertEqual(results["macro_regime"]["status"], "success")
+        self.assertEqual(results["event_impact"]["status"], "success")
+        self.assertEqual(results["briefing"]["status"], "success")
 
     def test_force_full_runs_all_collectors_and_forces_processors(self):
         import orchestrator

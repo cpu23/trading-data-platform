@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
+import posixpath
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Protocol
 
 from budgets import BudgetContext
@@ -30,6 +33,31 @@ def canonical_fingerprint(payload: dict) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def load_prompt_template(template_path: str) -> tuple[str, dict[str, str]]:
+    """Load one prompt and return only bounded, non-content identity metadata."""
+    configured = os.fspath(template_path)
+    config_root = Path(os.environ.get("CONFIG_DIR", "/app"))
+    candidate = Path(configured)
+    resolved = candidate if candidate.is_absolute() else config_root / candidate
+
+    if not resolved.exists():
+        raise FileNotFoundError(f"Prompt template not found: {resolved}")
+
+    raw = resolved.read_bytes()
+    normalized = posixpath.normpath(configured.replace("\\", "/"))
+    if candidate.is_absolute():
+        try:
+            normalized = resolved.resolve().relative_to(config_root.resolve()).as_posix()
+        except ValueError:
+            path_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+            normalized = f"external/{candidate.name}:{path_hash}"
+
+    return raw.decode("utf-8"), {
+        "path": normalized,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
 class Processor(Protocol):
     processor_id: str
     PROCESSOR_SCHEMA_VERSION: str
@@ -45,6 +73,10 @@ class Processor(Protocol):
 
     def get_prompt_version(self) -> str:
         """Return version string for current prompt template."""
+        ...
+
+    def get_prompt_identity(self, config: dict) -> dict[str, str]:
+        """Return safe configured-path and exact-content prompt markers."""
         ...
 
     def get_depends_on(self) -> list[str]:
