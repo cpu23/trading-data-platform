@@ -1,5 +1,6 @@
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -22,6 +23,23 @@ BACKFILL_YEARS = {
     "quarterly": 10,
     "annual": 10,
 }
+
+
+@dataclass(frozen=True)
+class MetadataOutcome:
+    metadata: dict[str, Any] | None
+    api_calls: int = 0
+    warning: dict | None = None
+    error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class ObservationOutcome:
+    records: list[dict]
+    fetch_duration_ms: int
+    parse_duration_ms: int
+    error_code: str | None = None
+    exception_type: str | None = None
 
 
 class FredCollector:
@@ -59,6 +77,8 @@ class FredCollector:
         metadata_duration_ms = 0
         observation_duration_ms = 0
         parse_duration_ms = 0
+        metadata_api_calls = 0
+        observation_api_calls = 0
 
         # Keep every database-backed lookup on the caller thread. Worker threads only
         # perform HTTP and pure normalization, so SQLAlchemy sessions are never shared.
@@ -75,12 +95,20 @@ class FredCollector:
                 )
                 metadata_started = time.monotonic()
                 try:
-                    metadata = self._fetch_series_metadata(
+                    metadata_outcome = self._resolve_series_metadata(
                         series_id, api_key, correlation_id, config
                     )
                 finally:
                     metadata_duration_ms += elapsed_ms(metadata_started)
-                prepared.append((series_entry, start_date, metadata))
+                metadata_api_calls += metadata_outcome.api_calls
+                if metadata_outcome.warning is not None:
+                    errors.append(metadata_outcome.warning)
+                if metadata_outcome.error is not None:
+                    prepared.append(metadata_outcome.error)
+                else:
+                    prepared.append(
+                        (series_entry, start_date, metadata_outcome.metadata or {})
+                    )
             except Exception as exc:
                 prepared.append(exc)
 
@@ -105,6 +133,7 @@ class FredCollector:
                         correlation_id,
                     )
                 )
+                observation_api_calls += 1
 
             # Futures are all submitted before results are consumed. Reading them in
             # configured order gives deterministic records and never cancels later work.
@@ -114,22 +143,42 @@ class FredCollector:
                 try:
                     if isinstance(future, Exception):
                         raise future
-                    records, fetch_ms, normalize_ms = future.result()
-                    observation_duration_ms += fetch_ms
-                    parse_duration_ms += normalize_ms
-                    all_records.extend(records)
+                    outcome = future.result()
+                    observation_duration_ms += outcome.fetch_duration_ms
+                    parse_duration_ms += outcome.parse_duration_ms
+                    if outcome.error_code is not None:
+                        error_entry = {
+                            "series_id": series_id,
+                            "stage": "observation",
+                            "code": outcome.error_code,
+                            "exception_type": outcome.exception_type or "Exception",
+                            "frequency": frequency,
+                        }
+                        errors.append(error_entry)
+                        logger.error(
+                            "series_collection_failed",
+                            action="collect_series",
+                            series_id=series_id,
+                            code=error_entry["code"],
+                            exception_type=error_entry["exception_type"],
+                            correlation_id=correlation_id,
+                        )
+                        continue
+                    all_records.extend(outcome.records)
                     successful_series += 1
                     logger.info(
                         "series_collected",
                         action="collect_series",
                         series_id=series_id,
-                        records_fetched=len(records),
+                        records_fetched=len(outcome.records),
                         correlation_id=correlation_id,
                     )
                 except Exception as exc:
                     error_entry = {
                         "series_id": series_id,
-                        "error": str(exc),
+                        "stage": "observation",
+                        "code": "request_or_parse_failed",
+                        "exception_type": type(exc).__name__,
                         "frequency": frequency,
                     }
                     errors.append(error_entry)
@@ -137,7 +186,8 @@ class FredCollector:
                         "series_collection_failed",
                         action="collect_series",
                         series_id=series_id,
-                        error=str(exc),
+                        code=error_entry["code"],
+                        exception_type=error_entry["exception_type"],
                         correlation_id=correlation_id,
                     )
 
@@ -152,6 +202,9 @@ class FredCollector:
                 "metadata_cache_duration_ms": metadata_duration_ms,
                 "observation_fetch_duration_ms": observation_duration_ms,
                 "parse_normalize_duration_ms": parse_duration_ms,
+                "metadata_api_calls": metadata_api_calls,
+                "observation_api_calls": observation_api_calls,
+                "api_calls_made": metadata_api_calls + observation_api_calls,
             },
         )
 
@@ -163,12 +216,15 @@ class FredCollector:
         )
 
         if errors:
+            failed_series = len(
+                {error.get("series_id") for error in errors if error.get("series_id")}
+            )
             logger.warning(
                 "fred_collection_partial",
                 action="collect",
                 total_series=total_series,
                 successful_series=successful_series,
-                failed_series=len(errors),
+                failed_series=failed_series,
                 correlation_id=correlation_id,
             )
 
@@ -182,7 +238,7 @@ class FredCollector:
         start_date: datetime,
         metadata: dict[str, Any],
         correlation_id: str,
-    ) -> tuple[list[dict], int, int]:
+    ) -> ObservationOutcome:
         params = {
             "series_id": series_id,
             "api_key": api_key,
@@ -191,54 +247,70 @@ class FredCollector:
         }
 
         fetch_started = time.monotonic()
-        response = make_request(
-            method="GET",
-            url=FRED_OBSERVATIONS_URL,
-            params=params,
-            correlation_id=correlation_id,
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        observations = data.get("observations", [])
+        try:
+            response = make_request(
+                method="GET",
+                url=FRED_OBSERVATIONS_URL,
+                params=params,
+                correlation_id=correlation_id,
+            )
+            response.raise_for_status()
+            data = response.json()
+            observations = data.get("observations", [])
+        except Exception as exc:
+            return ObservationOutcome(
+                [],
+                elapsed_ms(fetch_started),
+                0,
+                error_code="request_failed",
+                exception_type=type(exc).__name__,
+            )
         fetch_duration_ms = elapsed_ms(fetch_started)
 
         parse_started = time.monotonic()
-        records = []
-        for obs in observations:
-            value_str = obs.get("value", ".")
-            if value_str == "." or value_str is None:
-                continue
+        try:
+            records = []
+            for obs in observations:
+                value_str = obs.get("value", ".")
+                if value_str == "." or value_str is None:
+                    continue
 
-            try:
-                value = float(value_str)
-            except (ValueError, TypeError):
-                continue
+                try:
+                    value = float(value_str)
+                except (ValueError, TypeError):
+                    continue
 
-            date_str = obs.get("date", "")
-            try:
-                observed_at = datetime.strptime(date_str, "%Y-%m-%d").replace(
-                    tzinfo=timezone.utc
-                )
-            except ValueError:
-                continue
+                date_str = obs.get("date", "")
+                try:
+                    observed_at = datetime.strptime(date_str, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    continue
 
-            record = {
-                "series_id": series_id,
-                "observed_at": observed_at,
-                "value": value,
-                "source": "fred",
-                "metadata": {
-                    "units": metadata.get("units", ""),
-                    "seasonal_adjustment": metadata.get("seasonal_adjustment", ""),
-                    "frequency": metadata.get("frequency", frequency),
-                    "title": metadata.get("title", ""),
-                },
-            }
-            records.append(record)
+                record = {
+                    "series_id": series_id,
+                    "observed_at": observed_at,
+                    "value": value,
+                    "source": "fred",
+                    "metadata": {
+                        "units": metadata.get("units", ""),
+                        "seasonal_adjustment": metadata.get("seasonal_adjustment", ""),
+                        "frequency": metadata.get("frequency", frequency),
+                        "title": metadata.get("title", ""),
+                    },
+                }
+                records.append(record)
+        except Exception as exc:
+            return ObservationOutcome(
+                [],
+                fetch_duration_ms,
+                elapsed_ms(parse_started),
+                error_code="parse_failed",
+                exception_type=type(exc).__name__,
+            )
 
-        parse_duration_ms = elapsed_ms(parse_started)
-        return records, fetch_duration_ms, parse_duration_ms
+        return ObservationOutcome(records, fetch_duration_ms, elapsed_ms(parse_started))
 
     def _get_start_date(
         self,
@@ -313,9 +385,9 @@ class FredCollector:
         with get_session(config) as session:
             session.execute(statement, params)
 
-    def _fetch_series_metadata(
+    def _resolve_series_metadata(
         self, series_id: str, api_key: str, correlation_id: str, config: dict
-    ) -> dict[str, Any]:
+    ) -> MetadataOutcome:
         fred_config = config.get("collectors", {}).get("fred", {})
         try:
             ttl_days = float(fred_config.get("metadata_ttl_days", 30))
@@ -326,8 +398,9 @@ class FredCollector:
 
         cached = self._metadata_cache.get(series_id)
         if cached is not None and self._fresh_metadata(cached, ttl, now):
-            return self._metadata_values(cached)
+            return MetadataOutcome(self._metadata_values(cached))
 
+        warning = None
         try:
             persisted = query_latest(
                 table_name="macro_series_metadata",
@@ -338,13 +411,20 @@ class FredCollector:
             )
             if persisted and self._fresh_metadata(persisted[0], ttl, now):
                 self._metadata_cache[series_id] = dict(persisted[0])
-                return self._metadata_values(persisted[0])
+                return MetadataOutcome(self._metadata_values(persisted[0]))
         except Exception as exc:
+            warning = {
+                "series_id": series_id,
+                "stage": "metadata_cache",
+                "code": "cache_degraded",
+                "exception_type": type(exc).__name__,
+            }
             logger.warning(
                 "metadata_cache_read_failed",
                 action="fetch_series_metadata",
                 series_id=series_id,
-                error=str(exc),
+                code=warning["code"],
+                exception_type=warning["exception_type"],
                 correlation_id=correlation_id,
             )
 
@@ -354,37 +434,55 @@ class FredCollector:
             "file_type": "json",
         }
 
-        response = make_request(
-            method="GET",
-            url=FRED_SERIES_URL,
-            params=params,
-            correlation_id=correlation_id,
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        ser = data.get("seriess", [{}])[0] if data.get("seriess") else {}
-
-        metadata = {
-            "title": ser.get("title", ""),
-            "units": ser.get("units", ""),
-            "seasonal_adjustment": ser.get("seasonal_adjustment", ""),
-            "frequency": ser.get("frequency", ""),
-        }
+        try:
+            response = make_request(
+                method="GET",
+                url=FRED_SERIES_URL,
+                params=params,
+                correlation_id=correlation_id,
+            )
+            response.raise_for_status()
+            data = response.json()
+            ser = data.get("seriess", [{}])[0] if data.get("seriess") else {}
+            metadata = {
+                "title": ser.get("title", ""),
+                "units": ser.get("units", ""),
+                "seasonal_adjustment": ser.get("seasonal_adjustment", ""),
+                "frequency": ser.get("frequency", ""),
+            }
+        except Exception as exc:
+            return MetadataOutcome(None, api_calls=1, warning=warning, error=exc)
 
         fetched_at = datetime.now(timezone.utc)
         try:
             self._persist_series_metadata(series_id, metadata, fetched_at, config)
         except Exception as exc:
+            if warning is None:
+                warning = {
+                    "series_id": series_id,
+                    "stage": "metadata_cache",
+                    "code": "cache_degraded",
+                    "exception_type": type(exc).__name__,
+                }
             logger.warning(
                 "metadata_cache_write_failed",
                 action="fetch_series_metadata",
                 series_id=series_id,
-                error=str(exc),
+                code="cache_degraded",
+                exception_type=type(exc).__name__,
                 correlation_id=correlation_id,
             )
         self._metadata_cache[series_id] = {**metadata, "fetched_at": fetched_at}
-        return metadata
+        return MetadataOutcome(metadata, api_calls=1, warning=warning)
+
+    def _fetch_series_metadata(
+        self, series_id: str, api_key: str, correlation_id: str, config: dict
+    ) -> dict[str, Any]:
+        """Backward-compatible metadata-only interface used by focused callers."""
+        outcome = self._resolve_series_metadata(series_id, api_key, correlation_id, config)
+        if outcome.error is not None:
+            raise outcome.error
+        return outcome.metadata or {}
 
     def get_schedule(self, config: dict) -> str:
         return config["collectors"]["fred"]["schedule"]

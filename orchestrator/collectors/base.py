@@ -27,7 +27,7 @@ class CollectionResult:
 
     @property
     def partial_failure(self) -> bool:
-        return self.total_series > 0 and 0 < self.successful_series < self.total_series
+        return self.successful_series > 0 and bool(self.errors)
 
 
 class Collector(Protocol):

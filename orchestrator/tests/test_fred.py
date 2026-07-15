@@ -205,6 +205,105 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs["url"] == FRED_OBSERVATIONS_URL for call in make_request.call_args_list)
         )
+        self.assertEqual(result.metrics["metadata_api_calls"], 0)
+        self.assertEqual(result.metrics["observation_api_calls"], 3)
+        self.assertEqual(result.metrics["api_calls_made"], 3)
+
+    @patch("collectors.fred.get_session")
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_cache_read_and_write_failure_retains_records_with_one_safe_degradation(
+        self, query_latest, make_request, get_session
+    ):
+        secret = "postgres://user:SENTINEL-CACHE-SECRET@db/private"
+
+        def query(*, table_name, **kwargs):
+            if table_name == "macro_series_metadata":
+                raise RuntimeError(secret)
+            return []
+
+        query_latest.side_effect = query
+        get_session.side_effect = RuntimeError(secret)
+        make_request.side_effect = [
+            self._response({"seriess": [{"title": "GDP"}]}),
+            self._response({"observations": [{"date": "2025-01-01", "value": "1"}]}),
+        ]
+
+        with patch("collectors.fred.logger.warning") as warning_log:
+            result = FredCollector().collect(self._config(), "cid")
+
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.successful_series, 1)
+        self.assertTrue(result.partial_failure)
+        self.assertFalse(result.all_failed)
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(
+            {key: result.errors[0][key] for key in ("series_id", "stage", "code")},
+            {"series_id": "GDP", "stage": "metadata_cache", "code": "cache_degraded"},
+        )
+        self.assertNotIn(secret, repr(result.errors))
+        self.assertNotIn(secret, repr(warning_log.call_args_list))
+
+    @patch("collectors.fred.get_session")
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_cache_write_failure_alone_is_partial_and_safe(
+        self, query_latest, make_request, get_session
+    ):
+        query_latest.side_effect = self._query_with_metadata({})
+        get_session.side_effect = RuntimeError("SENTINEL-WRITE-SECRET")
+        make_request.side_effect = [
+            self._response({"seriess": [{"title": "GDP"}]}),
+            self._response({"observations": []}),
+        ]
+
+        result = FredCollector().collect(self._config(), "cid")
+
+        self.assertEqual(result.successful_series, 1)
+        self.assertTrue(result.partial_failure)
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(result.errors[0]["code"], "cache_degraded")
+        self.assertNotIn("SENTINEL-WRITE-SECRET", repr(result.errors))
+
+    @patch("collectors.fred.get_session")
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_cold_n_series_reports_exact_metadata_and_observation_calls(
+        self, query_latest, make_request, get_session
+    ):
+        series = [{"id": value, "frequency": "monthly"} for value in ("A", "B", "C")]
+        query_latest.side_effect = self._query_with_metadata({})
+        context = MagicMock()
+        context.__enter__.return_value = MagicMock()
+        get_session.return_value = context
+
+        def request(*, url, **kwargs):
+            if url == FRED_SERIES_URL:
+                return self._response({"seriess": [{"title": "metadata"}]})
+            return self._response({"observations": []})
+
+        make_request.side_effect = request
+
+        result = FredCollector().collect(self._config(series=series), "cid")
+
+        self.assertEqual(result.metrics["metadata_api_calls"], 3)
+        self.assertEqual(result.metrics["observation_api_calls"], 3)
+        self.assertEqual(result.metrics["api_calls_made"], 6)
+
+    @patch("collectors.fred.make_request", side_effect=RuntimeError("metadata unavailable"))
+    @patch("collectors.fred.query_latest")
+    def test_metadata_preflight_failure_reports_actual_calls_before_observation(
+        self, query_latest, make_request
+    ):
+        query_latest.side_effect = self._query_with_metadata({})
+
+        result = FredCollector().collect(self._config(), "cid")
+
+        self.assertTrue(result.all_failed)
+        self.assertEqual(result.metrics["metadata_api_calls"], 1)
+        self.assertEqual(result.metrics["observation_api_calls"], 0)
+        self.assertEqual(result.metrics["api_calls_made"], 1)
+        self.assertEqual(make_request.call_args.kwargs["url"], FRED_SERIES_URL)
 
 
 class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
@@ -327,6 +426,75 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
 
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
+    def test_failed_observation_retains_attempt_timing_and_safe_error(
+        self, query_latest, make_request
+    ):
+        query_latest.side_effect = self._query_with_metadata({"GDP": self._metadata_row()})
+
+        def fail_after_delay(**kwargs):
+            time.sleep(0.012)
+            raise RuntimeError("SENTINEL-OBSERVATION-SECRET")
+
+        make_request.side_effect = fail_after_delay
+
+        result = FredCollector().collect(self._config(max_concurrency=1), "cid")
+
+        self.assertTrue(result.all_failed)
+        self.assertGreaterEqual(result.metrics["observation_fetch_duration_ms"], 10)
+        self.assertEqual(result.metrics["parse_normalize_duration_ms"], 0)
+        self.assertEqual(result.metrics["observation_api_calls"], 1)
+        self.assertNotIn("SENTINEL-OBSERVATION-SECRET", repr(result.errors))
+        self.assertEqual(result.errors[0]["stage"], "observation")
+        self.assertEqual(result.errors[0]["code"], "request_failed")
+
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_parse_failure_retains_parse_attempt_duration(
+        self, query_latest, make_request
+    ):
+        query_latest.side_effect = self._query_with_metadata({"GDP": self._metadata_row()})
+
+        class SlowMalformedObservation:
+            def get(self, *args, **kwargs):
+                time.sleep(0.012)
+                raise TypeError("malformed")
+
+        make_request.return_value = self._response(
+            {"observations": [SlowMalformedObservation()]}
+        )
+
+        result = FredCollector().collect(self._config(max_concurrency=1), "cid")
+
+        self.assertTrue(result.all_failed)
+        self.assertGreaterEqual(result.metrics["parse_normalize_duration_ms"], 10)
+        self.assertEqual(result.metrics["observation_api_calls"], 1)
+        self.assertEqual(result.errors[0]["code"], "parse_failed")
+
+    @patch("collectors.fred.logger.warning")
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_multiple_stage_issues_log_one_failed_series(
+        self, query_latest, make_request, warning_log
+    ):
+        query_latest.side_effect = RuntimeError("cache unavailable")
+        make_request.side_effect = [
+            self._response({"seriess": [{"title": "GDP"}]}),
+            RuntimeError("observation unavailable"),
+        ]
+
+        result = FredCollector().collect(self._config(), "cid")
+
+        self.assertTrue(result.all_failed)
+        self.assertEqual(len(result.errors), 2)
+        partial_log = next(
+            call
+            for call in warning_log.call_args_list
+            if call.args[0] == "fred_collection_partial"
+        )
+        self.assertEqual(partial_log.kwargs["failed_series"], 1)
+
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
     def test_collection_propagates_real_substage_metrics(
         self, query_latest, make_request
     ):
@@ -343,6 +511,9 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
                 "metadata_cache_duration_ms",
                 "observation_fetch_duration_ms",
                 "parse_normalize_duration_ms",
+                "metadata_api_calls",
+                "observation_api_calls",
+                "api_calls_made",
             },
         )
         self.assertTrue(all(value >= 0 for value in result.metrics.values()))
@@ -385,6 +556,77 @@ class FredOrchestratorMetricTests(unittest.TestCase):
 
         self.assertEqual(result["metrics"]["db_write_duration_ms"], 40)
         self.assertEqual(result["metrics"]["metadata_cache_duration_ms"], 2)
+
+    def test_partial_reason_and_persisted_api_calls_use_safe_exact_metrics(self):
+        import orchestrator as runtime
+        from collectors.base import CollectionResult
+        from db import WriteResult
+
+        secret = "SENTINEL-CACHE-DETAIL"
+        collector = MagicMock()
+        collector.collect.return_value = CollectionResult(
+            records=[{"series_id": "GDP"}],
+            errors=[
+                {
+                    "series_id": "GDP",
+                    "stage": "metadata_cache",
+                    "code": "cache_degraded",
+                    "exception_type": "RuntimeError",
+                    "error": secret,
+                }
+            ],
+            total_series=1,
+            successful_series=1,
+            metrics={"metadata_api_calls": 0, "observation_api_calls": 3, "api_calls_made": 3},
+        )
+        collector.get_target_table.return_value = "macro_series"
+        collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+
+        with (
+            patch.object(runtime, "get_collector", return_value=collector),
+            patch.object(runtime, "upsert_records", return_value=WriteResult(1, 1, 0, ())),
+            patch.object(runtime, "_write_collection_log") as write_log,
+            patch.object(runtime, "_estimate_api_calls") as estimate,
+        ):
+            result = runtime._run_collector_impl(
+                "fred", {"collectors": {"fred": {"series": [1, 2, 3]}}}, "cid", False
+            )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertIn("1 collection issue", result["error"])
+        self.assertIn("GDP [metadata_cache/cache_degraded]", result["error"])
+        self.assertNotIn(secret, result["error"])
+        self.assertEqual(write_log.call_args.kwargs["api_calls_made"], 3)
+        self.assertEqual(write_log.call_args.kwargs["error_message"], result["error"])
+        estimate.assert_not_called()
+
+    def test_failed_db_write_still_records_duration_and_collector_api_calls(self):
+        import orchestrator as runtime
+        from collectors.base import CollectionResult
+
+        collector = MagicMock()
+        collector.collect.return_value = CollectionResult(
+            records=[{"series_id": "GDP"}],
+            total_series=1,
+            successful_series=1,
+            metrics={"api_calls_made": 1},
+        )
+        collector.get_target_table.return_value = "macro_series"
+        collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
+
+        with (
+            patch.object(runtime, "get_collector", return_value=collector),
+            patch.object(runtime, "upsert_records", side_effect=RuntimeError("write unavailable")),
+            patch.object(runtime, "_write_collection_log") as write_log,
+            patch.object(runtime, "_estimate_api_calls") as estimate,
+            patch.object(runtime.time, "monotonic", side_effect=[1.0, 1.1, 1.14, 1.2]),
+        ):
+            result = runtime._run_collector_impl("fred", {"collectors": {"fred": {}}}, "cid", False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["metrics"]["db_write_duration_ms"], 40)
+        self.assertEqual(write_log.call_args.kwargs["api_calls_made"], 1)
+        estimate.assert_not_called()
 
 
 if __name__ == "__main__":

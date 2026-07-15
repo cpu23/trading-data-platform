@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -31,10 +32,27 @@ class FredEdgeCaseTests(unittest.TestCase):
         base["collectors"]["fred"].update(overrides)
         return base
 
+    @staticmethod
+    def _cached_metadata(*, table_name, filters, **kwargs):
+        if table_name == "macro_series":
+            return []
+        return [
+            {
+                "series_id": filters["series_id"],
+                "title": "Test",
+                "units": "pct",
+                "seasonal_adjustment": "SA",
+                "frequency": "Monthly",
+                "fetched_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+            }
+        ]
+
+    @patch("collectors.fred.query_latest")
     @patch("collectors.fred.make_request")
-    def test_all_series_fail_returns_empty_with_errors(self, make_request):
+    def test_all_series_fail_returns_empty_with_errors(self, make_request, query_latest):
         """When all series fail, collect returns CollectionResult with empty records and tracked errors."""
         collector = FredCollector()
+        query_latest.side_effect = self._cached_metadata
 
         # Simulate network failure for all requests
         make_request.side_effect = httpx.ConnectError("Connection refused")
@@ -60,10 +78,12 @@ class FredEdgeCaseTests(unittest.TestCase):
         self.assertGreaterEqual(len(collector.last_errors), 1,
                                 "Should have at least one per-series error")
 
+    @patch("collectors.fred.query_latest")
     @patch("collectors.fred.make_request")
-    def test_some_series_fail_returns_partial_with_errors(self, make_request):
+    def test_some_series_fail_returns_partial_with_errors(self, make_request, query_latest):
         """When some series fail, records for successful ones are returned."""
         collector = FredCollector()
+        query_latest.side_effect = self._cached_metadata
 
         call_count = [0]
 

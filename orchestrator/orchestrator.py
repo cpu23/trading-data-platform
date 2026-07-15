@@ -398,6 +398,33 @@ def update_run_progress(
         return False
 
 
+def _safe_collection_token(value: object, default: str) -> str:
+    """Return a bounded identifier without copying arbitrary diagnostic text."""
+    text_value = str(value or "")[:64]
+    safe = "".join(character for character in text_value if character.isalnum() or character in "._-")
+    return safe or default
+
+
+def _collection_issue_reason(errors: list[dict], total_series: int, all_failed: bool) -> str:
+    issues_by_series = {}
+    for error in errors:
+        series_id = _safe_collection_token(error.get("series_id"), "unknown")
+        issues_by_series[series_id] = error
+    count = len(issues_by_series)
+    noun = "issue" if count == 1 else "issues"
+    details = []
+    for series_id, error in list(issues_by_series.items())[:3]:
+        stage = _safe_collection_token(error.get("stage"), "collection")
+        code = _safe_collection_token(error.get("code"), "failed")
+        details.append(f"{series_id} [{stage}/{code}]")
+    summary = f"{count} collection {noun}"
+    if details:
+        summary += ": " + "; ".join(details)
+    if all_failed:
+        return f"All {total_series} series failed; {summary}"
+    return summary
+
+
 def _run_collector_impl(
     source_id: str,
     config: dict | None = None,
@@ -452,39 +479,46 @@ def _run_collector_impl(
             # Derive collection-level status from structured result
             if raw_result.all_failed:
                 status = "failed"
-                error_message = (
-                    f"All {raw_result.total_series} series failed: "
-                    + "; ".join(
-                        f"{e['series_id']}: {e['error']}" for e in raw_result.errors[:3]
-                    )
+                error_message = _collection_issue_reason(
+                    raw_result.errors, raw_result.total_series, all_failed=True
                 )
             elif raw_result.partial_failure:
                 status = "partial"
+                error_message = _collection_issue_reason(
+                    raw_result.errors, raw_result.total_series, all_failed=False
+                )
         else:
             records = raw_result
             # Backward compat: try collector.last_errors
             collection_errors = getattr(collector, "last_errors", [])
 
         records_fetched = len(records)
+        exact_api_calls = collection_metrics.get("api_calls_made")
+        if isinstance(exact_api_calls, int) and exact_api_calls >= 0:
+            api_calls_made = exact_api_calls
+        else:
+            api_calls_made = _estimate_api_calls(source_id, records_fetched, config)
 
         if records:
             table_name = collector.get_target_table()
             conflict_columns = collector.get_conflict_columns()
             db_write_started = time.monotonic()
-            write_result = upsert_records(
-                table_name=table_name,
-                records=records,
-                conflict_columns=conflict_columns,
-                config=config,
-            )
-            collection_metrics["db_write_duration_ms"] = elapsed_ms(db_write_started)
-            logger.info(
-                "collector_db_write_metrics",
-                action="run_collector",
-                collector=source_id,
-                correlation_id=correlation_id,
-                db_write_duration_ms=collection_metrics["db_write_duration_ms"],
-            )
+            try:
+                write_result = upsert_records(
+                    table_name=table_name,
+                    records=records,
+                    conflict_columns=conflict_columns,
+                    config=config,
+                )
+            finally:
+                collection_metrics["db_write_duration_ms"] = elapsed_ms(db_write_started)
+                logger.info(
+                    "collector_db_write_metrics",
+                    action="run_collector",
+                    collector=source_id,
+                    correlation_id=correlation_id,
+                    db_write_duration_ms=collection_metrics["db_write_duration_ms"],
+                )
             records_written = write_result.written
 
             # Derive write-level status using WriteResult.status (Task 8)
@@ -503,8 +537,6 @@ def _run_collector_impl(
                     f"Partial DB write: {write_result.written}/{write_result.attempted} "
                     f"records written to {table_name}"
                 )
-
-        api_calls_made = _estimate_api_calls(source_id, records_fetched, config)
 
     except Exception as exc:
         status = "failed"
