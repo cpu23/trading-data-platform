@@ -5,6 +5,7 @@ from datetime import datetime, time as dt_time, timedelta, timezone
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from budgets import BudgetContext
 from db import get_session
 from llm_client import LLMStage, LLMStageFailure, call_llm
 from logging_config import get_logger
@@ -19,7 +20,12 @@ MAX_RETRIES = 1
 class DailyBriefingProcessor:
     processor_id = "briefing"
 
-    def process(self, config: dict, correlation_id: str) -> dict:
+    def process(
+        self,
+        config: dict,
+        correlation_id: str,
+        budget_context: BudgetContext | None = None,
+    ) -> dict:
         ff_config = config.get("processors", {}).get("briefing", {})
         prompt_template_path = ff_config.get(
             "prompt_template", "prompts/briefing_v3.txt"
@@ -48,7 +54,12 @@ class DailyBriefingProcessor:
             watchlist=watchlist_str,
         )
 
-        stage = LLMStage(config, self.processor_id, correlation_id=correlation_id)
+        stage = LLMStage(
+            config,
+            self.processor_id,
+            correlation_id=correlation_id,
+            budget_context=budget_context,
+        )
         model = stage.policy.model
         llm_result = stage.call(prompt_text)
 

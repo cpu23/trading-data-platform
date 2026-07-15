@@ -5,8 +5,9 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from budgets import BudgetContext
 from db import get_session
-from llm_client import call_llm, resolve_model
+from llm_client import LLMStage
 from logging_config import get_logger
 from sqlalchemy import text
 
@@ -16,7 +17,12 @@ logger = get_logger("processor.event_impact")
 class EventImpactProcessor:
     processor_id = "event_impact"
 
-    def process(self, config: dict, correlation_id: str) -> dict:
+    def process(
+        self,
+        config: dict,
+        correlation_id: str,
+        budget_context: BudgetContext | None = None,
+    ) -> dict:
         ff_config = config.get("processors", {}).get("event_impact", {})
         prompt_template_path = ff_config.get(
             "prompt_template", "prompts/event_impact_v1.txt"
@@ -38,14 +44,14 @@ class EventImpactProcessor:
             current_regime=current_regime,
         )
 
-        model = resolve_model(config, processor_id=self.processor_id)
-
-        llm_result = call_llm(
-            prompt=prompt_text,
-            model=model,
+        stage = LLMStage(
+            config,
+            self.processor_id,
             correlation_id=correlation_id,
-            config=config,
+            budget_context=budget_context,
         )
+        model = stage.policy.model
+        llm_result = stage.call(prompt_text)
 
         raw_response = llm_result["content"]
         parsed = self._parse_llm_response(raw_response)
@@ -92,6 +98,7 @@ class EventImpactProcessor:
                 "table": "econ_events",
                 "event_count": len(events),
                 "window": "next_48h",
+                **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
             "prompt_text": prompt_text,

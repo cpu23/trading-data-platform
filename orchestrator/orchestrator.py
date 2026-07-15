@@ -8,6 +8,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from budgets import BudgetBlock, BudgetContext, BudgetExceeded
 from collectors import get_all_collectors, get_collector
 from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, insert_records, upsert_records
@@ -40,6 +41,12 @@ def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
         return "success"
     if all(status == "failed" for status in values):
         return "failed"
+    budget_statuses = {"budget_blocked", "budget_unavailable"}
+    if all(status in budget_statuses for status in values):
+        if all(status == "budget_unavailable" for status in values):
+            return "budget_unavailable"
+        if all(status == "budget_blocked" for status in values):
+            return "budget_blocked"
     return "partial"
 
 
@@ -664,6 +671,7 @@ def _run_full_cycle_impl(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
     worker_id: str | None = None,
+    budget_context: BudgetContext | None = None,
 ) -> dict | None:
     if config is None:
         from config_loader import load_config
@@ -820,6 +828,7 @@ def _run_full_cycle_impl(
         correlation_id=correlation_id,
         successful_collectors=successful_collectors,
         progress_callback=record_progress,
+        budget_context=budget_context,
     )
 
     all_results = {**collector_results, **processor_results}
@@ -855,6 +864,7 @@ def run_full_cycle(
     config: dict | None = None,
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
+    budget_context: BudgetContext | None = None,
 ) -> dict | None:
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
@@ -880,6 +890,7 @@ def run_full_cycle(
                     correlation_id,
                     manage_lifecycle=False,
                     worker_id=worker_id,
+                    budget_context=budget_context,
                 )
             if manage_lifecycle and result is not None:
                 finalized = finalize_run_safely(
@@ -937,6 +948,7 @@ def _resolve_and_run_processors(
     correlation_id: str,
     successful_collectors: set[str],
     progress_callback=None,
+    budget_context: BudgetContext | None = None,
 ) -> dict:
     all_processors = get_all_processors()
     processor_results = {}
@@ -983,6 +995,12 @@ def _resolve_and_run_processors(
                         "skipped",
                         {"error": f"Dependencies not met: {', '.join(depends_on)}"},
                     )
+                processor_results[pid] = {
+                    "processor": pid,
+                    "status": "skipped",
+                    "reason": f"Dependencies not met: {', '.join(depends_on)}",
+                    "correlation_id": correlation_id,
+                }
             break
 
         for pid in this_pass:
@@ -996,6 +1014,7 @@ def _resolve_and_run_processors(
                 config=config,
                 correlation_id=correlation_id,
                 manage_lifecycle=False,
+                budget_context=budget_context,
             )
             processor_results[pid] = result
             if progress_callback:
@@ -1096,6 +1115,7 @@ def _run_processor_impl(
     config: dict | None = None,
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
+    budget_context: BudgetContext | None = None,
 ) -> dict | None:
     if config is None:
         from config_loader import load_config
@@ -1131,7 +1151,30 @@ def _run_processor_impl(
     failure_input_summary = None
 
     try:
-        result_payload = processor.process(config, correlation_id)
+        result_payload = processor.process(
+            config, correlation_id, budget_context=budget_context
+        )
+    except BudgetBlock as exc:
+        status = (
+            "budget_blocked" if isinstance(exc, BudgetExceeded) else "budget_unavailable"
+        )
+        error_message = exc.safe_reason
+        telemetry = getattr(exc, "telemetry", None)
+        failure_input_summary = {
+            "blocked_code": exc.code,
+            **(
+                telemetry.as_dict()
+                if telemetry is not None and hasattr(telemetry, "as_dict")
+                else {}
+            ),
+        }
+        logger.warning(
+            "processor_budget_blocked",
+            action="run_processor",
+            processor=processor_id,
+            blocked_code=exc.code,
+            correlation_id=correlation_id,
+        )
     except Exception as exc:
         status = "failed"
         error_message = str(exc)
@@ -1255,6 +1298,7 @@ def run_processor(
     config: dict | None = None,
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
+    budget_context: BudgetContext | None = None,
 ) -> dict | None:
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
@@ -1276,7 +1320,11 @@ def run_processor(
         with heartbeat:
             with advisory_lock(f"processor:{processor_id}", config):
                 result = _run_processor_impl(
-                    processor_id, config, correlation_id, manage_lifecycle=False
+                    processor_id,
+                    config,
+                    correlation_id,
+                    manage_lifecycle=False,
+                    budget_context=budget_context,
                 )
             if manage_lifecycle and result is not None:
                 finalized = finalize_run_safely(

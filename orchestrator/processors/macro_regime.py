@@ -6,6 +6,7 @@ import traceback
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from budgets import BudgetContext
 from db import get_session
 from llm_client import LLMStage, LLMStageFailure
 from logging_config import get_logger
@@ -69,7 +70,12 @@ DEFAULT_THRESHOLDS = {
 class MacroRegimeProcessor:
     processor_id = "macro_regime"
 
-    def process(self, config: dict, correlation_id: str) -> dict:
+    def process(
+        self,
+        config: dict,
+        correlation_id: str,
+        budget_context: BudgetContext | None = None,
+    ) -> dict:
         ff_config = config.get("processors", {}).get("macro_regime", {})
         thresholds = ff_config.get("thresholds", DEFAULT_THRESHOLDS)
         prompt_template_path = ff_config.get(
@@ -91,7 +97,12 @@ class MacroRegimeProcessor:
             cross_indicators=cross_indicators,
         )
 
-        stage = LLMStage(config, self.processor_id, correlation_id=correlation_id)
+        stage = LLMStage(
+            config,
+            self.processor_id,
+            correlation_id=correlation_id,
+            budget_context=budget_context,
+        )
         llm_result = stage.call(prompt_text)
         raw_response = llm_result["content"]
         try:

@@ -1,10 +1,17 @@
 from typing import Protocol
 
+from budgets import BudgetContext
+
 
 class Processor(Protocol):
     processor_id: str
 
-    def process(self, config: dict, correlation_id: str) -> dict:
+    def process(
+        self,
+        config: dict,
+        correlation_id: str,
+        budget_context: BudgetContext | None = None,
+    ) -> dict:
         """Query raw data, construct prompt, call LLM, parse response into structured opinion."""
         ...
 

@@ -450,8 +450,9 @@ class TestEvidenceRoutes(unittest.TestCase):
 class TestBudgetRoute(unittest.TestCase):
     """Integration tests for /api/system/budget."""
 
+    @patch("budgets.load_config", return_value=MOCK_CONFIG)
     @patch("budgets.query_one", return_value=None)
-    def test_budget_returns_status(self, _mock_qo):
+    def test_budget_returns_status(self, _mock_qo, _mock_config):
         """GET /api/system/budget returns a budget status dict."""
         resp = client.get("/api/system/budget", headers=AUTH)
         self.assertEqual(resp.status_code, 200)

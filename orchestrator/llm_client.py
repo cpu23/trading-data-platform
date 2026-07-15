@@ -2,6 +2,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from budgets import BudgetBlock, BudgetContext, BudgetPermit, enforce_budget
 from http_client import make_request
 from logging_config import get_logger
 
@@ -162,11 +163,13 @@ class LLMStage:
         processor_id: str,
         *,
         correlation_id: str | None = None,
+        budget_context: BudgetContext | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.config = config
         self.processor_id = processor_id
         self.correlation_id = correlation_id
+        self.budget_context = budget_context or BudgetContext()
         self.clock = clock
         self.policy = resolve_request_policy(config, processor_id)
         self._deadline = clock() + self.policy.stage_timeout_seconds
@@ -174,6 +177,7 @@ class LLMStage:
             model=self.policy.model,
             max_output_tokens=self.policy.max_output_tokens,
         )
+        self._budget_permit: BudgetPermit | None = None
 
     def add_validation_warnings(self, warnings: list[str]) -> None:
         remaining = MAX_SAFE_WARNINGS - len(self.telemetry.validation_warnings)
@@ -202,6 +206,15 @@ class LLMStage:
         if remaining <= 0:
             raise LLMStageTimeout("LLM stage deadline exhausted", self.telemetry)
 
+        if self._budget_permit is None:
+            try:
+                self._budget_permit = enforce_budget(
+                    self.config, self.processor_id, self.budget_context
+                )
+            except BudgetBlock as exc:
+                exc.telemetry = self.telemetry
+                raise
+
         started_at = self.clock()
         try:
             result = call_llm(
@@ -215,6 +228,7 @@ class LLMStage:
                 timeout=remaining,
                 structured_response=self.policy.structured_response,
                 max_retries=self.policy.request_attempts,
+                _budget_permit=self._budget_permit,
             )
         except Exception as exc:
             if isinstance(exc, LLMStageFailure):
@@ -246,6 +260,8 @@ def call_llm(
     max_output_tokens: int | None = None,
     timeout: float | None = None,
     structured_response: bool | None = None,
+    budget_context: BudgetContext | None = None,
+    _budget_permit: BudgetPermit | None = None,
 ) -> dict:
     if config is None:
         from config_loader import load_config
@@ -261,6 +277,8 @@ def call_llm(
         timeout=timeout,
         structured_response=structured_response,
     )
+    if _budget_permit is None or not _budget_permit.valid:
+        _budget_permit = enforce_budget(config, processor_id, budget_context)
     request_attempts = policy.request_attempts if max_retries is None else max_retries
 
     request_body = {
