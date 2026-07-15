@@ -268,6 +268,37 @@ class FredMetadataPersistenceTests(unittest.TestCase):
     @patch("collectors.fred.get_session")
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
+    def test_failed_cache_write_is_retried_on_same_collector_instance(
+        self, query_latest, make_request, get_session
+    ):
+        query_latest.side_effect = self._query_with_metadata({})
+        get_session.side_effect = RuntimeError("SENTINEL-PERSISTENCE-SECRET")
+
+        def request(*, url, **kwargs):
+            if url == FRED_SERIES_URL:
+                return self._response({"seriess": [{"title": "GDP"}]})
+            return self._response({"observations": []})
+
+        make_request.side_effect = request
+        collector = FredCollector()
+
+        first = collector.collect(self._config(), "cid-1")
+        second = collector.collect(self._config(), "cid-2")
+
+        self.assertTrue(first.partial_failure)
+        self.assertTrue(second.partial_failure)
+        self.assertEqual(get_session.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["url"] for call in make_request.call_args_list].count(FRED_SERIES_URL),
+            2,
+        )
+        self.assertEqual(first.errors[0]["code"], "cache_degraded")
+        self.assertEqual(second.errors[0]["code"], "cache_degraded")
+        self.assertNotIn("SENTINEL-PERSISTENCE-SECRET", repr(first.errors + second.errors))
+
+    @patch("collectors.fred.get_session")
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
     def test_cold_n_series_reports_exact_metadata_and_observation_calls(
         self, query_latest, make_request, get_session
     ):
@@ -304,9 +335,68 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertEqual(result.metrics["observation_api_calls"], 0)
         self.assertEqual(result.metrics["api_calls_made"], 1)
         self.assertEqual(make_request.call_args.kwargs["url"], FRED_SERIES_URL)
+        self.assertEqual(result.errors[0]["stage"], "metadata")
+        self.assertEqual(result.errors[0]["code"], "metadata_request_failed")
+        self.assertEqual(result.errors[0]["exception_type"], "RuntimeError")
 
 
 class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_fetch_metric_is_concurrent_wall_time_not_summed_worker_time(
+        self, query_latest, make_request
+    ):
+        series = [{"id": "A", "frequency": "daily"}, {"id": "B", "frequency": "daily"}]
+        query_latest.side_effect = self._query_with_metadata(
+            {entry["id"]: self._metadata_row(entry["id"]) for entry in series}
+        )
+        barrier = threading.Barrier(2)
+
+        def request(**kwargs):
+            barrier.wait(timeout=1)
+            time.sleep(0.03)
+            return self._response({"observations": []})
+
+        make_request.side_effect = request
+
+        result = FredCollector().collect(
+            self._config(series=series, max_concurrency=2), "cid"
+        )
+
+        worker_total = result.metrics["observation_fetch_worker_ms_total"]
+        wall = result.metrics["observation_fetch_duration_ms"]
+        self.assertGreaterEqual(worker_total, 50)
+        self.assertGreater(worker_total, wall)
+
+    @patch("collectors.fred.make_request")
+    @patch("collectors.fred.query_latest")
+    def test_normalization_runs_sequentially_on_coordinator_thread(
+        self, query_latest, make_request
+    ):
+        series = [{"id": "A", "frequency": "daily"}, {"id": "B", "frequency": "daily"}]
+        query_latest.side_effect = self._query_with_metadata(
+            {entry["id"]: self._metadata_row(entry["id"]) for entry in series}
+        )
+        coordinator_thread = threading.get_ident()
+        normalization_threads = []
+
+        class TrackingObservation(dict):
+            def get(self, *args, **kwargs):
+                normalization_threads.append(threading.get_ident())
+                return super().get(*args, **kwargs)
+
+        make_request.return_value = self._response(
+            {"observations": [TrackingObservation(date="2025-01-01", value="1")]}
+        )
+
+        result = FredCollector().collect(
+            self._config(series=series, max_concurrency=2), "cid"
+        )
+
+        self.assertEqual(result.successful_series, 2)
+        self.assertTrue(normalization_threads)
+        self.assertEqual(set(normalization_threads), {coordinator_thread})
+
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
     def test_observation_fetches_are_bounded_and_results_keep_configured_order(
@@ -510,6 +600,7 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
             {
                 "metadata_cache_duration_ms",
                 "observation_fetch_duration_ms",
+                "observation_fetch_worker_ms_total",
                 "parse_normalize_duration_ms",
                 "metadata_api_calls",
                 "observation_api_calls",

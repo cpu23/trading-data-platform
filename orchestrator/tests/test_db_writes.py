@@ -86,6 +86,60 @@ class WriteResultDataclassTests(unittest.TestCase):
 
 
 class BatchFirstWriteTests(unittest.TestCase):
+    def test_schema_mismatch_is_rejected_before_preparation_statement_or_session(self):
+        cases = (
+            (
+                "first record has a key missing later",
+                [{"id": 1, "API_TOKEN_SENTINEL_KEY": "FIRST_SECRET"}, {"id": 2}],
+            ),
+            (
+                "later record has an extra key",
+                [{"id": 1}, {"id": 2, "API_TOKEN_SENTINEL_KEY": "LATER_SECRET"}],
+            ),
+        )
+
+        for kind in ("insert", "upsert"):
+            for label, records in cases:
+                with self.subTest(kind=kind, case=label):
+                    with (
+                        patch.object(db, "_prepare_records") as prepare,
+                        patch.object(db, "text") as statement,
+                        patch.object(db, "get_session") as get_session,
+                    ):
+                        result = _call_write(kind, records)
+
+                self.assertEqual(
+                    result,
+                    db.WriteResult(
+                        attempted=2,
+                        written=0,
+                        failed=2,
+                        errors=("record schema mismatch at index 1",),
+                    ),
+                )
+                self.assertNotIn("API_TOKEN_SENTINEL_KEY", repr(result.errors))
+                self.assertNotIn("FIRST_SECRET", repr(result.errors))
+                self.assertNotIn("LATER_SECRET", repr(result.errors))
+                prepare.assert_not_called()
+                statement.assert_not_called()
+                get_session.assert_not_called()
+
+    def test_same_schema_in_different_key_order_uses_normal_executemany(self):
+        records = [{"id": 1, "value": "a"}, {"value": "b", "id": 2}]
+
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                session = MagicMock()
+                with patch.object(
+                    db, "get_session", return_value=_transaction(session, [], "batch")
+                ) as get_session:
+                    result = _call_write(kind, records)
+
+                self.assertEqual(result, db.WriteResult(2, 2, 0, ()))
+                session.execute.assert_called_once()
+                self.assertEqual(session.execute.call_args.args[1], records)
+                get_session.assert_called_once_with(CONFIG)
+
     def test_non_empty_success_uses_one_executemany_and_truthful_result(self):
         records = [
             {"id": 1, "payload": {"token": "alpha"}},

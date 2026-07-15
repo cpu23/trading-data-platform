@@ -83,6 +83,10 @@ def upsert_records(
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
 
+    schema_error = _validate_record_schemas(records)
+    if schema_error is not None:
+        return schema_error
+
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
     placeholders = ", ".join(f":{col}" for col in columns)
@@ -169,6 +173,10 @@ def insert_records(
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
 
+    schema_error = _validate_record_schemas(records)
+    if schema_error is not None:
+        return schema_error
+
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
     placeholders = ", ".join(f":{col}" for col in columns)
@@ -181,6 +189,21 @@ def insert_records(
         stmt=text(sql),
         config=config,
     )
+
+
+def _validate_record_schemas(records: list[dict]) -> WriteResult | None:
+    """Reject heterogeneous batches without exposing keys or values."""
+
+    canonical_keys = set(records[0])
+    errors = tuple(
+        f"record schema mismatch at index {index}"
+        for index, record in enumerate(records[1:], start=1)
+        if set(record) != canonical_keys
+    )
+    if not errors:
+        return None
+    attempted = len(records)
+    return WriteResult(attempted, 0, attempted, errors)
 
 
 def _prepare_records(records: list[dict]) -> list[dict]:

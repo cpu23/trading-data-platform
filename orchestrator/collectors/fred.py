@@ -34,10 +34,23 @@ class MetadataOutcome:
 
 
 @dataclass(frozen=True)
-class ObservationOutcome:
-    records: list[dict]
-    fetch_duration_ms: int
-    parse_duration_ms: int
+class PreparationFailure:
+    stage: str
+    code: str
+    exception_type: str
+
+
+@dataclass(frozen=True)
+class ObservationFetchOutcome:
+    observations: tuple[Any, ...]
+    worker_duration_ms: int
+    error_code: str | None = None
+    exception_type: str | None = None
+
+
+@dataclass(frozen=True)
+class NormalizationOutcome:
+    records: tuple[dict, ...]
     error_code: str | None = None
     exception_type: str | None = None
 
@@ -75,14 +88,13 @@ class FredCollector:
         total_series = len(series_list)
         successful_series = 0
         metadata_duration_ms = 0
-        observation_duration_ms = 0
-        parse_duration_ms = 0
         metadata_api_calls = 0
         observation_api_calls = 0
 
-        # Keep every database-backed lookup on the caller thread. Worker threads only
-        # perform HTTP and pure normalization, so SQLAlchemy sessions are never shared.
-        prepared: list[tuple[dict, datetime, dict[str, Any]] | Exception] = []
+        # Keep database-backed metadata resolution on the coordinator thread.
+        prepared: list[
+            tuple[dict, datetime, dict[str, Any]] | PreparationFailure
+        ] = []
         for series_entry in series_list:
             series_id = series_entry["id"]
             frequency = series_entry.get("frequency", "monthly")
@@ -104,92 +116,133 @@ class FredCollector:
                 if metadata_outcome.warning is not None:
                     errors.append(metadata_outcome.warning)
                 if metadata_outcome.error is not None:
-                    prepared.append(metadata_outcome.error)
+                    prepared.append(
+                        PreparationFailure(
+                            stage="metadata",
+                            code="metadata_request_failed",
+                            exception_type=type(metadata_outcome.error).__name__,
+                        )
+                    )
                 else:
                     prepared.append(
                         (series_entry, start_date, metadata_outcome.metadata or {})
                     )
             except Exception as exc:
-                prepared.append(exc)
+                prepared.append(
+                    PreparationFailure(
+                        stage="metadata",
+                        code="metadata_resolution_failed",
+                        exception_type=type(exc).__name__,
+                    )
+                )
 
-        futures: list[Future | Exception] = []
+        futures: list[Future | PreparationFailure] = []
+        fetch_outcomes: list[ObservationFetchOutcome | PreparationFailure] = []
+        observation_started = time.monotonic()
         with ThreadPoolExecutor(
             max_workers=self._max_concurrency(fred_config),
             thread_name_prefix="fred-observation",
         ) as executor:
             for item in prepared:
-                if isinstance(item, Exception):
+                if isinstance(item, PreparationFailure):
                     futures.append(item)
                     continue
-                series_entry, start_date, metadata = item
+                series_entry, start_date, _metadata = item
                 futures.append(
                     executor.submit(
-                        self._fetch_and_normalize_observations,
+                        self._fetch_observations,
                         series_entry["id"],
-                        series_entry.get("frequency", "monthly"),
                         api_key,
                         start_date,
-                        metadata,
                         correlation_id,
                     )
                 )
                 observation_api_calls += 1
 
-            # Futures are all submitted before results are consumed. Reading them in
-            # configured order gives deterministic records and never cancels later work.
-            for series_entry, future in zip(series_list, futures, strict=True):
-                series_id = series_entry["id"]
-                frequency = series_entry.get("frequency", "monthly")
+            # Resolve every submitted fetch before normalization begins. Outcomes remain
+            # in configured order even when worker completion order differs.
+            for future in futures:
+                if isinstance(future, PreparationFailure):
+                    fetch_outcomes.append(future)
+                    continue
                 try:
-                    if isinstance(future, Exception):
-                        raise future
-                    outcome = future.result()
-                    observation_duration_ms += outcome.fetch_duration_ms
-                    parse_duration_ms += outcome.parse_duration_ms
-                    if outcome.error_code is not None:
-                        error_entry = {
-                            "series_id": series_id,
-                            "stage": "observation",
-                            "code": outcome.error_code,
-                            "exception_type": outcome.exception_type or "Exception",
-                            "frequency": frequency,
-                        }
-                        errors.append(error_entry)
-                        logger.error(
-                            "series_collection_failed",
-                            action="collect_series",
-                            series_id=series_id,
-                            code=error_entry["code"],
-                            exception_type=error_entry["exception_type"],
-                            correlation_id=correlation_id,
+                    fetch_outcomes.append(future.result())
+                except Exception as exc:
+                    fetch_outcomes.append(
+                        ObservationFetchOutcome(
+                            (),
+                            0,
+                            error_code="request_failed",
+                            exception_type=type(exc).__name__,
                         )
-                        continue
-                    all_records.extend(outcome.records)
+                    )
+        observation_duration_ms = elapsed_ms(observation_started)
+        observation_worker_ms_total = sum(
+            outcome.worker_duration_ms
+            for outcome in fetch_outcomes
+            if isinstance(outcome, ObservationFetchOutcome)
+        )
+
+        parse_started = time.monotonic()
+        for series_entry, prepared_item, outcome in zip(
+            series_list, prepared, fetch_outcomes, strict=True
+        ):
+            series_id = series_entry["id"]
+            frequency = series_entry.get("frequency", "monthly")
+            if isinstance(outcome, PreparationFailure):
+                error_entry = {
+                    "series_id": series_id,
+                    "stage": outcome.stage,
+                    "code": outcome.code,
+                    "exception_type": outcome.exception_type,
+                    "frequency": frequency,
+                }
+                errors.append(error_entry)
+            elif outcome.error_code is not None:
+                error_entry = {
+                    "series_id": series_id,
+                    "stage": "observation",
+                    "code": outcome.error_code,
+                    "exception_type": outcome.exception_type or "Exception",
+                    "frequency": frequency,
+                }
+                errors.append(error_entry)
+            else:
+                assert not isinstance(prepared_item, PreparationFailure)
+                _entry, _start_date, metadata = prepared_item
+                normalized = self._normalize_observations(
+                    series_id, frequency, metadata, outcome.observations
+                )
+                if normalized.error_code is not None:
+                    error_entry = {
+                        "series_id": series_id,
+                        "stage": "observation",
+                        "code": normalized.error_code,
+                        "exception_type": normalized.exception_type or "Exception",
+                        "frequency": frequency,
+                    }
+                    errors.append(error_entry)
+                else:
+                    all_records.extend(normalized.records)
                     successful_series += 1
                     logger.info(
                         "series_collected",
                         action="collect_series",
                         series_id=series_id,
-                        records_fetched=len(outcome.records),
+                        records_fetched=len(normalized.records),
                         correlation_id=correlation_id,
                     )
-                except Exception as exc:
-                    error_entry = {
-                        "series_id": series_id,
-                        "stage": "observation",
-                        "code": "request_or_parse_failed",
-                        "exception_type": type(exc).__name__,
-                        "frequency": frequency,
-                    }
-                    errors.append(error_entry)
-                    logger.error(
-                        "series_collection_failed",
-                        action="collect_series",
-                        series_id=series_id,
-                        code=error_entry["code"],
-                        exception_type=error_entry["exception_type"],
-                        correlation_id=correlation_id,
-                    )
+                    continue
+
+            logger.error(
+                "series_collection_failed",
+                action="collect_series",
+                series_id=series_id,
+                code=error_entry["code"],
+                exception_type=error_entry["exception_type"],
+                correlation_id=correlation_id,
+            )
+        parse_duration_ms = elapsed_ms(parse_started)
 
         self.last_errors = errors
 
@@ -201,6 +254,7 @@ class FredCollector:
             metrics={
                 "metadata_cache_duration_ms": metadata_duration_ms,
                 "observation_fetch_duration_ms": observation_duration_ms,
+                "observation_fetch_worker_ms_total": observation_worker_ms_total,
                 "parse_normalize_duration_ms": parse_duration_ms,
                 "metadata_api_calls": metadata_api_calls,
                 "observation_api_calls": observation_api_calls,
@@ -230,23 +284,22 @@ class FredCollector:
 
         return result
 
-    def _fetch_and_normalize_observations(
+    def _fetch_observations(
         self,
         series_id: str,
-        frequency: str,
         api_key: str,
         start_date: datetime,
-        metadata: dict[str, Any],
         correlation_id: str,
-    ) -> ObservationOutcome:
+    ) -> ObservationFetchOutcome:
+        """Perform only observation HTTP and response decoding on a worker thread."""
+
         params = {
             "series_id": series_id,
             "api_key": api_key,
             "file_type": "json",
             "observation_start": start_date.strftime("%Y-%m-%d"),
         }
-
-        fetch_started = time.monotonic()
+        started = time.monotonic()
         try:
             response = make_request(
                 method="GET",
@@ -256,18 +309,25 @@ class FredCollector:
             )
             response.raise_for_status()
             data = response.json()
-            observations = data.get("observations", [])
+            observations = tuple(data.get("observations", []))
         except Exception as exc:
-            return ObservationOutcome(
-                [],
-                elapsed_ms(fetch_started),
-                0,
+            return ObservationFetchOutcome(
+                (),
+                elapsed_ms(started),
                 error_code="request_failed",
                 exception_type=type(exc).__name__,
             )
-        fetch_duration_ms = elapsed_ms(fetch_started)
+        return ObservationFetchOutcome(observations, elapsed_ms(started))
 
-        parse_started = time.monotonic()
+    def _normalize_observations(
+        self,
+        series_id: str,
+        frequency: str,
+        metadata: dict[str, Any],
+        observations: tuple[Any, ...],
+    ) -> NormalizationOutcome:
+        """Normalize one fetched series on the coordinator thread."""
+
         try:
             records = []
             for obs in observations:
@@ -288,29 +348,27 @@ class FredCollector:
                 except ValueError:
                     continue
 
-                record = {
-                    "series_id": series_id,
-                    "observed_at": observed_at,
-                    "value": value,
-                    "source": "fred",
-                    "metadata": {
-                        "units": metadata.get("units", ""),
-                        "seasonal_adjustment": metadata.get("seasonal_adjustment", ""),
-                        "frequency": metadata.get("frequency", frequency),
-                        "title": metadata.get("title", ""),
-                    },
-                }
-                records.append(record)
+                records.append(
+                    {
+                        "series_id": series_id,
+                        "observed_at": observed_at,
+                        "value": value,
+                        "source": "fred",
+                        "metadata": {
+                            "units": metadata.get("units", ""),
+                            "seasonal_adjustment": metadata.get(
+                                "seasonal_adjustment", ""
+                            ),
+                            "frequency": metadata.get("frequency", frequency),
+                            "title": metadata.get("title", ""),
+                        },
+                    }
+                )
         except Exception as exc:
-            return ObservationOutcome(
-                [],
-                fetch_duration_ms,
-                elapsed_ms(parse_started),
-                error_code="parse_failed",
-                exception_type=type(exc).__name__,
+            return NormalizationOutcome(
+                (), error_code="parse_failed", exception_type=type(exc).__name__
             )
-
-        return ObservationOutcome(records, fetch_duration_ms, elapsed_ms(parse_started))
+        return NormalizationOutcome(tuple(records))
 
     def _get_start_date(
         self,
@@ -454,8 +512,10 @@ class FredCollector:
             return MetadataOutcome(None, api_calls=1, warning=warning, error=exc)
 
         fetched_at = datetime.now(timezone.utc)
+        persisted_successfully = False
         try:
             self._persist_series_metadata(series_id, metadata, fetched_at, config)
+            persisted_successfully = True
         except Exception as exc:
             if warning is None:
                 warning = {
@@ -472,7 +532,8 @@ class FredCollector:
                 exception_type=type(exc).__name__,
                 correlation_id=correlation_id,
             )
-        self._metadata_cache[series_id] = {**metadata, "fetched_at": fetched_at}
+        if persisted_successfully:
+            self._metadata_cache[series_id] = {**metadata, "fetched_at": fetched_at}
         return MetadataOutcome(metadata, api_calls=1, warning=warning)
 
     def _fetch_series_metadata(
