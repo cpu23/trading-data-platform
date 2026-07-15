@@ -64,14 +64,32 @@ def _get_session_factory(config: dict | None = None):
 def get_session(config: dict | None = None):
     factory = _get_session_factory(config)
     session = factory()
+    committed = False
     try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+        try:
+            yield session
+            session.commit()
+            committed = True
+        except BaseException:
+            try:
+                session.rollback()
+            except Exception as rollback_exc:
+                logger.warning(
+                    "db_session_rollback_failed",
+                    action="db_session_rollback",
+                    error_type=type(rollback_exc).__name__,
+                )
+            raise
     finally:
-        session.close()
+        try:
+            session.close()
+        except Exception as close_exc:
+            logger.warning(
+                "db_session_close_failed",
+                action="db_session_close",
+                error_type=type(close_exc).__name__,
+                transaction_committed=committed,
+            )
 
 
 def upsert_records(

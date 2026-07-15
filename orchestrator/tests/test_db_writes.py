@@ -319,5 +319,124 @@ class DiagnosticFallbackTests(unittest.TestCase):
                 self.assertEqual(events, ["batch:open", "batch:rollback", "batch:close"])
 
 
+class SessionCleanupBoundaryTests(unittest.TestCase):
+    def _session_factory(self, *sessions):
+        factory = MagicMock(side_effect=sessions)
+        return patch.object(db, "_get_session_factory", return_value=factory), factory
+
+    def test_committed_batch_close_failure_is_safe_cleanup_not_replayed(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                session = MagicMock(name=f"{kind}_committed_batch")
+                session.close.side_effect = RuntimeError("RAW_CLOSE_SENTINEL")
+                factory_patch, factory = self._session_factory(session)
+
+                with factory_patch, patch.object(db.logger, "warning") as warning:
+                    result = _call_write(kind, [{"id": 1}, {"id": 2}])
+
+                self.assertEqual(result, db.WriteResult(2, 2, 0, ()))
+                factory.assert_called_once_with()
+                session.execute.assert_called_once()
+                session.commit.assert_called_once_with()
+                session.rollback.assert_not_called()
+                session.close.assert_called_once_with()
+                cleanup_calls = [
+                    logged
+                    for logged in warning.call_args_list
+                    if logged.args == ("db_session_close_failed",)
+                ]
+                self.assertEqual(len(cleanup_calls), 1)
+                self.assertEqual(cleanup_calls[0].kwargs["error_type"], "RuntimeError")
+                self.assertNotIn("RAW_CLOSE_SENTINEL", repr(warning.call_args_list))
+                self.assertNotIn(f"{kind}_batch_failed", repr(warning.call_args_list))
+
+    def test_commit_failure_rolls_back_closes_and_uses_fresh_fallback(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                batch = MagicMock(name=f"{kind}_commit_failed_batch")
+                batch.commit.side_effect = RuntimeError("RAW_COMMIT_SENTINEL")
+                fallback = _fallback_session([])
+                factory_patch, factory = self._session_factory(batch, fallback)
+
+                with factory_patch, patch.object(db.logger, "warning") as warning:
+                    result = _call_write(kind, [{"id": 1}, {"id": 2}])
+
+                self.assertEqual(result, db.WriteResult(2, 2, 0, ()))
+                self.assertEqual(factory.call_count, 2)
+                self.assertIsNot(batch, fallback)
+                batch.execute.assert_called_once()
+                batch.commit.assert_called_once_with()
+                batch.rollback.assert_called_once_with()
+                batch.close.assert_called_once_with()
+                self.assertEqual(fallback.execute.call_count, 2)
+                fallback.commit.assert_called_once_with()
+                batch_failure_calls = [
+                    logged
+                    for logged in warning.call_args_list
+                    if logged.args == (f"{kind}_batch_failed",)
+                ]
+                self.assertEqual(len(batch_failure_calls), 1)
+                self.assertEqual(batch_failure_calls[0].kwargs["error_type"], "RuntimeError")
+                self.assertNotIn("RAW_COMMIT_SENTINEL", repr(warning.call_args_list))
+
+    def test_execute_failure_remains_primary_when_rollback_and_close_fail(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                batch = MagicMock(name=f"{kind}_cleanup_failed_batch")
+                batch.execute.side_effect = LookupError("RAW_EXECUTE_SENTINEL")
+                batch.rollback.side_effect = RuntimeError("RAW_ROLLBACK_SENTINEL")
+                batch.close.side_effect = OSError("RAW_CLOSE_SENTINEL")
+                fallback = _fallback_session([])
+                factory_patch, factory = self._session_factory(batch, fallback)
+
+                with factory_patch, patch.object(db.logger, "warning") as warning:
+                    result = _call_write(kind, [{"id": 1}, {"id": 2}])
+
+                self.assertEqual(result, db.WriteResult(2, 2, 0, ()))
+                self.assertEqual(factory.call_count, 2)
+                self.assertEqual(fallback.execute.call_count, 2)
+                batch.rollback.assert_called_once_with()
+                batch.close.assert_called_once_with()
+                batch_failure_calls = [
+                    logged
+                    for logged in warning.call_args_list
+                    if logged.args == (f"{kind}_batch_failed",)
+                ]
+                self.assertEqual(len(batch_failure_calls), 1)
+                self.assertEqual(batch_failure_calls[0].kwargs["error_type"], "LookupError")
+                self.assertIn("db_session_rollback_failed", repr(warning.call_args_list))
+                self.assertIn("db_session_close_failed", repr(warning.call_args_list))
+                self.assertNotIn("RAW_EXECUTE_SENTINEL", repr(warning.call_args_list))
+                self.assertNotIn("RAW_ROLLBACK_SENTINEL", repr(warning.call_args_list))
+                self.assertNotIn("RAW_CLOSE_SENTINEL", repr(warning.call_args_list))
+
+    def test_committed_fallback_close_failure_keeps_truthful_row_counts(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                batch = MagicMock(name=f"{kind}_failed_batch")
+                batch.execute.side_effect = RuntimeError("RAW_BATCH_SENTINEL")
+                fallback = _fallback_session([])
+                fallback.close.side_effect = OSError("RAW_FALLBACK_CLOSE_SENTINEL")
+                factory_patch, factory = self._session_factory(batch, fallback)
+
+                with factory_patch, patch.object(db.logger, "warning") as warning:
+                    result = _call_write(kind, [{"id": 1}, {"id": 2}])
+
+                self.assertEqual(result, db.WriteResult(2, 2, 0, ()))
+                self.assertEqual(result.status, "success")
+                self.assertEqual(factory.call_count, 2)
+                fallback.commit.assert_called_once_with()
+                fallback.rollback.assert_not_called()
+                fallback.close.assert_called_once_with()
+                cleanup_calls = [
+                    logged
+                    for logged in warning.call_args_list
+                    if logged.args == ("db_session_close_failed",)
+                ]
+                self.assertEqual(len(cleanup_calls), 1)
+                self.assertEqual(cleanup_calls[0].kwargs["error_type"], "OSError")
+                self.assertNotIn("RAW_FALLBACK_CLOSE_SENTINEL", repr(warning.call_args_list))
+
+
 if __name__ == "__main__":
     unittest.main()
