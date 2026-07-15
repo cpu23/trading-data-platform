@@ -3,6 +3,7 @@ import threading
 import time
 import traceback
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -20,6 +21,8 @@ logger = get_logger("orchestrator")
 DEFAULT_ACCEPTED_TIMEOUT = timedelta(minutes=15)
 DEFAULT_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
+DEFAULT_COLLECTOR_WORKERS = 3
+MAX_COLLECTOR_WORKERS = 8
 
 
 class RunAcceptanceConflict(RuntimeError):
@@ -38,6 +41,21 @@ def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
     if all(status == "failed" for status in values):
         return "failed"
     return "partial"
+
+
+def collector_worker_limit(config: dict, enabled_count: int) -> int:
+    """Return a safe collector pool size, capped by the available work."""
+    orchestration = config.get("orchestration", {})
+    if not isinstance(orchestration, dict):
+        orchestration = {}
+    try:
+        configured = int(
+            orchestration.get("collector_workers", DEFAULT_COLLECTOR_WORKERS)
+        )
+    except (TypeError, ValueError, OverflowError):
+        configured = DEFAULT_COLLECTOR_WORKERS
+    configured = min(max(configured, 1), MAX_COLLECTOR_WORKERS)
+    return min(configured, max(enabled_count, 0))
 
 
 def _resolved_config(config: dict | None) -> dict:
@@ -640,8 +658,6 @@ def _run_full_cycle_impl(
         if collector_config.get("enabled", True):
             enabled_collectors.append(source_id)
 
-    collector_results = {}
-    successful_collectors = set()
     enabled_processors = [
         processor_id
         for processor_id in get_all_processors()
@@ -697,24 +713,75 @@ def _run_full_cycle_impl(
                 item["status"] not in ("pending", "running")
                 for item in progress["stages"]
             )
-            progress["current_stage"] = None
-            progress["current_kind"] = None
+            running_stage = next(
+                (item for item in progress["stages"] if item["status"] == "running"),
+                None,
+            )
+            progress["current_stage"] = (
+                running_stage["component"] if running_stage else None
+            )
+            progress["current_kind"] = running_stage["kind"] if running_stage else None
         update_run_progress(correlation_id, progress, config, worker_id)
 
     update_run_progress(correlation_id, progress, config, worker_id)
 
-    for source_id in enabled_collectors:
-        record_progress(source_id, "collector", "running")
-        result = run_collector(
-            source_id,
-            config=config,
-            correlation_id=correlation_id,
-            manage_lifecycle=False,
-        )
-        collector_results[source_id] = result
-        record_progress(source_id, "collector", result["status"], result)
-        if result["status"] in ("success", "partial"):
-            successful_collectors.add(source_id)
+    collector_layer_started = time.monotonic()
+    worker_limit = collector_worker_limit(config, len(enabled_collectors))
+    collector_results_by_id = {}
+    if enabled_collectors:
+        with ThreadPoolExecutor(
+            max_workers=worker_limit,
+            thread_name_prefix="cycle-collector",
+        ) as executor:
+            future_sources = {}
+            for source_id in enabled_collectors:
+                record_progress(source_id, "collector", "running")
+                future = executor.submit(
+                    run_collector,
+                    source_id,
+                    config=config,
+                    correlation_id=correlation_id,
+                    manage_lifecycle=False,
+                )
+                future_sources[future] = source_id
+
+            for future in as_completed(future_sources):
+                source_id = future_sources[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    logger.error(
+                        "collector_future_failed",
+                        action="run_full_cycle",
+                        collector=source_id,
+                        correlation_id=correlation_id,
+                    )
+                    result = {
+                        "collector": source_id,
+                        "status": "failed",
+                        "error": "collector execution failed",
+                        "correlation_id": correlation_id,
+                    }
+                collector_results_by_id[source_id] = result
+                record_progress(source_id, "collector", result["status"], result)
+
+    collector_results = {
+        source_id: collector_results_by_id[source_id]
+        for source_id in enabled_collectors
+    }
+    successful_collectors = {
+        source_id
+        for source_id, result in collector_results.items()
+        if result["status"] in ("success", "partial")
+    }
+    logger.info(
+        "collector_layer_finished",
+        action="run_full_cycle",
+        worker_limit=worker_limit,
+        collector_count=len(enabled_collectors),
+        duration_ms=elapsed_ms(collector_layer_started),
+        correlation_id=correlation_id,
+    )
 
     processor_results = _resolve_and_run_processors(
         config=config,

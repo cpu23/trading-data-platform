@@ -32,6 +32,9 @@ logging:
   output:
     - stdout
 
+orchestration:
+  collector_workers: 3
+
 collectors:
   fred:
     enabled: true
