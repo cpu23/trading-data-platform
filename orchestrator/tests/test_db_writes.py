@@ -1,268 +1,268 @@
+import json
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, PropertyMock, call, patch
+from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
 
 
-# ── helpers ──────────────────────────────────────────────────────────
+CONFIG = {"database": {"password": "DB_PASSWORD_SENTINEL"}}
 
-def _make_mock_session(*, fail_indices: set[int] | None = None):
-    """Return a mock session context manager.
 
-    Each call to ``session.execute`` succeeds unless its (0-indexed)
-    invocation number is in *fail_indices*.  A successful execute returns
-    a mock result; a failing one raises a ``ValueError`` with a distinct
-    per-index message.
-    """
-    call_count = [0]
-    session = MagicMock()
-    # begin_nested() returns a nested transaction mock
-    nested = MagicMock()
-    session.begin_nested.return_value = nested
+def _call_write(kind, records, *, config=CONFIG):
+    if kind == "insert":
+        return db.insert_records("events", records, config=config)
+    return db.upsert_records(
+        "events", records, conflict_columns=["id"], config=config
+    )
 
-    def _execute(stmt, params):
-        idx = call_count[0]
-        call_count[0] = idx + 1
-        if fail_indices and idx in fail_indices:
-            raise ValueError(f"simulated failure at index {idx}")
-        result = MagicMock()
-        result.rowcount = 1
-        return result
 
-    session.execute.side_effect = _execute
-    session.__enter__.return_value = session
+def _transaction(session, events, name):
+    """A realistic get_session stand-in with commit/rollback/close boundaries."""
 
-    # Context manager protocol: __exit__ must be callable
-    session.__exit__ = MagicMock(return_value=False)
+    @contextmanager
+    def transaction():
+        events.append(f"{name}:open")
+        try:
+            yield session
+            session.commit()
+            events.append(f"{name}:commit")
+        except Exception:
+            session.rollback()
+            events.append(f"{name}:rollback")
+            raise
+        finally:
+            session.close()
+            events.append(f"{name}:close")
+
+    return transaction()
+
+
+def _fallback_session(events, *, failing_ids=()):
+    session = MagicMock(name="fallback_session")
+    failing_ids = set(failing_ids)
+
+    @contextmanager
+    def nested():
+        record_id = session.execute.call_count
+        events.append(f"nested:{record_id}:open")
+        try:
+            yield
+            events.append(f"nested:{record_id}:commit")
+        except Exception:
+            events.append(f"nested:{record_id}:rollback")
+            raise
+
+    session.begin_nested.side_effect = nested
+
+    def execute(_stmt, params):
+        if params["id"] in failing_ids:
+            raise ValueError(
+                f"bad record {params!r}; DB_PASSWORD_SENTINEL; RECORD_SECRET_SENTINEL"
+            )
+        return MagicMock(rowcount=1)
+
+    session.execute.side_effect = execute
     return session
 
 
-def _patch_get_session(session):
-    """Patch ``db.get_session`` to return *session* (a context manager)."""
-    return patch.object(db, "get_session", return_value=session)
-
-
-# ── WriteResult dataclass tests ─────────────────────────────────────
-
 class WriteResultDataclassTests(unittest.TestCase):
-    """Test the structure / invariants of the WriteResult dataclass itself."""
-
-    def test_dataclass_exists_and_is_frozen(self):
-        result = db.WriteResult(attempted=5, written=5, failed=0, errors=())
-        self.assertEqual(result.attempted, 5)
-        self.assertEqual(result.status, "success")
-        # Frozen: cannot mutate
-        with self.assertRaises(Exception):
-            result.attempted = 10  # type: ignore[misc]
-
-    def test_status_success(self):
-        result = db.WriteResult(attempted=3, written=3, failed=0, errors=())
-        self.assertEqual(result.status, "success")
-
-    def test_status_partial(self):
-        result = db.WriteResult(attempted=3, written=2, failed=1, errors=("boom",))
-        self.assertEqual(result.status, "partial")
-
-    def test_status_failed(self):
-        result = db.WriteResult(
-            attempted=3, written=0, failed=3, errors=("e1", "e2", "e3")
-        )
-        self.assertEqual(result.status, "failed")
-
-
-# ── insert_records tests ────────────────────────────────────────────
-
-class InsertRecordsEmptyTests(unittest.TestCase):
-    """Empty-record-list edge cases."""
-
-    def test_empty_records_returns_write_result_zeroed(self):
-        result = db.insert_records("my_table", [], config={})
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 0)
-        self.assertEqual(result.written, 0)
-        self.assertEqual(result.failed, 0)
-        self.assertEqual(result.errors, ())
-        self.assertEqual(result.status, "success")
-
-
-class InsertRecordsSuccessTests(unittest.TestCase):
-    """All records succeed."""
-
-    def test_all_records_succeed(self):
-        records = [{"id": 1, "val": "a"}, {"id": 2, "val": "b"}, {"id": 3, "val": "c"}]
-        session = _make_mock_session()
-        with _patch_get_session(session):
-            result = db.insert_records("events", records, config={"database": {}})
-
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 3)
-        self.assertEqual(result.written, 3)
-        self.assertEqual(result.failed, 0)
-        self.assertEqual(result.errors, ())
-        self.assertEqual(result.status, "success")
-        self.assertEqual(session.execute.call_count, 3)
-
-
-class InsertRecordsPartialFailureTests(unittest.TestCase):
-    """Some records fail, some succeed."""
-
-    def test_middle_record_fails_others_succeed(self):
-        records = [{"id": 1}, {"id": 2}, {"id": 3}]
-        session = _make_mock_session(fail_indices={1})  # index 1 (second record)
-        with _patch_get_session(session):
-            result = db.insert_records("events", records, config={})
-
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 3)
-        self.assertEqual(result.written, 2)
-        self.assertEqual(result.failed, 1)
-        self.assertEqual(len(result.errors), 1)
-        self.assertIn("simulated failure at index 1", result.errors[0])
-        self.assertEqual(result.status, "partial")
-
-    def test_first_record_fails(self):
-        records = [{"id": 1}, {"id": 2}]
-        session = _make_mock_session(fail_indices={0})
-        with _patch_get_session(session):
-            result = db.insert_records("events", records, config={})
-
-        self.assertEqual(result.written, 1)
-        self.assertEqual(result.failed, 1)
-        self.assertEqual(result.status, "partial")
-
-
-class InsertRecordsAllFailureTests(unittest.TestCase):
-    """Every record fails."""
-
-    def test_all_records_fail(self):
-        records = [{"id": 1}, {"id": 2}]
-        session = _make_mock_session(fail_indices={0, 1})
-        with _patch_get_session(session):
-            result = db.insert_records("events", records, config={})
-
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 2)
-        self.assertEqual(result.written, 0)
-        self.assertEqual(result.failed, 2)
-        self.assertEqual(len(result.errors), 2)
-        self.assertEqual(result.status, "failed")
-
-
-# ── upsert_records tests ────────────────────────────────────────────
-
-
-class UpsertRecordsEmptyTests(unittest.TestCase):
-    """Empty-record-list edge cases."""
-
-    def test_empty_records_returns_write_result_zeroed(self):
-        result = db.upsert_records(
-            "my_table", [], conflict_columns=["id"], config={}
-        )
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 0)
-        self.assertEqual(result.written, 0)
-        self.assertEqual(result.failed, 0)
-        self.assertEqual(result.errors, ())
-        self.assertEqual(result.status, "success")
-
-
-class UpsertRecordsSuccessTests(unittest.TestCase):
-    """All records succeed."""
-
-    def test_all_records_upsert_succeed(self):
-        records = [
-            {"id": 1, "val": "a"},
-            {"id": 2, "val": "b"},
+    def test_frozen_status_semantics(self):
+        cases = [
+            (db.WriteResult(0, 0, 0, ()), "success"),
+            (db.WriteResult(3, 3, 0, ()), "success"),
+            (db.WriteResult(3, 2, 1, ("record 2 failed",)), "partial"),
+            (db.WriteResult(3, 0, 3, ("records not written",)), "failed"),
         ]
-        session = _make_mock_session()
-        with _patch_get_session(session):
-            result = db.upsert_records(
-                "events", records, conflict_columns=["id"], config={"database": {}}
+        for result, status in cases:
+            with self.subTest(result=result):
+                self.assertEqual(result.status, status)
+        with self.assertRaises(Exception):
+            cases[0][0].written = 1  # type: ignore[misc]
+
+
+class BatchFirstWriteTests(unittest.TestCase):
+    def test_non_empty_success_uses_one_executemany_and_truthful_result(self):
+        records = [
+            {"id": 1, "payload": {"token": "alpha"}},
+            {"id": 2, "payload": ["beta"]},
+            {"id": 3, "payload": "plain"},
+        ]
+        expected_params = [
+            {"id": 1, "payload": json.dumps({"token": "alpha"})},
+            {"id": 2, "payload": json.dumps(["beta"])},
+            {"id": 3, "payload": "plain"},
+        ]
+
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                events = []
+                session = MagicMock(name=f"{kind}_batch_session")
+                with patch.object(
+                    db,
+                    "get_session",
+                    return_value=_transaction(session, events, "batch"),
+                ) as get_session:
+                    result = _call_write(kind, records)
+
+                self.assertEqual(result, db.WriteResult(3, 3, 0, ()))
+                self.assertEqual(result.status, "success")
+                self.assertEqual(session.execute.call_count, 1)
+                self.assertEqual(session.execute.call_args.args[1], expected_params)
+                session.begin_nested.assert_not_called()
+                session.commit.assert_called_once_with()
+                session.rollback.assert_not_called()
+                session.close.assert_called_once_with()
+                get_session.assert_called_once_with(CONFIG)
+                self.assertEqual(events, ["batch:open", "batch:commit", "batch:close"])
+
+    def test_empty_records_return_zero_without_session_work(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind), patch.object(db, "get_session") as get_session:
+                result = _call_write(kind, [])
+            self.assertEqual(result, db.WriteResult(0, 0, 0, ()))
+            get_session.assert_not_called()
+
+    def test_statement_and_prepared_parameters_are_preserved(self):
+        records = [{"id": 7, "payload": {"secret": "value"}, "status": "new"}]
+
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                session = MagicMock()
+                with patch.object(
+                    db, "get_session", return_value=_transaction(session, [], "batch")
+                ):
+                    _call_write(kind, records)
+
+                stmt, params = session.execute.call_args.args
+                sql = str(stmt)
+                self.assertIn(
+                    "INSERT INTO events (id, payload, status) VALUES (:id, :payload, :status)",
+                    sql,
+                )
+                self.assertEqual(
+                    params,
+                    [{"id": 7, "payload": json.dumps({"secret": "value"}), "status": "new"}],
+                )
+                if kind == "upsert":
+                    self.assertIn("ON CONFLICT (id) DO UPDATE SET", sql)
+                    self.assertIn("payload = EXCLUDED.payload", sql)
+                    self.assertIn("status = EXCLUDED.status", sql)
+                else:
+                    self.assertNotIn("ON CONFLICT", sql)
+
+    def test_upsert_all_conflict_columns_keeps_do_nothing_clause(self):
+        session = MagicMock()
+        with patch.object(
+            db, "get_session", return_value=_transaction(session, [], "batch")
+        ):
+            db.upsert_records("events", [{"id": 1}], ["id"], config=CONFIG)
+        self.assertIn("ON CONFLICT (id) DO NOTHING", str(session.execute.call_args.args[0]))
+
+
+class DiagnosticFallbackTests(unittest.TestCase):
+    def _run_fallback(self, kind, failing_ids):
+        events = []
+        batch_session = MagicMock(name="failed_batch_session")
+        batch_session.execute.side_effect = RuntimeError(
+            "batch failed DB_PASSWORD_SENTINEL RECORD_SECRET_SENTINEL"
+        )
+        fallback_session = _fallback_session(events, failing_ids=failing_ids)
+        contexts = [
+            _transaction(batch_session, events, "batch"),
+            _transaction(fallback_session, events, "fallback"),
+        ]
+        with patch.object(db, "get_session", side_effect=contexts) as get_session:
+            result = _call_write(
+                kind,
+                [
+                    {"id": 1, "value": "first"},
+                    {"id": 2, "value": "RECORD_SECRET_SENTINEL"},
+                    {"id": 3, "value": "third"},
+                ],
             )
+        return result, events, batch_session, fallback_session, get_session
 
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 2)
-        self.assertEqual(result.written, 2)
-        self.assertEqual(result.failed, 0)
-        self.assertEqual(result.errors, ())
-        self.assertEqual(result.status, "success")
-        self.assertEqual(session.execute.call_count, 2)
+    def test_batch_failure_uses_fresh_transaction_and_isolates_partial_failures(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                result, events, batch, fallback, get_session = self._run_fallback(
+                    kind, failing_ids={2}
+                )
 
+                self.assertEqual(result.attempted, 3)
+                self.assertEqual(result.written, 2)
+                self.assertEqual(result.failed, 1)
+                self.assertEqual(result.status, "partial")
+                self.assertEqual(len(result.errors), 1)
+                self.assertIn("record 2", result.errors[0])
+                self.assertNotIn("batch failed", " ".join(result.errors))
+                self.assertNotIn("RECORD_SECRET_SENTINEL", " ".join(result.errors))
+                self.assertNotIn("DB_PASSWORD_SENTINEL", " ".join(result.errors))
 
-class UpsertRecordsPartialFailureTests(unittest.TestCase):
-    """Some upsert records fail."""
+                self.assertEqual(batch.execute.call_count, 1)
+                self.assertIsInstance(batch.execute.call_args.args[1], list)
+                self.assertEqual(fallback.execute.call_count, 3)
+                self.assertEqual(fallback.begin_nested.call_count, 3)
+                self.assertIsNot(batch, fallback)
+                self.assertEqual(get_session.call_args_list, [call(CONFIG), call(CONFIG)])
+                batch.rollback.assert_called_once_with()
+                batch.commit.assert_not_called()
+                batch.close.assert_called_once_with()
+                fallback.commit.assert_called_once_with()
+                fallback.rollback.assert_not_called()
+                fallback.close.assert_called_once_with()
+                self.assertLess(events.index("batch:close"), events.index("fallback:open"))
+                self.assertIn("nested:1:rollback", events)
 
-    def test_one_of_three_fails(self):
-        records = [{"id": 1}, {"id": 2}, {"id": 3}]
-        session = _make_mock_session(fail_indices={2})
-        with _patch_get_session(session):
-            result = db.upsert_records(
-                "events", records, conflict_columns=["id"], config={}
-            )
+    def test_batch_failure_then_all_rows_fail_counts_only_isolated_rows(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                result, _events, _batch, fallback, _get_session = self._run_fallback(
+                    kind, failing_ids={1, 2, 3}
+                )
+                self.assertEqual(result, db.WriteResult(3, 0, 3, result.errors))
+                self.assertEqual(result.status, "failed")
+                self.assertEqual(len(result.errors), 3)
+                self.assertEqual(fallback.execute.call_count, 3)
+                self.assertNotIn("batch failed", " ".join(result.errors))
 
-        self.assertEqual(result.attempted, 3)
-        self.assertEqual(result.written, 2)
-        self.assertEqual(result.failed, 1)
-        self.assertEqual(len(result.errors), 1)
-        self.assertEqual(result.status, "partial")
+    def test_fallback_session_creation_failure_is_clear_safe_and_truthful(self):
+        for kind in ("insert", "upsert"):
+            with self.subTest(kind=kind):
+                events = []
+                batch = MagicMock()
+                batch.execute.side_effect = RuntimeError("batch RECORD_SECRET_SENTINEL")
+                first_context = _transaction(batch, events, "batch")
+                calls = [0]
 
+                def get_session(_config):
+                    calls[0] += 1
+                    if calls[0] == 1:
+                        return first_context
+                    raise ConnectionError(
+                        "password=SQL_CREDENTIAL_SENTINEL RECORD_SECRET_SENTINEL"
+                    )
 
-class UpsertRecordsAllFailureTests(unittest.TestCase):
-    """All upsert records fail."""
+                with patch.object(db, "get_session", side_effect=get_session):
+                    result = _call_write(kind, [{"id": 1}, {"id": 2}])
 
-    def test_all_upsert_records_fail(self):
-        records = [{"id": 1}, {"id": 2}, {"id": 3}]
-        session = _make_mock_session(fail_indices={0, 1, 2})
-        with _patch_get_session(session):
-            result = db.upsert_records(
-                "events", records, conflict_columns=["id"], config={}
-            )
-
-        self.assertIsInstance(result, db.WriteResult)
-        self.assertEqual(result.attempted, 3)
-        self.assertEqual(result.written, 0)
-        self.assertEqual(result.failed, 3)
-        self.assertEqual(len(result.errors), 3)
-        self.assertEqual(result.status, "failed")
-
-
-# ── upsert_update_clause tests ──────────────────────────────────────
-
-class UpsertRecordsUpdateClauseTests(unittest.TestCase):
-    """Verify SQL generation when non-conflict columns exist."""
-
-    def test_update_clause_generated_for_extra_columns(self):
-        """When update_cols is non-empty, ON CONFLICT DO UPDATE is used."""
-        records = [{"id": 1, "val": "x", "status": "new"}]
-        session = _make_mock_session()
-        with _patch_get_session(session):
-            db.upsert_records(
-                "events", records, conflict_columns=["id"], config={}
-            )
-
-        # The generated SQL should contain ON CONFLICT ... DO UPDATE SET
-        executed_sql = str(session.execute.call_args.args[0])
-        self.assertIn("ON CONFLICT", executed_sql)
-        self.assertIn("DO UPDATE SET", executed_sql)
-        self.assertIn("val = EXCLUDED.val", executed_sql)
-        self.assertIn("status = EXCLUDED.status", executed_sql)
-
-    def test_do_nothing_when_no_update_columns(self):
-        """When all columns are conflict columns, ON CONFLICT DO NOTHING."""
-        records = [{"id": 1}]
-        session = _make_mock_session()
-        with _patch_get_session(session):
-            db.upsert_records(
-                "events", records, conflict_columns=["id"], config={}
-            )
-
-        executed_sql = str(session.execute.call_args.args[0])
-        self.assertIn("ON CONFLICT", executed_sql)
-        self.assertIn("DO NOTHING", executed_sql)
+                self.assertEqual(result.attempted, 2)
+                self.assertEqual(result.written, 0)
+                self.assertEqual(result.failed, 2)
+                self.assertEqual(result.status, "failed")
+                self.assertEqual(len(result.errors), 1)
+                self.assertIn("diagnostic fallback unavailable", result.errors[0])
+                self.assertNotIn("SQL_CREDENTIAL_SENTINEL", result.errors[0])
+                self.assertNotIn("DB_PASSWORD_SENTINEL", result.errors[0])
+                self.assertNotIn("RECORD_SECRET_SENTINEL", result.errors[0])
+                batch.rollback.assert_called_once_with()
+                batch.close.assert_called_once_with()
+                self.assertEqual(events, ["batch:open", "batch:rollback", "batch:close"])
 
 
 if __name__ == "__main__":

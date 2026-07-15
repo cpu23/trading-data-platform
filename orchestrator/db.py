@@ -83,12 +83,6 @@ def upsert_records(
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
 
-    import json as _json
-
-    start_ms = _now_ms()
-    written = 0
-    errors: list[str] = []
-
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
     placeholders = ", ".join(f":{col}" for col in columns)
@@ -107,48 +101,12 @@ def upsert_records(
             f"ON CONFLICT ({conflict_cols}) DO NOTHING"
         )
 
-    stmt = text(sql)
-
-    with get_session(config) as session:
-        for record in records:
-            try:
-                prepared = {}
-                for k, v in record.items():
-                    if isinstance(v, (dict, list)):
-                        prepared[k] = _json.dumps(v)
-                    else:
-                        prepared[k] = v
-                nested = session.begin_nested()
-                session.execute(stmt, prepared)
-                nested.commit()
-                written += 1
-            except Exception as exc:
-                nested.rollback()
-                errors.append(str(exc))
-                logger.error(
-                    "upsert_record_failed",
-                    action="upsert_record",
-                    table=table_name,
-                    error=str(exc),
-                    record_keys=list(record.keys()),
-                )
-
-    duration_ms = int(_now_ms() - start_ms)
-    logger.info(
-        "upsert_completed",
-        action="upsert",
-        table=table_name,
-        records_total=len(records),
-        records_written=written,
-        duration_ms=duration_ms,
-    )
-
-    attempted = len(records)
-    return WriteResult(
-        attempted=attempted,
-        written=written,
-        failed=attempted - written,
-        errors=tuple(errors),
+    return _write_records(
+        operation="upsert",
+        table_name=table_name,
+        records=records,
+        stmt=text(sql),
+        config=config,
     )
 
 
@@ -211,59 +169,134 @@ def insert_records(
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
 
-    import json as _json
-
-    start_ms = _now_ms()
-    written = 0
-    errors: list[str] = []
-
     columns = list(records[0].keys())
     col_list = ", ".join(columns)
     placeholders = ", ".join(f":{col}" for col in columns)
-
     sql = f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})"
-    stmt = text(sql)
 
-    with get_session(config) as session:
-        for record in records:
-            try:
-                prepared = {}
-                for k, v in record.items():
-                    if isinstance(v, (dict, list)):
-                        prepared[k] = _json.dumps(v)
-                    else:
-                        prepared[k] = v
-                nested = session.begin_nested()
-                session.execute(stmt, prepared)
-                nested.commit()
-                written += 1
-            except Exception as exc:
-                nested.rollback()
-                errors.append(str(exc))
-                logger.error(
-                    "insert_record_failed",
-                    action="insert_record",
-                    table=table_name,
-                    error=str(exc),
-                    record_keys=list(record.keys()),
-                )
-
-    duration_ms = int(_now_ms() - start_ms)
-    logger.info(
-        "insert_completed",
-        action="insert",
-        table=table_name,
-        records_total=len(records),
-        records_written=written,
-        duration_ms=duration_ms,
+    return _write_records(
+        operation="insert",
+        table_name=table_name,
+        records=records,
+        stmt=text(sql),
+        config=config,
     )
 
+
+def _prepare_records(records: list[dict]) -> list[dict]:
+    import json
+
+    return [
+        {
+            key: json.dumps(value) if isinstance(value, (dict, list)) else value
+            for key, value in record.items()
+        }
+        for record in records
+    ]
+
+
+def _exception_type(exc: Exception) -> str:
+    """Return safe diagnostic detail without exception text or record values."""
+
+    return type(exc).__name__
+
+
+def _write_records(
+    *,
+    operation: str,
+    table_name: str,
+    records: list[dict],
+    stmt,
+    config: dict | None,
+) -> WriteResult:
+    """Try one executemany, then diagnose failures in a fresh transaction."""
+
+    start_ms = _now_ms()
     attempted = len(records)
-    return WriteResult(
+    prepared_records = _prepare_records(records)
+
+    try:
+        with get_session(config) as session:
+            session.execute(stmt, prepared_records)
+    except Exception as batch_exc:
+        logger.warning(
+            f"{operation}_batch_failed",
+            action=f"{operation}_batch",
+            table=table_name,
+            records_total=attempted,
+            error_type=_exception_type(batch_exc),
+        )
+    else:
+        result = WriteResult(attempted, attempted, 0, ())
+        _log_write_completed(operation, table_name, result, start_ms)
+        return result
+
+    written = 0
+    errors: list[str] = []
+    try:
+        # Never reuse the transaction invalidated by the executemany failure.
+        with get_session(config) as session:
+            for index, (record, prepared) in enumerate(
+                zip(records, prepared_records, strict=True), start=1
+            ):
+                try:
+                    with session.begin_nested():
+                        session.execute(stmt, prepared)
+                    written += 1
+                except Exception as row_exc:
+                    errors.append(
+                        f"record {index} failed ({_exception_type(row_exc)})"
+                    )
+                    logger.error(
+                        f"{operation}_record_failed",
+                        action=f"{operation}_record",
+                        table=table_name,
+                        record_index=index,
+                        error_type=_exception_type(row_exc),
+                        record_keys=list(record.keys()),
+                    )
+    except Exception as fallback_exc:
+        # A failed fallback transaction cannot have committed any diagnosed rows.
+        result = WriteResult(
+            attempted=attempted,
+            written=0,
+            failed=attempted,
+            errors=(
+                "diagnostic fallback unavailable "
+                f"({_exception_type(fallback_exc)}); records not written",
+            ),
+        )
+        logger.error(
+            f"{operation}_fallback_unavailable",
+            action=f"{operation}_fallback",
+            table=table_name,
+            records_total=attempted,
+            error_type=_exception_type(fallback_exc),
+        )
+        _log_write_completed(operation, table_name, result, start_ms)
+        return result
+
+    result = WriteResult(
         attempted=attempted,
         written=written,
         failed=attempted - written,
         errors=tuple(errors),
+    )
+    _log_write_completed(operation, table_name, result, start_ms)
+    return result
+
+
+def _log_write_completed(
+    operation: str, table_name: str, result: WriteResult, start_ms: float
+) -> None:
+    logger.info(
+        f"{operation}_completed",
+        action=operation,
+        table=table_name,
+        records_total=result.attempted,
+        records_written=result.written,
+        records_failed=result.failed,
+        duration_ms=int(_now_ms() - start_ms),
     )
 
 
