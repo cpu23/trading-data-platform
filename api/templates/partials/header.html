@@ -39,18 +39,23 @@
       over budget
       {% endif %}
     </div>
-    <button id="run-cycle-btn" class="btn"
-            data-original-label="Run cycle"
-            hx-post="/api/cycle"
-            {% if budget.warning %}
-            hx-confirm="LLM spend at ${{ cost_str }}/${{ cap_str }} today. Run cycle anyway?"
-            {% else %}
-            hx-confirm="Run a full collection and analysis cycle? This will trigger LLM calls and incur cost."
-            {% endif %}
-            hx-swap="none">
-      <span id="cycle-spinner" class="braille-spinner" aria-hidden="true"></span>
-      <span class="btn-label">Run cycle</span>
-    </button>
+    <div class="cycle-actions">
+      <button id="run-cycle-btn" class="btn"
+              type="button"
+              data-cycle-mode="refresh"
+              data-original-label="Refresh"
+              title="Collect due sources and update analysis">
+        <span id="cycle-spinner" class="braille-spinner" aria-hidden="true"></span>
+        <span class="btn-label">Refresh</span>
+      </button>
+      <select id="cycle-mode-select" class="cycle-mode-select"
+              aria-label="Choose cycle mode"
+              title="Choose another cycle mode">
+        <option value="" selected>More…</option>
+        <option value="analyze">Analyze</option>
+        <option value="force_full">Force full</option>
+      </select>
+    </div>
   </div>
   <div id="cycle-progress" class="cycle-progress" hidden aria-live="polite">
     <div class="cycle-progress-summary">

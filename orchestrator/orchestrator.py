@@ -17,6 +17,7 @@ from locks import RunConflict, advisory_lock
 from llm_client import resolve_model
 from processors import get_all_processors, get_processor
 from processors.base import canonical_fingerprint
+from schedules import build_cron_trigger
 from sqlalchemy import text
 
 logger = get_logger("orchestrator")
@@ -26,6 +27,7 @@ DEFAULT_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 DEFAULT_COLLECTOR_WORKERS = 3
 MAX_COLLECTOR_WORKERS = 8
+VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
 
 
 class RunAcceptanceConflict(RuntimeError):
@@ -115,6 +117,7 @@ def accept_run(
     run_kind: str,
     requested_component: str | None = None,
     idempotency_key: str | None = None,
+    request_summary: dict | None = None,
 ) -> datetime:
     """Persist durable acceptance, raising a typed conflict on unique-key races."""
     from sqlalchemy.exc import IntegrityError
@@ -126,9 +129,9 @@ def accept_run(
                 text(
                     "INSERT INTO cycle_runs "
                     "(correlation_id, status, accepted_at, triggered_by, run_kind, "
-                    "requested_component, idempotency_key) "
+                    "requested_component, idempotency_key, summary) "
                     "VALUES (:cid, 'accepted', :accepted_at, :triggered_by, :run_kind, "
-                    ":component, :idempotency_key)"
+                    ":component, :idempotency_key, CAST(:summary AS JSONB))"
                 ),
                 {
                     "cid": correlation_id,
@@ -137,6 +140,7 @@ def accept_run(
                     "run_kind": run_kind,
                     "component": requested_component,
                     "idempotency_key": idempotency_key,
+                    "summary": json.dumps(request_summary) if request_summary else None,
                 },
             )
     except IntegrityError as exc:
@@ -206,7 +210,7 @@ def get_run_for_retry(config: dict, correlation_id: str) -> dict | None:
     with get_session(config) as session:
         row = session.execute(
             text(
-                "SELECT correlation_id, status, run_kind, requested_component, triggered_by "
+                "SELECT correlation_id, status, run_kind, requested_component, triggered_by, summary "
                 "FROM cycle_runs WHERE correlation_id = :cid"
             ),
             {"cid": correlation_id},
@@ -418,7 +422,8 @@ def update_run_progress(
         with get_session(config) as session:
             result = session.execute(
                 text(
-                    "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB), "
+                    "UPDATE cycle_runs SET summary = "
+                    "COALESCE(summary, CAST('{}' AS JSONB)) || CAST(:summary AS JSONB), "
                     "heartbeat_at = :heartbeat_at "
                     "WHERE correlation_id = :cid AND status = 'running'" + owner_clause
                 ),
@@ -707,7 +712,11 @@ def _run_full_cycle_impl(
     manage_lifecycle: bool = True,
     worker_id: str | None = None,
     budget_context: BudgetContext | None = None,
+    mode: str = "refresh",
+    now: datetime | None = None,
 ) -> dict | None:
+    if mode not in VALID_CYCLE_MODES:
+        raise ValueError("invalid cycle mode")
     if config is None:
         from config_loader import load_config
 
@@ -781,6 +790,7 @@ def _run_full_cycle_impl(
                             "records_fetched",
                             "records_written",
                             "error",
+                            "reason",
                         )
                     }
                 )
@@ -801,15 +811,50 @@ def _run_full_cycle_impl(
     update_run_progress(correlation_id, progress, config, worker_id)
 
     collector_layer_started = time.monotonic()
-    worker_limit = collector_worker_limit(config, len(enabled_collectors))
+    cycle_now = now or datetime.now(timezone.utc)
+    collectors_to_run = []
+    historical_available = set()
     collector_results_by_id = {}
-    if enabled_collectors:
+    for source_id in enabled_collectors:
+        if mode == "force_full":
+            collectors_to_run.append(source_id)
+            continue
+        if mode == "analyze":
+            reason = "analyze_mode_no_collection"
+        elif _collector_is_due(source_id, config, now=cycle_now):
+            collectors_to_run.append(source_id)
+            continue
+        else:
+            reason = "not_due"
+        try:
+            if _last_successful_collection(source_id, config) is not None:
+                historical_available.add(source_id)
+        except Exception:
+            logger.warning(
+                "collector_history_lookup_failed",
+                action="select_cycle_collectors",
+                collector=source_id,
+                safe_code="collector_history_unavailable",
+            )
+        skipped = {
+            "collector": source_id,
+            "status": "skipped",
+            "reason": reason,
+            "mode": mode,
+            "no_change": True,
+            "correlation_id": correlation_id,
+        }
+        collector_results_by_id[source_id] = skipped
+        record_progress(source_id, "collector", "skipped", skipped)
+
+    worker_limit = collector_worker_limit(config, len(collectors_to_run))
+    if collectors_to_run:
         with ThreadPoolExecutor(
             max_workers=worker_limit,
             thread_name_prefix="cycle-collector",
         ) as executor:
             future_sources = {}
-            for source_id in enabled_collectors:
+            for source_id in collectors_to_run:
                 record_progress(source_id, "collector", "running")
                 future = executor.submit(
                     run_collector,
@@ -844,16 +889,17 @@ def _run_full_cycle_impl(
         source_id: collector_results_by_id[source_id]
         for source_id in enabled_collectors
     }
-    successful_collectors = {
+    successful_collectors = historical_available | {
         source_id
-        for source_id, result in collector_results.items()
-        if result["status"] in ("success", "partial")
+        for source_id in collectors_to_run
+        if collector_results[source_id]["status"] == "success"
     }
     logger.info(
         "collector_layer_finished",
         action="run_full_cycle",
         worker_limit=worker_limit,
-        collector_count=len(enabled_collectors),
+        collector_count=len(collectors_to_run),
+        enabled_collector_count=len(enabled_collectors),
         duration_ms=elapsed_ms(collector_layer_started),
         correlation_id=correlation_id,
     )
@@ -864,6 +910,7 @@ def _run_full_cycle_impl(
         successful_collectors=successful_collectors,
         progress_callback=record_progress,
         budget_context=budget_context,
+        force=mode == "force_full",
     )
 
     all_results = {**collector_results, **processor_results}
@@ -873,6 +920,11 @@ def _run_full_cycle_impl(
 
     cycle_result = {
         "status": overall_status,
+        "mode": mode,
+        "forced": mode == "force_full",
+        "no_change": bool(all_results) and all(
+            result["status"] == "skipped" for result in all_results.values()
+        ),
         "collectors": collector_results,
         "processors": processor_results,
         "correlation_id": correlation_id,
@@ -882,7 +934,12 @@ def _run_full_cycle_impl(
         "full_cycle_work_finished",
         action="run_full_cycle",
         overall_status=overall_status,
-        collectors_run=list(collector_results.keys()),
+        collectors_run=collectors_to_run,
+        collectors_skipped=[
+            source_id
+            for source_id, result in collector_results.items()
+            if result["status"] == "skipped"
+        ],
         processors_run=list(processor_results.keys()),
         correlation_id=correlation_id,
     )
@@ -900,7 +957,10 @@ def run_full_cycle(
     correlation_id: str | None = None,
     manage_lifecycle: bool = True,
     budget_context: BudgetContext | None = None,
+    mode: str = "refresh",
 ) -> dict | None:
+    if mode not in VALID_CYCLE_MODES:
+        raise ValueError("invalid cycle mode")
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
     lifecycle_created = False
@@ -926,6 +986,7 @@ def run_full_cycle(
                     manage_lifecycle=False,
                     worker_id=worker_id,
                     budget_context=budget_context,
+                    mode=mode,
                 )
             if manage_lifecycle and result is not None:
                 finalized = finalize_run_safely(
@@ -966,6 +1027,55 @@ def run_full_cycle(
         raise
 
 
+def _last_successful_collection(source_id: str, config: dict) -> datetime | None:
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT completed_at FROM collection_log "
+                "WHERE collector = :collector AND status = 'success' "
+                "ORDER BY completed_at DESC LIMIT 1"
+            ),
+            {"collector": source_id},
+        ).fetchone()
+    if row is None:
+        return None
+    mapping = getattr(row, "_mapping", None)
+    return mapping["completed_at"] if mapping is not None else row[0]
+
+
+def _collector_is_due(
+    source_id: str,
+    config: dict,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    try:
+        completed_at = _last_successful_collection(source_id, config)
+        if completed_at is None:
+            return True
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        completed_at = completed_at.astimezone(timezone.utc)
+        schedule = config.get("collectors", {}).get(source_id, {}).get("schedule")
+        if not isinstance(schedule, str) or not schedule.strip():
+            raise ValueError("collector schedule missing")
+        trigger = build_cron_trigger(schedule)
+        next_fire = trigger.get_next_fire_time(completed_at, completed_at)
+        return next_fire is None or next_fire <= current
+    except Exception:
+        logger.warning(
+            "collector_due_check_failed_safe_due",
+            action="select_cycle_collectors",
+            collector=source_id,
+            safe_code="collector_due_check_unavailable",
+        )
+        return True
+
+
 def _estimate_api_calls(source_id: str, records_fetched: int, config: dict) -> int:
     if source_id == "fred":
         series_count = len(
@@ -984,6 +1094,7 @@ def _resolve_and_run_processors(
     successful_collectors: set[str],
     progress_callback=None,
     budget_context: BudgetContext | None = None,
+    force: bool = False,
 ) -> dict:
     all_processors = get_all_processors()
     processor_results = {}
@@ -1050,6 +1161,7 @@ def _resolve_and_run_processors(
                 correlation_id=correlation_id,
                 manage_lifecycle=False,
                 budget_context=budget_context,
+                force=force,
             )
             processor_results[pid] = result
             if progress_callback:

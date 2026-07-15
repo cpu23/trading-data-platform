@@ -86,6 +86,106 @@ class TestComponentIdValidation(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class TestCycleModes(unittest.TestCase):
+    def _accepted(self):
+        response = MagicMock(status_code=202, text='{"job_id":"job-1"}')
+        response.json.return_value = {"job_id": "job-1", "accepted_at": "now"}
+        return response
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_cycle_defaults_to_refresh_and_propagates_safe_confirmation(self, post):
+        post.return_value = self._accepted()
+
+        response = client.post("/api/triggers/cycle", headers=AUTH, json={})
+
+        self.assertEqual(response.status_code, 202)
+        payload = post.await_args.kwargs["json"]
+        self.assertEqual(payload["mode"], "refresh")
+        self.assertFalse(payload["budget_confirmed"])
+        self.assertNotIn("auth", post.await_args.kwargs)
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(self, post):
+        for mode in ("everything", ["refresh"], {"mode": "refresh"}, 1, True, None):
+            with self.subTest(mode=mode):
+                response = client.post(
+                    "/api/triggers/cycle", headers=AUTH, json={"mode": mode}
+                )
+                self.assertEqual(response.status_code, 422)
+
+        post.assert_not_awaited()
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_invalid_body_and_confirmation_types_are_422_before_orchestrator_call(self, post):
+        for body in (
+            ["refresh"],
+            "refresh",
+            1,
+            True,
+            {"budget_confirmed": "true"},
+            {"budget_confirmed": 1},
+            {"budget_confirmed": [True]},
+        ):
+            with self.subTest(body=body):
+                response = client.post("/api/triggers/cycle", headers=AUTH, json=body)
+                self.assertEqual(response.status_code, 422)
+
+        post.assert_not_awaited()
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_absent_or_null_body_defaults_to_refresh(self, post):
+        post.return_value = self._accepted()
+        for send_null in (False, True):
+            with self.subTest(send_null=send_null):
+                if send_null:
+                    response = client.post(
+                        "/api/triggers/cycle",
+                        headers={**AUTH, "Content-Type": "application/json"},
+                        content="null",
+                    )
+                else:
+                    response = client.post("/api/triggers/cycle", headers=AUTH)
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(post.await_args.kwargs["json"]["mode"], "refresh")
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_force_full_requires_explicit_confirmation_before_call(self, post):
+        response = client.post(
+            "/api/triggers/cycle", headers=AUTH, json={"mode": "force_full"}
+        )
+
+        self.assertEqual(response.status_code, 422)
+        post.assert_not_awaited()
+
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_force_full_forwards_internal_basic_auth_after_global_auth(self, post):
+        post.return_value = self._accepted()
+
+        response = client.post(
+            "/api/triggers/cycle",
+            headers=AUTH,
+            json={"mode": "force_full", "budget_confirmed": True},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        request = post.await_args
+        self.assertEqual(request.kwargs["json"]["mode"], "force_full")
+        self.assertTrue(request.kwargs["json"]["budget_confirmed"])
+        self.assertIsInstance(request.kwargs["auth"], httpx.BasicAuth)
+
+    @patch("routes.json.triggers._internal_basic_auth", side_effect=RuntimeError)
+    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    def test_force_full_missing_internal_credentials_fails_closed(self, post, _auth):
+        response = client.post(
+            "/api/triggers/cycle",
+            headers=AUTH,
+            json={"mode": "force_full", "budget_confirmed": True},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        post.assert_not_awaited()
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Test cases
 # ═════════════════════════════════════════════════════════════════════════════

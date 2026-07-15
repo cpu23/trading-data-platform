@@ -117,6 +117,8 @@ class DurableRunLifecycleTests(unittest.TestCase):
         self.assertIn("worker_id = :worker_id", heartbeat_sql)
         self.assertIn("heartbeat_at", progress_sql)
         self.assertIn("status = 'running'", progress_sql)
+        self.assertIn("COALESCE(summary", progress_sql)
+        self.assertIn("|| CAST(:summary AS JSONB)", progress_sql)
 
     def test_finish_run_does_not_overwrite_terminal_or_abandoned_state(self):
         from orchestrator import finish_run

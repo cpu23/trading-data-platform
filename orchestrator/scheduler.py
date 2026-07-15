@@ -1,11 +1,11 @@
-import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+
 
 from logging_config import get_logger
+from schedules import build_cron_trigger
 from orchestrator import (
     accept_run,
     aggregate_stage_statuses,
@@ -18,34 +18,6 @@ from orchestrator import (
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
-_POSIX_WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
-
-
-def _normalize_posix_weekdays(day_of_week: str) -> str:
-    if not re.search(r"\d", day_of_week):
-        return day_of_week
-
-    named_weekdays: list[str] = []
-    for item in day_of_week.split(","):
-        match = re.fullmatch(r"([0-7])(?:-([0-7]))?", item)
-        if not match:
-            raise ValueError(
-                "Unsupported POSIX numeric weekday expression; use numeric values or "
-                "non-wrapping ranges (for example 1-5), or named weekdays such as mon-fri"
-            )
-        start = int(match.group(1))
-        end = int(match.group(2) or start)
-        if end < start:
-            raise ValueError(
-                "Wrapping POSIX numeric weekday ranges are unsupported; use an explicit "
-                "comma-separated list of named weekdays"
-            )
-        for weekday in range(start, end + 1):
-            name = _POSIX_WEEKDAYS[weekday]
-            if name not in named_weekdays:
-                named_weekdays.append(name)
-    return ",".join(named_weekdays)
-
 
 def _start_scheduled_run(
     config: dict, correlation_id: str, worker_id: str, run_kind: str, component: str
@@ -73,12 +45,7 @@ def _start_scheduled_run(
         return None
 
 
-def _build_cron_trigger(schedule: str) -> CronTrigger:
-    fields = schedule.split()
-    if len(fields) == 5:
-        fields[4] = _normalize_posix_weekdays(fields[4])
-        schedule = " ".join(fields)
-    return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
+_build_cron_trigger = build_cron_trigger
 
 
 def _scheduled_collector(source_id: str, config: dict) -> None:

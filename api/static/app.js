@@ -462,40 +462,63 @@
       document.body.dispatchEvent(new CustomEvent('cycleComplete', { bubbles: true }));
     }
 
-    document.body.addEventListener('htmx:beforeRequest', function (evt) {
-      var btn = evt.detail.elt;
-      if (btn && btn.id === 'run-cycle-btn') {
-        var cycleLabel = btn.querySelector('.btn-label');
-        var cycleSpinner = btn.querySelector('#cycle-spinner');
-        startBrailleSpinner(cycleSpinner);
-        if (cycleLabel) cycleLabel.textContent = 'Running cycle...';
-        btn.disabled = true;
-      }
+    function triggerCycle(mode, budgetConfirmed) {
+      var btn = document.getElementById('run-cycle-btn');
+      var menu = document.getElementById('cycle-mode-select');
+      if (!btn || btn.disabled) return;
+      var cycleLabel = btn.querySelector('.btn-label');
+      var originalLabel = btn.getAttribute('data-original-label') || 'Refresh';
+      startBrailleSpinner(btn.querySelector('#cycle-spinner'));
+      if (cycleLabel) cycleLabel.textContent = 'Starting ' + mode.replace('_', ' ') + '…';
+      btn.disabled = true;
+      if (menu) menu.disabled = true;
+
+      fetch('/api/triggers/cycle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: mode, budget_confirmed: budgetConfirmed})
+      }).then(function (response) {
+        if (response.status === 202) return response.json();
+        var labels = {
+          409: 'Cycle already running',
+          422: 'Cycle request rejected',
+          503: 'Cycle unavailable'
+        };
+        var error = new Error(labels[response.status] || 'Cycle failed — try again');
+        error.status = response.status;
+        throw error;
+      }).then(function (response) {
+        htmx.ajax('GET', '/partials/cards/clear', {target: '#expansion-panel', swap: 'outerHTML'});
+        pollCycleCompletion(response.job_id, btn, cycleLabel, originalLabel, dispatchCycleRefresh);
+      }).catch(function (error) {
+        if (cycleLabel) cycleLabel.textContent = error.message;
+        stopBrailleSpinner();
+        btn.disabled = false;
+        if (menu) menu.disabled = false;
+        dispatchCycleRefresh();
+      }).finally(function () {
+        if (menu) menu.value = '';
+      });
+    }
+
+    document.body.addEventListener('click', function (event) {
+      if (!event.target.closest('#run-cycle-btn')) return;
+      triggerCycle('refresh', false);
     });
 
-    document.body.addEventListener('htmx:afterRequest', function (evt) {
-      var btn = evt.detail.elt;
-      if (btn && btn.id === 'run-cycle-btn') {
-        var cycleLabel = btn.querySelector('.btn-label');
-        var originalLabel = btn.getAttribute('data-original-label') || 'Run cycle';
-        if (evt.detail.successful) {
-          var response = JSON.parse(evt.detail.xhr.responseText);
-          var correlationId = response.job_id;
-          htmx.ajax('GET', '/partials/cards/clear', {target: '#expansion-panel', swap: 'outerHTML'});
-          pollCycleCompletion(correlationId, btn, cycleLabel, originalLabel, dispatchCycleRefresh);
-        } else {
-          var status = evt.detail.xhr.status;
-          console.error('Cycle request failed:', status, evt.detail.xhr.responseText);
-          if (status === 409) {
-            if (cycleLabel) cycleLabel.textContent = 'Cycle already running';
-          } else {
-            if (cycleLabel) cycleLabel.textContent = 'Cycle failed — try again';
-          }
-          stopBrailleSpinner();
-          btn.disabled = false;
-          dispatchCycleRefresh();
+    document.body.addEventListener('change', function (event) {
+      if (event.target.id !== 'cycle-mode-select') return;
+      var mode = event.target.value;
+      if (!mode) return;
+      if (mode === 'force_full') {
+        if (!window.confirm(
+          'Force full is a daily budget bypass and may incur additional cost. Continue?'
+        )) {
+          event.target.value = '';
+          return;
         }
       }
+      triggerCycle(mode, mode === 'force_full');
     });
   }
 
@@ -589,6 +612,8 @@
         if (labelEl) labelEl.textContent = 'Cycle taking longer than expected — check logs';
         stopBrailleSpinner();
         if (btn) btn.disabled = false;
+        var timeoutMenu = document.getElementById('cycle-mode-select');
+        if (timeoutMenu) timeoutMenu.disabled = false;
         dispatchCycleRefresh();
         return;
       }
@@ -603,11 +628,15 @@
             if (labelEl) labelEl.textContent = originalLabel;
             stopBrailleSpinner();
             if (btn) btn.disabled = false;
+            var completeMenu = document.getElementById('cycle-mode-select');
+            if (completeMenu) completeMenu.disabled = false;
             dispatchCycleRefresh();
           } else if (data.status === 'failed') {
             if (labelEl) labelEl.textContent = 'Cycle failed — check logs';
             stopBrailleSpinner();
             if (btn) btn.disabled = false;
+            var failedMenu = document.getElementById('cycle-mode-select');
+            if (failedMenu) failedMenu.disabled = false;
             dispatchCycleRefresh();
           } else {
             setTimeout(poll, 2000);

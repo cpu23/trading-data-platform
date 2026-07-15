@@ -1,10 +1,19 @@
+import json
+import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, BackgroundTasks, Body, HTTPException
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import text
 
+from budgets import (
+    BudgetContext,
+    mint_trusted_manual_authorization,
+    trusted_manual_budget_context,
+)
 from config_loader import load_config
 from db import check_connection, get_session
 
@@ -39,6 +48,8 @@ from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
 app = FastAPI(title="Trading Data Orchestrator")
 logger = get_logger("orchestrator.api")
+optional_basic = HTTPBasic(auto_error=False)
+VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
 
 # Status compatibility only; PostgreSQL advisory locks provide coordination.
 _cycle_correlation_id: str | None = None
@@ -232,6 +243,7 @@ def _accept_http_run(
     run_kind: str,
     requested_component: str | None,
     body: dict | None,
+    request_summary: dict | None = None,
 ) -> datetime:
     try:
         return accept_run(
@@ -241,6 +253,7 @@ def _accept_http_run(
             run_kind,
             requested_component,
             _idempotency_key_from_body(body),
+            request_summary=request_summary,
         )
     except RunAcceptanceConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -295,6 +308,24 @@ def retry_abandoned_run(
             )
 
     new_correlation_id = str(uuid4())
+    cycle_mode = "refresh"
+    retry_summary = None
+    if run_kind == "cycle":
+        prior_summary = previous.get("summary")
+        if isinstance(prior_summary, str):
+            try:
+                prior_summary = json.loads(prior_summary)
+            except (TypeError, ValueError):
+                prior_summary = {}
+        if isinstance(prior_summary, dict):
+            candidate_mode = prior_summary.get("mode")
+            if isinstance(candidate_mode, str) and candidate_mode in VALID_CYCLE_MODES:
+                cycle_mode = candidate_mode
+        retry_summary = {
+            "mode": cycle_mode,
+            "budget_confirmed": False,
+            "retry": True,
+        }
     try:
         accepted_at = accept_run(
             config,
@@ -302,6 +333,7 @@ def retry_abandoned_run(
             "retry",
             run_kind,
             component,
+            request_summary=retry_summary,
         )
     except RunAcceptanceConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -315,7 +347,9 @@ def retry_abandoned_run(
         raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
 
     if run_kind == "cycle":
-        background_tasks.add_task(_run_cycle_task, new_correlation_id)
+        background_tasks.add_task(
+            _run_cycle_task, new_correlation_id, cycle_mode, None
+        )
     elif run_kind == "collector":
         background_tasks.add_task(_run_collector_task, str(component), new_correlation_id)
     else:
@@ -328,7 +362,11 @@ def retry_abandoned_run(
     }
 
 
-def _run_cycle_task(correlation_id: str):
+def _run_cycle_task(
+    correlation_id: str,
+    mode: str = "refresh",
+    budget_context: BudgetContext | None = None,
+):
     global _cycle_correlation_id
     config = _get_config()
     worker_id = f"api:{uuid4()}"
@@ -345,6 +383,8 @@ def _run_cycle_task(correlation_id: str):
                 config=config,
                 correlation_id=correlation_id,
                 manage_lifecycle=False,
+                mode=mode,
+                budget_context=budget_context,
             )
             if result is None:
                 raise RuntimeError("run returned no result after ownership was claimed")
@@ -378,13 +418,66 @@ def _run_cycle_task(correlation_id: str):
 def trigger_cycle(
     background_tasks: BackgroundTasks,
     body: dict | None = Body(default=None),
+    credentials: HTTPBasicCredentials | None = Depends(optional_basic),
 ):
     global _cycle_correlation_id
 
+    if body is None:
+        body = {}
+    elif not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Cycle body must be an object")
+
+    mode = body.get("mode", "refresh")
+    if not isinstance(mode, str) or mode not in VALID_CYCLE_MODES:
+        raise HTTPException(status_code=422, detail="Invalid cycle mode")
+    if "budget_confirmed" in body and type(body["budget_confirmed"]) is not bool:
+        raise HTTPException(
+            status_code=422, detail="budget_confirmed must be a boolean"
+        )
+
+    budget_context = None
+    if mode == "force_full":
+        username = os.environ.get("DASHBOARD_USER", "")
+        password = os.environ.get("DASHBOARD_PASSWORD", "")
+        if not username or not password:
+            raise HTTPException(
+                status_code=503, detail="Internal authentication unavailable"
+            )
+        supplied = credentials if hasattr(credentials, "username") else None
+        authenticated = bool(supplied) and secrets.compare_digest(
+            supplied.username, username
+        ) and secrets.compare_digest(supplied.password, password)
+        if not authenticated:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        if body.get("budget_confirmed") is not True:
+            raise HTTPException(
+                status_code=422,
+                detail="force_full requires explicit budget confirmation",
+            )
+        budget_context = trusted_manual_budget_context(
+            force=True,
+            manual_authorized=True,
+            authorization=mint_trusted_manual_authorization(),
+        )
+
+    request_summary = {
+        "mode": mode,
+        "budget_confirmed": mode == "force_full",
+    }
     correlation_id = _correlation_id_from_body(body)
-    accepted_at = _accept_http_run(correlation_id, "cycle", None, body)
+    accepted_at = _accept_http_run(
+        correlation_id,
+        "cycle",
+        None,
+        body,
+        request_summary=request_summary,
+    )
     _cycle_correlation_id = correlation_id
-    background_tasks.add_task(_run_cycle_task, correlation_id)
+    background_tasks.add_task(_run_cycle_task, correlation_id, mode, budget_context)
 
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
