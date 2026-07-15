@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,77 @@ from click.testing import CliRunner
 
 
 class NewsTests(unittest.TestCase):
+    def test_concurrent_publications_for_same_source_do_not_lose_items(self):
+        from sources.news_feed import collect_and_publish
+        from sources.news_result import NewsCollectionResult
+        from sources.news_storage import merge_items
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "reuters" / "reuters_today.json"
+            cfg = {
+                "news_feed": {"output_path": tmp, "history_days": 7},
+                "reuters": {"enabled": True},
+                "kobeissi": {"enabled": False},
+            }
+            barrier = threading.Barrier(3)
+
+            def publish(item_id):
+                item = {
+                    "id": item_id, "source": "reuters", "source_label": "Reuters",
+                    "title": item_id, "summary": "", "url": f"https://x/{item_id}",
+                    "published": datetime.now(timezone.utc).isoformat(), "symbols": [],
+                    "tags": [], "engagement": {}, "media": [], "meta": {},
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                def collector():
+                    merge_items(source_path, [item])
+                    return NewsCollectionResult([item], "ok")
+
+                barrier.wait()
+                collect_and_publish("reuters", cfg, collector)
+
+            threads = [threading.Thread(target=publish, args=(item_id,)) for item_id in ("one", "two")]
+            for thread in threads: thread.start()
+            barrier.wait()
+            for thread in threads: thread.join(timeout=5)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual({item["id"] for item in json.loads(source_path.read_text())}, {"one", "two"})
+            self.assertEqual({item["id"] for item in json.loads((root / "feed.json").read_text())["items"]}, {"one", "two"})
+
+    def test_feed_build_failure_preserves_prior_valid_publication(self):
+        from sources.news_feed import collect_and_publish
+        from sources.news_result import NewsCollectionResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            feed_path = Path(tmp, "feed.json")
+            prior = {"generated_at": "prior", "days": 7, "count": 0, "sources": [], "items": []}
+            feed_path.write_text(json.dumps(prior))
+            cfg = {"news_feed": {"output_path": tmp}, "reuters": {"enabled": True}}
+
+            with patch("sources.news_feed._build_feed_unlocked", side_effect=ValueError("raw secret")):
+                result = collect_and_publish(
+                    "reuters", cfg, lambda: NewsCollectionResult([], "ok")
+                )
+
+            self.assertEqual(result.status, "error")
+            self.assertEqual(result.error, "News feed publication failed: ValueError")
+            self.assertEqual(json.loads(feed_path.read_text()), prior)
+            self.assertFalse(list(Path(tmp).rglob("*.tmp")))
+
+    def test_atomic_write_uses_fsync_replace_and_restrictive_mode(self):
+        from sources.news_storage import atomic_write_json
+
+        with tempfile.TemporaryDirectory() as tmp, patch("sources.news_storage.os.fsync", wraps=__import__("os").fsync) as fsync, patch("sources.news_storage.os.replace", wraps=__import__("os").replace) as replace:
+            path = Path(tmp, "feed.json")
+            atomic_write_json(path, {"ok": True})
+
+            self.assertGreaterEqual(fsync.call_count, 2)
+            replace.assert_called_once()
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
     def test_atomic_json_recovers_malformed_and_replaces_file(self):
         from sources.news_storage import atomic_write_json, read_json
         with tempfile.TemporaryDirectory() as tmp:
@@ -580,9 +652,9 @@ class NewsTests(unittest.TestCase):
         from cli import cli
         from sources.news_result import NewsCollectionResult
 
-        cfg = {"reuters": {"enabled": True}}
+        cfg = {"reuters": {"enabled": True}, "news_feed": {"output_path": "unused"}}
         failure = NewsCollectionResult([], "error", "Reuters sitemap index failed: TimeoutError")
-        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure):
+        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure), patch("sources.news_feed.collect_and_publish", side_effect=lambda _source, _config, collector, **_kwargs: collector()):
             result = CliRunner().invoke(cli, ["news", "reuters"])
 
         self.assertNotEqual(result.exit_code, 0)
@@ -608,13 +680,14 @@ class NewsTests(unittest.TestCase):
 
         cfg = {"reuters": {"enabled": True, "max_pages": 8}, "kobeissi": {"enabled": True, "count": 35}, "news_feed": {"output_path": "unused", "history_days": 12}}
         success = NewsCollectionResult([], "ok", None)
-        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=success) as reuters, patch("sources.kobeissi.run_kobeissi", return_value=success) as kobeissi, patch("sources.news_feed.build_feed", return_value={"count": 0, "sources": [], "items": []}) as feed:
+        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=success) as reuters, patch("sources.kobeissi.run_kobeissi", return_value=success) as kobeissi, patch("sources.news_feed.collect_and_publish", side_effect=lambda _source, _config, collector, **_kwargs: collector()) as publish:
             result = CliRunner().invoke(cli, ["news", "all"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         reuters.assert_called_once_with(cfg, max_pages=8)
         kobeissi.assert_called_once_with(cfg, count=35)
-        feed.assert_called_once_with(cfg, days=12)
+        self.assertEqual(publish.call_count, 2)
+        self.assertTrue(all(call.kwargs["days"] == 12 for call in publish.call_args_list))
 
 
 if __name__ == "__main__":

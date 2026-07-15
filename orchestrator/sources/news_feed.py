@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from logging_config import get_logger
-from sources.news_storage import atomic_write_json, read_json
+from sources.news_result import NewsCollectionResult
+from sources.news_storage import atomic_write_json, publication_lock, read_json
 
 logger = get_logger("news_feed")
 SOURCES = ("reuters", "kobeissi")
@@ -28,7 +29,7 @@ def _timestamp(value: Any) -> float | None:
         return None
 
 
-def build_feed(config: dict, days: int = 7) -> dict[str, Any]:
+def _build_feed_unlocked(config: dict, days: int = 7) -> dict[str, Any]:
     if days < 1:
         raise ValueError("days must be at least 1")
     output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
@@ -70,3 +71,33 @@ def build_feed(config: dict, days: int = 7) -> dict[str, Any]:
     atomic_write_json(output_dir / "feed.json", feed)
     logger.info("feed_built", count=len(items), path=str(output_dir / "feed.json"))
     return feed
+
+
+def build_feed(config: dict, days: int = 7) -> dict[str, Any]:
+    """Atomically rebuild the feed as the sole public lock owner."""
+    output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    with publication_lock(output_dir):
+        return _build_feed_unlocked(config, days)
+
+
+def collect_and_publish(
+    source_id: str,
+    config: dict,
+    collector: Callable[[], NewsCollectionResult],
+    *,
+    days: int | None = None,
+) -> NewsCollectionResult:
+    """Serialize snapshot/state changes and rebuild the feed only after success."""
+    output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    history_days = days if days is not None else config.get("news_feed", {}).get("history_days", 7)
+    with publication_lock(output_dir):
+        result = collector()
+        if not result.succeeded:
+            return result
+        try:
+            _build_feed_unlocked(config, days=history_days)
+        except Exception as exc:
+            error = f"News feed publication failed: {type(exc).__name__}"
+            logger.error("news_feed_publication_failed", source_id=source_id, error=error)
+            return NewsCollectionResult(result.items, "error", error)
+        return result

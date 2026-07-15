@@ -431,13 +431,16 @@ def news():
 def news_reuters(pages, output_json):
     """Poll Reuters sitemap for market-relevant articles."""
     from sources.reuters import run_reuters
+    from sources.news_feed import collect_and_publish
     config = load_config()
     reuters_config = config.get("reuters", {})
     if not reuters_config.get("enabled"):
         click.echo("Reuters source is disabled in config.", err=True)
         raise SystemExit(1)
     pages = pages if pages is not None else reuters_config.get("max_pages", 3)
-    result = run_reuters(config, max_pages=pages)
+    result = collect_and_publish(
+        "reuters", config, lambda: run_reuters(config, max_pages=pages)
+    )
     if result.status == "error":
         click.echo(f"Reuters collection failed: {result.error}", err=True)
         raise SystemExit(1)
@@ -461,13 +464,16 @@ def news_reuters(pages, output_json):
 def news_kobeissi(count, output_json):
     """Fetch Kobeissi Letter tweets."""
     from sources.kobeissi import run_kobeissi
+    from sources.news_feed import collect_and_publish
     config = load_config()
     kobeissi_config = config.get("kobeissi", {})
     if not kobeissi_config.get("enabled"):
         click.echo("Kobeissi source is disabled in config.", err=True)
         raise SystemExit(1)
     count = count if count is not None else kobeissi_config.get("count", 20)
-    result = run_kobeissi(config, count=count)
+    result = collect_and_publish(
+        "kobeissi", config, lambda: run_kobeissi(config, count=count)
+    )
     if result.status == "error":
         click.echo(f"Kobeissi collection failed: {result.error}", err=True)
         raise SystemExit(1)
@@ -512,7 +518,9 @@ def news_all(pages, count, days):
     """Run all news sources and build feed."""
     from sources.reuters import run_reuters
     from sources.kobeissi import run_kobeissi
-    from sources.news_feed import build_feed
+    from pathlib import Path
+    from sources.news_feed import collect_and_publish
+    from sources.news_storage import read_json
     config = load_config()
     pages = pages if pages is not None else config.get("reuters", {}).get("max_pages", 3)
     count = count if count is not None else config.get("kobeissi", {}).get("count", 20)
@@ -520,7 +528,9 @@ def news_all(pages, count, days):
     failed = False
 
     if config.get("reuters", {}).get("enabled", False):
-        result = run_reuters(config, max_pages=pages)
+        result = collect_and_publish(
+            "reuters", config, lambda: run_reuters(config, max_pages=pages), days=days
+        )
         if result.status == "error":
             click.echo(f"Reuters: failed — {result.error}", err=True)
             failed = True
@@ -530,7 +540,9 @@ def news_all(pages, count, days):
         click.echo("Reuters: disabled")
 
     if config.get("kobeissi", {}).get("enabled", False):
-        result = run_kobeissi(config, count=count)
+        result = collect_and_publish(
+            "kobeissi", config, lambda: run_kobeissi(config, count=count), days=days
+        )
         if result.status == "error":
             click.echo(f"Kobeissi: failed — {result.error}", err=True)
             failed = True
@@ -539,8 +551,9 @@ def news_all(pages, count, days):
     else:
         click.echo("Kobeissi: disabled")
 
-    feed = build_feed(config, days=days)
-    click.echo(f"Feed: {feed['count']} items total")
+    output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    feed = read_json(output_dir / "feed.json", {"count": 0})
+    click.echo(f"Feed: {feed.get('count', 0)} items total")
     if failed:
         raise SystemExit(1)
 
