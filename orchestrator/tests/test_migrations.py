@@ -8,6 +8,8 @@ import migrate
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DURABLE_JOBS_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "011_durable_jobs.sql"
+FRED_METADATA_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "012_macro_series_metadata.sql"
+RAW_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "002_raw_tables.sql"
 CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
 
 
@@ -413,6 +415,26 @@ class DurableJobsSchemaTests(unittest.TestCase):
         )
         for destructive_statement in ("drop table", "drop column", "delete from", "truncate"):
             self.assertNotIn(destructive_statement, sql)
+
+
+class FredMetadataSchemaTests(unittest.TestCase):
+    @staticmethod
+    def _sql(path: Path) -> str:
+        return " ".join(path.read_text().lower().split())
+
+    def test_bootstrap_and_idempotent_upgrade_define_matching_metadata_table(self):
+        expected = (
+            "macro_series_metadata ( series_id text primary key, title text, units text, "
+            "seasonal_adjustment text, frequency text, fetched_at timestamptz not null )"
+        )
+
+        init_sql = self._sql(RAW_TABLES_INIT)
+        migration_sql = self._sql(FRED_METADATA_MIGRATION)
+
+        self.assertIn(f"create table {expected}", init_sql)
+        self.assertIn(f"create table if not exists {expected}", migration_sql)
+        for destructive in ("drop table", "drop column", "delete from", "truncate"):
+            self.assertNotIn(destructive, migration_sql)
 
 
 if __name__ == "__main__":

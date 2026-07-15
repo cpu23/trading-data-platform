@@ -16,6 +16,16 @@ CREATE TRIGGER macro_series_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 
+CREATE TABLE macro_series_metadata (
+    series_id TEXT PRIMARY KEY,
+    title TEXT,
+    units TEXT,
+    seasonal_adjustment TEXT,
+    frequency TEXT,
+    fetched_at TIMESTAMPTZ NOT NULL
+);
+
+
 CREATE TABLE source_payload_cache (
     cache_key TEXT PRIMARY KEY,
     source TEXT NOT NULL,

@@ -2,8 +2,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import text
+
 from collectors.base import CollectionResult
-from db import query_latest
+from db import get_session, query_latest
 from http_client import make_request
 from logging_config import get_logger
 
@@ -115,7 +117,9 @@ class FredCollector:
     ) -> list[dict]:
         start_date = self._get_start_date(series_id, frequency, backfill_years, config)
 
-        metadata = self._fetch_series_metadata(series_id, api_key, correlation_id)
+        metadata = self._fetch_series_metadata(
+            series_id, api_key, correlation_id, config
+        )
 
         params = {
             "series_id": series_id,
@@ -200,11 +204,83 @@ class FredCollector:
 
         return datetime.now(timezone.utc) - timedelta(days=backfill_years * 365)
 
+    @staticmethod
+    def _metadata_values(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": row.get("title", ""),
+            "units": row.get("units", ""),
+            "seasonal_adjustment": row.get("seasonal_adjustment", ""),
+            "frequency": row.get("frequency", ""),
+        }
+
+    @staticmethod
+    def _fresh_metadata(
+        row: dict[str, Any], ttl: timedelta, now: datetime
+    ) -> bool:
+        fetched_at = row.get("fetched_at")
+        if isinstance(fetched_at, str):
+            try:
+                fetched_at = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+        if not isinstance(fetched_at, datetime) or fetched_at.tzinfo is None:
+            return False
+        return timedelta(0) <= now - fetched_at.astimezone(timezone.utc) < ttl
+
+    def _persist_series_metadata(
+        self,
+        series_id: str,
+        metadata: dict[str, Any],
+        fetched_at: datetime,
+        config: dict,
+    ) -> None:
+        statement = text(
+            "INSERT INTO macro_series_metadata "
+            "(series_id, title, units, seasonal_adjustment, frequency, fetched_at) "
+            "VALUES (:series_id, :title, :units, :seasonal_adjustment, :frequency, :fetched_at) "
+            "ON CONFLICT (series_id) DO UPDATE SET "
+            "title = EXCLUDED.title, units = EXCLUDED.units, "
+            "seasonal_adjustment = EXCLUDED.seasonal_adjustment, "
+            "frequency = EXCLUDED.frequency, fetched_at = EXCLUDED.fetched_at"
+        )
+        params = {"series_id": series_id, **metadata, "fetched_at": fetched_at}
+        with get_session(config) as session:
+            session.execute(statement, params)
+
     def _fetch_series_metadata(
-        self, series_id: str, api_key: str, correlation_id: str
+        self, series_id: str, api_key: str, correlation_id: str, config: dict
     ) -> dict[str, Any]:
-        if series_id in self._metadata_cache:
-            return self._metadata_cache[series_id]
+        fred_config = config.get("collectors", {}).get("fred", {})
+        try:
+            ttl_days = float(fred_config.get("metadata_ttl_days", 30))
+        except (TypeError, ValueError):
+            ttl_days = 30
+        ttl = timedelta(days=max(ttl_days, 0))
+        now = datetime.now(timezone.utc)
+
+        cached = self._metadata_cache.get(series_id)
+        if cached is not None and self._fresh_metadata(cached, ttl, now):
+            return self._metadata_values(cached)
+
+        try:
+            persisted = query_latest(
+                table_name="macro_series_metadata",
+                filters={"series_id": series_id},
+                order_by="fetched_at DESC",
+                limit=1,
+                config=config,
+            )
+            if persisted and self._fresh_metadata(persisted[0], ttl, now):
+                self._metadata_cache[series_id] = dict(persisted[0])
+                return self._metadata_values(persisted[0])
+        except Exception as exc:
+            logger.warning(
+                "metadata_cache_read_failed",
+                action="fetch_series_metadata",
+                series_id=series_id,
+                error=str(exc),
+                correlation_id=correlation_id,
+            )
 
         params = {
             "series_id": series_id,
@@ -230,7 +306,18 @@ class FredCollector:
             "frequency": ser.get("frequency", ""),
         }
 
-        self._metadata_cache[series_id] = metadata
+        fetched_at = datetime.now(timezone.utc)
+        try:
+            self._persist_series_metadata(series_id, metadata, fetched_at, config)
+        except Exception as exc:
+            logger.warning(
+                "metadata_cache_write_failed",
+                action="fetch_series_metadata",
+                series_id=series_id,
+                error=str(exc),
+                correlation_id=correlation_id,
+            )
+        self._metadata_cache[series_id] = {**metadata, "fetched_at": fetched_at}
         return metadata
 
     def get_schedule(self, config: dict) -> str:
