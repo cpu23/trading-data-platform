@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from budgets import BudgetContext
 from db import get_session
-from llm_client import LLMStage, LLMStageFailure, call_llm
+from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
 from processors._validators import validate_briefing_sections, coerce_briefing_fields
 from sqlalchemy import text
@@ -70,7 +70,7 @@ class DailyBriefingProcessor:
         except ValueError as exc:
             stage.add_validation_warnings(["response was not valid JSON"])
             if stage.policy.validation_retries < 1:
-                raise LLMStageFailure("LLM response validation failed", stage.telemetry) from exc
+                raise LLMValidationError("LLM response validation failed", stage.telemetry) from exc
             retry_prompt = (
                 prompt_text
                 + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
@@ -82,7 +82,7 @@ class DailyBriefingProcessor:
                 parsed = self._parse_llm_response(raw_response)
             except ValueError as retry_exc:
                 stage.add_validation_warnings(["final response was not valid JSON"])
-                raise LLMStageFailure(
+                raise LLMValidationError(
                     "LLM response validation failed after retry", stage.telemetry
                 ) from retry_exc
 
@@ -144,9 +144,9 @@ class DailyBriefingProcessor:
             "model_used": llm_result.get("model", model),
             "prompt_version": self.get_prompt_version(),
             "tokens_used": (
-                llm_result.get("tokens_input", 0) + llm_result.get("tokens_output", 0)
+                stage.telemetry.tokens_input_total + stage.telemetry.tokens_output_total
             ),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         briefing_record = {
@@ -170,12 +170,12 @@ class DailyBriefingProcessor:
                 **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
-            "prompt_text": prompt_text,
-            "raw_response": raw_response,
+            "prompt_text": None,
+            "raw_response": None,
             "model_used": llm_result.get("model", model),
-            "tokens_input": llm_result.get("tokens_input", 0),
-            "tokens_output": llm_result.get("tokens_output", 0),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "tokens_input": stage.telemetry.tokens_input_total,
+            "tokens_output": stage.telemetry.tokens_output_total,
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         return {
@@ -261,39 +261,48 @@ class DailyBriefingProcessor:
         correlation_id: str,
         stage: LLMStage | None = None,
     ) -> dict:
-        is_valid, warnings = validate_briefing_sections(sections, watchlist_config)
-
-        for warning in warnings:
-            logger.warning(
-                "briefing_validation_warning",
-                action="validate_briefing",
-                warning=warning,
-                correlation_id=correlation_id,
-            )
-
         coercion_warnings = coerce_briefing_fields(sections)
-        for warning in coercion_warnings:
+        for _warning in coercion_warnings:
             logger.info(
                 "briefing_coercion",
                 action="coerce_briefing",
-                warning=warning,
+                correlation_id=correlation_id,
+            )
+
+        is_valid, warnings = self._validate_sections_schema(
+            sections, watchlist_config
+        )
+        for _warning in warnings:
+            logger.warning(
+                "briefing_validation_warning",
+                action="validate_briefing",
                 correlation_id=correlation_id,
             )
 
         if not is_valid:
             if stage is not None:
-                stage.add_validation_warnings(warnings)
+                stage.add_validation_warnings(
+                    ["briefing response did not match required schema"]
+                )
             logger.warning(
                 "briefing_validation_failed_retrying",
                 action="validate_briefing",
-                warnings=warnings,
                 correlation_id=correlation_id,
             )
+
+            if (
+                stage is not None
+                and stage.telemetry.attempt_count
+                >= 1 + stage.policy.validation_retries
+            ):
+                raise LLMValidationError(
+                    "LLM response validation failed after retry", stage.telemetry
+                )
 
             expected_symbols = ", ".join(
                 w.get("symbol", "") for w in watchlist_config if w.get("symbol")
             )
-            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: Your previous response had format issues: " + "; ".join(warnings) + ". Please respond again with the correct JSON format, ensuring watchlist_notes is an array of objects, each with symbol, asset_class, bias, confidence, summary, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
+            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: The previous response did not match the required schema. Please respond again with the correct JSON format, ensuring watchlist_notes is an array of objects, each with symbol, asset_class, bias, confidence, summary, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
 
             try:
                 retry_result = (
@@ -308,34 +317,37 @@ class DailyBriefingProcessor:
                     )
                 )
                 retry_parsed = self._parse_llm_response(retry_result["content"])
-
                 retry_sections = {
-                    "macro_trend": retry_parsed.get("macro_trend", sections.get("macro_trend", "")),
-                    "today": retry_parsed.get("today", sections.get("today", "")),
-                    "this_week": retry_parsed.get("this_week", sections.get("this_week", "")),
-                    "regime_assessment": retry_parsed.get("regime_assessment", sections.get("regime_assessment", "")),
-                    "watchlist_notes": retry_parsed.get("watchlist_notes", sections.get("watchlist_notes", [])),
+                    "macro_trend": retry_parsed.get(
+                        "macro_trend", retry_parsed.get("macro_summary", "")
+                    ),
+                    "today": retry_parsed.get("today", ""),
+                    "this_week": retry_parsed.get(
+                        "this_week", retry_parsed.get("upcoming_events", "")
+                    ),
+                    "regime_assessment": retry_parsed.get("regime_assessment", ""),
+                    "watchlist_notes": retry_parsed.get("watchlist_notes", []),
                 }
 
-                retry_valid, retry_warnings = validate_briefing_sections(
+                retry_coercion = coerce_briefing_fields(retry_sections)
+                retry_valid, retry_warnings = self._validate_sections_schema(
                     retry_sections, watchlist_config
                 )
-                if stage is not None:
-                    stage.add_validation_warnings(retry_warnings)
-                retry_coercion = coerce_briefing_fields(retry_sections)
+                if stage is not None and retry_warnings:
+                    stage.add_validation_warnings(
+                        ["final briefing response did not match required schema"]
+                    )
 
-                for w in retry_warnings:
+                for _warning in retry_warnings:
                     logger.warning(
                         "briefing_retry_validation_warning",
                         action="validate_briefing_retry",
-                        warning=w,
                         correlation_id=correlation_id,
                     )
-                for w in retry_coercion:
+                for _warning in retry_coercion:
                     logger.info(
                         "briefing_retry_coercion",
                         action="coerce_briefing_retry",
-                        warning=w,
                         correlation_id=correlation_id,
                     )
 
@@ -348,21 +360,44 @@ class DailyBriefingProcessor:
                     return retry_sections
 
                 logger.warning(
-                    "briefing_retry_still_invalid_using_original",
+                    "briefing_retry_still_invalid",
                     action="validate_briefing",
                     correlation_id=correlation_id,
                 )
+                if stage is not None:
+                    raise LLMValidationError(
+                        "LLM response validation failed after retry", stage.telemetry
+                    )
             except LLMStageFailure:
                 raise
             except Exception as exc:
                 logger.error(
                     "briefing_retry_failed",
                     action="validate_briefing",
-                    error=str(exc),
                     correlation_id=correlation_id,
                 )
+                if stage is not None:
+                    stage.add_validation_warnings(
+                        ["final briefing response could not be validated"]
+                    )
+                    raise LLMValidationError(
+                        "LLM response validation failed after retry", stage.telemetry
+                    ) from exc
 
         return sections
+
+    @staticmethod
+    def _validate_sections_schema(
+        sections: dict, watchlist_config: list[dict]
+    ) -> tuple[bool, list[str]]:
+        """Validate required briefing fields without exposing model content."""
+        is_valid, warnings = validate_briefing_sections(sections, watchlist_config)
+        for field in ("macro_trend", "today", "this_week", "regime_assessment"):
+            value = sections.get(field)
+            if not isinstance(value, str) or not value.strip():
+                warnings.append(f"required section {field} is missing or invalid")
+                is_valid = False
+        return is_valid, warnings
 
     def _get_regime_summary(self, config: dict) -> str | None:
         sql = text("""
@@ -719,14 +754,18 @@ class DailyBriefingProcessor:
         text = response_text.strip()
 
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
 
         fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
         if fence_match:
             try:
-                return json.loads(fence_match.group(1).strip())
+                parsed = json.loads(fence_match.group(1).strip())
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
@@ -735,9 +774,11 @@ class DailyBriefingProcessor:
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
             candidate = text[first_brace : last_brace + 1]
             try:
-                return json.loads(candidate)
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
                 pass
 
         logger.error("llm_response_parse_failed", action="parse_llm_response")
-        raise ValueError("Could not parse LLM response as JSON")
+        raise ValueError("Could not parse LLM response as JSON object")

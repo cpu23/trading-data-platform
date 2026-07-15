@@ -100,6 +100,35 @@ class LLMRequestPolicyTests(unittest.TestCase):
 
         self.assertNotIn("response_format", make_request.call_args.kwargs["json_body"])
 
+    @patch("llm_client.make_request")
+    def test_malformed_usage_is_sanitized_to_finite_zeroes(self, make_request):
+        response = Mock()
+        response.json.side_effect = [
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": None,
+            },
+            {
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": "not-a-number",
+                    "completion_tokens": -7,
+                    "cost": float("nan"),
+                },
+            },
+        ]
+        make_request.return_value = response
+
+        results = [
+            call_llm("JSON please", processor_id="macro_regime", config=self.config),
+            call_llm("JSON please", processor_id="macro_regime", config=self.config),
+        ]
+
+        for result in results:
+            self.assertEqual(result["tokens_input"], 0)
+            self.assertEqual(result["tokens_output"], 0)
+            self.assertEqual(result["cost_usd"], 0.0)
+
     def test_invalid_unbounded_config_fails_closed(self):
         self.config["llm"]["max_output_tokens"]["briefing"] = 0
         with self.assertRaisesRegex(ValueError, "max_output_tokens"):
@@ -126,8 +155,20 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
     @patch("llm_client.call_llm")
     def test_retry_uses_remaining_stage_budget_and_records_distinct_attempts(self, call):
         call.side_effect = [
-            {"content": "bad", "duration_ms": 3000},
-            {"content": "{}", "duration_ms": 4000},
+            {
+                "content": "bad",
+                "duration_ms": 3000,
+                "tokens_input": 11,
+                "tokens_output": 7,
+                "cost_usd": 0.012,
+            },
+            {
+                "content": "{}",
+                "duration_ms": 4000,
+                "tokens_input": 13,
+                "tokens_output": 5,
+                "cost_usd": 0.008,
+            },
         ]
         stage = LLMStage(
             self.config,
@@ -147,6 +188,11 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(stage.telemetry.validation_warnings, ["watchlist_notes missing UK100"])
         self.assertEqual(stage.telemetry.model, "provider/briefing")
         self.assertEqual(stage.telemetry.max_output_tokens, 2600)
+        self.assertEqual(stage.telemetry.tokens_input_total, 24)
+        self.assertEqual(stage.telemetry.tokens_output_total, 12)
+        self.assertAlmostEqual(stage.telemetry.cost_usd_total, 0.02)
+        self.assertEqual(stage.telemetry.as_dict()["tokens_input_total"], 24)
+        self.assertNotIn("content", stage.telemetry.as_dict())
 
     @patch("llm_client.call_llm")
     def test_exhausted_budget_raises_typed_timeout_without_retry_request(self, call):
@@ -230,6 +276,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
             validation_warnings=["invalid JSON shape"],
             model="provider/briefing",
             max_output_tokens=2600,
+            tokens_input_total=30,
+            tokens_output_total=12,
+            cost_usd_total=0.03,
         )
         processor = Mock()
         processor.process.side_effect = LLMStageFailure(
@@ -247,6 +296,11 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(summary["attempt_count"], 2)
         self.assertEqual(summary["validation_retry_duration_ms"], 200)
         self.assertNotIn("raw", str(summary).lower())
+        persisted = write_log.call_args.kwargs
+        self.assertEqual((persisted["tokens_input"], persisted["tokens_output"]), (30, 12))
+        self.assertAlmostEqual(persisted["cost_usd"], 0.03)
+        self.assertIsNone(persisted["prompt_text"])
+        self.assertIsNone(persisted["raw_response"])
 
 
 if __name__ == "__main__":

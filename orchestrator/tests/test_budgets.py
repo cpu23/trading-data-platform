@@ -239,6 +239,9 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
             "model": "provider/event",
         }
         stage.telemetry.as_dict.return_value = {"attempt_count": 1}
+        stage.telemetry.tokens_input_total = 0
+        stage.telemetry.tokens_output_total = 0
+        stage.telemetry.cost_usd_total = 0.0
         with patch.object(
             processor, "_fetch_upcoming_events", return_value=[{"event_name": "CPI"}]
         ), patch.object(processor, "_format_watchlist", return_value="EURUSD"), patch.object(

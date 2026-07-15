@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from budgets import BudgetContext
 from db import get_session
-from llm_client import LLMStage
+from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
 from sqlalchemy import text
 
@@ -54,7 +54,28 @@ class EventImpactProcessor:
         llm_result = stage.call(prompt_text)
 
         raw_response = llm_result["content"]
-        parsed = self._parse_llm_response(raw_response)
+        try:
+            parsed = self._parse_llm_response(raw_response)
+            self._validate_llm_response(parsed)
+        except ValueError as exc:
+            stage.add_validation_warnings(["response was not valid JSON"])
+            if stage.policy.validation_retries < 1:
+                raise LLMValidationError("LLM response validation failed", stage.telemetry) from exc
+            retry_prompt = (
+                prompt_text
+                + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
+                "the exact schema above. Do not include markdown or commentary."
+            )
+            llm_result = stage.call(retry_prompt)
+            raw_response = llm_result["content"]
+            try:
+                parsed = self._parse_llm_response(raw_response)
+                self._validate_llm_response(parsed)
+            except ValueError as retry_exc:
+                stage.add_validation_warnings(["final response was not valid JSON"])
+                raise LLMValidationError(
+                    "LLM response validation failed after retry", stage.telemetry
+                ) from retry_exc
 
         opinion_id = str(uuid4())
 
@@ -86,9 +107,9 @@ class EventImpactProcessor:
             "model_used": llm_result.get("model", model),
             "prompt_version": self.get_prompt_version(),
             "tokens_used": (
-                llm_result.get("tokens_input", 0) + llm_result.get("tokens_output", 0)
+                stage.telemetry.tokens_input_total + stage.telemetry.tokens_output_total
             ),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         processing_log = {
@@ -101,12 +122,12 @@ class EventImpactProcessor:
                 **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
-            "prompt_text": prompt_text,
-            "raw_response": raw_response,
+            "prompt_text": None,
+            "raw_response": None,
             "model_used": llm_result.get("model", model),
-            "tokens_input": llm_result.get("tokens_input", 0),
-            "tokens_output": llm_result.get("tokens_output", 0),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "tokens_input": stage.telemetry.tokens_input_total,
+            "tokens_output": stage.telemetry.tokens_output_total,
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         return {
@@ -332,6 +353,20 @@ class EventImpactProcessor:
         return summary
 
     @staticmethod
+    def _validate_llm_response(parsed: dict) -> None:
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM response did not match required schema")
+        required_types = {
+            "events": list,
+            "overall_volatility_outlook": str,
+            "risk_management_note": str,
+        }
+        if any(not isinstance(parsed.get(key), expected) for key, expected in required_types.items()):
+            raise ValueError("LLM response did not match required schema")
+        if any(not isinstance(event, dict) for event in parsed["events"]):
+            raise ValueError("LLM response did not match required schema")
+
+    @staticmethod
     def _parse_llm_response(response_text: str) -> dict:
         text = response_text.strip()
 
@@ -356,11 +391,5 @@ class EventImpactProcessor:
             except json.JSONDecodeError:
                 pass
 
-        logger.error(
-            "llm_response_parse_failed",
-            action="parse_llm_response",
-            raw_response=response_text[:2000],
-        )
-        raise ValueError(
-            f"Could not parse LLM response as JSON. Raw text:\n{response_text[:500]}"
-        )
+        logger.error("llm_response_parse_failed", action="parse_llm_response")
+        raise ValueError("Could not parse LLM response as JSON")

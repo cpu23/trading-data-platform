@@ -1,3 +1,4 @@
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,6 +38,9 @@ class LLMAttemptTelemetry:
     validation_warnings: list[str] = field(default_factory=list)
     model: str = ""
     max_output_tokens: int = 0
+    tokens_input_total: int = 0
+    tokens_output_total: int = 0
+    cost_usd_total: float = 0.0
 
     def as_dict(self) -> dict:
         return {
@@ -46,6 +50,9 @@ class LLMAttemptTelemetry:
             "validation_warnings": list(self.validation_warnings),
             "model": self.model,
             "max_output_tokens": self.max_output_tokens,
+            "tokens_input_total": self.tokens_input_total,
+            "tokens_output_total": self.tokens_output_total,
+            "cost_usd_total": self.cost_usd_total,
         }
 
 
@@ -57,6 +64,30 @@ class LLMStageFailure(RuntimeError):
 
 class LLMStageTimeout(LLMStageFailure):
     pass
+
+
+class LLMValidationError(LLMStageFailure):
+    code = "llm_validation_failed"
+
+
+def _safe_token_count(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return parsed if parsed >= 0 else 0
+
+
+def _safe_cost_usd(value) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) and parsed >= 0 else 0.0
 
 
 def _processor_value(llm_config: dict, key: str, processor_id: str, default):
@@ -198,6 +229,11 @@ class LLMStage:
             self.telemetry.validation_retry_duration_ms = duration_ms
         return completed_at
 
+    def _record_usage(self, result: dict) -> None:
+        self.telemetry.tokens_input_total += _safe_token_count(result.get("tokens_input"))
+        self.telemetry.tokens_output_total += _safe_token_count(result.get("tokens_output"))
+        self.telemetry.cost_usd_total += _safe_cost_usd(result.get("cost_usd"))
+
     def call(self, prompt: str) -> dict:
         if self.telemetry.attempt_count >= 1 + self.policy.validation_retries:
             raise LLMStageFailure("LLM validation retry limit exhausted", self.telemetry)
@@ -241,6 +277,7 @@ class LLMStage:
             raise LLMStageFailure("LLM request failed", self.telemetry) from exc
 
         completed_at = self._record_attempt(started_at)
+        self._record_usage(result)
         # The sync HTTP timeout is the primary interruption mechanism. This
         # post-call guard also rejects transports/mocks that return too late.
         if completed_at >= self._deadline:
@@ -329,13 +366,13 @@ def call_llm(
         raise
 
     duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
-    usage = data.get("usage", {})
-    tokens_input = usage.get("prompt_tokens", 0)
-    tokens_output = usage.get("completion_tokens", 0)
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    tokens_input = _safe_token_count(usage.get("prompt_tokens", 0))
+    tokens_output = _safe_token_count(usage.get("completion_tokens", 0))
     model_used = data.get("model", policy.model)
-    cost_usd = usage.get("cost")
-    if cost_usd is not None:
-        cost_usd = float(cost_usd)
+    cost_usd = _safe_cost_usd(usage.get("cost"))
 
     logger.info(
         "llm_call_completed",

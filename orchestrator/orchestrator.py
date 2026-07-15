@@ -1432,6 +1432,13 @@ def _run_processor_impl(
         )
     if failure_input_summary is not None:
         processing_log["input_summary"] = failure_input_summary
+        processing_log["tokens_input"] = failure_input_summary.get("tokens_input_total", 0)
+        processing_log["tokens_output"] = failure_input_summary.get("tokens_output_total", 0)
+        processing_log["cost_usd"] = failure_input_summary.get("cost_usd_total", 0.0)
+
+    # Raw LLM request/response content is never part of operational persistence.
+    processing_log["prompt_text"] = None
+    processing_log["raw_response"] = None
 
     processing_log.setdefault("processor", processor_id)
     processing_log.setdefault("status", status)
@@ -1593,8 +1600,8 @@ def _write_processing_log(
         "status": status,
         "input_summary": json.dumps(input_summary) if input_summary else None,
         "output_id": output_id,
-        "prompt_text": prompt_text,
-        "raw_response": raw_response,
+        "prompt_text": None,
+        "raw_response": None,
         "model_used": model_used,
         "tokens_input": tokens_input,
         "tokens_output": tokens_output,

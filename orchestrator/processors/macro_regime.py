@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from budgets import BudgetContext
 from db import get_session
-from llm_client import LLMStage, LLMStageFailure
+from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
 from sqlalchemy import text
 
@@ -111,7 +111,7 @@ class MacroRegimeProcessor:
         except ValueError as exc:
             stage.add_validation_warnings(["response was not valid JSON"])
             if stage.policy.validation_retries < 1:
-                raise LLMStageFailure("LLM response validation failed", stage.telemetry) from exc
+                raise LLMValidationError("LLM response validation failed", stage.telemetry) from exc
             retry_prompt = (
                 prompt_text
                 + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
@@ -123,7 +123,7 @@ class MacroRegimeProcessor:
                 parsed = self._parse_llm_response(raw_response)
             except ValueError as retry_exc:
                 stage.add_validation_warnings(["final response was not valid JSON"])
-                raise LLMStageFailure(
+                raise LLMValidationError(
                     "LLM response validation failed after retry", stage.telemetry
                 ) from retry_exc
 
@@ -163,9 +163,9 @@ class MacroRegimeProcessor:
             "model_used": llm_result.get("model", model),
             "prompt_version": self.get_prompt_version(),
             "tokens_used": (
-                llm_result.get("tokens_input", 0) + llm_result.get("tokens_output", 0)
+                stage.telemetry.tokens_input_total + stage.telemetry.tokens_output_total
             ),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         key_indicators = {}
@@ -201,12 +201,12 @@ class MacroRegimeProcessor:
                 **stage.telemetry.as_dict(),
             },
             "output_id": opinion_id,
-            "prompt_text": prompt_text,
-            "raw_response": raw_response,
+            "prompt_text": None,
+            "raw_response": None,
             "model_used": llm_result.get("model", model),
-            "tokens_input": llm_result.get("tokens_input", 0),
-            "tokens_output": llm_result.get("tokens_output", 0),
-            "cost_usd": llm_result.get("cost_usd", 0.0),
+            "tokens_input": stage.telemetry.tokens_input_total,
+            "tokens_output": stage.telemetry.tokens_output_total,
+            "cost_usd": stage.telemetry.cost_usd_total,
         }
 
         return {
