@@ -1,5 +1,11 @@
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
+
+
+def elapsed_ms(started_at: float) -> int:
+    """Return a nonnegative elapsed duration rounded to the nearest millisecond."""
+    return max(0, round((time.monotonic() - started_at) * 1000))
 
 
 @dataclass
@@ -13,6 +19,7 @@ class CollectionResult:
     errors: list[dict] = field(default_factory=list)
     total_series: int = 0
     successful_series: int = 0
+    metrics: dict[str, int] = field(default_factory=dict)
 
     @property
     def all_failed(self) -> bool:

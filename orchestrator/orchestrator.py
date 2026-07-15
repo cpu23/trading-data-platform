@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from collectors import get_all_collectors, get_collector
-from collectors.base import CollectionResult
+from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, insert_records, upsert_records
 from logging_config import get_logger
 from locks import RunConflict, advisory_lock
@@ -421,6 +421,7 @@ def _run_collector_impl(
     error_message = None
     error_traceback = None
     collection_errors: list[dict] = []
+    collection_metrics: dict[str, int] = {}
 
     try:
         raw_result = collector.collect(config, correlation_id)
@@ -429,6 +430,7 @@ def _run_collector_impl(
         if isinstance(raw_result, CollectionResult):
             records = raw_result.records
             collection_errors = raw_result.errors
+            collection_metrics = dict(raw_result.metrics)
             # Derive collection-level status from structured result
             if raw_result.all_failed:
                 status = "failed"
@@ -450,11 +452,20 @@ def _run_collector_impl(
         if records:
             table_name = collector.get_target_table()
             conflict_columns = collector.get_conflict_columns()
+            db_write_started = time.monotonic()
             write_result = upsert_records(
                 table_name=table_name,
                 records=records,
                 conflict_columns=conflict_columns,
                 config=config,
+            )
+            collection_metrics["db_write_duration_ms"] = elapsed_ms(db_write_started)
+            logger.info(
+                "collector_db_write_metrics",
+                action="run_collector",
+                collector=source_id,
+                correlation_id=correlation_id,
+                db_write_duration_ms=collection_metrics["db_write_duration_ms"],
             )
             records_written = write_result.written
 
@@ -513,6 +524,7 @@ def _run_collector_impl(
         "records_fetched": records_fetched,
         "records_written": records_written,
         "duration_ms": duration_ms,
+        "metrics": collection_metrics,
         "error": error_message,
         "correlation_id": correlation_id,
     }

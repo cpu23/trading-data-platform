@@ -38,6 +38,7 @@ collectors:
     api_key: ${FRED_API_KEY}
     schedule: "0 6 * * *"
     metadata_ttl_days: 30
+    max_concurrency: 4
     backfill_years_daily: 2
     backfill_years_monthly: 5
     backfill_years_quarterly: 10

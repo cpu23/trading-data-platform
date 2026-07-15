@@ -1,10 +1,11 @@
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import text
 
-from collectors.base import CollectionResult
+from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, query_latest
 from http_client import make_request
 from logging_config import get_logger
@@ -31,6 +32,14 @@ class FredCollector:
         self._metadata_cache = {}
         self.last_errors: list[dict] = []
 
+    @staticmethod
+    def _max_concurrency(fred_config: dict) -> int:
+        try:
+            configured = int(fred_config.get("max_concurrency", 4))
+        except (TypeError, ValueError):
+            configured = 4
+        return max(1, min(configured, 16))
+
     def collect(self, config: dict, correlation_id: str) -> CollectionResult:
         fred_config = config["collectors"]["fred"]
         api_key = fred_config["api_key"]
@@ -47,43 +56,90 @@ class FredCollector:
         errors: list[dict] = []
         total_series = len(series_list)
         successful_series = 0
+        metadata_duration_ms = 0
+        observation_duration_ms = 0
+        parse_duration_ms = 0
 
+        # Keep every database-backed lookup on the caller thread. Worker threads only
+        # perform HTTP and pure normalization, so SQLAlchemy sessions are never shared.
+        prepared: list[tuple[dict, datetime, dict[str, Any]] | Exception] = []
         for series_entry in series_list:
             series_id = series_entry["id"]
             frequency = series_entry.get("frequency", "monthly")
-
             try:
-                records = self._collect_series(
-                    series_id=series_id,
-                    frequency=frequency,
-                    api_key=api_key,
-                    backfill_years=backfill_overrides.get(frequency, 5),
-                    correlation_id=correlation_id,
-                    config=config,
+                start_date = self._get_start_date(
+                    series_id,
+                    frequency,
+                    backfill_overrides.get(frequency, 5),
+                    config,
                 )
-                all_records.extend(records)
-                successful_series += 1
-                logger.info(
-                    "series_collected",
-                    action="collect_series",
-                    series_id=series_id,
-                    records_fetched=len(records),
-                    correlation_id=correlation_id,
-                )
+                metadata_started = time.monotonic()
+                try:
+                    metadata = self._fetch_series_metadata(
+                        series_id, api_key, correlation_id, config
+                    )
+                finally:
+                    metadata_duration_ms += elapsed_ms(metadata_started)
+                prepared.append((series_entry, start_date, metadata))
             except Exception as exc:
-                error_entry = {
-                    "series_id": series_id,
-                    "error": str(exc),
-                    "frequency": frequency,
-                }
-                errors.append(error_entry)
-                logger.error(
-                    "series_collection_failed",
-                    action="collect_series",
-                    series_id=series_id,
-                    error=str(exc),
-                    correlation_id=correlation_id,
+                prepared.append(exc)
+
+        futures: list[Future | Exception] = []
+        with ThreadPoolExecutor(
+            max_workers=self._max_concurrency(fred_config),
+            thread_name_prefix="fred-observation",
+        ) as executor:
+            for item in prepared:
+                if isinstance(item, Exception):
+                    futures.append(item)
+                    continue
+                series_entry, start_date, metadata = item
+                futures.append(
+                    executor.submit(
+                        self._fetch_and_normalize_observations,
+                        series_entry["id"],
+                        series_entry.get("frequency", "monthly"),
+                        api_key,
+                        start_date,
+                        metadata,
+                        correlation_id,
+                    )
                 )
+
+            # Futures are all submitted before results are consumed. Reading them in
+            # configured order gives deterministic records and never cancels later work.
+            for series_entry, future in zip(series_list, futures, strict=True):
+                series_id = series_entry["id"]
+                frequency = series_entry.get("frequency", "monthly")
+                try:
+                    if isinstance(future, Exception):
+                        raise future
+                    records, fetch_ms, normalize_ms = future.result()
+                    observation_duration_ms += fetch_ms
+                    parse_duration_ms += normalize_ms
+                    all_records.extend(records)
+                    successful_series += 1
+                    logger.info(
+                        "series_collected",
+                        action="collect_series",
+                        series_id=series_id,
+                        records_fetched=len(records),
+                        correlation_id=correlation_id,
+                    )
+                except Exception as exc:
+                    error_entry = {
+                        "series_id": series_id,
+                        "error": str(exc),
+                        "frequency": frequency,
+                    }
+                    errors.append(error_entry)
+                    logger.error(
+                        "series_collection_failed",
+                        action="collect_series",
+                        series_id=series_id,
+                        error=str(exc),
+                        correlation_id=correlation_id,
+                    )
 
         self.last_errors = errors
 
@@ -92,6 +148,18 @@ class FredCollector:
             errors=errors,
             total_series=total_series,
             successful_series=successful_series,
+            metrics={
+                "metadata_cache_duration_ms": metadata_duration_ms,
+                "observation_fetch_duration_ms": observation_duration_ms,
+                "parse_normalize_duration_ms": parse_duration_ms,
+            },
+        )
+
+        logger.info(
+            "fred_stage_metrics",
+            action="collect",
+            correlation_id=correlation_id,
+            **result.metrics,
         )
 
         if errors:
@@ -106,21 +174,15 @@ class FredCollector:
 
         return result
 
-    def _collect_series(
+    def _fetch_and_normalize_observations(
         self,
         series_id: str,
         frequency: str,
         api_key: str,
-        backfill_years: int,
+        start_date: datetime,
+        metadata: dict[str, Any],
         correlation_id: str,
-        config: dict,
-    ) -> list[dict]:
-        start_date = self._get_start_date(series_id, frequency, backfill_years, config)
-
-        metadata = self._fetch_series_metadata(
-            series_id, api_key, correlation_id, config
-        )
-
+    ) -> tuple[list[dict], int, int]:
         params = {
             "series_id": series_id,
             "api_key": api_key,
@@ -128,6 +190,7 @@ class FredCollector:
             "observation_start": start_date.strftime("%Y-%m-%d"),
         }
 
+        fetch_started = time.monotonic()
         response = make_request(
             method="GET",
             url=FRED_OBSERVATIONS_URL,
@@ -138,7 +201,9 @@ class FredCollector:
 
         data = response.json()
         observations = data.get("observations", [])
+        fetch_duration_ms = elapsed_ms(fetch_started)
 
+        parse_started = time.monotonic()
         records = []
         for obs in observations:
             value_str = obs.get("value", ".")
@@ -172,7 +237,8 @@ class FredCollector:
             }
             records.append(record)
 
-        return records
+        parse_duration_ms = elapsed_ms(parse_started)
+        return records, fetch_duration_ms, parse_duration_ms
 
     def _get_start_date(
         self,
