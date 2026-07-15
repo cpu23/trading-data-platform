@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from llm_client import LLMValidationError
+from db import WriteResult
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
 from processors.macro_regime import MacroRegimeProcessor
@@ -46,6 +47,137 @@ def response(content: str, tokens_input: int, tokens_output: int, cost: float) -
 
 
 class ProcessorLLMPersistenceTests(unittest.TestCase):
+    def _successful_processor_result(self, *, processing_log=None, extra_records=None):
+        return {
+            "opinion": {"opinion_id": "11111111-1111-1111-1111-111111111111"},
+            "extra_records": extra_records or {},
+            "processing_log": processing_log if processing_log is not None else {
+                "status": "success",
+                "output_id": "untrusted-output-id",
+                "model_used": "provider/cumulative",
+                "tokens_input": 31,
+                "tokens_output": 7,
+                "cost_usd": 0.125,
+                "input_summary": {"attempt_count": 2, "safe_stage": "validation_retry"},
+                "prompt_text": PROMPT_SENTINEL,
+                "raw_response": RAW_SENTINEL,
+            },
+        }
+
+    def _run_processor_with_writes(self, processor_result, *, opinion_write, extra_write=None):
+        import orchestrator
+
+        processor = Mock()
+        processor.process.return_value = processor_result
+        with patch.object(orchestrator, "get_processor", return_value=processor), patch.object(
+            orchestrator, "build_processor_fingerprint", return_value="f" * 64
+        ), patch.object(orchestrator, "insert_records", return_value=opinion_write) as insert, patch.object(
+            orchestrator,
+            "upsert_records",
+            return_value=extra_write or WriteResult(0, 0, 0, ()),
+        ), patch.object(orchestrator, "_write_processing_log") as write_log:
+            result = orchestrator._run_processor_impl(
+                "briefing", config={}, correlation_id="cid", manage_lifecycle=False
+            )
+        return result, write_log, insert
+
+    def test_partial_opinion_write_retains_exact_cumulative_llm_usage_once(self):
+        result, write_log, _ = self._run_processor_with_writes(
+            self._successful_processor_result(),
+            opinion_write=WriteResult(2, 1, 1, ("one opinion row failed",)),
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["opinion_id"], "11111111-1111-1111-1111-111111111111")
+        write_log.assert_called_once()
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["status"], "partial")
+        self.assertEqual(logged["input_fingerprint"], "f" * 64)
+        self.assertEqual(logged["output_id"], result["opinion_id"])
+        self.assertEqual((logged["tokens_input"], logged["tokens_output"]), (31, 7))
+        self.assertEqual(logged["cost_usd"], 0.125)
+        self.assertEqual(logged["model_used"], "provider/cumulative")
+        self.assertEqual(
+            logged["input_summary"],
+            {"attempt_count": 2, "safe_stage": "validation_retry"},
+        )
+        self.assertIsNone(logged["prompt_text"])
+        self.assertIsNone(logged["raw_response"])
+
+    def test_failed_opinion_write_has_no_false_output_id_but_keeps_usage(self):
+        result, write_log, _ = self._run_processor_with_writes(
+            self._successful_processor_result(),
+            opinion_write=WriteResult(1, 0, 1, ("opinion not written",)),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["opinion_id"])
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["status"], "failed")
+        self.assertIsNone(logged["output_id"])
+        self.assertEqual((logged["tokens_input"], logged["tokens_output"]), (31, 7))
+        self.assertEqual(logged["cost_usd"], 0.125)
+
+    def test_partial_extra_write_after_durable_opinion_keeps_usage_once(self):
+        processor_result = self._successful_processor_result(
+            extra_records={"daily_briefings": [{"briefing_date": "2026-07-15"}]}
+        )
+        result, write_log, insert = self._run_processor_with_writes(
+            processor_result,
+            opinion_write=WriteResult(1, 1, 0, ()),
+            extra_write=WriteResult(2, 1, 1, ("one briefing row failed",)),
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["opinion_id"], "11111111-1111-1111-1111-111111111111")
+        insert.assert_called_once()
+        write_log.assert_called_once()
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["status"], "partial")
+        self.assertEqual(logged["output_id"], result["opinion_id"])
+        self.assertEqual((logged["tokens_input"], logged["tokens_output"]), (31, 7))
+        self.assertEqual(logged["cost_usd"], 0.125)
+
+    def test_malformed_processing_log_fails_safe_without_crashing(self):
+        result, write_log, _ = self._run_processor_with_writes(
+            self._successful_processor_result(processing_log=["malformed"]),
+            opinion_write=WriteResult(1, 0, 1, ("opinion not written",)),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["status"], "failed")
+        self.assertIsNone(logged["output_id"])
+        self.assertEqual(logged["tokens_input"], 0)
+        self.assertEqual(logged["tokens_output"], 0)
+        self.assertEqual(logged["cost_usd"], 0.0)
+        self.assertIsNone(logged["input_summary"])
+        self.assertIsNone(logged["model_used"])
+
+    def test_malformed_processing_telemetry_uses_safe_zero_fields(self):
+        malformed = {
+            "status": "success",
+            "output_id": "false-id",
+            "tokens_input": "31",
+            "tokens_output": object(),
+            "cost_usd": float("nan"),
+            "model_used": {"unsafe": "model"},
+            "input_summary": "unsafe summary",
+        }
+        result, write_log, _ = self._run_processor_with_writes(
+            self._successful_processor_result(processing_log=malformed),
+            opinion_write=WriteResult(1, 0, 1, ("opinion not written",)),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["tokens_input"], 0)
+        self.assertEqual(logged["tokens_output"], 0)
+        self.assertEqual(logged["cost_usd"], 0.0)
+        self.assertIsNone(logged["model_used"])
+        self.assertIsNone(logged["input_summary"])
+        self.assertIsNone(logged["output_id"])
+
     def test_processing_log_insert_defensively_nulls_legacy_raw_columns(self):
         import orchestrator
 

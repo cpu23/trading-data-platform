@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time
 import traceback
@@ -1310,6 +1311,8 @@ def _run_processor_impl(
     failure_input_summary = None
     input_fingerprint = None
     reusable_output = None
+    processor_processing_log = {}
+    durable_output_id = None
 
     try:
         input_fingerprint = build_processor_fingerprint(processor, config)
@@ -1342,6 +1345,45 @@ def _run_processor_impl(
             result_payload = processor.process(
                 config, correlation_id, budget_context=budget_context
             )
+            raw_processing_log = (
+                result_payload.get("processing_log")
+                if isinstance(result_payload, dict)
+                else None
+            )
+            if isinstance(raw_processing_log, dict):
+                tokens_input = raw_processing_log.get("tokens_input", 0)
+                if (
+                    not isinstance(tokens_input, int)
+                    or isinstance(tokens_input, bool)
+                    or tokens_input < 0
+                ):
+                    tokens_input = 0
+                tokens_output = raw_processing_log.get("tokens_output", 0)
+                if (
+                    not isinstance(tokens_output, int)
+                    or isinstance(tokens_output, bool)
+                    or tokens_output < 0
+                ):
+                    tokens_output = 0
+                cost_usd = raw_processing_log.get("cost_usd", 0.0)
+                if (
+                    not isinstance(cost_usd, (int, float))
+                    or isinstance(cost_usd, bool)
+                    or not math.isfinite(cost_usd)
+                    or cost_usd < 0
+                ):
+                    cost_usd = 0.0
+                processor_processing_log = {
+                    "input_summary": raw_processing_log.get("input_summary")
+                    if isinstance(raw_processing_log.get("input_summary"), dict)
+                    else None,
+                    "model_used": raw_processing_log.get("model_used")
+                    if isinstance(raw_processing_log.get("model_used"), str)
+                    else None,
+                    "tokens_input": tokens_input,
+                    "tokens_output": tokens_output,
+                    "cost_usd": cost_usd,
+                }
     except BudgetBlock as exc:
         status = (
             "budget_blocked" if isinstance(exc, BudgetExceeded) else "budget_unavailable"
@@ -1381,6 +1423,8 @@ def _run_processor_impl(
     duration_ms = int(time.monotonic() * 1000 - start_ms)
 
     if status == "success" and result_payload:
+        write_outcomes = []
+        any_output_written = False
         try:
             opinion = result_payload["opinion"]
             opinion_written = insert_records(
@@ -1388,6 +1432,19 @@ def _run_processor_impl(
                 records=[opinion],
                 config=config,
             )
+            opinion_status = getattr(opinion_written, "status", "success")
+            if opinion_status not in {"success", "partial", "failed"}:
+                opinion_status = "success"
+            write_outcomes.append(opinion_status)
+            opinion_count = getattr(opinion_written, "written", None)
+            opinion_durable = (
+                opinion_count > 0
+                if isinstance(opinion_count, int) and not isinstance(opinion_count, bool)
+                else opinion_status != "failed"
+            )
+            if opinion_durable:
+                durable_output_id = opinion.get("opinion_id")
+                any_output_written = True
 
             extra_records = result_payload.get("extra_records", {})
             extra_written = {}
@@ -1406,6 +1463,21 @@ def _run_processor_impl(
                         config=config,
                     )
                 extra_written[table_name] = count
+                extra_status = getattr(count, "status", "success")
+                if extra_status not in {"success", "partial", "failed"}:
+                    extra_status = "success"
+                write_outcomes.append(extra_status)
+                written_count = getattr(count, "written", None)
+                if (
+                    isinstance(written_count, int)
+                    and not isinstance(written_count, bool)
+                    and written_count > 0
+                ):
+                    any_output_written = True
+
+            if any(outcome != "success" for outcome in write_outcomes):
+                status = "partial" if any_output_written else "failed"
+                error_message = "Structured output DB write was not fully durable"
 
             logger.info(
                 "processor_records_written",
@@ -1416,7 +1488,7 @@ def _run_processor_impl(
                 correlation_id=correlation_id,
             )
         except Exception as exc:
-            status = "partial"
+            status = "partial" if any_output_written else "failed"
             error_message = f"DB write failed: {exc}"
             logger.error(
                 "processor_db_write_failed",
@@ -1426,10 +1498,7 @@ def _run_processor_impl(
                 correlation_id=correlation_id,
             )
 
-    processing_log = None
-    if status == "success" and result_payload:
-        processing_log = result_payload.get("processing_log")
-    processing_log = processing_log or {}
+    processing_log = dict(processor_processing_log)
     if status == "skipped":
         processing_log.update(
             {
@@ -1445,12 +1514,19 @@ def _run_processor_impl(
         processing_log["tokens_output"] = failure_input_summary.get("tokens_output_total", 0)
         processing_log["cost_usd"] = failure_input_summary.get("cost_usd_total", 0.0)
 
+    processing_log.setdefault("tokens_input", 0)
+    processing_log.setdefault("tokens_output", 0)
+    processing_log.setdefault("cost_usd", 0.0)
+
     # Raw LLM request/response content is never part of operational persistence.
     processing_log["prompt_text"] = None
     processing_log["raw_response"] = None
 
     processing_log.setdefault("processor", processor_id)
-    processing_log.setdefault("status", status)
+    # Processor telemetry describes incurred LLM work, but durability determines
+    # the final status and reusable output identity.
+    processing_log["status"] = status
+    processing_log["output_id"] = durable_output_id
     processing_log.setdefault("started_at", started_at)
     processing_log.setdefault("completed_at", completed_at)
     processing_log.setdefault("duration_ms", duration_ms)
@@ -1486,9 +1562,7 @@ def _run_processor_impl(
         "duration_ms": duration_ms,
         "error": error_message,
         "correlation_id": correlation_id,
-        "opinion_id": result_payload["opinion"]["opinion_id"]
-        if result_payload and status == "success"
-        else None,
+        "opinion_id": durable_output_id,
         "skip_reason": "unchanged_inputs" if status == "skipped" else None,
         "reusable_output": status == "skipped" and reusable_output is not None,
         "forced": force,
