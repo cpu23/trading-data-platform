@@ -1,10 +1,22 @@
 -- Fictional deterministic fixtures for the credential-free portfolio demo.
 INSERT INTO macro_series (series_id, observed_at, value, source) VALUES
+('T10Y2Y', NOW() - INTERVAL '14 days', 0.30, 'demo'),
+('T10Y2Y', NOW() - INTERVAL '7 days', 0.36, 'demo'),
 ('T10Y2Y', NOW() - INTERVAL '1 hour', 0.42, 'demo'),
+('VIXCLS', NOW() - INTERVAL '14 days', 18.2, 'demo'),
+('VIXCLS', NOW() - INTERVAL '7 days', 16.9, 'demo'),
 ('VIXCLS', NOW() - INTERVAL '1 hour', 15.8, 'demo'),
+('DTWEXBGS', NOW() - INTERVAL '14 days', 120.1, 'demo'),
+('DTWEXBGS', NOW() - INTERVAL '7 days', 120.7, 'demo'),
 ('DTWEXBGS', NOW() - INTERVAL '1 hour', 121.4, 'demo'),
+('BAMLH0A0HYM2', NOW() - INTERVAL '14 days', 3.48, 'demo'),
+('BAMLH0A0HYM2', NOW() - INTERVAL '7 days', 3.34, 'demo'),
 ('BAMLH0A0HYM2', NOW() - INTERVAL '1 hour', 3.21, 'demo'),
+('DGS10', NOW() - INTERVAL '14 days', 4.05, 'demo'),
+('DGS10', NOW() - INTERVAL '7 days', 4.12, 'demo'),
 ('DGS10', NOW() - INTERVAL '1 hour', 4.18, 'demo'),
+('T5YIE', NOW() - INTERVAL '14 days', 2.42, 'demo'),
+('T5YIE', NOW() - INTERVAL '7 days', 2.36, 'demo'),
 ('T5YIE', NOW() - INTERVAL '1 hour', 2.31, 'demo');
 
 INSERT INTO econ_events (event_id, event_name, country, scheduled_at, impact_level, consensus, previous, source, metadata) VALUES

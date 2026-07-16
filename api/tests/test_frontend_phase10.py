@@ -1,4 +1,7 @@
+import asyncio
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,6 +21,10 @@ class Phase10FrontendContracts(unittest.TestCase):
         cls.cards = (API_ROOT / "templates/partials/cards_section.html").read_text()
         cls.expansion = (API_ROOT / "templates/partials/expansion_content.html").read_text()
         cls.regime = (API_ROOT / "templates/partials/regime_section.html").read_text()
+        cls.news = (API_ROOT / "templates/partials/news_section.html").read_text()
+
+    def test_page_declares_inline_favicon_to_avoid_browser_404(self):
+        self.assertIn('<link rel="icon" href="data:,">', self.base)
 
     def test_charts_initialize_on_dom_and_htmx_lifecycle_idempotently(self):
         self.assertIn("function initCharts(root)", self.app_js)
@@ -87,6 +94,33 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("min-height: 36px", self.css)
         self.assertIn(".chart-frame", self.css)
         self.assertIn("height: clamp(", self.css)
+
+    def test_dashboard_health_forwards_request_context(self):
+        from unittest.mock import patch
+        from routes.views.dashboard import _get_dashboard_health
+
+        request = object()
+        with patch("routes.views.dashboard.get_system_health", return_value={"overall": "healthy"}) as health:
+            self.assertEqual(asyncio.run(_get_dashboard_health(request)), {"overall": "healthy"})
+        health.assert_awaited_once_with(request)
+
+    def test_dashboard_news_is_bounded_and_has_truthful_empty_state(self):
+        from routes.views.dashboard import _news_context
+
+        self.assertIn('id="news-section"', self.news)
+        self.assertIn("not_published", self.news)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "feed.json"
+            path.write_text(json.dumps({
+                "generated_at": "2026-07-16T12:00:00+00:00",
+                "items": [
+                    {"title": f"Item {index}", "source_label": "Demo", "published": "2026-07-16T12:00:00+00:00"}
+                    for index in range(7)
+                ],
+            }))
+            context = _news_context({"news_feed": {"output_path": directory}})
+        self.assertEqual(context["status"], "published")
+        self.assertEqual(len(context["items"]), 5)
 
 
 if __name__ == "__main__":

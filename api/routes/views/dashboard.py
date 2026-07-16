@@ -1,8 +1,11 @@
+import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from config import load_config
 from db import query_many, query_one
@@ -14,8 +17,10 @@ from routes.json.system import get_system_health
 from routes.json.settings import timezone_context
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
+from logging_config import get_logger
 
 router = APIRouter()
+logger = get_logger("dashboard.view")
 
 ASSET_EVENT_RULES = {
     "EURUSD": {"currencies": {"EUR", "USD"}},
@@ -39,6 +44,37 @@ SYMBOL_LINKS = {
     "DE40": {"url": "https://finance.yahoo.com/quote/%5EGDAXI", "label": "Yahoo Finance DAX"},
     "EURCHF": {"url": "https://finance.yahoo.com/quote/EURCHF=X", "label": "Yahoo Finance EUR/CHF"},
 }
+
+
+def _news_context(config: dict) -> dict:
+    feed_path = Path(
+        config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news")
+    ) / "feed.json"
+    if not feed_path.is_file():
+        return {"status": "not_published", "items": [], "generated_at": None}
+    try:
+        payload = json.loads(feed_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid", "items": [], "generated_at": None}
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return {"status": "invalid", "items": [], "generated_at": None}
+    items = []
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip():
+            continue
+        items.append({
+            "title": item["title"].strip(),
+            "source": str(item.get("source_label") or item.get("source") or "News"),
+            "published": item.get("published") if isinstance(item.get("published"), str) else None,
+            "summary": item.get("summary", "")[:240] if isinstance(item.get("summary"), str) else "",
+        })
+        if len(items) == 5:
+            break
+    return {
+        "status": "published",
+        "items": items,
+        "generated_at": payload.get("generated_at"),
+    }
 
 
 def _get_templates(request: Request):
@@ -364,21 +400,26 @@ def _get_latest_prices(config: dict) -> dict:
     return price_map
 
 
-def _get_dashboard_health() -> dict:
+async def _get_dashboard_health(request: Request) -> dict:
     try:
-        return get_system_health()
+        result = await get_system_health(request)
+        if isinstance(result, JSONResponse):
+            return json.loads(bytes(result.body))
+        return result
     except Exception as exc:
+        logger.warning("dashboard_health_unavailable", error_type=type(exc).__name__)
         return {
             "overall": "unavailable",
-            "error": str(exc),
+            "error": "Health data unavailable.",
             "components": [],
             "today_llm_cost_usd": 0,
             "today_token_count": 0,
         }
 
 
+
 @router.get("/")
-def dashboard(request: Request):
+async def dashboard(request: Request):
     config = load_config()
     templates = _get_templates(request)
 
@@ -453,7 +494,7 @@ def dashboard(request: Request):
         "request": request,
         "last_cycle_text": _last_cycle_text(config),
         "last_cycle_status": _latest_cycle_status(config),
-        "system_health": _get_dashboard_health(),
+        "system_health": await _get_dashboard_health(request),
         "regime": regime,
         "briefing": briefing,
         "events_data": events_data,
@@ -468,6 +509,7 @@ def dashboard(request: Request):
         "price_map": price_map,
         "budget": get_budget_status(),
         "symbol_links": SYMBOL_LINKS,
+        "news": _news_context(config),
         **tz_context,
         **event_context,
     }
@@ -475,16 +517,16 @@ def dashboard(request: Request):
 
 
 @router.get("/partials/system-health")
-def partial_system_health(request: Request):
+async def partial_system_health(request: Request):
     templates = _get_templates(request)
     return templates.TemplateResponse(request, "partials/system_health.html", {
         "request": request,
-        "system_health": _get_dashboard_health(),
+        "system_health": await _get_dashboard_health(request),
     })
 
 
 @router.get("/partials/header")
-def partial_header(request: Request):
+async def partial_header(request: Request):
     config = load_config()
     templates = _get_templates(request)
     tz_context = timezone_context(request, config)
@@ -528,7 +570,7 @@ def partial_header(request: Request):
         "last_cycle_status": _latest_cycle_status(config),
         "current_time": now,
         "any_stale": any_stale,
-        "system_health": _get_dashboard_health(),
+        "system_health": await _get_dashboard_health(request),
         "budget": get_budget_status(),
         "symbol_links": SYMBOL_LINKS,
         **tz_context,

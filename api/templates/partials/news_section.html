@@ -1,0 +1,23 @@
+<section class="section news-section" id="news-section">
+  <div class="section-heading">
+    <span class="label">News</span>
+    {% if news.status == 'published' and news.generated_at %}
+      <span class="news-generated tabular">Published {{ news.generated_at }}</span>
+    {% endif %}
+  </div>
+  {% if news.status == 'published' and news.items %}
+    <div class="news-list">
+      {% for item in news.items %}
+        <article class="news-item">
+          <div class="news-meta tabular">{{ item.source }}{% if item.published %} · {{ item.published }}{% endif %}</div>
+          <h3>{{ item.title }}</h3>
+          {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% elif news.status == 'not_published' %}
+    <div class="empty-state">News feed not published yet. Check source status in <a href="/operations">Operations</a>.</div>
+  {% else %}
+    <div class="error-block" role="alert">News feed unavailable. The last valid source files remain untouched.</div>
+  {% endif %}
+</section>
