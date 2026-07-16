@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Operations overview{% endblock %}
+{% block content %}
+<main aria-labelledby="operations-title" class="operations-overview">
+  <header class="section-header">
+    <div><h1 id="operations-title">Operations overview</h1><p class="dim">Bounded recent snapshot · {{ current_timezone }}</p></div>
+    <nav aria-label="Dashboard navigation"><a href="/">Dashboard</a> · <a href="/logs">Logs</a> · <a href="/quality">Quality</a></nav>
+  </header>
+
+  <section aria-labelledby="source-state-title">
+    <h2 id="source-state-title">Source &amp; scheduler state</h2>
+    {% if not source_state.available %}<p role="status">Unavailable</p>
+    {% elif not source_state.components %}<p>No source or scheduler state yet</p>
+    {% else %}<table><thead><tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Next due</th></tr></thead><tbody>
+      {% for item in source_state.components %}<tr><th scope="row">{{ item.name }}</th><td>{{ item.last_status }}</td><td>{{ item.next_due_at or '—' }}</td></tr>{% endfor %}
+    </tbody></table>{% endif %}
+  </section>
+
+  <section aria-labelledby="processor-title">
+    <h2 id="processor-title">Latest processor outcomes</h2>
+    {% if not processors.available %}<p role="status">Unavailable</p>
+    {% elif not processors['items'] %}<p>No processor outcomes yet</p>
+    {% else %}<table><thead><tr><th scope="col">Processor</th><th scope="col">Status</th><th scope="col">Model</th><th scope="col">Cost</th><th scope="col">Time</th><th scope="col">Duration</th></tr></thead><tbody>
+      {% for item in processors['items'] %}<tr><th scope="row">{{ item.processor }}</th><td>{{ item.status }}</td><td>{{ item.model_used or '—' }}</td><td>{% if item.cost_usd is not none %}${{ '%.4f'|format(item.cost_usd) }}{% else %}—{% endif %}</td><td>{{ item.time_display or '—' }}</td><td>{{ item.duration_ms if item.duration_ms is not none else '—' }}{% if item.duration_ms is not none %} ms{% endif %}</td></tr>{% endfor %}
+    </tbody></table>{% endif %}
+  </section>
+
+  <section aria-labelledby="feed-title">
+    <h2 id="feed-title">Feed publication state</h2>
+    {% if not feed.available %}<p role="status">Unavailable</p>
+    {% else %}<dl><dt>Status</dt><dd>{{ feed.status }}</dd><dt>Items</dt><dd>{{ feed.item_count }}</dd><dt>Published</dt><dd>{{ feed.published_at or 'Not yet' }}</dd></dl>{% endif %}
+  </section>
+
+  <section aria-labelledby="runs-title">
+    <h2 id="runs-title">Recent durable runs</h2>
+    {% if not runs.available %}<p role="status">Unavailable</p>
+    {% elif not runs['items'] %}<p>No durable runs yet</p>
+    {% else %}<table><thead><tr><th scope="col">Mode</th><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Duration</th><th scope="col">Started</th><th scope="col">Summary</th></tr></thead><tbody>
+      {% for item in runs['items'] %}<tr><th scope="row">{{ item.mode }}</th><td>{{ item.component }}</td><td>{{ item.status }}</td><td>{{ item.duration_ms if item.duration_ms is not none else '—' }}{% if item.duration_ms is not none %} ms{% endif %}</td><td>{{ item.time_display or '—' }}</td><td>{{ item.summary }}</td></tr>{% endfor %}
+    </tbody></table>{% endif %}
+  </section>
+</main>
+{% endblock %}

@@ -14,6 +14,15 @@ router = APIRouter()
 
 logger = get_logger("system.health")
 
+
+def _normalized_lines(raw: str) -> int:
+    if not raw.isascii() or not raw.isdecimal():
+        raise HTTPException(status_code=422, detail="lines must be a positive integer")
+    value = int(raw)
+    if value < 1:
+        raise HTTPException(status_code=422, detail="lines must be at least 1")
+    return min(value, 1000)
+
 # Explicit enums mirror the values emitted by orchestrator/main.py,
 # scheduler.py, price_stream.py, and data_quality.py. Keep these contracts
 # narrow so malformed upstream data cannot reach downstream ``.get()`` calls.
@@ -552,6 +561,33 @@ def get_system_logs(
         logs.append(entry)
 
     return {"logs": logs, "limit": limit}
+
+
+@router.get("/logs")
+def get_bounded_logs(lines: str = Query(default="200")):
+    normalized = _normalized_lines(lines)
+    rows = query_many(
+        """SELECT correlation_id, component, log_type, started_at, completed_at,
+                  status, duration_ms, error_message
+           FROM (
+               SELECT correlation_id, collector AS component, 'collection' AS log_type,
+                      started_at, completed_at, status, duration_ms, error_message
+               FROM collection_log
+               UNION ALL
+               SELECT correlation_id, processor AS component, 'processing' AS log_type,
+                      started_at, completed_at, status, duration_ms, error_message
+               FROM processing_log
+           ) AS bounded_logs
+           ORDER BY started_at DESC
+           LIMIT :limit""",
+        params={"limit": normalized},
+        config=load_config(),
+    )
+    logs = [
+        {**row, "started_at": _fmt(row.get("started_at")), "completed_at": _fmt(row.get("completed_at"))}
+        for row in rows
+    ]
+    return {"logs": logs, "lines": normalized}
 
 
 def _run_payload(row: dict) -> dict:

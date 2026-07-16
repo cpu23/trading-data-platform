@@ -2,11 +2,12 @@ import json
 from datetime import datetime, time as dt_time, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from config import load_config
 from db import query_one, query_many
 from staleness import get_staleness_config, is_stale
+from routes.json.settings import timezone_context
 
 router = APIRouter()
 
@@ -20,6 +21,51 @@ COUNTRY_TO_CURRENCY = {
     "AU": "AUD",
     "CN": "CNY",
 }
+
+
+def _bounded_positive_integer(raw: str, *, maximum: int, name: str) -> int:
+    if not raw.isascii() or not raw.isdecimal():
+        raise HTTPException(status_code=422, detail=f"{name} must be a positive integer")
+    value = int(raw)
+    if value < 1:
+        raise HTTPException(status_code=422, detail=f"{name} must be at least 1")
+    return min(value, maximum)
+
+
+@router.get("/calendar/events")
+def get_calendar_events(
+    request: Request,
+    hours: str = Query(default="24"),
+    limit: str = Query(default="100"),
+):
+    normalized_hours = _bounded_positive_integer(hours, maximum=168, name="hours")
+    normalized_limit = _bounded_positive_integer(limit, maximum=500, name="limit")
+    config = load_config()
+    start = datetime.now(timezone.utc)
+    end = start + timedelta(hours=normalized_hours)
+    rows = query_many(
+        """SELECT event_id, event_name, country, scheduled_at, impact_level,
+                  consensus, previous, actual, source, metadata
+           FROM econ_events
+           WHERE scheduled_at >= :start AND scheduled_at <= :end
+           ORDER BY scheduled_at ASC
+           LIMIT :limit""",
+        params={"start": start, "end": end, "limit": normalized_limit},
+        config=config,
+    )
+    display_zone = timezone_context(request, config)["display_zone"]
+    events = []
+    for row in rows:
+        event = dict(row)
+        scheduled = event.get("scheduled_at")
+        if isinstance(scheduled, datetime):
+            event["scheduled_at"] = scheduled.isoformat()
+            event["display_time"] = scheduled.astimezone(display_zone).isoformat()
+        else:
+            event["scheduled_at"] = str(scheduled)
+            event["display_time"] = event["scheduled_at"]
+        events.append(event)
+    return {"events": events, "hours": normalized_hours, "limit": normalized_limit}
 
 
 def _timezone_config(config: dict) -> dict:

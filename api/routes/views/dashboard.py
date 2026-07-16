@@ -11,6 +11,7 @@ from routes.json.events import get_events_upcoming
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.system import get_system_health
+from routes.json.settings import timezone_context
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
 
@@ -415,7 +416,8 @@ def dashboard(request: Request):
     except Exception as exc:
         indicators = [{"error": str(exc)}]
 
-    now = datetime.now(timezone.utc)
+    tz_context = timezone_context(request, config)
+    now = datetime.now(tz_context["display_zone"])
     event_context = _event_template_context(events_data, config)
     price_map = _get_latest_prices(config)
 
@@ -444,6 +446,7 @@ def dashboard(request: Request):
         "briefing_bullets": _briefing_bullets(briefing),
         "price_map": price_map,
         "budget": get_budget_status(),
+        **tz_context,
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -462,7 +465,8 @@ def partial_system_health(request: Request):
 def partial_header(request: Request):
     config = load_config()
     templates = _get_templates(request)
-    now = datetime.now(timezone.utc)
+    tz_context = timezone_context(request, config)
+    now = datetime.now(tz_context["display_zone"])
 
     regime = {}
     try:
@@ -504,6 +508,7 @@ def partial_header(request: Request):
         "any_stale": any_stale,
         "system_health": _get_dashboard_health(),
         "budget": get_budget_status(),
+        **tz_context,
     })
 
 

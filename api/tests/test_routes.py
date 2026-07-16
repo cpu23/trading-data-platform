@@ -9,6 +9,7 @@ import unittest
 import json
 import tempfile
 import httpx
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── Environment (auth) ──────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ MOCK_CONFIG = {
         "daily_llm_usd": 2.00,
         "warn_at_pct": 80,
     },
+    "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
 }
 
 # ── Patch config.load_config BEFORE importing main (and the whole tree) ────
@@ -523,6 +525,136 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIn("logs", data)
         self.assertIsInstance(data["logs"], list)
         self.assertIn("limit", data)
+
+
+class TestBoundedDashboardInputs(unittest.TestCase):
+    @patch("routes.json.events.query_many", return_value=[])
+    def test_calendar_defaults_custom_values_and_upper_clamps_reach_one_bounded_query(self, query):
+        for url, expected in (
+            ("/api/calendar/events", (24, 100)),
+            ("/api/calendar/events?hours=48&limit=25", (48, 25)),
+            ("/api/calendar/events?hours=999&limit=9999", (168, 500)),
+        ):
+            with self.subTest(url=url):
+                query.reset_mock()
+                response = client.get(url, headers=AUTH)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual((response.json()["hours"], response.json()["limit"]), expected)
+                params = query.call_args.kwargs["params"]
+                self.assertEqual(params["limit"], expected[1])
+                self.assertIn("LIMIT :limit", query.call_args.args[0])
+
+    @patch("routes.json.events.query_many")
+    def test_calendar_rejects_malformed_zero_and_negative_before_query(self, query):
+        for name in ("hours", "limit"):
+            for value in ("wat", "1.5", "0", "-1", "+2"):
+                with self.subTest(name=name, value=value):
+                    response = client.get(f"/api/calendar/events?{name}={value}", headers=AUTH)
+                    self.assertEqual(response.status_code, 422)
+        query.assert_not_called()
+
+    @patch("routes.json.events.query_many")
+    def test_calendar_renders_selected_timezone_only_after_cookie_allowlist(self, query):
+        query.return_value = [{
+            "event_id": "event-1", "event_name": "Open", "country": "JP",
+            "scheduled_at": datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc),
+        }]
+        client.cookies.set("display_timezone", "Asia/Tokyo")
+        try:
+            response = client.get("/api/calendar/events", headers=AUTH)
+        finally:
+            client.cookies.clear()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["events"][0]["display_time"].endswith("+09:00"))
+
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_api_logs_lines_default_custom_and_clamp(self, query):
+        for url, expected in (("/api/logs", 200), ("/api/logs?lines=12", 12), ("/api/logs?lines=5000", 1000)):
+            with self.subTest(url=url):
+                query.reset_mock()
+                response = client.get(url, headers=AUTH)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["lines"], expected)
+                self.assertEqual(query.call_args.kwargs["params"]["limit"], expected)
+
+    @patch("routes.json.system.query_many")
+    def test_api_logs_rejects_malformed_zero_and_negative_before_read(self, query):
+        for value in ("wat", "2.2", "0", "-4", "+2"):
+            with self.subTest(value=value):
+                response = client.get(f"/api/logs?lines={value}", headers=AUTH)
+                self.assertEqual(response.status_code, 422)
+        query.assert_not_called()
+
+
+class TestTimezoneSettings(unittest.TestCase):
+    def tearDown(self):
+        client.cookies.clear()
+
+    @patch("routes.json.settings.load_config", return_value=MOCK_CONFIG)
+    def test_get_uses_configured_default_and_returns_strict_choices(self, _config):
+        response = client.get("/api/settings/timezone", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["current"], "Europe/London")
+        self.assertEqual(response.json()["choices"], ["UTC", "Europe/London", "America/New_York", "Asia/Tokyo", "Australia/Sydney"])
+
+    def test_post_accepts_allowlisted_timezone_and_sets_strict_cookie(self):
+        response = client.post("/api/settings/timezone", headers=AUTH, json={"timezone": "Asia/Tokyo"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["current"], "Asia/Tokyo")
+        cookie = response.headers["set-cookie"]
+        self.assertEqual(response.cookies.get("display_timezone").strip('"'), "Asia/Tokyo")
+        self.assertEqual(client.get("/api/settings/timezone", headers=AUTH).json()["current"], "Asia/Tokyo")
+        self.assertIn("SameSite=strict", cookie)
+
+    def test_post_rejects_unknown_without_setting_cookie(self):
+        response = client.post("/api/settings/timezone", headers=AUTH, json={"timezone": "../../etc/passwd"})
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn("set-cookie", response.headers)
+
+    @patch("routes.json.settings.load_config", return_value=MOCK_CONFIG)
+    def test_invalid_cookie_falls_back_before_zoneinfo_lookup(self, _config):
+        client.cookies.set("display_timezone", "Mars/Olympus")
+        response = client.get("/api/settings/timezone", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["current"], "Europe/London")
+
+
+class TestOperationsOverview(unittest.TestCase):
+    @patch("routes.views.operations.get_system_health", new_callable=AsyncMock)
+    @patch("routes.views.operations.query_many")
+    @patch("routes.views.operations._feed_snapshot")
+    def test_populated_overview_is_bounded_and_renders_required_sections(self, feed, query, health):
+        health.return_value = {"components": [{"name": "fred", "last_status": "success", "next_due_at": "later"}], "readiness": "ready"}
+        query.side_effect = [
+            [{"processor": "briefing", "status": "success", "model_used": "model-x", "cost_usd": 0.1, "started_at": "2026-07-16T00:00:00+00:00", "duration_ms": 1200}],
+            [{"correlation_id": "run-1", "run_kind": "cycle", "requested_component": None, "status": "completed", "result_status": "success", "started_at": "2026-07-16T00:00:00+00:00", "completed_at": "2026-07-16T00:00:02+00:00", "error_message": "RAW_SECRET"}],
+        ]
+        feed.return_value = {"status": "published", "item_count": 4, "published_at": "now"}
+        client.cookies.set("display_timezone", "Asia/Tokyo")
+        try:
+            response = client.get("/operations", headers=AUTH)
+        finally:
+            client.cookies.clear()
+        self.assertEqual(response.status_code, 200)
+        for label in ("Source &amp; scheduler state", "Latest processor outcomes", "Feed publication state", "Recent durable runs"):
+            self.assertIn(label, response.text)
+        self.assertIn("briefing", response.text)
+        self.assertIn("Asia/Tokyo", response.text)
+        self.assertNotIn("RAW_SECRET", response.text)
+        self.assertEqual(query.call_count, 2)
+        for call in query.call_args_list:
+            self.assertEqual(call.kwargs["params"]["limit"], 10)
+            self.assertIn("LIMIT :limit", call.args[0])
+
+    @patch("routes.views.operations.get_system_health", new_callable=AsyncMock, side_effect=RuntimeError("RAW_HEALTH_SECRET"))
+    @patch("routes.views.operations.query_many", side_effect=[RuntimeError("RAW_DB_SECRET"), []])
+    @patch("routes.views.operations._feed_snapshot", side_effect=RuntimeError("RAW_FEED_SECRET"))
+    def test_partial_failure_and_empty_sections_fail_soft_without_raw_errors(self, _feed, _query, _health):
+        response = client.get("/operations", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.text.count("Unavailable"), 3)
+        self.assertIn("No durable runs yet", response.text)
+        self.assertNotIn("RAW_", response.text)
 
 
 class TestRegimeRoutes(unittest.TestCase):

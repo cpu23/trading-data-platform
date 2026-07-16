@@ -25,7 +25,13 @@
   {% endif %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
-    <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M UTC') }}</span>
+    <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M') }} {{ current_time.tzname() }}</span>
+    {% if timezone_choices %}
+    <label class="page-header-meta" for="display-timezone">Timezone</label>
+    <select id="display-timezone" name="timezone" data-settings-endpoint="/api/settings/timezone" aria-label="Display timezone">
+      {% for zone in timezone_choices %}<option value="{{ zone }}"{% if zone == current_timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}
+    </select>
+    {% endif %}
   </div>
   <div class="page-header-right">
     <div class="freshness">
