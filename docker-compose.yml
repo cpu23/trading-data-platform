@@ -7,7 +7,7 @@ services:
       POSTGRES_DB: ${DB_NAME:-trading_data}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:5432:5432"
     restart: unless-stopped
@@ -15,47 +15,85 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME:-trading_data}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "cli.py", "migrate"]
+    env_file: .env
+    volumes:
+      - ./config:/app/config:ro
+      - ./db/migrations:/app/db/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   orchestrator:
-    build: ./orchestrator
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./db/migrations:/app/db/migrations:ro
       - ./data/news:/var/lib/trading-data/news
       - ./logs:/var/log/trading-data
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")'"]
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/api
+    command: ["/app/api/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
+    environment:
+      ORCHESTRATOR_URL: http://orchestrator:8000
     ports:
-      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
       - ./logs:/var/log/trading-data
-      - ./api/static:/app/static:ro
-      - ./api/templates:/app/templates:ro
-      - ./api/routes:/app/routes:ro
+      - ./api/static:/app/api/static:ro
+      - ./api/templates:/app/api/templates:ro
+      - ./api/routes:/app/api/routes:ro
       - ./data/news:/var/lib/trading-data/news:ro
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       orchestrator:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import base64,os,urllib.request; token=base64.b64encode((os.environ['DASHBOARD_USER']+':' + os.environ['DASHBOARD_PASSWORD']).encode()).decode(); request=urllib.request.Request('http://127.0.0.1:8000/api/system/health',headers={'Authorization':'Basic '+token}); urllib.request.urlopen(request,timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   pgdata:

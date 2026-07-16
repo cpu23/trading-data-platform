@@ -1,60 +1,113 @@
+x-demo-environment: &demo_environment
+  DB_USER: demo
+  DB_PASSWORD: demo
+  DB_NAME: trading_data
+  FRED_API_KEY: demo-disabled
+  OPENROUTER_API_KEY: demo-disabled
+  OPENROUTER_MODEL: demo/deterministic
+  OANDA_API_KEY: demo-disabled
+  TWITTERAPI_KEY: ""
+  DASHBOARD_USER: demo
+  DASHBOARD_PASSWORD: demo
+  DEMO_MODE: "true"
+
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
     environment:
       POSTGRES_USER: demo
       POSTGRES_PASSWORD: demo
-      POSTGRES_DB: ${DB_NAME:-trading_data}
+      POSTGRES_DB: trading_data
     volumes:
       - demo_pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/init:/docker-entrypoint-initdb.d:ro
       - ./db/demo/900_demo_seed.sql:/docker-entrypoint-initdb.d/900_demo_seed.sql:ro
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U demo -d ${DB_NAME:-trading_data}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      test: ["CMD-SHELL", "pg_isready -U demo -d trading_data"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "cli.py", "migrate"]
+    environment: *demo_environment
+    volumes:
+      - ./config:/app/config:ro
+      - ./db/migrations:/app/db/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   orchestrator:
-    build: ./orchestrator
-    environment: &demo_environment
-      DB_USER: demo
-      DB_PASSWORD: demo
-      DB_NAME: ${DB_NAME:-trading_data}
-      FRED_API_KEY: demo-disabled
-      OPENROUTER_API_KEY: demo-disabled
-      OPENROUTER_MODEL: deepseek/deepseek-v4-flash
-      OANDA_API_KEY: demo-disabled
-      TWITTERAPI_KEY: ""
-      DASHBOARD_USER: demo
-      DASHBOARD_PASSWORD: demo
-      DEMO_MODE: "true"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *demo_environment
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./db/migrations:/app/db/migrations:ro
-      - ./data/news:/var/lib/trading-data/news
+      - demo_news:/var/lib/trading-data/news
+      - demo_logs:/var/log/trading-data
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 20s
 
   api:
-    build: ./api
-    environment: *demo_environment
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:local
+    working_dir: /app/api
+    command: ["/app/api/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *demo_environment
+      ORCHESTRATOR_URL: http://orchestrator:8000
     ports:
-      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./api/static:/app/static:ro
-      - ./api/templates:/app/templates:ro
-      - ./api/routes:/app/routes:ro
-      - ./data/news:/var/lib/trading-data/news:ro
+      - demo_logs:/var/log/trading-data
+      - ./api/static:/app/api/static:ro
+      - ./api/templates:/app/api/templates:ro
+      - ./api/routes:/app/api/routes:ro
+      - demo_news:/var/lib/trading-data/news:ro
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       orchestrator:
-        condition: service_started
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import base64,os,urllib.request; token=base64.b64encode((os.environ['DASHBOARD_USER']+':' + os.environ['DASHBOARD_PASSWORD']).encode()).decode(); request=urllib.request.Request('http://127.0.0.1:8000/api/system/health',headers={'Authorization':'Basic '+token}); urllib.request.urlopen(request,timeout=3)\""]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 15s
 
 volumes:
   demo_pgdata:
+  demo_news:
+  demo_logs:
