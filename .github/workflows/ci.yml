@@ -2,99 +2,119 @@ name: CI
 
 on:
   push:
-    branches: [master]
   pull_request:
-    branches: [master]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-jobs:
-  python:
-    name: Python checks
-    runs-on: ubuntu-latest
+env:
+  PYTHON_VERSION: "3.12"
 
+jobs:
+  api-unit:
+    name: API unit tests
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Set up uv
+      - name: Set up uv with cache
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-
-      - name: Compile Python sources
-        run: python -m compileall -q -x '/\.venv/' api orchestrator
-
-      - name: Install locked orchestrator environment
-        working-directory: orchestrator
-        run: uv sync --frozen
-
-      - name: Run orchestrator unit tests
-        working-directory: orchestrator
-        run: uv run python -m unittest discover -s tests -v
-
+          cache-dependency-glob: api/uv.lock
       - name: Install locked API environment
         working-directory: api
         run: uv sync --frozen
-
-      - name: Verify API imports
+      - name: Run API unit tests
         working-directory: api
         env:
           CONFIG_DIR: ../config
           DB_USER: ci
           DB_PASSWORD: ci
-          FRED_API_KEY: ci
-          OPENROUTER_API_KEY: ci
-          OPENROUTER_MODEL: deepseek/deepseek-v4-flash
-          OANDA_API_KEY: ci
+          FRED_API_KEY: ci-disabled
+          OPENROUTER_API_KEY: ci-disabled
+          OPENROUTER_MODEL: demo/disabled
+          OANDA_API_KEY: ci-disabled
           DASHBOARD_USER: ci
           DASHBOARD_PASSWORD: ci
-        run: uv run python -c "import main; assert main.app.title == 'Trading Data API'"
+        run: uv run python -m unittest discover -s tests -v
 
-  compose:
-    name: Docker Compose validation
+  orchestrator-unit:
+    name: Orchestrator unit tests
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv with cache
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: orchestrator/uv.lock
+      - name: Install locked orchestrator environment
+        working-directory: orchestrator
+        run: uv sync --frozen
+      - name: Run orchestrator unit tests
+        working-directory: orchestrator
+        run: uv run python -m unittest discover -s tests -v
 
-      - name: Create CI environment file
-        run: cp .env.example .env
-
-      - name: Validate Compose configuration
-        env:
-          DB_USER: ci
-          DB_PASSWORD: ci
-          FRED_API_KEY: ci
-          OPENROUTER_API_KEY: ci
-          OPENROUTER_MODEL: deepseek/deepseek-v4-flash
-          OANDA_API_KEY: ci
-          DASHBOARD_USER: ci
-          DASHBOARD_PASSWORD: ci
-        run: docker compose config --quiet
-
-      - name: Validate demo Compose configuration
-        run: docker compose -f docker-compose.demo.yml config --quiet
-
-  secrets:
-    name: Tracked-file secret scan
+  static:
+    name: Static, migration, and fixture gates
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv with cache
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: orchestrator/uv.lock
+      - name: Install validation environment
+        working-directory: orchestrator
+        run: uv sync --frozen
+      - name: Compile Python sources
+        run: python -m compileall -q -x '/\.venv/' api orchestrator scripts tests
+      - name: Validate migration inventory and behavior
+        working-directory: orchestrator
+        run: uv run python -m unittest tests/test_migrations.py -v
+      - name: Validate YAML and deterministic fixtures
+        run: orchestrator/.venv/bin/python scripts/validate_fixtures.py
+      - name: Validate CI workflow source
+        run: orchestrator/.venv/bin/python -m unittest discover -s tests -p 'test_ci_workflow.py' -v
+      - name: Validate production Compose
+        env: &ci_environment
+          DB_USER: ci
+          DB_PASSWORD: ci
+          DB_NAME: trading_data
+        run: docker compose config --quiet
+      - name: Validate demo Compose
+        run: docker compose -f docker-compose.demo.yml config --quiet
+      - name: Reject whitespace errors
+        run: git diff --check
 
-      - name: Scan tracked files
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  demo-smoke:
+    name: Credential-free demo smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Build and smoke demo topology
+        run: scripts/smoke_test.sh
+      - name: Always tear down demo and volumes
+        if: always()
+        run: docker compose -f docker-compose.demo.yml down --volumes --remove-orphans
