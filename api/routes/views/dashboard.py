@@ -29,6 +29,17 @@ ASSET_EVENT_RULES = {
     "UK100": {"currencies": {"GBP"}, "countries": {"GB", "UK"}, "keywords": {"uk", "britain", "boe", "bank of england"}},
 }
 
+# Curated destinations only: never derive an external URL from a rendered symbol.
+SYMBOL_LINKS = {
+    "AUDJPY": {"url": "https://finance.yahoo.com/quote/AUDJPY=X", "label": "Yahoo Finance AUD/JPY"},
+    "XAUUSD": {"url": "https://finance.yahoo.com/quote/GC=F", "label": "Yahoo Finance Gold Futures"},
+    "XPTUSD": {"url": "https://finance.yahoo.com/quote/PL=F", "label": "Yahoo Finance Platinum Futures"},
+    "JP225": {"url": "https://finance.yahoo.com/quote/%5EN225", "label": "Yahoo Finance Nikkei 225"},
+    "UK100": {"url": "https://finance.yahoo.com/quote/%5EFTSE", "label": "Yahoo Finance FTSE 100"},
+    "DE40": {"url": "https://finance.yahoo.com/quote/%5EGDAXI", "label": "Yahoo Finance DAX"},
+    "EURCHF": {"url": "https://finance.yahoo.com/quote/EURCHF=X", "label": "Yahoo Finance EUR/CHF"},
+}
+
 
 def _get_templates(request: Request):
     return request.app.state.templates
@@ -446,6 +457,7 @@ def dashboard(request: Request):
         "briefing_bullets": _briefing_bullets(briefing),
         "price_map": price_map,
         "budget": get_budget_status(),
+        "symbol_links": SYMBOL_LINKS,
         **tz_context,
         **event_context,
     }
@@ -508,6 +520,7 @@ def partial_header(request: Request):
         "any_stale": any_stale,
         "system_health": _get_dashboard_health(),
         "budget": get_budget_status(),
+        "symbol_links": SYMBOL_LINKS,
         **tz_context,
     })
 
@@ -542,7 +555,8 @@ def partial_events(request: Request):
     except Exception as exc:
         events_data = {"error": str(exc)}
 
-    now = datetime.now(timezone.utc)
+    tz_context = timezone_context(request, config)
+    now = datetime.now(tz_context["display_zone"])
     event_context = _event_template_context(events_data, config)
 
     return templates.TemplateResponse(request, "partials/events_section.html", {
@@ -551,6 +565,7 @@ def partial_events(request: Request):
         "current_time": now,
         "timedelta": timedelta,
         "dot": _section_dots({}, events_data, None, False, None)["events"],
+        **tz_context,
         **event_context,
     })
 
@@ -598,6 +613,7 @@ def partial_cards_symbol(request: Request, symbol: str):
             "drivers": _asset_drivers(note),
             "matched_events": _matched_asset_events(symbol, events),
             "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
+            "symbol_links": SYMBOL_LINKS,
         })
 
     # Symbol not found: return empty panel
@@ -622,6 +638,7 @@ def partial_cards(request: Request):
         "request": request,
         "briefing": briefing,
         "price_map": _get_latest_prices(config),
+        "symbol_links": SYMBOL_LINKS,
     })
 
 

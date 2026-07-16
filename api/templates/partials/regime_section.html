@@ -38,8 +38,9 @@
     <details class="provenance-details" data-history-days="90" data-opinion-id="{{ regime.opinion_id or '' }}">
       <summary>History and evidence</summary>
       <div class="regime-timeline" data-history-target></div>
-      <div class="regime-compare" data-compare-target>
-        <canvas id="regime-compare-chart"></canvas>
+      <div class="regime-compare chart-frame" data-compare-target data-chart="regime-compare" aria-busy="true">
+        <div class="chart-status" role="status" aria-live="polite">Loading comparison…</div>
+        <canvas id="regime-compare-chart" aria-label="Macro regime comparison history" role="img"></canvas>
       </div>
       <div class="evidence-view" data-evidence-target></div>
     </details>

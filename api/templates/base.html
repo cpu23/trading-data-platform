@@ -26,9 +26,9 @@
         <div id="modal-title" class="modal-title"></div>
         <button class="modal-close" aria-label="Close modal">&times;</button>
       </div>
-      <div id="modal-status" class="modal-status" hidden></div>
-      <div id="modal-chart-container" style="height: 400px;">
-        <canvas id="modal-chart"></canvas>
+      <div id="modal-chart-container" class="chart-frame" data-chart="indicator" aria-busy="true">
+        <div id="modal-status" class="chart-status" role="status" aria-live="polite">Loading series…</div>
+        <canvas id="modal-chart" aria-label="Indicator history chart" role="img"></canvas>
       </div>
     </div>
   </div>

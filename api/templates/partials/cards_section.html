@@ -23,7 +23,12 @@
                data-symbol="{{ note.symbol }}"
                data-card-index="{{ loop.index0 }}">
             <div class="instrument-header">
-              <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
+              {% set symbol_link = symbol_links.get(note.symbol) if symbol_links else none %}
+              {% if symbol_link %}
+                <a class="instrument-symbol symbol-link tabular" href="{{ symbol_link.url }}" target="_blank" rel="noopener noreferrer" title="View {{ note.symbol }} on {{ symbol_link.label }}" aria-label="View {{ note.symbol }} on {{ symbol_link.label }} (opens in a new tab)">{{ note.symbol }}</a>
+              {% else %}
+                <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
+              {% endif %}
               <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
             </div>
             <div class="instrument-price tabular" data-live-price="{{ note.symbol }}">

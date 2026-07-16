@@ -25,12 +25,18 @@
   {% endif %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
+    <nav class="header-nav" aria-label="Operations">
+      <a class="quiet-link" href="/operations">Operations</a>
+    </nav>
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M') }} {{ current_time.tzname() }}</span>
     {% if timezone_choices %}
-    <label class="page-header-meta" for="display-timezone">Timezone</label>
-    <select id="display-timezone" name="timezone" data-settings-endpoint="/api/settings/timezone" aria-label="Display timezone">
-      {% for zone in timezone_choices %}<option value="{{ zone }}"{% if zone == current_timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}
-    </select>
+    <div class="timezone-control">
+      <label class="sr-only" for="display-timezone">Display timezone</label>
+      <select id="display-timezone" class="compact-select" name="timezone" data-settings-endpoint="/api/settings/timezone" aria-describedby="timezone-status" aria-label="Display timezone">
+        {% for zone in timezone_choices %}<option value="{{ zone }}"{% if zone == current_timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}
+      </select>
+      <span id="timezone-status" class="control-status" role="status" aria-live="polite"></span>
+    </div>
     {% endif %}
   </div>
   <div class="page-header-right">

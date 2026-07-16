@@ -15,6 +15,32 @@
 
   let modalChart = null;
 
+  function chartRoots(root) {
+    var nodes = [];
+    if (root && root.matches && root.matches('[data-chart]')) nodes.push(root);
+    if (root && root.querySelectorAll) {
+      nodes = nodes.concat(Array.from(root.querySelectorAll('[data-chart]')));
+    }
+    return nodes;
+  }
+
+  function setChartBusy(container, busy) {
+    if (container) container.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  function initCharts(root) {
+    chartRoots(root || document).forEach(function (container) {
+      if (container.dataset.chartInitialized === 'true') return;
+      container.dataset.chartInitialized = 'true';
+      setChartBusy(container, true);
+      var canvas = container.querySelector('canvas');
+      if (canvas) {
+        var existing = Chart.getChart(canvas);
+        if (existing) existing.destroy();
+      }
+    });
+  }
+
   /* Modal chart ------------------------------------------------------------- */
   function setModalState(message, isError) {
     var status = document.getElementById('modal-status');
@@ -30,7 +56,12 @@
     title.textContent = label || seriesId;
     modal.classList.add('active');
     modal.setAttribute('aria-hidden', 'false');
-    setModalState('Loading series...', false);
+    var chartContainer = document.getElementById('modal-chart-container');
+    setChartBusy(chartContainer, true);
+    setModalState('Loading series…', false);
+    var modalCanvas = document.getElementById('modal-chart');
+    var existing = modalCanvas ? Chart.getChart(modalCanvas) : null;
+    if (existing) existing.destroy();
     if (modalChart) {
       modalChart.destroy();
       modalChart = null;
@@ -89,6 +120,9 @@
       .catch(function (err) {
         console.error('Modal chart error for', seriesId, err);
         setModalState('Unable to load this series.', true);
+      })
+      .finally(function () {
+        setChartBusy(chartContainer, false);
       });
   }
 
@@ -128,6 +162,7 @@
   /* Card expand / collapse -------------------------------------------------- */
   function initCards() {
     document.body.addEventListener('click', function (e) {
+      if (e.target.closest('.symbol-link')) return;
       var card = e.target.closest('.instrument-card');
       if (!card) return;
       toggleInstrumentCard(card);
@@ -271,6 +306,9 @@
       var compareTarget = details.querySelector('[data-compare-target]');
       if (compareTarget && !compareTarget.dataset.loaded) {
         compareTarget.dataset.loaded = 'true';
+        setChartBusy(compareTarget, true);
+        var compareStatus = compareTarget.querySelector('.chart-status');
+        if (compareStatus) compareStatus.textContent = 'Loading comparison…';
         var indicators = ['T10Y2Y', 'VIXCLS', 'DTWEXBGS', 'BAMLH0A0HYM2', 'DGS10', 'T5YIE'];
         var colors = ['#DCDCD4', '#4FA86E', '#C44545', '#C9A227', '#6B6B66', '#999992'];
         var days = details.dataset.historyDays || '90';
@@ -285,7 +323,13 @@
             if (!data || !data.observations || !data.observations.length) return;
             datasets.push({
               label: indicators[i],
-              data: data.observations.map(function(o) { return {x: o.observed_at, y: o.value}; }),
+              data: data.observations.map(function(o) {
+                var date = new Date(o.observed_at);
+                return {
+                  x: isNaN(date.getTime()) ? o.observed_at : date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
+                  y: o.value
+                };
+              }),
               borderColor: colors[i],
               borderWidth: 1,
               pointRadius: 0,
@@ -293,9 +337,14 @@
               fill: false
             });
           });
-          if (!datasets.length) return;
-          var canvas = document.getElementById('regime-compare-chart');
-          if (!canvas) return;
+          if (!datasets.length) {
+            if (compareStatus) compareStatus.textContent = 'No comparison observations available.';
+            return;
+          }
+          var canvas = compareTarget.querySelector('canvas');
+          if (!canvas) throw new Error('Comparison chart canvas unavailable');
+          var existing = Chart.getChart(canvas);
+          if (existing) existing.destroy();
           var ctx = canvas.getContext('2d');
           new Chart(ctx, {
             type: 'line',
@@ -305,8 +354,7 @@
               maintainAspectRatio: false,
               scales: {
                 x: {
-                  type: 'time',
-                  time: { tooltipFormat: 'MMM dd' },
+                  type: 'category',
                   grid: { color: 'rgba(220,220,212,0.06)' },
                   ticks: { color: '#6B6B66', font: { size: 10 } }
                 },
@@ -323,8 +371,15 @@
               }
             }
           });
-          var compareContainer = ctx.canvas.parentElement;
-          if (compareContainer) compareContainer.style.display = 'block';
+          if (compareStatus) compareStatus.hidden = true;
+        }).catch(function (error) {
+          console.error('Regime comparison chart error', error);
+          if (compareStatus) {
+            compareStatus.hidden = false;
+            compareStatus.textContent = 'Unable to load macro comparison.';
+          }
+        }).finally(function () {
+          setChartBusy(compareTarget, false);
         });
       }
     }, true);
@@ -651,8 +706,65 @@
     poll();
   }
 
+  function initTimezoneControl(root) {
+    var select = (root && root.matches && root.matches('#display-timezone'))
+      ? root
+      : (root && root.querySelector ? root.querySelector('#display-timezone') : null);
+    if (!select || select.dataset.bound === 'true') return;
+    select.dataset.bound = 'true';
+    var status = document.getElementById('timezone-status');
+    var previous = select.value;
+
+    fetch('/api/settings/timezone', {method: 'GET'})
+      .then(function (response) {
+        if (!response.ok) throw new Error('Timezone unavailable');
+        return response.json();
+      })
+      .then(function (setting) {
+        select.replaceChildren();
+        (setting.choices || []).forEach(function (choice) {
+          var option = document.createElement('option');
+          option.value = choice;
+          option.textContent = choice;
+          option.selected = choice === setting.current;
+          select.appendChild(option);
+        });
+        previous = setting.current;
+      })
+      .catch(function () {
+        select.value = previous;
+        if (status) status.textContent = 'Timezone unavailable';
+      });
+
+    select.addEventListener('change', function () {
+      var requested = select.value;
+      select.disabled = true;
+      if (status) status.textContent = 'Saving…';
+      fetch('/api/settings/timezone', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({timezone: requested})
+      }).then(function (response) {
+        if (!response.ok) throw new Error('Timezone not saved');
+        return response.json();
+      }).then(function () {
+        window.location.reload();
+      }).catch(function () {
+        select.value = previous;
+        select.disabled = false;
+        if (status) status.textContent = 'Timezone not saved';
+      });
+    });
+  }
+
+  function initDynamicUi(root) {
+    initCharts(root);
+    initTimezoneControl(root);
+  }
+
   /* Boot --------------------------------------------------------------------- */
   document.addEventListener('DOMContentLoaded', function () {
+    initCharts(document);
     initModal();
     initCards();
     initIndicatorKeyboard();
@@ -661,5 +773,13 @@
     initLiveQuotes();
     initLogs();
     initCycleButton();
+    initTimezoneControl(document);
+  });
+
+  ['htmx:afterSwap', 'htmx:afterSettle'].forEach(function (eventName) {
+    document.body.addEventListener(eventName, function (evt) {
+      if (evt.detail && evt.detail.target) initCharts(evt.detail.target);
+      if (evt.detail && evt.detail.target) initDynamicUi(evt.detail.target);
+    });
   });
 })();

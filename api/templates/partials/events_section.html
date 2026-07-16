@@ -2,59 +2,85 @@
          hx-get="/partials/events"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
+  <div class="calendar-toolbar section-heading">
+    <span class="label">Economic calendar</span>
+    <span class="calendar-timezone tabular">Times shown in {{ current_timezone }}</span>
+    <div class="impact-legend" aria-label="Impact legend">
+      <span class="impact-badge impact-high">High</span>
+      <span class="impact-badge impact-medium">Medium</span>
+      <span class="impact-badge impact-low">Low</span>
+    </div>
+  </div>
+
+  {% if events_data is mapping and events_data.get('error') %}
+    <div class="error-block" role="alert">Calendar unavailable. Try Refresh or check Operations.</div>
+  {% else %}
   <details class="calendar-details">
-    <summary class="section-heading">
-      <span class="label calendar-title calendar-title-compact">Upcoming high-impact catalysts</span>
-      <span class="label calendar-title calendar-title-full">Full economic calendar</span>
+    <summary class="calendar-toggle">
+      <span class="calendar-title-compact">Upcoming high-impact catalysts</span>
+      <span class="calendar-title-full">Full economic calendar</span>
       <span class="calendar-toggle-icon" aria-hidden="true"></span>
     </summary>
-
     <div class="calendar-full">
       {% if not filtered_events %}
-        <div class="empty-state">No configured-currency events through Friday.</div>
+        <div class="empty-state">No configured-market events in this window.</div>
       {% else %}
-      {% for day_key in grouped | sort %}
-        <div class="events-day">
-          <div class="events-day-label">{{ day_label_for(day_key) }}</div>
-          {% for ev in grouped[day_key] %}
-            <div class="event-row">
-              <span class="event-time tabular">{{ ev.time_display }}</span>
-              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-              <span class="event-name">{{ ev.event_name }}</span>
-              <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
-              <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
-              {% if ev.actual %}
-                <span class="event-actual tabular">actual {{ ev.actual }}</span>
-              {% endif %}
-            </div>
+      <div class="calendar-scroll scroll-affordance" tabindex="0" aria-label="Full economic calendar; scroll horizontally for all columns">
+        <table class="calendar-table">
+          <caption class="sr-only">Full economic calendar in {{ current_timezone }}</caption>
+          <thead><tr>
+            <th scope="col">Time</th><th scope="col">Event</th><th scope="col">Market</th><th scope="col">Impact</th>
+            <th scope="col" class="numeric">Actual</th><th scope="col" class="numeric">Forecast</th><th scope="col" class="numeric">Previous</th>
+          </tr></thead>
+          <tbody>
+          {% for day_key in grouped | sort %}
+            <tr class="calendar-day-row"><th colspan="7" scope="rowgroup">{{ day_label_for(day_key) }}</th></tr>
+            {% for ev in grouped[day_key] %}
+            <tr class="event-row event-row-{{ ev.impact_level | lower }}">
+              <td class="event-time tabular">{{ ev.time_display }}</td>
+              <th scope="row" class="event-name">{{ ev.event_name }}</th>
+              <td class="event-market">{{ ev.currency or '—' }} <span class="dim">{{ ev.country or '' }}</span></td>
+              <td><span class="impact-badge impact-{{ ev.impact_level | lower }}">{{ ev.impact_level | title }}</span></td>
+              <td class="event-actual numeric tabular">{{ ev.actual if ev.actual is not none else '—' }}</td>
+              <td class="event-consensus numeric tabular">{{ ev.consensus if ev.consensus is not none else '—' }}</td>
+              <td class="event-previous numeric tabular">{{ ev.previous if ev.previous is not none else '—' }}</td>
+            </tr>
+            {% endfor %}
           {% endfor %}
-        </div>
-      {% endfor %}
+          </tbody>
+        </table>
+      </div>
       {% endif %}
     </div>
   </details>
 
   <div class="calendar-compact">
     {% if not catalysts %}
-      <div class="empty-state">No high-impact events through Friday.</div>
+      <div class="empty-state">No high-impact events in this window.</div>
     {% else %}
-      {% for day_key in high_impact_grouped | sort %}
-        <div class="events-day">
-          <div class="events-day-label">{{ day_label_for(day_key) }}</div>
-          {% for ev in high_impact_grouped[day_key] %}
-            <div class="event-row">
-              <span class="event-time tabular">{{ ev.time_display }}</span>
-              <span class="event-impact event-impact-{{ ev.impact_level }}">{{ ev.impact_level | upper }} · {{ ev.currency or ev.country }}</span>
-              <span class="event-name">{{ ev.event_name }}</span>
-              <span class="event-consensus tabular">{% if ev.consensus %}exp {{ ev.consensus }}{% else %}—{% endif %}</span>
-              <span class="event-previous tabular">{% if ev.previous %}prev {{ ev.previous }}{% else %}—{% endif %}</span>
-              {% if ev.actual %}
-                <span class="event-actual tabular">actual {{ ev.actual }}</span>
-              {% endif %}
-            </div>
-          {% endfor %}
-        </div>
-      {% endfor %}
+    <div class="calendar-scroll scroll-affordance" tabindex="0" aria-label="High-impact catalysts; scroll horizontally for all columns">
+      <table class="calendar-table calendar-table-compact">
+        <caption class="sr-only">Upcoming high-impact catalysts in {{ current_timezone }}</caption>
+        <thead><tr>
+          <th scope="col">Time</th><th scope="col">Event</th><th scope="col">Market</th><th scope="col">Impact</th>
+          <th scope="col" class="numeric">Actual</th><th scope="col" class="numeric">Forecast</th><th scope="col" class="numeric">Previous</th>
+        </tr></thead>
+        <tbody>
+        {% for ev in catalysts %}
+          <tr class="event-row event-row-high">
+            <td class="event-time tabular">{{ ev.day_time_display }}</td>
+            <th scope="row" class="event-name">{{ ev.event_name }}</th>
+            <td class="event-market">{{ ev.currency or '—' }} <span class="dim">{{ ev.country or '' }}</span></td>
+            <td><span class="impact-badge impact-high">High</span></td>
+            <td class="event-actual numeric tabular">{{ ev.actual if ev.actual is not none else '—' }}</td>
+            <td class="event-consensus numeric tabular">{{ ev.consensus if ev.consensus is not none else '—' }}</td>
+            <td class="event-previous numeric tabular">{{ ev.previous if ev.previous is not none else '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% endif %}
   </div>
+  {% endif %}
 </section>
