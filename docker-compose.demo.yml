@@ -20,7 +20,14 @@ services:
       POSTGRES_DB: trading_data
     volumes:
       - demo_pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      # Individual read-only mounts allow the demo seed to share the init directory
+      # without a nested mount under a read-only parent bind.
+      - ./db/init/001_extensions.sql:/docker-entrypoint-initdb.d/001_extensions.sql:ro
+      - ./db/init/002_raw_tables.sql:/docker-entrypoint-initdb.d/002_raw_tables.sql:ro
+      - ./db/init/003_derived_tables.sql:/docker-entrypoint-initdb.d/003_derived_tables.sql:ro
+      - ./db/init/004_system_tables.sql:/docker-entrypoint-initdb.d/004_system_tables.sql:ro
+      - ./db/init/005_cycle_runs.sql:/docker-entrypoint-initdb.d/005_cycle_runs.sql:ro
+      - ./db/init/006_schema_migrations.sql:/docker-entrypoint-initdb.d/006_schema_migrations.sql:ro
       - ./db/demo/900_demo_seed.sql:/docker-entrypoint-initdb.d/900_demo_seed.sql:ro
     restart: unless-stopped
     healthcheck:
@@ -52,7 +59,7 @@ services:
       dockerfile: Dockerfile
     image: trading-data-platform:local
     working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *demo_environment
     volumes:
       - ./config:/app/config:ro
@@ -78,12 +85,12 @@ services:
       dockerfile: Dockerfile
     image: trading-data-platform:local
     working_dir: /app/api
-    command: ["/app/api/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/api/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       <<: *demo_environment
       ORCHESTRATOR_URL: http://orchestrator:8000
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro

@@ -1,60 +1,123 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== Smoke test: trading-data-platform ==="
+COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.demo.yml}
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-40}
+SLEEP_SECONDS=${SLEEP_SECONDS:-2}
+API_HOST_PORT=${API_HOST_PORT:-18080}
+export API_HOST_PORT
+API_URL=${API_URL:-http://127.0.0.1:${API_HOST_PORT}}
+AUTH=${AUTH:-demo:demo}
 
-# Validate compose files
-docker compose config --quiet && echo "✓ docker compose config valid"
-docker compose -f docker-compose.demo.yml config --quiet && echo "✓ demo compose config valid"
+compose() {
+  docker compose -f "$COMPOSE_FILE" "$@"
+}
 
-# Start demo mode
-docker compose -f docker-compose.demo.yml up -d --build
-trap 'docker compose -f docker-compose.demo.yml down 2>/dev/null' EXIT
+cleanup() {
+  compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
-# Verify migrations ran on orchestrator startup (check container logs)
-echo "Checking orchestrator migration logs..."
-for i in $(seq 1 20); do
-  if docker compose -f docker-compose.demo.yml logs orchestrator 2>/dev/null | grep -q "migration"; then
-    echo "✓ Migrations ran in orchestrator (attempt $i)"
+fail_with_logs() {
+  echo "ERROR: $*" >&2
+  compose ps >&2 || true
+  compose logs --no-color --tail=100 >&2 || true
+  exit 1
+}
+
+wait_for_healthy() {
+  local service=$1
+  local attempt container status
+  for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+    container=$(compose ps -q "$service")
+    if [[ -n "$container" ]]; then
+      status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)
+      if [[ "$status" == "healthy" ]]; then
+        echo "healthy: $service (attempt $attempt)"
+        return 0
+      fi
+    fi
+    sleep "$SLEEP_SECONDS"
+  done
+  fail_with_logs "$service did not become healthy"
+}
+
+wait_for_api() {
+  local attempt
+  for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+    if curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/system/health" >/dev/null 2>&1; then
+      echo "ready: authenticated API (attempt $attempt)"
+      return 0
+    fi
+    sleep "$SLEEP_SECONDS"
+  done
+  fail_with_logs "API did not become ready"
+}
+
+assert_api_unavailable() {
+  local attempt
+  for attempt in $(seq 1 15); do
+    if ! curl --fail --silent --user "$AUTH" --max-time 2 "$API_URL/api/system/health" >/dev/null 2>&1; then
+      echo "observed API unavailable after process failure"
+      return 0
+    fi
+    sleep 1
+  done
+  fail_with_logs "API health stayed successful while a required process was killed"
+}
+
+assert_restart() {
+  local service=$1
+  local container before after
+  container=$(compose ps -q "$service")
+  [[ -n "$container" ]] || fail_with_logs "missing $service container"
+  before=$(docker inspect --format '{{.State.StartedAt}}' "$container")
+  compose stop -t 0 "$service" >/dev/null
+  assert_api_unavailable
+  compose start "$service" >/dev/null
+  wait_for_healthy "$service"
+  wait_for_api
+  after=$(docker inspect --format '{{.State.StartedAt}}' "$container")
+  [[ "$after" != "$before" ]] || fail_with_logs "$service did not restart"
+  echo "restarted independently: $service"
+}
+
+echo "=== credential-free demo topology smoke ==="
+docker compose -f "$COMPOSE_FILE" config --quiet
+compose up -d --build
+
+# The explicit one-shot must have completed successfully before either app starts.
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  if docker compose -f "$COMPOSE_FILE" ps --status exited migrate -q | grep -q .; then
+    migrate_container=$(compose ps -a -q migrate)
+    migrate_exit=$(docker inspect --format '{{.State.ExitCode}}' "$migrate_container")
+    [[ "$migrate_exit" == "0" ]] || fail_with_logs "migration exited $migrate_exit"
+    echo "migration one-shot completed successfully"
     break
   fi
-  sleep 2
+  sleep "$SLEEP_SECONDS"
 done
+[[ ${migrate_exit:-unset} == "0" ]] || fail_with_logs "migration did not complete"
 
-# Verify second-run idempotence: re-run migrate inside the container
-echo "Verifying migration idempotence..."
-MIGRATE_OUTPUT=$(docker compose -f docker-compose.demo.yml exec -T orchestrator python cli.py migrate 2>&1) || true
-if echo "$MIGRATE_OUTPUT" | grep -q "No pending"; then
-  echo "✓ Migration idempotent: $MIGRATE_OUTPUT"
-else
-  echo "⚠ Unexpected migration output: $MIGRATE_OUTPUT"
-fi
+wait_for_healthy orchestrator
+wait_for_healthy api
+wait_for_api
 
-# Wait for API
-echo "Waiting for API..."
-for i in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:8001/api/system/health -u demo:demo > /dev/null 2>&1; then
-    echo "✓ API is up (attempt $i)"
-    break
-  fi
-  sleep 2
-done
+orchestrator_health=$(compose exec -T orchestrator /app/orchestrator/.venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read().decode())")
+printf '%s' "$orchestrator_health" | grep -q '"readiness":"ready"\|"readiness": "ready"' || fail_with_logs "orchestrator readiness contract failed"
 
-# Verify health endpoint
-HEALTH=$(curl -sf http://127.0.0.1:8001/api/system/health -u demo:demo)
-echo "✓ Health: $(echo $HEALTH | python3 -c 'import sys,json; print(json.load(sys.stdin)["overall"])' 2>/dev/null || echo 'parse failed')"
+migration_rerun=$(compose run --rm migrate)
+printf '%s' "$migration_rerun" | grep -qi "no pending" || fail_with_logs "migration rerun was not idempotent"
 
-# Verify regime endpoint
-curl -sf http://127.0.0.1:8001/api/regime/current -u demo:demo > /dev/null && echo "✓ Regime endpoint OK"
+regime=$(curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/regime/current")
+printf '%s' "$regime" | grep -q "controlled_expansion" || fail_with_logs "controlled_expansion fixture marker missing"
+briefing=$(curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/briefing/latest")
+printf '%s' "$briefing" | grep -q "demo/deterministic" || fail_with_logs "demo/deterministic fixture marker missing"
 
-# Verify dashboard loads
-curl -sf http://127.0.0.1:8001/ -u demo:demo > /dev/null && echo "✓ Dashboard page loads"
+# Each PID-1 app process must stop independently, make the public health path
+# unavailable, and recover cleanly without a shell supervisor. Restart-policy
+# wiring is asserted by the structural topology tests.
+assert_restart "api"
+assert_restart "orchestrator"
 
-# Verify logs page
-curl -sf http://127.0.0.1:8001/logs -u demo:demo > /dev/null && echo "✓ Logs page loads"
-
-# Verify quality page
-curl -sf http://127.0.0.1:8001/quality -u demo:demo > /dev/null && echo "✓ Quality page loads"
-
-echo ""
-echo "=== All smoke tests passed ==="
+echo "=== demo topology and process supervision smoke passed ==="

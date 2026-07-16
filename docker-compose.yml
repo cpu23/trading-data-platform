@@ -40,7 +40,7 @@ services:
       dockerfile: Dockerfile
     image: trading-data-platform:local
     working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     volumes:
       - ./config:/app/config:ro
@@ -66,7 +66,7 @@ services:
       dockerfile: Dockerfile
     image: trading-data-platform:local
     working_dir: /app/api
-    command: ["/app/api/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/api/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     environment:
       ORCHESTRATOR_URL: http://orchestrator:8000
