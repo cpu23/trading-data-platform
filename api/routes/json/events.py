@@ -114,10 +114,17 @@ def _metadata_value(metadata):
     return {}
 
 
-def _serialize_event(row: dict, window: dict) -> dict:
+def _serialize_event(
+    row: dict,
+    window: dict,
+    *,
+    display_zone: ZoneInfo,
+    display_timezone: str,
+) -> dict:
     scheduled_at = row["scheduled_at"]
     london_dt = scheduled_at.astimezone(window["london"])
     ny_dt = scheduled_at.astimezone(window["ny"])
+    display_dt = scheduled_at.astimezone(display_zone)
     metadata = _metadata_value(row.get("metadata"))
     currency = metadata.get("currency") or COUNTRY_TO_CURRENCY.get(
         row.get("country"), row.get("country")
@@ -128,10 +135,12 @@ def _serialize_event(row: dict, window: dict) -> dict:
         "country": row["country"],
         "currency": currency,
         "scheduled_at": scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at),
-        "day_key": london_dt.date().isoformat(),
+        "day_key": display_dt.date().isoformat(),
+        "day_label_short": display_dt.strftime("%a"),
         "london_time": london_dt.strftime("%H:%M"),
         "ny_time": ny_dt.strftime("%H:%M"),
-        "time_display": f"{window['london_label']} {london_dt.strftime('%H:%M')} / {window['ny_label']} {ny_dt.strftime('%H:%M')}",
+        "time_display": display_dt.strftime("%H:%M"),
+        "display_timezone": display_timezone,
         "impact_level": row.get("impact_level"),
         "consensus": row.get("consensus"),
         "previous": row.get("previous"),
@@ -141,8 +150,16 @@ def _serialize_event(row: dict, window: dict) -> dict:
 
 
 @router.get("/events/upcoming")
-def get_events_upcoming(days: int = Query(default=14, ge=1, le=90)):
+def get_events_upcoming(
+    request: Request,
+    days: int = Query(default=14, ge=1, le=90),
+):
+    return get_events_upcoming_data(request=request, days=days)
+
+
+def get_events_upcoming_data(*, request: Request, days: int = 14) -> dict:
     config = load_config()
+    display = timezone_context(request, config)
     thresholds = get_staleness_config(config)
     window = _event_window(config)
 
@@ -180,7 +197,15 @@ def get_events_upcoming(days: int = Query(default=14, ge=1, le=90)):
         thresholds["events_hours"],
     )
 
-    events = [_serialize_event(row, window) for row in rows]
+    events = [
+        _serialize_event(
+            row,
+            window,
+            display_zone=display["display_zone"],
+            display_timezone=display["current_timezone"],
+        )
+        for row in rows
+    ]
     grouped = {}
     for event in events:
         grouped.setdefault(event["day_key"], []).append(event)

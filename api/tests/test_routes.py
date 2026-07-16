@@ -11,6 +11,7 @@ import tempfile
 import httpx
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 # ── Environment (auth) ──────────────────────────────────────────────────────
 os.environ["DASHBOARD_USER"] = "test"
@@ -865,3 +866,39 @@ class TestHealthContract(unittest.TestCase):
         self.assertEqual(data["liveness"], "ok",
                          "Liveness stays 'ok' even when no data available")
         self.assertEqual(data["data_health"], "degraded")
+
+
+class TestCalendarDisplayTimezone(unittest.TestCase):
+    def test_serialized_time_and_day_boundary_use_selected_timezone(self):
+        from routes.json.events import _serialize_event
+
+        row = {
+            "event_id": "event-1",
+            "event_name": "Tokyo boundary",
+            "country": "JP",
+            "scheduled_at": datetime(2026, 1, 1, 15, 30, tzinfo=timezone.utc),
+            "impact_level": "high",
+            "consensus": None,
+            "previous": None,
+            "actual": None,
+            "source": "fixture",
+            "metadata": {"currency": "JPY"},
+        }
+        window = {
+            "london": ZoneInfo("Europe/London"),
+            "ny": ZoneInfo("America/New_York"),
+            "london_label": "London",
+            "ny_label": "New York",
+        }
+
+        event = _serialize_event(
+            row,
+            window,
+            display_zone=ZoneInfo("Asia/Tokyo"),
+            display_timezone="Asia/Tokyo",
+        )
+
+        self.assertEqual(event["time_display"], "00:30")
+        self.assertEqual(event["day_key"], "2026-01-02")
+        self.assertEqual(event["day_label_short"], "Fri")
+        self.assertEqual(event["display_timezone"], "Asia/Tokyo")

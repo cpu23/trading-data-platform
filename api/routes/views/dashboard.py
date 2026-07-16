@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from config import load_config
 from db import query_many, query_one
 from routes.json.briefing import get_briefing_latest
-from routes.json.events import get_events_upcoming
+from routes.json.events import get_events_upcoming_data
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.system import get_system_health
@@ -136,7 +136,12 @@ def _primary_timezone(config: dict) -> ZoneInfo:
     return ZoneInfo(tz_name)
 
 
-def _event_template_context(events_data: dict, config: dict) -> dict:
+def _event_template_context(
+    events_data: dict,
+    config: dict,
+    *,
+    display_zone: ZoneInfo | None = None,
+) -> dict:
     grouped = events_data.get("grouped", {}) if isinstance(events_data, dict) else {}
     filtered_events = events_data.get("events", []) if isinstance(events_data, dict) else []
     high_impact_grouped = {}
@@ -148,8 +153,8 @@ def _event_template_context(events_data: dict, config: dict) -> dict:
         ]
         if high_impact_events:
             high_impact_grouped[day_key] = high_impact_events
-    london = _primary_timezone(config)
-    today_str = datetime.now(london).strftime("%Y-%m-%d")
+    selected_zone = display_zone or _primary_timezone(config)
+    today_str = datetime.now(selected_zone).strftime("%Y-%m-%d")
 
     def day_label_for(day_key: str) -> str:
         if day_key == today_str:
@@ -207,7 +212,8 @@ def _chronological_event_key(event: dict) -> tuple:
 def _event_day_time_display(event: dict) -> str:
     scheduled = _event_datetime(event)
     if scheduled != datetime.max.replace(tzinfo=timezone.utc):
-        return f"{scheduled.strftime('%a')} · {event.get('time_display') or scheduled.strftime('%H:%M UTC')}"
+        day_label = event.get("day_label_short") or scheduled.strftime("%a")
+        return f"{day_label} · {event.get('time_display') or scheduled.strftime('%H:%M UTC')}"
     return event.get("time_display") or "Time TBC"
 
 
@@ -397,7 +403,7 @@ def dashboard(request: Request):
 
     events_data = {}
     try:
-        events_data = get_events_upcoming(days=14)
+        events_data = get_events_upcoming_data(request=request, days=14)
         # Parse ISO strings to datetime for template convenience
         for ev in events_data.get("events", []):
             ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
@@ -429,7 +435,11 @@ def dashboard(request: Request):
 
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
-    event_context = _event_template_context(events_data, config)
+    event_context = _event_template_context(
+        events_data,
+        config,
+        display_zone=tz_context["display_zone"],
+    )
     price_map = _get_latest_prices(config)
 
     any_stale = bool(
@@ -494,7 +504,7 @@ def partial_header(request: Request):
 
     events_data = {}
     try:
-        events_data = get_events_upcoming(days=14)
+        events_data = get_events_upcoming_data(request=request, days=14)
     except Exception:
         pass
 
@@ -549,7 +559,7 @@ def partial_events(request: Request):
     templates = _get_templates(request)
     events_data = {}
     try:
-        events_data = get_events_upcoming(days=14)
+        events_data = get_events_upcoming_data(request=request, days=14)
         for ev in events_data.get("events", []):
             ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
     except Exception as exc:
@@ -557,7 +567,11 @@ def partial_events(request: Request):
 
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
-    event_context = _event_template_context(events_data, config)
+    event_context = _event_template_context(
+        events_data,
+        config,
+        display_zone=tz_context["display_zone"],
+    )
 
     return templates.TemplateResponse(request, "partials/events_section.html", {
         "request": request,
@@ -600,7 +614,7 @@ def partial_cards_symbol(request: Request, symbol: str):
     if note:
         events = []
         try:
-            events_data = get_events_upcoming(days=14)
+            events_data = get_events_upcoming_data(request=request, days=14)
             events = events_data.get("events", [])
             for ev in events:
                 ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
