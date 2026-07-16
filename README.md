@@ -115,6 +115,11 @@ derived outputs inspectable without mixing raw source data with analysis.
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
   [docs/news-sources.md](docs/news-sources.md).
+- **Durable operations** — accepted jobs, heartbeats, advisory locks, restart
+  reconciliation, scheduler state, and manual retry remain inspectable across
+  process restarts. See [docs/operations.md](docs/operations.md).
+- **Measured acceptance** — offline HTTP and browser baselines are recorded in
+  [docs/performance-baseline.md](docs/performance-baseline.md).
 
 ## Dashboard
 
@@ -123,11 +128,13 @@ signal engine. It includes:
 
 - Source and processor health with freshness indicators
 - Current macro regime and supporting indicators
+- Historical regime timeline and multi-series macro comparison chart
 - Watchlist cards with price snapshots, context, and matched catalysts
 - Upcoming high-impact economic events
+- Bounded Reuters/Kobeissi News section with a truthful unpublished state
 - Daily briefing and analytical summaries
-- Manual cycle controls with live status
-- A searchable operational logs view
+- Refresh, analyze, and explicit force-full cycle controls with live status
+- Searchable logs, data-quality, and Operations views
 
 ![System logs](docs/assets/system-logs-full-page.png)
 
@@ -144,9 +151,9 @@ FastAPI exposes JSON endpoints for:
 - Manually triggered collectors, processors, and full cycles
 - Read-only Reuters and Kobeissi feed and source-state views
 
-Reuters and Kobeissi collection is currently operator-triggered through the
-orchestrator CLI, not FastAPI. News collection trigger, scheduling, and lineage
-endpoints remain deferred roadmap work.
+Reuters and Kobeissi collection can be invoked through the orchestrator CLI or
+the authenticated durable API trigger. Reuters is scheduled every two hours;
+Kobeissi remains on-demand by default because it consumes a paid API.
 
 When the API service is running, interactive OpenAPI documentation is available
 at `/docs`.
@@ -170,8 +177,9 @@ docker compose -f docker-compose.demo.yml up --build
 # Open http://127.0.0.1:8001 and sign in with demo / demo
 ```
 
-The demo seeds deterministic fictional analysis, linked operational runs, and
-an in-memory simulated quote stream. It makes no external or paid API calls.
+The demo seeds deterministic fictional analysis, three-point comparison-series
+history, linked operational runs, and an in-memory simulated quote stream. It
+makes no external or paid API calls.
 
 ### Prerequisites
 
@@ -195,11 +203,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Docker Compose starts:
+Docker Compose starts four independently owned lifecycles:
 
 - PostgreSQL with TimescaleDB
-- The collection and processing orchestrator
-- The FastAPI JSON API and dashboard
+- A checksum-verified one-shot migration gate
+- The internal collection, scheduling, and processing orchestrator
+- The public FastAPI JSON API and dashboard
 
 The dashboard is exposed at `http://127.0.0.1:8001` by default.
 
@@ -238,15 +247,20 @@ The repository uses locked `uv` environments for the API and orchestrator.
 
 ```bash
 python3 -m compileall -q -x '/\.venv/' api orchestrator
-cd orchestrator
-uv sync --frozen
-uv run python -m unittest discover -s tests -v
+cd api && uv run python -m unittest discover -s tests
+cd ../orchestrator && uv run python -m unittest discover -s tests
 cd ..
+api/.venv/bin/python -m unittest discover -s tests
+api/.venv/bin/python scripts/failure_drills.py --unit-only
 docker compose config --quiet
+docker compose -f docker-compose.demo.yml config --quiet
+scripts/test_clean_migrations.sh
+scripts/smoke_test.sh
 ```
 
-The GitHub Actions workflow runs compilation, unit tests, Docker Compose
-validation, and a tracked-file secret scan on every push and pull request.
+The GitHub Actions workflow runs compilation, API/orchestrator/root tests,
+deterministic failure drills, migration and fixture checks, Compose validation,
+and the credential-free demo smoke on every push and pull request.
 
 ## Project Structure
 
@@ -294,14 +308,11 @@ interpretation and decisions with the user.
 
 ## Roadmap
 
-- Synthetic demo mode requiring no external API credentials
-- Persistent schedule runner for the configured collection and processing times
-- Historical regime timeline and macro comparison views
-- Per-claim evidence and data-lineage inspection
-- Expanded API, orchestration, and database integration tests
-- Data-quality checks for freshness, gaps, duplicates, and anomalies
-- Server-side budgets and rate limits for analytical processing
-- Explicit migration tooling and TimescaleDB retention policies
+- Measure production collector and processor latency under an approved upstream
+  call budget.
+- Add an operator-approved Kobeissi polling budget before enabling its schedule.
+- Evaluate independent chart axes or normalization for mixed-scale macro series.
+- Define host-level log retention and a tested backup/restore cadence.
 
 ## Public Boundary
 

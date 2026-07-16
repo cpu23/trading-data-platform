@@ -29,8 +29,11 @@ uv run python cli.py news feed --days 7
 uv run python cli.py news all
 ```
 
-Schedule `news all` externally at the desired polling interval; both sources are
-on-demand by default. Disabled sources are skipped.
+The internal scheduler reads the UTC cron expressions in `config/config.yaml`.
+Reuters is enabled at minute 15 every two hours. Kobeissi is deliberately
+`on_demand_only` with scheduling disabled; enabling its six-hour expression
+requires an explicit TwitterAPI.io call-budget decision. Disabled sources are
+skipped.
 
 ## API
 
@@ -38,6 +41,9 @@ Authenticated endpoints:
 
 - `GET /api/news/feed` returns the normalized feed.
 - `GET /api/news/sources` reports enabled state, last poll, status, and error.
+- `POST /api/triggers/news/{source_id}` accepts an authenticated durable news
+  job for `reuters` or `kobeissi` and forwards internal Basic authentication to
+  the orchestrator.
 
 A feed item always includes `id`, `source`, `source_label`, `title`, `summary`,
 `url`, `published`, `symbols`, `tags`, `engagement`, `media`, `meta`, and
@@ -45,7 +51,9 @@ A feed item always includes `id`, `source`, `source_label`, `title`, `summary`,
 
 ## Reliability and recovery
 
-State and daily snapshots are replaced atomically. IDs are deduplicated, Reuters
+State and daily snapshots are replaced atomically. A successful source snapshot
+and unified feed are published before its cursor advances; publication failure
+therefore preserves both the prior feed and the prior cursor. IDs are deduplicated, Reuters
 keeps a bounded lexicographically sorted set of seen URLs, and Twitter IDs are
 compared numerically.
 Malformed state is treated as empty state and rewritten on the next successful
