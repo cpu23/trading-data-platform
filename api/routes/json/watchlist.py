@@ -37,8 +37,8 @@ async def _quote_events(request: Request, sleep=asyncio.sleep):
             yield f"data: {json.dumps(response.json())}\n\n"
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            yield f"event: stream-status\ndata: {json.dumps({'status': 'unavailable', 'error': str(exc)})}\n\n"
+        except Exception:
+            yield f"event: stream-status\ndata: {json.dumps({'status': 'unavailable', 'error': 'upstream unavailable'})}\n\n"
         if await request.is_disconnected():
             break
         await sleep(2)

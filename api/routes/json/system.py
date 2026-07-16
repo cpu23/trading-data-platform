@@ -213,8 +213,8 @@ async def get_system_health(request: Request):
             params={"today_start": today_start},
             config=config,
         )
-    except Exception as db_exc:
-        logger.error("db_unavailable", error=str(db_exc))
+    except Exception:
+        logger.error("db_unavailable")
         return JSONResponse(
             status_code=503,
             content={

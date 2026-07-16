@@ -1,4 +1,5 @@
 import json
+import base64
 import os
 import sys
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DASHBOARD_USER", "internal-user")
 os.environ.setdefault("DASHBOARD_PASSWORD", "internal-pass")
+INTERNAL_AUTH = {"Authorization": "Basic " + base64.b64encode(b"internal-user:internal-pass").decode()}
 
 
 class CycleModeEndpointTests(unittest.TestCase):
@@ -17,8 +19,25 @@ class CycleModeEndpointTests(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         self.main = main
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, headers=INTERNAL_AUTH)
         main._cycle_correlation_id = None
+
+    def test_every_mutation_family_requires_internal_basic_auth(self):
+        from fastapi.testclient import TestClient
+
+        unauthenticated = TestClient(self.main.app)
+        paths = (
+            "/run_cycle",
+            "/run_collector/not-real",
+            "/run_processor/not-real",
+            "/run_news/not-real",
+            "/runs/00000000-0000-0000-0000-000000000000/retry",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                response = unauthenticated.post(path, json={})
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.headers.get("www-authenticate"), "Basic")
 
     def test_invalid_mode_values_and_types_are_rejected_before_config_or_acceptance(self):
         with patch("main._get_config") as get_config, patch("main.accept_run") as accept:
@@ -69,8 +88,10 @@ class CycleModeEndpointTests(unittest.TestCase):
         )
 
     def test_force_full_body_confirmation_without_auth_cannot_bypass(self):
+        from fastapi.testclient import TestClient
+
         with patch("main.accept_run") as accept:
-            response = self.client.post(
+            response = TestClient(self.main.app).post(
                 "/run_cycle",
                 json={"mode": "force_full", "budget_confirmed": True},
             )

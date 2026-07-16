@@ -70,7 +70,7 @@ def create_app(
             referer = request.headers.get("referer")
             browser_signal = bool(origin or referer or request.cookies.get(CSRF_COOKIE) or request.headers.get("sec-fetch-site"))
             machine_json = request.headers.get("content-type", "").split(";", 1)[0].lower() == "application/json" and not browser_signal
-            if not machine_json and browser_signal:
+            if not machine_json:
                 supplied = request.headers.get("x-csrf-token", "")
                 from urllib.parse import urlsplit
                 expected_origin = (urlsplit(str(request.base_url)).scheme, urlsplit(str(request.base_url)).netloc)

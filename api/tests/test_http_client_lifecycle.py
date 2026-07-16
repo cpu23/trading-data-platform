@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
 
+from auth import mint_csrf_token
+
 MOCK_CONFIG = {
     "logging": {"level": "INFO"},
     "database": {"host": "localhost", "name": "test", "user": "test", "password": "test"},
@@ -35,7 +37,11 @@ MOCK_CONFIG = {
     "processors": {},
     "budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80},
 }
-AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}
+AUTH = {
+    "Authorization": "Basic dGVzdDp0ZXN0",
+    "Origin": "http://testserver",
+    "X-CSRF-Token": mint_csrf_token(),
+}
 
 with patch("config.load_config", return_value=MOCK_CONFIG):
     from main import create_app

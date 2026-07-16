@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
 
+from auth import mint_csrf_token
+
 # ── Minimal config that every route handler can consume ─────────────────────
 MOCK_CONFIG = {
     "logging": {"level": "INFO"},
@@ -68,7 +70,11 @@ def tearDownModule():
     client.__exit__(None, None, None)
 
 # ── Auth helpers ────────────────────────────────────────────────────────────
-AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}  # test:test
+AUTH = {
+    "Authorization": "Basic dGVzdDp0ZXN0",  # test:test
+    "Origin": "http://testserver",
+    "X-CSRF-Token": mint_csrf_token(),
+}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -1,3 +1,4 @@
+import base64
 import os
 import sys
 import tempfile
@@ -8,6 +9,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.setdefault("DASHBOARD_USER", "internal-user")
+os.environ.setdefault("DASHBOARD_PASSWORD", "internal-pass")
+INTERNAL_AUTH = {"Authorization": "Basic " + base64.b64encode(b"internal-user:internal-pass").decode()}
 
 from collectors.oanda import OandaCollector
 from llm_client import resolve_model
@@ -21,7 +25,7 @@ class ComponentIdValidationTests(unittest.TestCase):
     def setUp(self):
         from main import app
         from fastapi.testclient import TestClient
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=INTERNAL_AUTH)
 
     def test_run_collector_invalid_id_returns_404(self):
         """POST /run_collector/not-real returns 404."""
@@ -942,7 +946,7 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         with patch("main._get_config", return_value={}), patch(
             "main.get_run_for_retry"
         ) as lookup, patch("main.accept_run") as accept:
-            response = TestClient(main.app).post("/runs/not-a-uuid/retry")
+            response = TestClient(main.app, headers=INTERNAL_AUTH).post("/runs/not-a-uuid/retry")
 
         self.assertEqual(response.status_code, 422)
         lookup.assert_not_called()
@@ -955,7 +959,7 @@ class CollectionFailureStatusTests(unittest.TestCase):
     def setUp(self):
         from main import app
         from fastapi.testclient import TestClient
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=INTERNAL_AUTH)
         self.lock_patcher = patch(
             "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
         )
@@ -1472,7 +1476,7 @@ class HealthContractTests(unittest.TestCase):
     def setUp(self):
         from main import app
         from fastapi.testclient import TestClient
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=INTERNAL_AUTH)
 
     @patch("main.run_quality_checks", return_value={})
     @patch("main.check_connection", return_value=True)
