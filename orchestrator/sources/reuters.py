@@ -9,8 +9,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from logging_config import get_logger
-from sources.news_result import NewsCollectionResult
-from sources.news_storage import atomic_write_json, merge_items, read_json
+from sources.news_result import NewsCollectionResult, NewsPublication
+from sources.news_storage import atomic_write_json, read_json
 
 logger = get_logger("reuters")
 
@@ -203,20 +203,36 @@ def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
         all_items.extend(items)
         seen_urls.update(i["url"] for i in items)
 
-    state["last_seen_urls"] = sorted(seen_urls)[-5000:]
-    state["last_poll"] = datetime.now(timezone.utc).isoformat()
-    state["status"] = "error" if page_errors else "ok"
-    state["error"] = "; ".join(page_errors) if page_errors else None
-    atomic_write_json(state_path, state)
+    if page_errors:
+        failure_state = dict(state)
+        failure_state["last_seen_urls"] = sorted(
+            url for url in stored_urls if isinstance(url, str)
+        )
+        failure_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+        failure_state["status"] = "error"
+        failure_state["error"] = "; ".join(page_errors)
+        atomic_write_json(state_path, failure_state)
+        logger.info("reuters_poll_complete", new_items=len(all_items))
+        return NewsCollectionResult(all_items, "error", failure_state["error"])
+
+    candidate_state = dict(state)
+    candidate_state["last_seen_urls"] = sorted(seen_urls)[-5000:]
+    candidate_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+    candidate_state["status"] = "ok"
+    candidate_state["error"] = None
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    publication = NewsPublication(
+        snapshot_path=output_dir / f"reuters_{today}.json",
+        state_path=state_path,
+        candidate_state=candidate_state,
+    )
 
     if all_items:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        daily_file = output_dir / f"reuters_{today}.json"
-        merge_items(daily_file, all_items)
         logger.info("reuters_poll_complete", new_items=len(all_items))
     else:
         logger.info("reuters_poll_complete", new_items=0)
 
-    error = state["error"]
-    return NewsCollectionResult(all_items, state["status"], error)
+    error = candidate_state["error"]
+    return NewsCollectionResult(
+        all_items, candidate_state["status"], error, publication
+    )

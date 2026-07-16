@@ -1395,6 +1395,27 @@ class RuntimeFeatureTests(unittest.TestCase):
         self.assertTrue(result["feed_published"])
         lock.assert_called_once_with("news:reuters", config)
 
+    def test_state_failure_after_feed_publication_is_truthfully_reported(self):
+        from sources.news_result import NewsCollectionResult, NewsPublication
+        from orchestrator import run_news_source
+
+        publication = NewsPublication(Path("snapshot"), Path("state"), {"cursor": "advanced"})
+        outcome = NewsCollectionResult(
+            [{"id": "one"}], "error", "News state persistence failed: OSError",
+            publication, True,
+        )
+        config = {"news_feed": {"output_path": "unused"}, "reuters": {"enabled": True}}
+        with patch("orchestrator.advisory_lock", return_value=nullcontext()), patch(
+            "sources.news_feed.collect_and_publish", return_value=outcome
+        ):
+            result = run_news_source("reuters", "cid-state", config, manage_lifecycle=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["state"], "publication_failed")
+        self.assertEqual(result["code"], "news_publication_failed")
+        self.assertTrue(result["feed_published"])
+        self.assertEqual(result["new_item_count"], 1)
+
     def test_background_news_lock_conflict_finalizes_failed(self):
         import main
         from locks import RunConflict

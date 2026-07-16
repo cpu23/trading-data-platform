@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from logging_config import get_logger
-from sources.news_result import NewsCollectionResult
-from sources.news_storage import atomic_write_json, merge_items, read_json
+from sources.news_result import NewsCollectionResult, NewsPublication
+from sources.news_storage import atomic_write_json, read_json
 
 logger = get_logger("kobeissi")
 
@@ -153,20 +153,22 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
         atomic_write_json(state_path, state)
         return NewsCollectionResult([], "error", error)
 
+    candidate_state = dict(state)
     if new_items:
-        state["last_seen_id"] = new_items[0]["id"].split(":")[1]
-    state["last_poll"] = datetime.now(timezone.utc).isoformat()
-    state["status"] = "ok"
-    state["error"] = None
-    atomic_write_json(state_path, state)
+        candidate_state["last_seen_id"] = new_items[0]["id"].split(":")[1]
+    candidate_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+    candidate_state["status"] = "ok"
+    candidate_state["error"] = None
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    publication = NewsPublication(
+        snapshot_path=output_dir / f"kobeissi_{today}.json",
+        state_path=state_path,
+        candidate_state=candidate_state,
+    )
 
     if new_items:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        daily_file = output_dir / f"kobeissi_{today}.json"
-        merge_items(daily_file, new_items)
         logger.info("kobeissi_fetch_complete", new_items=len(new_items))
     else:
         logger.info("kobeissi_fetch_complete", new_items=0)
 
-    return NewsCollectionResult(new_items, "ok")
+    return NewsCollectionResult(new_items, "ok", publication=publication)

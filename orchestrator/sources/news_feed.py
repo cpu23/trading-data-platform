@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from logging_config import get_logger
 from sources.news_result import NewsCollectionResult
-from sources.news_storage import atomic_write_json, publication_lock, read_json
+from sources.news_storage import atomic_write_json, merge_items, publication_lock, read_json
 
 logger = get_logger("news_feed")
 SOURCES = ("reuters", "kobeissi")
@@ -87,7 +87,7 @@ def collect_and_publish(
     *,
     days: int | None = None,
 ) -> NewsCollectionResult:
-    """Serialize snapshot/state changes and rebuild the feed only after success."""
+    """Publish snapshot/feed before committing a collector's advanced cursor."""
     output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
     history_days = days if days is not None else config.get("news_feed", {}).get("history_days", 7)
     with publication_lock(output_dir):
@@ -95,9 +95,23 @@ def collect_and_publish(
         if not result.succeeded:
             return result
         try:
+            if result.publication is not None and result.items:
+                merge_items(result.publication.snapshot_path, result.items)
             _build_feed_unlocked(config, days=history_days)
         except Exception as exc:
             error = f"News feed publication failed: {type(exc).__name__}"
             logger.error("news_feed_publication_failed", source_id=source_id, error=error)
-            return NewsCollectionResult(result.items, "error", error)
-        return result
+            return NewsCollectionResult(result.items, "error", error, result.publication)
+        if result.publication is not None:
+            try:
+                atomic_write_json(
+                    result.publication.state_path,
+                    result.publication.candidate_state,
+                )
+            except Exception as exc:
+                error = f"News state persistence failed: {type(exc).__name__}"
+                logger.error("news_state_persistence_failed", source_id=source_id, error=error)
+                return NewsCollectionResult(
+                    result.items, "error", error, result.publication, True
+                )
+        return NewsCollectionResult(result.items, result.status, result.error, feed_published=True)

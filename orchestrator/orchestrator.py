@@ -745,16 +745,21 @@ def run_news_source(
                         status, state, error, code = "success", "published", None, None
                     else:
                         publication_failed = bool(
-                            outcome.error and outcome.error.startswith("News feed publication failed:")
+                            outcome.error and (
+                                outcome.error.startswith("News feed publication failed:")
+                                or outcome.error.startswith("News state persistence failed:")
+                            )
                         )
                         state = "publication_failed" if publication_failed else "collection_failed"
                         code = "news_publication_failed" if publication_failed else "news_collection_failed"
                         status, error = "failed", outcome.error or "news collection failed"
                     item_count = len(outcome.items)
+                    feed_published = outcome.feed_published if not outcome.succeeded else True
                 except Exception as exc:
                     status, state, item_count = "failed", "collection_failed", 0
                     code = "news_collection_failed"
                     error = f"news collection failed: {type(exc).__name__}"
+                    feed_published = False
                 result = {
                     "status": status,
                     "new_item_count": item_count,
@@ -762,7 +767,7 @@ def run_news_source(
                     "state": state,
                     "error": error,
                     "code": code,
-                    "feed_published": state == "published",
+                    "feed_published": feed_published,
                     "correlation_id": correlation_id,
                 }
             if manage_lifecycle:
