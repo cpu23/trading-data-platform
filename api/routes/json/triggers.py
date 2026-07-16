@@ -54,7 +54,7 @@ async def trigger_collect(source_id: str, request: Request):
     try:
         response = await request.app.state.orchestrator_client.post(
             f"{ORCHESTRATOR_URL}/run_collector/{source_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0,
+            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
@@ -80,7 +80,7 @@ async def trigger_process(processor_id: str, request: Request):
     try:
         response = await request.app.state.orchestrator_client.post(
             f"{ORCHESTRATOR_URL}/run_processor/{processor_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0,
+            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
@@ -105,7 +105,7 @@ async def trigger_news(source_id: str, request: Request):
     try:
         response = await request.app.state.orchestrator_client.post(
             f"{ORCHESTRATOR_URL}/run_news/{source_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0,
+            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=type(exc).__name__)
@@ -140,6 +140,10 @@ async def trigger_cycle(request: Request, body: CycleRequest | None = None):
         )
 
     auth = None
+    try:
+        auth = _internal_basic_auth()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Internal authentication unavailable") from exc
     if body.mode == "force_full":
         try:
             auth = _internal_basic_auth()
@@ -156,8 +160,7 @@ async def trigger_cycle(request: Request, body: CycleRequest | None = None):
         },
         "timeout": 10.0,
     }
-    if auth is not None:
-        request_kwargs["auth"] = auth
+    request_kwargs["auth"] = auth
 
     try:
         response = await request.app.state.orchestrator_client.post(

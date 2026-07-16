@@ -1,6 +1,18 @@
 (function () {
   'use strict';
 
+  function csrfHeaders(headers) {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta && meta.content;
+    if (token) headers['X-CSRF-Token'] = token;
+    return headers;
+  }
+
+  document.body && document.body.addEventListener('htmx:configRequest', function (evt) {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.content) evt.detail.headers['X-CSRF-Token'] = meta.content;
+  });
+
   /* Chart.js global defaults */
   Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, Inter, sans-serif";
   Chart.defaults.font.size = 11;
@@ -387,8 +399,11 @@
 
   function initLiveQuotes() {
     if (!window.EventSource || !document.querySelector('[data-live-price]')) return;
-    var source = new EventSource('/api/quotes/stream');
-    source.onmessage = function (event) {
+    fetch('/api/quotes/stream-token', {credentials: 'same-origin'})
+      .then(function (response) { if (!response.ok) throw new Error('stream token unavailable'); return response.json(); })
+      .then(function (payload) {
+      var source = new EventSource('/api/quotes/stream?token=' + encodeURIComponent(payload.token));
+      source.onmessage = function (event) {
       var payload = JSON.parse(event.data);
       (payload.quotes || []).forEach(function (quote) {
         document.querySelectorAll('[data-live-price="' + quote.symbol + '"]').forEach(function (el) {
@@ -398,7 +413,8 @@
           el.textContent = 'live · ' + new Date(quote.observed_at).toISOString().slice(11, 19) + ' UTC';
         });
       });
-    };
+      };
+      });
   }
 
   /* Log row expand / collapse ----------------------------------------------- */
@@ -530,7 +546,7 @@
 
       fetch('/api/triggers/cycle', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: csrfHeaders({'Content-Type': 'application/json'}),
         body: JSON.stringify({mode: mode, budget_confirmed: budgetConfirmed})
       }).then(function (response) {
         if (response.status === 202) return response.json();
@@ -742,7 +758,7 @@
       if (status) status.textContent = 'Saving…';
       fetch('/api/settings/timezone', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: csrfHeaders({'Content-Type': 'application/json'}),
         body: JSON.stringify({timezone: requested})
       }).then(function (response) {
         if (!response.ok) throw new Error('Timezone not saved');

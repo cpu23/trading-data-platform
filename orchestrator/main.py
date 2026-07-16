@@ -56,6 +56,17 @@ VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
 _cycle_correlation_id: str | None = None
 
 
+def require_internal_basic(credentials: HTTPBasicCredentials | None = Depends(optional_basic)):
+    username = os.environ.get("DASHBOARD_USER", "")
+    password = os.environ.get("DASHBOARD_PASSWORD", "")
+    supplied_user = credentials.username if credentials else ""
+    supplied_pass = credentials.password if credentials else ""
+    valid = bool(username and password) and secrets.compare_digest(supplied_user, username) and secrets.compare_digest(supplied_pass, password)
+    if not valid:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
+    return supplied_user
+
+
 
 def _get_config():
     return load_config()
@@ -268,7 +279,7 @@ def _accept_http_run(
         raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
 
 
-@app.post("/runs/{correlation_id}/retry", status_code=202)
+@app.post("/runs/{correlation_id}/retry", status_code=202, dependencies=[Depends(require_internal_basic)])
 def retry_abandoned_run(
     correlation_id: UUID,
     background_tasks: BackgroundTasks,
@@ -425,7 +436,7 @@ def _run_cycle_task(
             _cycle_correlation_id = None
 
 
-@app.post("/run_cycle", status_code=202)
+@app.post("/run_cycle", status_code=202, dependencies=[Depends(require_internal_basic)])
 def trigger_cycle(
     background_tasks: BackgroundTasks,
     body: dict | None = Body(default=None),
@@ -547,7 +558,7 @@ def _run_collector_task(source_id: str, correlation_id: str):
         )
 
 
-@app.post("/run_collector/{source_id}", status_code=202)
+@app.post("/run_collector/{source_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
 def trigger_collector(
     source_id: str,
     background_tasks: BackgroundTasks,
@@ -616,7 +627,7 @@ def _run_news_task(source_id: str, correlation_id: str):
         )
 
 
-@app.post("/run_news/{source_id}", status_code=202)
+@app.post("/run_news/{source_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
 def trigger_news(
     source_id: str,
     background_tasks: BackgroundTasks,
@@ -678,7 +689,7 @@ def _run_processor_task(processor_id: str, correlation_id: str):
         )
 
 
-@app.post("/run_processor/{processor_id}", status_code=202)
+@app.post("/run_processor/{processor_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
 def trigger_processor(
     processor_id: str,
     background_tasks: BackgroundTasks,

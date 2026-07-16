@@ -134,7 +134,7 @@ class TestCycleModes(unittest.TestCase):
         payload = post.await_args.kwargs["json"]
         self.assertEqual(payload["mode"], "refresh")
         self.assertFalse(payload["budget_confirmed"])
-        self.assertNotIn("auth", post.await_args.kwargs)
+        self.assertIn("auth", post.await_args.kwargs)
 
     @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
     def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(self, post):

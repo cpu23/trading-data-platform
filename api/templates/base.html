@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Trading data{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <meta name="csrf-token" content="{{ request.state.csrf_token | default('') }}">
   <script src="/static/vendor/htmx.min.js"></script>
   <script src="/static/vendor/chart.min.js"></script>
   <script src="/static/app.js" defer></script>

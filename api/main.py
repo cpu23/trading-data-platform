@@ -2,12 +2,17 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import os
+import base64
+import binascii
+import secrets
+import time
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from auth import verify_credentials
+from auth import CSRF_COOKIE, mint_csrf_token, verify_csrf_token, verify_credentials
 from config import load_config
 from logging_config import setup_logging
 from routes.json import router as json_router
@@ -41,17 +46,44 @@ def create_app(
     app = FastAPI(
         title="Trading Data API",
         version="0.1.0",
-        dependencies=[Depends(verify_credentials)],
         lifespan=lifespan,
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    @app.middleware("http")
+    async def security_contract(request: Request, call_next):
+        is_sse = request.url.path == "/api/quotes/stream"
+        if not is_sse:
+            auth = request.headers.get("authorization", "")
+            try:
+                scheme, value = auth.split(" ", 1)
+                user, password = base64.b64decode(value, validate=True).decode().split(":", 1)
+                expected_user, expected_password = os.environ.get("DASHBOARD_USER", ""), os.environ.get("DASHBOARD_PASSWORD", "")
+                valid = scheme.lower() == "basic" and expected_user and expected_password and secrets.compare_digest(user, expected_user) and secrets.compare_digest(password, expected_password)
+            except (ValueError, UnicodeDecodeError, binascii.Error):
+                valid = False
+            if not valid:
+                return JSONResponse(status_code=401, content={"detail": "Authentication required"}, headers={"WWW-Authenticate": "Basic"})
+        token = request.cookies.get(CSRF_COOKIE) or mint_csrf_token()
+        request.state.csrf_token = token
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            browser_signal = bool(origin or referer or request.cookies.get(CSRF_COOKIE) or request.headers.get("sec-fetch-site"))
+            machine_json = request.headers.get("content-type", "").split(";", 1)[0].lower() == "application/json" and not browser_signal
+            if not machine_json and browser_signal:
+                supplied = request.headers.get("x-csrf-token", "")
+                from urllib.parse import urlsplit
+                expected_origin = (urlsplit(str(request.base_url)).scheme, urlsplit(str(request.base_url)).netloc)
+                supplied_origin = origin or referer
+                parsed = urlsplit(supplied_origin) if supplied_origin else None
+                same_origin = parsed and (parsed.scheme, parsed.netloc) == expected_origin
+                if not verify_csrf_token(supplied) or not same_origin:
+                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
+        response = await call_next(request)
+        if request.method == "GET" and response.status_code < 400 and request.url.path not in {"/static", "/api/quotes/stream"}:
+            secure = os.environ.get("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
+            response.set_cookie(CSRF_COOKIE, token or mint_csrf_token(), secure=secure, httponly=False, samesite="strict", path="/")
+        return response
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     app.state.templates = Jinja2Templates(directory="templates")
