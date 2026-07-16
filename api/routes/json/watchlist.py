@@ -1,7 +1,8 @@
 import asyncio
 import json
+import os
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from auth import mint_sse_token, verify_sse_token
 
@@ -45,16 +46,23 @@ async def _quote_events(request: Request, sleep=asyncio.sleep):
 
 
 @router.get("/quotes/stream")
-async def stream_quotes(request: Request, token: str | None = None):
-    import time
-    now = int(time.time())
-    used = {key: expiry for key, expiry in getattr(request.app.state, "used_sse_tokens", {}).items() if expiry > now}
-    request.app.state.used_sse_tokens = used
-    if not verify_sse_token(token, "/api/quotes/stream", used):
+async def stream_quotes(request: Request):
+    token = request.cookies.get("sse-auth")
+    if not verify_sse_token(token, "/api/quotes/stream"):
         raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
     return StreamingResponse(_quote_events(request), media_type="text/event-stream")
 
 
 @router.get("/quotes/stream-token")
-def stream_token():
-    return {"token": mint_sse_token()}
+def stream_token(response: Response):
+    secure = os.environ.get("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
+    response.set_cookie(
+        "sse-auth",
+        mint_sse_token(ttl=60),
+        max_age=60,
+        secure=secure,
+        httponly=True,
+        samesite="strict",
+        path="/api/quotes/stream",
+    )
+    return {"expires_in": 60}

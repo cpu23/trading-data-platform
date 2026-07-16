@@ -399,22 +399,29 @@
 
   function initLiveQuotes() {
     if (!window.EventSource || !document.querySelector('[data-live-price]')) return;
-    fetch('/api/quotes/stream-token', {credentials: 'same-origin'})
-      .then(function (response) { if (!response.ok) throw new Error('stream token unavailable'); return response.json(); })
-      .then(function (payload) {
-      var source = new EventSource('/api/quotes/stream?token=' + encodeURIComponent(payload.token));
-      source.onmessage = function (event) {
-      var payload = JSON.parse(event.data);
-      (payload.quotes || []).forEach(function (quote) {
-        document.querySelectorAll('[data-live-price="' + quote.symbol + '"]').forEach(function (el) {
-          el.textContent = Number(quote.price).toPrecision(6);
+    function connect(hasRefreshed) {
+      fetch('/api/quotes/stream-token', {credentials: 'same-origin'})
+        .then(function (response) { if (!response.ok) throw new Error('stream token unavailable'); })
+        .then(function () {
+          var source = new EventSource('/api/quotes/stream');
+          source.onmessage = function (event) {
+            var payload = JSON.parse(event.data);
+            (payload.quotes || []).forEach(function (quote) {
+              document.querySelectorAll('[data-live-price="' + quote.symbol + '"]').forEach(function (el) {
+                el.textContent = Number(quote.price).toPrecision(6);
+              });
+              document.querySelectorAll('[data-live-time="' + quote.symbol + '"]').forEach(function (el) {
+                el.textContent = 'live · ' + new Date(quote.observed_at).toISOString().slice(11, 19) + ' UTC';
+              });
+            });
+          };
+          source.onerror = function () {
+            source.close();
+            if (!hasRefreshed) connect(true);
+          };
         });
-        document.querySelectorAll('[data-live-time="' + quote.symbol + '"]').forEach(function (el) {
-          el.textContent = 'live · ' + new Date(quote.observed_at).toISOString().slice(11, 19) + ' UTC';
-        });
-      });
-      };
-      });
+    }
+    connect(false);
   }
 
   /* Log row expand / collapse ----------------------------------------------- */

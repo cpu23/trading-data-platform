@@ -55,10 +55,10 @@ class Phase11SecurityTests(unittest.TestCase):
                     self.assertEqual(response.headers.get("www-authenticate"), "Basic")
 
     def test_sse_tokens_are_expiring_path_bound_and_tamper_evident(self):
-        self.assertFalse(verify_sse_token(mint_sse_token(ttl=-1), "/api/quotes/stream", set()))
-        self.assertFalse(verify_sse_token(mint_sse_token(path="/wrong"), "/api/quotes/stream", set()))
+        self.assertFalse(verify_sse_token(mint_sse_token(ttl=-1), "/api/quotes/stream"))
+        self.assertFalse(verify_sse_token(mint_sse_token(path="/wrong"), "/api/quotes/stream"))
         token = mint_sse_token()
-        self.assertFalse(verify_sse_token(token + "tampered", "/api/quotes/stream", set()))
+        self.assertFalse(verify_sse_token(token + "tampered", "/api/quotes/stream"))
 
     def test_api_database_unavailable_is_safe_unready_503(self):
         with TestClient(make_app(), base_url="https://testserver") as client:
@@ -69,20 +69,50 @@ class Phase11SecurityTests(unittest.TestCase):
         self.assertEqual(response.json()["readiness"], "unready")
         self.assertNotIn("RAW_DB_SECRET", response.text)
 
-    def test_mutation_forwards_basic_and_sse_requires_one_time_signed_token(self):
+    def test_mutation_forwards_basic_and_sse_uses_short_lived_signed_cookie(self):
         with TestClient(make_app(), base_url="https://testserver") as client:
             self.assertEqual(client.post("/api/collect/fred").status_code, 401)
             self.assertEqual(client.post("/api/collect/fred", headers=AUTH, json={}).status_code, 202)
-            token = client.get("/api/quotes/stream-token", headers=AUTH).json()["token"]
-            self.assertEqual(client.get("/api/quotes/stream").status_code, 401)
+            with patch("routes.json.watchlist._quote_events") as events:
+                self.assertEqual(client.get("/api/quotes/stream").status_code, 401)
+                events.assert_not_called()
+            token_response = client.get("/api/quotes/stream-token", headers=AUTH)
+            self.assertEqual(token_response.status_code, 200)
+            self.assertNotIn("token", token_response.json())
+            self.assertIsNotNone(client.cookies.get("sse-auth"))
+            sse_cookie = next(
+                value for value in token_response.headers.get_list("set-cookie")
+                if value.startswith("sse-auth=")
+            )
+            self.assertIn("HttpOnly", sse_cookie)
+            self.assertIn("SameSite=strict", sse_cookie)
+            self.assertIn("Path=/api/quotes/stream", sse_cookie)
+            self.assertIn("Max-Age=60", sse_cookie)
             with patch("routes.json.watchlist._quote_events", finite_events):
-                response = client.get("/api/quotes/stream", params={"token": token}, headers=AUTH)
+                response = client.get("/api/quotes/stream")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("data: {}", response.text)
-            self.assertEqual(
-                client.get("/api/quotes/stream", params={"token": token}, headers=AUTH).status_code,
-                401,
-            )
+            with patch("routes.json.watchlist._quote_events", finite_events):
+                self.assertEqual(client.get("/api/quotes/stream").status_code, 200)
+
+    def test_sse_cookie_secure_flag_is_configurable(self):
+        with patch.dict(os.environ, {"COOKIE_SECURE": "1"}):
+            with TestClient(make_app(), base_url="https://testserver") as client:
+                response = client.get("/api/quotes/stream-token", headers=AUTH)
+        sse_cookie = next(
+            value for value in response.headers.get_list("set-cookie")
+            if value.startswith("sse-auth=")
+        )
+        self.assertIn("Secure", sse_cookie)
+
+    def test_sse_cookie_rejects_expired_and_wrong_path_before_generator(self):
+        with TestClient(make_app(), base_url="https://testserver") as client:
+            for token in (mint_sse_token(ttl=-1), mint_sse_token(path="/wrong")):
+                client.cookies.set("sse-auth", token, path="/api/quotes/stream")
+                with patch("routes.json.watchlist._quote_events") as events:
+                    response = client.get("/api/quotes/stream")
+                self.assertEqual(response.status_code, 401)
+                events.assert_not_called()
 
     def test_browser_mutation_requires_csrf_but_json_machine_call_is_exempt(self):
         with TestClient(make_app(), base_url="https://testserver") as client:

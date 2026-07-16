@@ -71,8 +71,8 @@ def mint_csrf_token(ttl: int = 3600) -> str:
     return _signed({"purpose": CSRF_PURPOSE, "exp": int(time.time()) + ttl, "jti": uuid.uuid4().hex})
 
 
-def verify_sse_token(token: str | None, path: str, used: set[str]) -> bool:
-    if not token or not _secret() or token in used:
+def verify_sse_token(token: str | None, path: str) -> bool:
+    if not token or not _secret():
         return False
     try:
         encoded, supplied = token.split(".", 1)
@@ -82,11 +82,6 @@ def verify_sse_token(token: str | None, path: str, used: set[str]) -> bool:
         padded = encoded + "=" * (-len(encoded) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded))
         valid = payload.get("path") == path and payload.get("purpose") == SSE_PURPOSE and int(payload.get("exp", 0)) > int(time.time())
-        if valid:
-            if hasattr(used, "__setitem__"):
-                used[token] = int(payload["exp"])
-            else:
-                used.add(token)
         return valid
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, OverflowError):
         return False
