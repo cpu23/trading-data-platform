@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Operations overview{% endblock %}
 {% block content %}
-<main aria-labelledby="operations-title" class="operations-overview">
+<main aria-label="Operations" class="operations-overview">
   <header class="section-header">
-    <div><h1 id="operations-title">Operations overview</h1><p class="dim">Bounded recent snapshot · {{ current_timezone }}</p></div>
     {% include "partials/navigation.html" %}
+    <span class="nav-separator" aria-hidden="true">·</span>
+    <span class="page-header-meta tabular">{{ current_timezone }}</span>
   </header>
 
   <section aria-labelledby="source-state-title">

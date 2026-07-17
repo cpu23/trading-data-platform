@@ -5,7 +5,7 @@
   <div class="calendar-toolbar section-heading">
     <span class="label">Economic calendar</span>
     <span class="calendar-timezone tabular">Times shown in {{ current_timezone }}</span>
-    <div class="impact-legend" aria-label="Impact legend">
+    <div class="impact-legend" aria-label="Impact severity legend">
       <span class="impact-badge impact-high">High</span>
       <span class="impact-badge impact-medium">Medium</span>
       <span class="impact-badge impact-low">Low</span>
@@ -13,7 +13,7 @@
   </div>
 
   {% if events_data is mapping and events_data.get('error') %}
-    <div class="error-block" role="alert">Calendar unavailable. Try Refresh or check Operations.</div>
+    <div class="error-block" role="alert">Calendar unavailable. Run a due cycle or check Operations.</div>
   {% else %}
   <details class="calendar-details">
     <summary class="calendar-toggle">

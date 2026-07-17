@@ -24,8 +24,8 @@
     {% set cap_str = '%.2f' | format(cap) %}
   {% endif %}
   <div class="page-header-left">
-    <span class="page-header-title">Trading intelligence</span>
     {% include "partials/navigation.html" %}
+    <span class="nav-separator" aria-hidden="true">·</span>
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M') }} {{ current_time.tzname() }}</span>
     {% if timezone_choices %}
     <div class="timezone-control">
@@ -53,17 +53,17 @@
       <button id="run-cycle-btn" class="btn"
               type="button"
               data-cycle-mode="refresh"
-              data-original-label="Refresh"
-              title="Collect due sources and update analysis">
+              data-original-label="Run due cycle"
+              title="Collect sources that are due, then update changed analysis">
         <span id="cycle-spinner" class="braille-spinner" aria-hidden="true"></span>
-        <span class="btn-label">Refresh</span>
+        <span class="btn-label">Run due cycle</span>
       </button>
       <select id="cycle-mode-select" class="cycle-mode-select"
               aria-label="Choose cycle mode"
               title="Choose another cycle mode">
-        <option value="" selected>More…</option>
-        <option value="analyze">Analyze</option>
-        <option value="force_full">Force full</option>
+        <option value="" selected>Choose another cycle…</option>
+        <option value="analyze">Analyze stored data</option>
+        <option value="force_full">Rebuild everything (uses budget)</option>
       </select>
     </div>
   </div>

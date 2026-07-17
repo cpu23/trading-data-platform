@@ -80,8 +80,14 @@ class Phase10FrontendContracts(unittest.TestCase):
     def test_header_wires_timezone_and_operations_without_duplicate_refresh(self):
         self.assertEqual(self.header.count('id="run-cycle-btn"'), 1)
         self.assertIn('partials/navigation.html', self.header)
-        for href in ('/', '/logs', '/quality', '/news', '/operations'):
-            self.assertIn(f'href="{href}"', self.navigation)
+        for label in ('Dashboard', 'Logs', 'Quality', 'News', 'Operations'):
+            self.assertIn(label, self.navigation)
+        self.assertIn('aria-current="page"', self.navigation)
+        self.assertIn('is-active', self.navigation)
+        self.assertIn('Run due cycle', self.header)
+        self.assertIn('Analyze stored data', self.header)
+        self.assertIn('Rebuild everything (uses budget)', self.header)
+        self.assertNotIn('>More…<', self.header)
         self.assertIn('id="timezone-status"', self.header)
         self.assertIn("initTimezoneControl", self.app_js)
         self.assertIn("fetch('/api/settings/timezone'", self.app_js)

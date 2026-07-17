@@ -545,7 +545,7 @@
       var menu = document.getElementById('cycle-mode-select');
       if (!btn || btn.disabled) return;
       var cycleLabel = btn.querySelector('.btn-label');
-      var originalLabel = btn.getAttribute('data-original-label') || 'Refresh';
+      var originalLabel = btn.getAttribute('data-original-label') || 'Run due cycle';
       startBrailleSpinner(btn.querySelector('#cycle-spinner'));
       if (cycleLabel) cycleLabel.textContent = 'Starting ' + mode.replace('_', ' ') + '…';
       btn.disabled = true;

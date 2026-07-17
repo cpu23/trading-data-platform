@@ -1,7 +1,9 @@
 <nav class="header-nav" aria-label="Primary navigation">
-  <a class="quiet-link" href="/">Dashboard</a>
-  <a class="quiet-link" href="/logs">Logs</a>
-  <a class="quiet-link" href="/quality">Quality</a>
-  <a class="quiet-link" href="/news">News</a>
-  <a class="quiet-link" href="/operations">Operations</a>
+  {% set path = request.url.path %}
+  {% set pages = [('/', 'Dashboard'), ('/logs', 'Logs'), ('/quality', 'Quality'), ('/news', 'News'), ('/operations', 'Operations')] %}
+  {% for href, label in pages %}
+    {% if not loop.first %}<span class="nav-separator" aria-hidden="true">·</span>{% endif %}
+    {% set active = path == href or (href != '/' and path.startswith(href ~ '/')) %}
+    <a class="nav-link{% if active %} is-active{% endif %}" href="{{ href }}"{% if active %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
 </nav>

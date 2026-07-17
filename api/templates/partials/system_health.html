@@ -8,6 +8,11 @@
     <div class="health-summary">
       <span class="status-dot status-{{ 'success' if health.get('overall') == 'healthy' else 'partial' if health.get('overall') in ['degraded', 'unavailable'] else 'failed' }}"></span>
       <span>{{ health.get('overall', 'unknown') | replace('_', ' ') | title }}</span>
+      {% if health.get('overall') == 'degraded' %}
+        <span class="health-explanation">Data is stale or incomplete; services may still be running normally.</span>
+      {% elif health.get('overall') == 'healthy' %}
+        <span class="health-explanation">Services and data checks are current.</span>
+      {% endif %}
     </div>
 
     {% if health.get('error') %}

@@ -12,17 +12,18 @@ class CycleModeHeaderTests(unittest.TestCase):
         cls.header = (API_ROOT / "templates/partials/header.html").read_text()
         cls.app_js = (API_ROOT / "static/app.js").read_text()
 
-    def test_header_has_one_refresh_primary_and_compact_adjacent_mode_menu(self):
+    def test_header_has_one_clear_due_cycle_action_and_explicit_mode_menu(self):
         self.assertEqual(self.header.count('id="run-cycle-btn"'), 1)
         self.assertIn('data-cycle-mode="refresh"', self.header)
         self.assertRegex(
             self.header,
-            r'id="run-cycle-btn"[\s\S]*?<span class="btn-label">Refresh</span>',
+            r'id="run-cycle-btn"[\s\S]*?<span class="btn-label">Run due cycle</span>',
         )
         self.assertIn('id="cycle-mode-select"', self.header)
         self.assertIn('aria-label="Choose cycle mode"', self.header)
-        self.assertIn('<option value="analyze">Analyze</option>', self.header)
-        self.assertIn('<option value="force_full">Force full</option>', self.header)
+        self.assertIn('<option value="analyze">Analyze stored data</option>', self.header)
+        self.assertIn('<option value="force_full">Rebuild everything (uses budget)</option>', self.header)
+        self.assertNotIn('>More…<', self.header)
         self.assertNotIn('data-cycle-mode="analyze" class="btn"', self.header)
         self.assertNotIn('data-cycle-mode="force_full" class="btn"', self.header)
 
