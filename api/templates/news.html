@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}News — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">
+    <span class="page-header-title">Market news</span>
+    {% include "partials/navigation.html" %}
+  </div>
+</header>
+
+<section class="section" aria-labelledby="news-sources-title">
+  <div class="section-heading"><span class="label" id="news-sources-title">Source state</span></div>
+  <div class="news-source-states">
+    {% for state in source_states %}
+      <div class="news-source-state">
+        <strong>{{ state.name | title }}</strong>
+        <span class="muted">{{ state.status }}</span>
+        {% if state.last_poll %}<span class="dim tabular">{{ state.last_poll }}</span>{% endif %}
+        {% if state.error %}<span class="error-text">{{ state.error }}</span>{% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<form class="logs-filter-bar" method="get" action="/news">
+  <label class="sr-only" for="news-source">Source</label>
+  <select id="news-source" name="source">
+    <option value="">All sources</option>
+    {% for value in sources %}<option value="{{ value }}"{% if selected_source == value %} selected{% endif %}>{{ value | title }}</option>{% endfor %}
+  </select>
+  <label class="sr-only" for="news-symbol">Symbol or tag</label>
+  <select id="news-symbol" name="symbol">
+    <option value="">All symbols/tags</option>
+    {% for value in symbols %}<option value="{{ value }}"{% if selected_symbol == value %} selected{% endif %}>{{ value }}</option>{% endfor %}
+  </select>
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+<section class="section" aria-labelledby="news-feed-title">
+  <div class="section-heading"><span class="label" id="news-feed-title">Latest feed</span>{% if news.generated_at %}<span class="news-generated tabular">{{ news.generated_at }}</span>{% endif %}</div>
+  {% if news.status == 'not_published' %}<div class="empty-state">News feed not published yet. Run an approved source collection from Operations.</div>
+  {% elif news.status != 'published' %}<div class="error-block" role="alert">News feed unavailable. Source state is shown above.</div>
+  {% elif not news['items'] %}<div class="empty-state">No news items match these filters.</div>
+  {% else %}<div class="news-list news-list-full">
+    {% for item in news['items'] %}<article class="news-item">
+      <div class="news-meta tabular">{{ item.source }}{% if item.published %} · {{ item.published }}{% endif %}</div>
+      <h2>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h2>
+      {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
+      {% if item.symbols or item.tags %}<div class="news-tags">{% for value in item.symbols + item.tags %}<span>{{ value }}</span>{% endfor %}</div>{% endif %}
+    </article>{% endfor %}
+  </div>{% endif %}
+</section>
+{% endblock %}

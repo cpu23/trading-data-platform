@@ -32,7 +32,10 @@ class RuntimeTopologyTests(unittest.TestCase):
                 for name in ("migrate", "orchestrator", "api"):
                     self.assertEqual(services[name]["build"]["context"], ".")
                     self.assertEqual(services[name]["build"]["dockerfile"], "Dockerfile")
-                    self.assertEqual(services[name]["image"], "trading-data-platform:local")
+                    self.assertEqual(services[name]["image"], "trading-data-platform:0.1.0")
+                    self.assertGreater(services[name]["pids_limit"], 0)
+                    self.assertRegex(str(services[name]["mem_limit"]), r"^[0-9]+[mg]$")
+                    self.assertIn("no-new-privileges:true", services[name]["security_opt"])
 
                 self.assertEqual(services["migrate"]["restart"], "no")
                 self.assertIn("cli.py", " ".join(services["migrate"]["command"]))
@@ -64,6 +67,16 @@ class RuntimeTopologyTests(unittest.TestCase):
                 self.assertEqual(api["environment"]["ORCHESTRATOR_URL"], "http://orchestrator:8000")
                 self.assertEqual(len(api["ports"]), 1)
                 self.assertTrue(api["ports"][0].endswith(":8000"))
+
+    def test_upstream_images_are_immutable_and_runtime_is_non_root(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertGreaterEqual(dockerfile.count("@sha256:"), 3)
+        self.assertIn("USER 10001:10001", dockerfile)
+        self.assertNotIn(":latest", dockerfile)
+        for path in COMPOSE_FILES:
+            source = path.read_text()
+            self.assertIn("timescale/timescaledb@sha256:", source)
+            self.assertNotIn("timescaledb:latest", source)
 
     def test_long_running_services_have_bounded_health_and_restart(self):
         for path in COMPOSE_FILES:

@@ -6,13 +6,12 @@ import os
 import base64
 import binascii
 import secrets
-import time
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from auth import CSRF_COOKIE, mint_csrf_token, verify_csrf_token, verify_credentials
+from auth import CSRF_COOKIE, mint_csrf_token, verify_csrf_token
 from config import load_config
 from logging_config import setup_logging
 from routes.json import router as json_router

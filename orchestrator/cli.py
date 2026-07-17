@@ -1,7 +1,7 @@
 import click
 
 from config_loader import load_config
-from db import check_connection, check_tables_exist, get_session, query_latest
+from db import check_connection, check_tables_exist, get_session
 from logging_config import setup_logging
 from collectors import get_all_collectors
 from processors import get_all_processors

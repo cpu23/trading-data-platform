@@ -2,7 +2,7 @@
 
 ## Scope
 
-These are measured local acceptance numbers from 16 July 2026 after the reliability and UI remediation. They are not production-SLA claims and do not include live FRED, OANDA, OpenRouter, Reuters, or TwitterAPI.io latency.
+These are measured local acceptance numbers from 17 July 2026 after the reliability and UI remediation. They are not production-SLA claims and do not include live FRED, OANDA, OpenRouter, Reuters, or TwitterAPI.io latency.
 
 Environment:
 
@@ -17,11 +17,12 @@ Environment:
 
 | Route | Status | Response bytes | Median ms | Min ms | Max ms |
 |---|---:|---:|---:|---:|---:|
-| `/` | 200 | 27,447 | 120.89 | 116.28 | 125.51 |
-| `/logs` | 200 | 7,944 | 2.41 | 2.31 | 2.63 |
-| `/quality` | 200 | 18,471 | 55.04 | 51.75 | 55.29 |
-| `/operations` | 200 | 4,034 | 106.88 | 95.33 | 108.93 |
-| `/api/system/health` | 200 | 20,880 | 105.86 | 101.96 | 108.20 |
+| `/` | 200 | 25,347 | 135.36 | 131.13 | 137.83 |
+| `/logs` | 200 | 8,212 | 3.69 | 3.34 | 4.26 |
+| `/quality` | 200 | 18,739 | 55.82 | 53.64 | 59.67 |
+| `/operations` | 200 | 4,214 | 115.67 | 112.23 | 153.41 |
+| `/news` | 200 | 3,322 | 1.84 | 1.65 | 3.30 |
+| `/api/system/health` | 200 | 20,880 | 132.23 | 124.86 | 134.31 |
 
 The demo health response reported `liveness: ok`, `readiness: ready`, and `data_health: degraded`. That degraded state is expected because external collection is disabled; it proves that readiness and data freshness are reported separately.
 
@@ -36,11 +37,15 @@ A fully local Chromium/CDP run used vendored Chart.js and HTMX assets and blocke
 - desktop page overflow: false;
 - 390 px page overflow: false (`scrollWidth=390`, `clientWidth=390`);
 - console errors: zero.
+- dedicated News page navigation and filters remained usable at desktop and 390 px;
+- News source state and unpublished empty state were truthful, with no visible clipping, overlap, or overflow.
 
 Acceptance screenshots were written outside the repository:
 
 - `/home/mrw/trading-dashboard-phase12-interactive.png`
 - `/home/mrw/trading-dashboard-phase12-interactive-mobile.png`
+- `/home/mrw/trading-news-phase12-final-desktop.png`
+- `/home/mrw/trading-news-phase12-final-mobile.png`
 
 ## Pipeline timings and deferred live measurements
 

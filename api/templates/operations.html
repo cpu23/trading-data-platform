@@ -4,7 +4,7 @@
 <main aria-labelledby="operations-title" class="operations-overview">
   <header class="section-header">
     <div><h1 id="operations-title">Operations overview</h1><p class="dim">Bounded recent snapshot · {{ current_timezone }}</p></div>
-    <nav aria-label="Dashboard navigation"><a href="/">Dashboard</a> · <a href="/logs">Logs</a> · <a href="/quality">Quality</a></nav>
+    {% include "partials/navigation.html" %}
   </header>
 
   <section aria-labelledby="source-state-title">

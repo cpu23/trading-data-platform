@@ -1,9 +1,8 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from logging_config import get_logger
 

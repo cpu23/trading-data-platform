@@ -131,10 +131,10 @@ signal engine. It includes:
 - Historical regime timeline and multi-series macro comparison chart
 - Watchlist cards with price snapshots, context, and matched catalysts
 - Upcoming high-impact economic events
-- Bounded Reuters/Kobeissi News section with a truthful unpublished state
+- Bounded Reuters/Kobeissi dashboard summary plus a full source/symbol-filtered News view
 - Daily briefing and analytical summaries
 - Refresh, analyze, and explicit force-full cycle controls with live status
-- Searchable logs, data-quality, and Operations views
+- Persistent Dashboard, Logs, Quality, News, and Operations navigation
 
 ![System logs](docs/assets/system-logs-full-page.png)
 
@@ -210,7 +210,11 @@ Docker Compose starts four independently owned lifecycles:
 - The internal collection, scheduling, and processing orchestrator
 - The public FastAPI JSON API and dashboard
 
-The dashboard is exposed at `http://127.0.0.1:8001` by default.
+Application processes run as UID 10001 with no-new-privileges, bounded memory
+and PID limits, immutable upstream image digests, and shared named volumes for
+logs and published News. Only the API publishes a host port.
+
+The dashboard is exposed at `http://127.0.0.1:8000` by default.
 
 ### Run And Inspect Collectors
 
@@ -260,7 +264,9 @@ scripts/smoke_test.sh
 
 The GitHub Actions workflow runs compilation, API/orchestrator/root tests,
 deterministic failure drills, migration and fixture checks, Compose validation,
-and the credential-free demo smoke on every push and pull request.
+Ruff, dependency audits, clean-migration and live cross-service contracts, the
+credential-free demo smoke, and a High/Critical Trivy image gate on every push
+and pull request.
 
 ## Project Structure
 

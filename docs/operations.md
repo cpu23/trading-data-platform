@@ -11,6 +11,8 @@ The image is shared, but each Compose service owns one lifecycle:
 3. `orchestrator` starts only after migration success. It is internal-only and owns scheduling, durable jobs, collectors, processors, news collection, and the quote stream.
 4. `api` starts after migrations and orchestrator health. It is the only application service with a host port.
 
+The shared application image runs as UID/GID 10001 with `no-new-privileges`, bounded memory/PIDs, and immutable Python/uv base digests. Compose named volumes `newsdata` and `logsdata` provide the writable shared paths; do not replace them with root-owned bind mounts unless UID 10001 has explicit access.
+
 Start production only after replacing every required `.env` placeholder:
 
 ```bash
@@ -130,7 +132,7 @@ docker compose exec orchestrator python cli.py news kobeissi
 docker compose exec orchestrator python cli.py news all
 ```
 
-Publication is atomic: source snapshots and the unified feed are written before cursor advancement. A publication failure leaves the previous feed valid and the cursor unchanged.
+Publication is atomic: source snapshots and the unified feed are written before cursor advancement. A publication failure leaves the previous feed valid and the cursor unchanged. The dashboard shows a bounded summary; `/news` provides source and symbol/tag filters without a search database.
 
 ## Logging, redaction, and retention
 
@@ -146,6 +148,9 @@ cd api && uv run python -m unittest discover -s tests
 cd ../orchestrator && uv run python -m unittest discover -s tests
 cd ..
 api/.venv/bin/python -m unittest discover -s tests
+orchestrator/.venv/bin/ruff check api orchestrator scripts tests
+(cd api && uv run --with pip-audit==2.9.0 pip-audit --local --progress-spinner off)
+(cd orchestrator && uv run --with pip-audit==2.9.0 pip-audit --local --progress-spinner off)
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 docker compose config --quiet
 docker compose -f docker-compose.demo.yml config --quiet

@@ -1,65 +1,48 @@
-"""News feed JSON endpoint — serves the unified feed.json."""
+"""Bounded News feed and source-state JSON endpoints."""
 from pathlib import Path
-import json
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+
+import config as app_config
+from routes.views.news import load_news_context, load_source_states
 
 router = APIRouter(tags=["news"])
 
 
 @router.get("/news/feed")
 def get_news_feed():
-    """Return the unified news feed."""
-    from config import load_config
-    config = load_config()
+    """Return the bounded, normalized unified News feed."""
+    config = app_config.load_config()
     feed_path = Path(
         config.get("news_feed", {}).get("output_path", "var/news")
     ) / "feed.json"
-
     if not feed_path.exists():
         return JSONResponse(
             {"error": "Feed not generated yet. Run `python cli.py news all` first."},
             status_code=404,
         )
 
-    try:
-        payload = json.loads(feed_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return JSONResponse({"error": "News feed is temporarily unavailable."}, status_code=503)
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-        return JSONResponse({"error": "News feed is invalid."}, status_code=503)
+    payload = load_news_context(config)
+    if payload["status"] != "published":
+        return JSONResponse(
+            {"error": "News feed is temporarily unavailable."},
+            status_code=503,
+        )
     return JSONResponse(payload)
 
 
 @router.get("/news/sources")
 def get_news_sources():
-    """List available news sources and their last poll status."""
-
-    from config import load_config
-    config = load_config()
-    output_base = Path(config.get("news_feed", {}).get("output_path", "var/news"))
+    """List bounded source state without exposing raw provider data."""
+    config = app_config.load_config()
     sources = []
-
-    for name in ("reuters", "kobeissi"):
-        state_file = output_base / name / "state.json"
+    for state in load_source_states(config):
+        name = state["name"]
         src_config = config.get(name, {})
-        state = {}
-        if state_file.exists():
-            try:
-                state = json.loads(state_file.read_text())
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                state = {"status": "error", "error": "state file is invalid"}
-            if not isinstance(state, dict):
-                state = {"status": "error", "error": "state file is invalid"}
-
         sources.append({
-            "name": name,
+            **state,
             "enabled": src_config.get("enabled", False),
-            "last_poll": state.get("last_poll"),
-            "status": state.get("status", "never_polled"),
-            "error": state.get("error"),
             "on_demand_only": src_config.get("on_demand_only", True),
         })
-
     return JSONResponse({"sources": sources})

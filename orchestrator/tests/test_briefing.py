@@ -3,7 +3,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from processors._validators import (
     validate_briefing_sections,
     coerce_briefing_fields,
-    ALLOWED_BIAS,
 )
 from processors.briefing import DailyBriefingProcessor
 

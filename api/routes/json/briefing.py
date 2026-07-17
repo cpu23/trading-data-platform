@@ -1,9 +1,9 @@
-from datetime import date, datetime, timezone
+from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
 from config import load_config
-from db import query_one, query_many
+from db import query_one
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()

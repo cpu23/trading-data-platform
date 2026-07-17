@@ -1,30 +1,29 @@
-import json
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from config import load_config
 from db import query_many
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
+from routes.views.news import load_news_context
 
 router = APIRouter()
 OVERVIEW_LIMIT = 10
 
 
 def _feed_snapshot(config: dict) -> dict:
-    path = Path(config.get("news_feed", {}).get("output_path", "var/news")) / "feed.json"
-    if not path.is_file():
+    context = load_news_context(config)
+    if context["status"] == "not_published":
         return {"status": "not_published", "item_count": 0, "published_at": None}
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+    if context["status"] != "published":
         raise ValueError("invalid feed")
     return {
         "status": "published",
-        "item_count": len(payload["items"]),
-        "published_at": datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(),
+        "item_count": len(context["items"]),
+        "published_at": context["generated_at"],
     }
 
 
@@ -50,20 +49,10 @@ def _duration_ms(row: dict):
         return None
 
 
-@router.get("/operations")
-async def operations_overview(request: Request):
+def _local_snapshot(request: Request) -> dict:
     config = load_config()
     tz = timezone_context(request, config)
     unavailable = {"available": False, "message": "Unavailable"}
-
-    try:
-        health = await get_system_health(request)
-        if isinstance(health, JSONResponse):
-            source_state = unavailable
-        else:
-            source_state = {"available": True, "readiness": health.get("readiness", "unknown"), "components": health.get("components", [])[:OVERVIEW_LIMIT]}
-    except Exception:
-        source_state = unavailable
 
     try:
         processor_rows = query_many(
@@ -107,11 +96,27 @@ async def operations_overview(request: Request):
     except Exception:
         runs = unavailable
 
+    return {"tz": tz, "processors": processors, "feed": feed, "runs": runs}
+
+
+@router.get("/operations")
+async def operations_overview(request: Request):
+    unavailable = {"available": False, "message": "Unavailable"}
+    snapshot = await run_in_threadpool(_local_snapshot, request)
+    try:
+        health = await get_system_health(request)
+        if isinstance(health, JSONResponse):
+            source_state = unavailable
+        else:
+            source_state = {"available": True, "readiness": health.get("readiness", "unknown"), "components": health.get("components", [])[:OVERVIEW_LIMIT]}
+    except Exception:
+        source_state = unavailable
+
     return request.app.state.templates.TemplateResponse(request, "operations.html", {
         "request": request,
-        **tz,
+        **snapshot["tz"],
         "source_state": source_state,
-        "processors": processors,
-        "feed": feed,
-        "runs": runs,
+        "processors": snapshot["processors"],
+        "feed": snapshot["feed"],
+        "runs": snapshot["runs"],
     })

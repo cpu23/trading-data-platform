@@ -2,6 +2,8 @@
 set -euo pipefail
 
 COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.demo.yml}
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-trading-data-platform-demo-smoke}
+export COMPOSE_PROJECT_NAME
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-40}
 SLEEP_SECONDS=${SLEEP_SECONDS:-2}
 API_HOST_PORT=${API_HOST_PORT:-18080}
@@ -113,6 +115,11 @@ regime=$(curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/regime/c
 printf '%s' "$regime" | grep -q "controlled_expansion" || fail_with_logs "controlled_expansion fixture marker missing"
 briefing=$(curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/briefing/latest")
 printf '%s' "$briefing" | grep -q "demo/deterministic" || fail_with_logs "demo/deterministic fixture marker missing"
+
+python3 scripts/test_service_contracts.py \
+  --compose-file "$COMPOSE_FILE" \
+  --api-url "$API_URL" \
+  --auth "$AUTH"
 
 # Each PID-1 app process must stop independently, make the public health path
 # unavailable, and recover cleanly without a shell supervisor. Restart-policy

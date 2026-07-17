@@ -1,11 +1,11 @@
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from config import load_config
 from db import query_many, query_one
@@ -18,6 +18,7 @@ from routes.json.settings import timezone_context
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
 from logging_config import get_logger
+from routes.views.news import load_news_context
 
 router = APIRouter()
 logger = get_logger("dashboard.view")
@@ -44,37 +45,6 @@ SYMBOL_LINKS = {
     "DE40": {"url": "https://finance.yahoo.com/quote/%5EGDAXI", "label": "Yahoo Finance DAX"},
     "EURCHF": {"url": "https://finance.yahoo.com/quote/EURCHF=X", "label": "Yahoo Finance EUR/CHF"},
 }
-
-
-def _news_context(config: dict) -> dict:
-    feed_path = Path(
-        config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news")
-    ) / "feed.json"
-    if not feed_path.is_file():
-        return {"status": "not_published", "items": [], "generated_at": None}
-    try:
-        payload = json.loads(feed_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {"status": "invalid", "items": [], "generated_at": None}
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-        return {"status": "invalid", "items": [], "generated_at": None}
-    items = []
-    for item in payload["items"]:
-        if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip():
-            continue
-        items.append({
-            "title": item["title"].strip(),
-            "source": str(item.get("source_label") or item.get("source") or "News"),
-            "published": item.get("published") if isinstance(item.get("published"), str) else None,
-            "summary": item.get("summary", "")[:240] if isinstance(item.get("summary"), str) else "",
-        })
-        if len(items) == 5:
-            break
-    return {
-        "status": "published",
-        "items": items,
-        "generated_at": payload.get("generated_at"),
-    }
 
 
 def _get_templates(request: Request):
@@ -420,13 +390,13 @@ async def _get_dashboard_health(request: Request) -> dict:
 
 @router.get("/")
 async def dashboard(request: Request):
-    config = load_config()
+    config = await run_in_threadpool(load_config)
     templates = _get_templates(request)
 
     # Fetch data with graceful error handling per section
     regime = {}
     try:
-        regime = get_regime_current()
+        regime = await run_in_threadpool(get_regime_current)
         if regime.get("stale") and regime.get("stale_reason"):
             regime = dict(regime)
             regime["stale_reason"] = _format_stale_reason(regime["stale_reason"], "regime")
@@ -435,7 +405,7 @@ async def dashboard(request: Request):
 
     briefing = None
     try:
-        briefing = get_briefing_latest()
+        briefing = await run_in_threadpool(get_briefing_latest)
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
             briefing["stale_reason"] = _format_stale_reason(briefing["stale_reason"], "briefing")
@@ -444,7 +414,7 @@ async def dashboard(request: Request):
 
     events_data = {}
     try:
-        events_data = get_events_upcoming_data(request=request, days=14)
+        events_data = await run_in_threadpool(get_events_upcoming_data, request=request, days=14)
         # Parse ISO strings to datetime for template convenience
         for ev in events_data.get("events", []):
             ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
@@ -455,7 +425,7 @@ async def dashboard(request: Request):
     indicators_stale = False
     indicators_stale_reason = None
     try:
-        macro_data = get_macro_dashboard()
+        macro_data = await run_in_threadpool(get_macro_dashboard)
         indicator_configs = config.get("dashboard", {}).get("indicators", [])
         precision_map = {ic["series_id"]: ic.get("precision", 2) for ic in indicator_configs}
         note_map = {ic["series_id"]: ic.get("note") for ic in indicator_configs}
@@ -481,7 +451,7 @@ async def dashboard(request: Request):
         config,
         display_zone=tz_context["display_zone"],
     )
-    price_map = _get_latest_prices(config)
+    price_map = await run_in_threadpool(_get_latest_prices, config)
 
     any_stale = bool(
         (regime.get("stale") if isinstance(regime, dict) else False)
@@ -492,8 +462,8 @@ async def dashboard(request: Request):
 
     context = {
         "request": request,
-        "last_cycle_text": _last_cycle_text(config),
-        "last_cycle_status": _latest_cycle_status(config),
+        "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
+        "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
         "system_health": await _get_dashboard_health(request),
         "regime": regime,
         "briefing": briefing,
@@ -507,9 +477,9 @@ async def dashboard(request: Request):
         "dots": _section_dots(regime, events_data, briefing, indicators_stale, indicators_stale_reason),
         "briefing_bullets": _briefing_bullets(briefing),
         "price_map": price_map,
-        "budget": get_budget_status(),
+        "budget": await run_in_threadpool(get_budget_status),
         "symbol_links": SYMBOL_LINKS,
-        "news": _news_context(config),
+        "news": await run_in_threadpool(load_news_context, config, 5),
         **tz_context,
         **event_context,
     }
@@ -527,32 +497,32 @@ async def partial_system_health(request: Request):
 
 @router.get("/partials/header")
 async def partial_header(request: Request):
-    config = load_config()
+    config = await run_in_threadpool(load_config)
     templates = _get_templates(request)
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
 
     regime = {}
     try:
-        regime = get_regime_current()
+        regime = await run_in_threadpool(get_regime_current)
     except Exception:
         pass
 
     briefing = None
     try:
-        briefing = get_briefing_latest()
+        briefing = await run_in_threadpool(get_briefing_latest)
     except Exception:
         pass
 
     events_data = {}
     try:
-        events_data = get_events_upcoming_data(request=request, days=14)
+        events_data = await run_in_threadpool(get_events_upcoming_data, request=request, days=14)
     except Exception:
         pass
 
     indicators = []
     try:
-        macro_data = get_macro_dashboard()
+        macro_data = await run_in_threadpool(get_macro_dashboard)
         indicators = macro_data.get("indicators", [])
     except Exception:
         pass
@@ -566,12 +536,12 @@ async def partial_header(request: Request):
 
     return templates.TemplateResponse(request, "partials/header.html", {
         "request": request,
-        "last_cycle_text": _last_cycle_text(config),
-        "last_cycle_status": _latest_cycle_status(config),
+        "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
+        "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
         "current_time": now,
         "any_stale": any_stale,
         "system_health": await _get_dashboard_health(request),
-        "budget": get_budget_status(),
+        "budget": await run_in_threadpool(get_budget_status),
         "symbol_links": SYMBOL_LINKS,
         **tz_context,
     })

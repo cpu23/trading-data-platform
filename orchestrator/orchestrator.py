@@ -14,7 +14,7 @@ from collectors import get_all_collectors, get_collector
 from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, insert_records, upsert_records
 from logging_config import get_logger
-from locks import RunConflict, advisory_lock
+from locks import advisory_lock
 from llm_client import resolve_model
 from processors import get_all_processors, get_processor
 from processors.base import canonical_fingerprint

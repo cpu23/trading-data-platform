@@ -25,9 +25,7 @@
   {% endif %}
   <div class="page-header-left">
     <span class="page-header-title">Trading intelligence</span>
-    <nav class="header-nav" aria-label="Operations">
-      <a class="quiet-link" href="/operations">Operations</a>
-    </nav>
+    {% include "partials/navigation.html" %}
     <span class="page-header-meta tabular">{{ current_time.strftime('%a %d %b · %H:%M') }} {{ current_time.tzname() }}</span>
     {% if timezone_choices %}
     <div class="timezone-control">

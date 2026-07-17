@@ -22,6 +22,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         cls.expansion = (API_ROOT / "templates/partials/expansion_content.html").read_text()
         cls.regime = (API_ROOT / "templates/partials/regime_section.html").read_text()
         cls.news = (API_ROOT / "templates/partials/news_section.html").read_text()
+        cls.navigation = (API_ROOT / "templates/partials/navigation.html").read_text()
 
     def test_page_declares_inline_favicon_to_avoid_browser_404(self):
         self.assertIn('<link rel="icon" href="data:,">', self.base)
@@ -78,7 +79,9 @@ class Phase10FrontendContracts(unittest.TestCase):
 
     def test_header_wires_timezone_and_operations_without_duplicate_refresh(self):
         self.assertEqual(self.header.count('id="run-cycle-btn"'), 1)
-        self.assertIn('href="/operations"', self.header)
+        self.assertIn('partials/navigation.html', self.header)
+        for href in ('/', '/logs', '/quality', '/news', '/operations'):
+            self.assertIn(f'href="{href}"', self.navigation)
         self.assertIn('id="timezone-status"', self.header)
         self.assertIn("initTimezoneControl", self.app_js)
         self.assertIn("fetch('/api/settings/timezone'", self.app_js)
@@ -105,7 +108,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         health.assert_awaited_once_with(request)
 
     def test_dashboard_news_is_bounded_and_has_truthful_empty_state(self):
-        from routes.views.dashboard import _news_context
+        from routes.views.news import load_news_context
 
         self.assertIn('id="news-section"', self.news)
         self.assertIn("not_published", self.news)
@@ -118,7 +121,7 @@ class Phase10FrontendContracts(unittest.TestCase):
                     for index in range(7)
                 ],
             }))
-            context = _news_context({"news_feed": {"output_path": directory}})
+            context = load_news_context({"news_feed": {"output_path": directory}}, limit=5)
         self.assertEqual(context["status"], "published")
         self.assertEqual(len(context["items"]), 5)
 

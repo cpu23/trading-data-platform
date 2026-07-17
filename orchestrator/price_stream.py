@@ -1,7 +1,6 @@
 import json
 import math
 import threading
-import time
 from datetime import datetime, timezone
 
 import httpx

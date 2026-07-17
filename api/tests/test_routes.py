@@ -627,6 +627,23 @@ class TestTimezoneSettings(unittest.TestCase):
 
 
 class TestOperationsOverview(unittest.TestCase):
+    @patch("routes.views.operations.get_system_health", new_callable=AsyncMock, return_value={})
+    @patch("routes.views.operations.run_in_threadpool", new_callable=AsyncMock)
+    def test_operations_dispatches_local_snapshot_to_threadpool(self, threadpool, _health):
+        threadpool.return_value = {
+            "tz": {
+                "display_timezone": "Europe/London",
+                "display_timezone_label": "London",
+                "timezone_options": [],
+            },
+            "processors": {"available": False, "message": "Unavailable"},
+            "feed": {"available": False, "message": "Unavailable"},
+            "runs": {"available": False, "message": "Unavailable"},
+        }
+        response = client.get("/operations", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        threadpool.assert_awaited_once()
+
     @patch("routes.views.operations.get_system_health", new_callable=AsyncMock)
     @patch("routes.views.operations.query_many")
     @patch("routes.views.operations._feed_snapshot")

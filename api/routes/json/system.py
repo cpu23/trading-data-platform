@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from config import load_config
 from db import query_many, query_one
@@ -13,6 +13,34 @@ from logging_config import get_logger
 router = APIRouter()
 
 logger = get_logger("system.health")
+
+
+def _load_local_health_data():
+    config = load_config()
+    thresholds = get_staleness_config(config)
+    collector_rows = query_many(
+        """SELECT DISTINCT ON (collector)
+               collector, started_at, status, duration_ms, error_message
+           FROM collection_log
+           ORDER BY collector, started_at DESC""",
+        config=config,
+    )
+    processor_rows = query_many(
+        """SELECT DISTINCT ON (processor)
+               processor, started_at, status, model_used, cost_usd, duration_ms
+           FROM processing_log
+           ORDER BY processor, started_at DESC""",
+        config=config,
+    )
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    cost_rows = query_many(
+        "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, "
+        "COALESCE(SUM(tokens_input + tokens_output), 0) as total_tokens "
+        "FROM processing_log WHERE started_at >= :today_start",
+        params={"today_start": today_start},
+        config=config,
+    )
+    return config, thresholds, collector_rows, processor_rows, cost_rows
 
 
 def _normalized_lines(raw: str) -> int:
@@ -184,34 +212,10 @@ def _validate_orchestrator_quality_contract(payload):
 
 @router.get("/system/health")
 async def get_system_health(request: Request):
-    config = load_config()
-    thresholds = get_staleness_config(config)
-
     # ── DB queries (wrapped — failure → readiness "unready", HTTP 503) ──
     try:
-        collector_rows = query_many(
-            """SELECT DISTINCT ON (collector)
-                   collector, started_at, status, duration_ms, error_message
-               FROM collection_log
-               ORDER BY collector, started_at DESC""",
-            config=config,
-        )
-
-        processor_rows = query_many(
-            """SELECT DISTINCT ON (processor)
-                   processor, started_at, status, model_used, cost_usd, duration_ms
-               FROM processing_log
-               ORDER BY processor, started_at DESC""",
-            config=config,
-        )
-
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        cost_rows = query_many(
-            "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, "
-            "COALESCE(SUM(tokens_input + tokens_output), 0) as total_tokens "
-            "FROM processing_log WHERE started_at >= :today_start",
-            params={"today_start": today_start},
-            config=config,
+        config, thresholds, collector_rows, processor_rows, cost_rows = await run_in_threadpool(
+            _load_local_health_data
         )
     except Exception:
         logger.error("db_unavailable")

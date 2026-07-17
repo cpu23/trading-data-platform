@@ -1,13 +1,12 @@
 import json
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from sqlalchemy import text
 
 from budgets import (
     BudgetContext,
@@ -15,7 +14,7 @@ from budgets import (
     trusted_manual_budget_context,
 )
 from config_loader import load_config
-from db import check_connection, get_session
+from db import check_connection, get_session as get_session
 
 try:
     from data_quality import DATA_QUALITY_CHECKS, run_quality_checks
