@@ -25,12 +25,18 @@ class QuoteStream:
         demo = config.get("demo", {}).get("enabled", False)
         if demo:
             target = self._run_demo
-        elif oanda_config.get("stream_enabled", False):
-            target = self._run_oanda_with_fallback
+        elif (
+            oanda_config.get("enabled", True)
+            and oanda_config.get("stream_enabled", False)
+        ):
+            target = self._run_oanda
         else:
-            # No OANDA stream enabled, use simulation as default
-            logger.info("no_stream_configured_using_simulation")
-            target = self._run_demo
+            self.state.update(
+                status="disabled",
+                error="OANDA live stream is not enabled",
+            )
+            logger.info("no_live_price_stream_configured")
+            return
         self._thread = threading.Thread(target=target, args=(config,), daemon=True)
         self._thread.start()
 
@@ -104,17 +110,5 @@ class QuoteStream:
                 logger.warning("price_stream_reconnecting", error=str(exc), backoff=backoff)
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
-
-
-    def _run_oanda_with_fallback(self, config: dict) -> None:
-        try:
-            self._run_oanda(config)
-        except Exception:
-            pass
-        # If we exit _run_oanda (not via stop), fall back to simulation
-        if not self._stop.is_set():
-            logger.warning("oanda_stream_failed_falling_back_to_simulation")
-            self._run_demo(config)
-
 
 quote_stream = QuoteStream()

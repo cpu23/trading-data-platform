@@ -14,6 +14,7 @@ def get_opinions_latest(limit: int = Query(default=20, ge=1, le=200)):
         SELECT opinion_id, created_at, opinion_type, scope, direction,
                confidence, timeframe, summary, model_used, prompt_version
         FROM structured_opinions
+        WHERE lifecycle_status = 'published'
         ORDER BY created_at DESC
         LIMIT :limit
     """
@@ -48,6 +49,7 @@ def get_opinions_by_type(opinion_type: str, limit: int = Query(default=20, ge=1,
                confidence, timeframe, summary, model_used, prompt_version
         FROM structured_opinions
         WHERE opinion_type = :opinion_type
+          AND lifecycle_status = 'published'
         ORDER BY created_at DESC
         LIMIT :limit
     """

@@ -29,6 +29,8 @@ DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 DEFAULT_COLLECTOR_WORKERS = 3
 MAX_COLLECTOR_WORKERS = 8
 VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
+COMPLETE_STAGE_STATES = {"success"}
+FAILED_STAGE_STATES = {"failed", "validation_failed"}
 
 
 class RunAcceptanceConflict(RuntimeError):
@@ -52,6 +54,29 @@ def aggregate_stage_statuses(statuses: Iterable[str]) -> str:
             return "budget_unavailable"
         if all(status == "budget_blocked" for status in values):
             return "budget_blocked"
+    return "partial"
+
+
+def _aggregate_stage_status(results: dict[str, dict]) -> str:
+    if not results:
+        return "failed"
+    statuses = [
+        result.get("status", "failed")
+        for result in results.values()
+        if result.get("blocking", True)
+    ]
+    if not statuses:
+        return "success"
+    if all(status in COMPLETE_STAGE_STATES for status in statuses):
+        return "success"
+    if all(status in FAILED_STAGE_STATES | {"skipped", "budget_denied"} for status in statuses):
+        if "validation_failed" in statuses:
+            return "validation_failed"
+        if "budget_denied" in statuses and not any(
+            status in FAILED_STAGE_STATES for status in statuses
+        ):
+            return "budget_denied"
+        return "failed"
     return "partial"
 
 
@@ -1802,3 +1827,155 @@ def _write_processing_log(
             error=str(exc),
             correlation_id=correlation_id,
         )
+
+
+def _get_budget_status(config: dict) -> dict:
+    budget_cfg = config.get(
+        "budgets",
+        {"daily_llm_usd": 2.00, "warn_at_pct": 80},
+    )
+    daily_cap = float(budget_cfg.get("daily_llm_usd", 2.00))
+    warn_pct = int(budget_cfg.get("warn_at_pct", 80))
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS total_cost, "
+                "COALESCE(SUM(tokens_input + tokens_output), 0) AS total_tokens "
+                "FROM processing_log WHERE started_at >= :today_start"
+            ),
+            {"today_start": today_start},
+        ).fetchone()
+
+    total_cost = float(row._mapping.get("total_cost", 0) or 0) if row else 0.0
+    total_tokens = int(row._mapping.get("total_tokens", 0) or 0) if row else 0
+    unlimited = daily_cap <= 0
+    usage_pct = 0.0 if unlimited else round((total_cost / daily_cap) * 100, 2)
+    exceeded = False if unlimited else total_cost >= daily_cap
+    warning = False if unlimited or exceeded else usage_pct >= warn_pct
+
+    return {
+        "today_cost_usd": round(total_cost, 6),
+        "today_tokens": total_tokens,
+        "budget_cap_usd": daily_cap,
+        "unlimited": unlimited,
+        "warn_at_pct": warn_pct,
+        "usage_pct": usage_pct,
+        "warning": warning,
+        "exceeded": exceeded,
+        "hard_limit_reached": exceeded,
+        "paid_calls_allowed": unlimited or not exceeded,
+        "remaining_usd": (
+            None
+            if unlimited
+            else round(max(daily_cap - total_cost, 0.0), 6)
+        ),
+    }
+
+
+def _consume_budget_override(
+    correlation_id: str,
+    config: dict,
+) -> dict | None:
+    """Atomically consume an API-recorded override for this run."""
+    with get_session(config) as session:
+        row = session.execute(
+            text(
+                "SELECT summary FROM cycle_runs "
+                "WHERE correlation_id = :cid FOR UPDATE"
+            ),
+            {"cid": correlation_id},
+        ).fetchone()
+        if not row:
+            return None
+
+        summary = row._mapping.get("summary") or {}
+        if isinstance(summary, str):
+            summary = json.loads(summary)
+        override = summary.get("budget_override")
+        if not isinstance(override, dict) or not override.get("requested"):
+            return None
+        if override.get("consumed_at"):
+            if override.get("consumed_by") == correlation_id:
+                return override
+            return None
+
+        override = {
+            **override,
+            "consumed_at": datetime.now(timezone.utc).isoformat(),
+            "consumed_by": correlation_id,
+        }
+        summary["budget_override"] = override
+        session.execute(
+            text(
+                "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
+                "WHERE correlation_id = :cid"
+            ),
+            {"cid": correlation_id, "summary": json.dumps(summary)},
+        )
+
+    logger.warning(
+        "budget_override_consumed",
+        correlation_id=correlation_id,
+        reason=override.get("reason"),
+        requested_by=override.get("requested_by"),
+    )
+    return override
+
+
+def _persist_processor_result(
+    opinions: list[dict],
+    extra_records: dict[str, list[dict]],
+    processing_log: dict,
+    processor_id: str,
+    started_at: datetime,
+    completed_at: datetime,
+    duration_ms: int,
+    correlation_id: str,
+    config: dict,
+) -> None:
+    """Persist one processor result as a single transaction."""
+    from db import insert_records_in_session, upsert_records_in_session
+
+    with get_session(config) as session:
+        insert_records_in_session(session, "structured_opinions", opinions)
+        for table_name, records in extra_records.items():
+            if table_name == "daily_briefings":
+                upsert_records_in_session(
+                    session, table_name, records, ["briefing_date", "correlation_id"]
+                )
+            else:
+                insert_records_in_session(session, table_name, records)
+
+        log_record = {
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "processor": processor_id,
+            "status": "success",
+            "input_summary": processing_log.get("input_summary"),
+            "output_id": processing_log.get("output_id"),
+            "output_ids": processing_log.get("output_ids", []),
+            "prompt_text": processing_log.get("prompt_text"),
+            "raw_response": processing_log.get("raw_response"),
+            "model_used": processing_log.get("model_used"),
+            "tokens_input": processing_log.get("tokens_input"),
+            "tokens_output": processing_log.get("tokens_output"),
+            "cost_usd": processing_log.get("cost_usd"),
+            "duration_ms": duration_ms,
+            "error_message": None,
+            "request_metadata": processing_log.get("request_metadata"),
+            "correlation_id": correlation_id,
+        }
+        insert_records_in_session(session, "processing_log", [log_record])
+
+    logger.info(
+        "processor_records_written",
+        action="run_processor",
+        processor=processor_id,
+        opinion_count=len(opinions),
+        extra_tables=list(extra_records),
+        correlation_id=correlation_id,
+    )

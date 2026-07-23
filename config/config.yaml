@@ -146,6 +146,313 @@ collectors:
         oanda_instrument: UK100_GBP
         enabled: true
 
+  cftc:
+    enabled: false
+    schedule: "0 22 * * 5"
+    freshness_hours: 192
+    url: "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
+    limit: 5000
+    categories:
+      - [dealer, dealer_positions_long_all, dealer_positions_short_all]
+      - [asset_manager, asset_mgr_positions_long, asset_mgr_positions_short]
+      - [leveraged_funds, lev_money_positions_long, lev_money_positions_short]
+    contracts:
+      - market_id: "099741"
+        name: Euro FX
+        assets: [EURUSD]
+      - market_id: "097741"
+        name: Japanese Yen
+        assets: [AUDJPY, USDJPY]
+      - market_id: "232741"
+        name: Australian Dollar
+        assets: [AUDJPY]
+      - market_id: "088691"
+        name: Gold
+        assets: [XAUUSD]
+      - market_id: "076651"
+        name: Platinum
+        assets: [XPTUSD]
+
+  central_banks:
+    enabled: false
+    schedule: "0 */6 * * *"
+    freshness_hours: 12
+    feeds:
+      - institution: fed
+        document_type: decision
+        url: "https://www.federalreserve.gov/feeds/press_monetary.xml"
+      - institution: fed
+        document_type: speech
+        url: "https://www.federalreserve.gov/feeds/speeches.xml"
+      - institution: ecb
+        document_type: decision
+        url: "https://www.ecb.europa.eu/rss/press.html"
+
+  oecd:
+    enabled: false
+    schedule: "30 6 * * *"
+    freshness_hours: 36
+    headers:
+      Accept: "text/csv"
+    series:
+      - id: CLI_US
+        title: Composite leading indicator — United States
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/USA.M.LI.IX._Z.AA.IX._Z.H"
+        params: {startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: growth.global
+        region: US
+      - id: CLI_DE
+        title: Composite leading indicator — Germany
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/DEU.M.LI.IX._Z.AA.IX._Z.H"
+        params: {startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: growth.global
+        region: DE
+      - id: CLI_GB
+        title: Composite leading indicator — United Kingdom
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/GBR.M.LI.IX._Z.AA.IX._Z.H"
+        params: {startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: growth.global
+        region: GB
+      - id: CLI_JP
+        title: Composite leading indicator — Japan
+        url: "https://sdmx.oecd.org/public/rest/v1/data/OECD.SDD.STES,DSD_STES@DF_CLI,/JPN.M.LI.IX._Z.AA.IX._Z.H"
+        params: {startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: growth.global
+        region: JP
+
+  ecb:
+    enabled: false
+    schedule: "40 6 * * *"
+    freshness_hours: 36
+    headers:
+      Accept: "text/csv"
+    series:
+      - id: DEPOSIT_RATE
+        title: ECB deposit facility rate
+        url: "https://data-api.ecb.europa.eu/service/data/FM/D.U2.EUR.4F.KR.DFR.LEV"
+        params: {format: csvdata, startPeriod: "2015-01-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: daily
+        semantic_feature: policy.eu
+        region: EA
+      - id: ESTR
+        title: Euro short-term rate
+        url: "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT"
+        params: {format: csvdata, startPeriod: "2019-10-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: daily
+        semantic_feature: policy.eu
+        region: EA
+      - id: CISS
+        title: Composite indicator of systemic stress
+        url: "https://data-api.ecb.europa.eu/service/data/CISS/D.U2.Z0Z.4F.EC.SS_CIN.IDX"
+        params: {format: csvdata, startPeriod: "2015-01-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: daily
+        semantic_feature: stress.global
+        region: EA
+      - id: CREDIT_NFC
+        title: Euro-area loans to non-financial corporations
+        url: "https://data-api.ecb.europa.eu/service/data/BSI/M.U2.N.A.A20.A.1.U2.2240.Z01.E"
+        params: {format: csvdata, startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: credit.eu
+        region: EA
+      - id: GOVT_10Y
+        title: Euro-area 10-year government benchmark yield
+        url: "https://data-api.ecb.europa.eu/service/data/FM/M.U2.EUR.4F.BB.U2_10Y.YLD"
+        params: {format: csvdata, startPeriod: "2015-01"}
+        format: csv
+        date_field: TIME_PERIOD
+        value_field: OBS_VALUE
+        frequency: monthly
+        semantic_feature: yields.eu
+        region: EA
+
+  boe:
+    enabled: false
+    schedule: "50 6 * * *"
+    freshness_hours: 36
+    headers:
+      Accept: "text/csv"
+      User-Agent: "Mozilla/5.0 (compatible; TradingDataPlatform/1.0)"
+    series:
+      - id: BANK_RATE
+        provider_series: IUDBEDR
+        title: Bank Rate
+        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+        params:
+          csv.x: "yes"
+          Datefrom: "01/Jan/2015"
+          Dateto: "31/Dec/2099"
+          SeriesCodes: IUDBEDR
+          CSVF: TN
+          UsingCodes: "Y"
+          VPD: "Y"
+          VFD: "N"
+        format: csv
+        date_field: DATE
+        date_format: "%d %b %Y"
+        value_field: IUDBEDR
+        frequency: daily
+        semantic_feature: policy.uk
+        region: GB
+      - id: M4
+        provider_series: LPMAUZI
+        title: UK broad money M4
+        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+        params:
+          csv.x: "yes"
+          Datefrom: "01/Jan/2015"
+          Dateto: "31/Dec/2099"
+          SeriesCodes: LPMAUZI
+          CSVF: TN
+          UsingCodes: "Y"
+          VPD: "Y"
+          VFD: "N"
+        format: csv
+        date_field: DATE
+        date_format: "%d %b %Y"
+        value_field: LPMAUZI
+        frequency: monthly
+        semantic_feature: money.uk
+        region: GB
+      - id: CONSUMER_CREDIT
+        provider_series: LPMBZ2A
+        title: UK consumer credit
+        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+        params:
+          csv.x: "yes"
+          Datefrom: "01/Jan/2015"
+          Dateto: "31/Dec/2099"
+          SeriesCodes: LPMBZ2A
+          CSVF: TN
+          UsingCodes: "Y"
+          VPD: "Y"
+          VFD: "N"
+        format: csv
+        date_field: DATE
+        date_format: "%d %b %Y"
+        value_field: LPMBZ2A
+        frequency: monthly
+        semantic_feature: credit.uk
+        region: GB
+      - id: MORTGAGE_LENDING
+        provider_series: LPMVZQH
+        title: UK secured lending to individuals
+        url: "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+        params:
+          csv.x: "yes"
+          Datefrom: "01/Jan/2015"
+          Dateto: "31/Dec/2099"
+          SeriesCodes: LPMVZQH
+          CSVF: TN
+          UsingCodes: "Y"
+          VPD: "Y"
+          VFD: "N"
+        format: csv
+        date_field: DATE
+        date_format: "%d %b %Y"
+        value_field: LPMVZQH
+        frequency: monthly
+        semantic_feature: lending.uk
+        region: GB
+
+  eia:
+    enabled: false
+    schedule: "10 7 * * *"
+    freshness_hours: 36
+    requires_api_key: true
+    credential_name: EIA_API_KEY
+    api_key: ${EIA_API_KEY:-}
+    api_key_param: api_key
+    series:
+      - id: BRENT
+        title: Europe Brent spot price
+        url: "https://api.eia.gov/v2/petroleum/pri/spt/data/"
+        params:
+          frequency: monthly
+          "data[0]": value
+          "facets[series][]": RBRTE
+          start: "2015-01"
+          length: 5000
+        records_path: [response, data]
+        date_field: period
+        value_field: value
+        frequency: monthly
+        semantic_feature: energy.global
+        region: global
+      - id: WTI
+        title: WTI spot price
+        url: "https://api.eia.gov/v2/petroleum/pri/spt/data/"
+        params:
+          frequency: monthly
+          "data[0]": value
+          "facets[series][]": RWTC
+          start: "2015-01"
+          length: 5000
+        records_path: [response, data]
+        date_field: period
+        value_field: value
+        frequency: monthly
+        semantic_feature: energy.global
+        region: US
+      - id: CRUDE_STOCKS
+        title: US crude oil inventories
+        url: "https://api.eia.gov/v2/petroleum/stoc/wstk/data/"
+        params:
+          frequency: weekly
+          "data[0]": value
+          "facets[series][]": WCESTUS1
+          start: "2015-01-01"
+          length: 5000
+        records_path: [response, data]
+        date_field: period
+        value_field: value
+        frequency: weekly
+        semantic_feature: energy.global
+        region: US
+      - id: NATGAS_STORAGE
+        title: US working natural gas in storage
+        url: "https://api.eia.gov/v2/natural-gas/stor/wkly/data/"
+        params:
+          frequency: weekly
+          "data[0]": value
+          "facets[series][]": NW2_EPG0_SWO_R48_BCF
+          start: "2015-01-01"
+          length: 5000
+        records_path: [response, data]
+        date_field: period
+        value_field: value
+        frequency: weekly
+        semantic_feature: energy.global
+        region: US
+
 reuters:
   enabled: true
   on_demand_only: false
@@ -284,6 +591,43 @@ processors:
     depends_on: [macro_regime]
     prompt_template: prompts/briefing_v4.txt
     schedule: "0 7 * * *"
+
+  market_intelligence:
+    enabled: true
+    depends_on: [macro_regime]
+    schedule: after_dependency
+    asset_context:
+      EURUSD:
+        channels: [US-Eurozone relative growth, relative monetary policy, inflation expectations]
+        positioning_effects:
+          EUR: "Net long Euro supports EURUSD; net short Euro pressures EURUSD."
+      DXY:
+        channels: [broad US relative growth, Federal Reserve policy, global risk demand]
+      AUDJPY:
+        channels: [global growth and risk appetite, Australia-Japan policy differential, commodity demand]
+        positioning_effects:
+          AUD: "Net long Australian Dollar supports AUDJPY; net short pressures it."
+          JPY: "Net long Japanese Yen pressures AUDJPY; net short supports it."
+      USDJPY:
+        channels: [US-Japan policy differential, yield differential, global risk demand]
+        positioning_effects:
+          JPY: "Net long Japanese Yen pressures USDJPY; net short supports USDJPY."
+      SP500:
+        channels: [US growth, inflation and discount rates, credit conditions, systemic stress]
+      XAUUSD:
+        channels: [real-rate pressure, inflation expectations, dollar conditions, systemic stress]
+        channel_effects:
+          - "Higher real-rate pressure generally weighs on gold; lower real-rate pressure supports it."
+          - "A stronger dollar generally weighs on gold; systemic stress can support safe-haven demand."
+      XPTUSD:
+        channels: [global industrial growth, automotive demand, energy conditions, dollar conditions]
+        channel_effects:
+          - "Stronger industrial and automotive demand generally supports platinum; weaker demand pressures it."
+          - "A stronger dollar generally pressures platinum."
+      GER40:
+        channels: [Eurozone and German growth, ECB policy, credit conditions, global trade]
+      UK100:
+        channels: [UK growth and credit, BoE policy, sterling conditions, global commodity demand]
 
 watchlist:
   trading:

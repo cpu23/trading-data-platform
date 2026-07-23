@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<main class="setup-shell">
+  <section class="setup-step">
+    <span class="label">Market intelligence</span>
+    <h1>Welcome back.</h1>
+    <p class="dim">Sign in to continue to your private dashboard.</p>
+  </section>
+  <form class="setup-step" id="login-form">
+    <label for="login-password">Administrator password</label>
+    <input id="login-password" name="password" type="password" required autofocus autocomplete="current-password">
+    <button class="btn" id="login-submit" type="submit">Sign in</button>
+    <p id="login-result" class="dim" role="alert" aria-live="polite"></p>
+  </form>
+</main>
+<script>
+document.getElementById('login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.getElementById('login-submit');
+  const result = document.getElementById('login-result');
+  button.disabled = true;
+  result.textContent = 'Signing in…';
+  try {
+    const response = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: document.getElementById('login-password').value})
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || 'Sign in failed');
+    location.href = {{ next_path | tojson }};
+  } catch (error) {
+    result.textContent = error.message;
+    button.disabled = false;
+  }
+});
+</script>
+{% endblock %}

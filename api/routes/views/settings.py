@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 from budgets import DEFAULT_DAILY_LLM_USD
-from config import load_config
+import config as app_config
 from routes.json.settings import _read_secrets, timezone_context
 from routes.views.dashboard import (
     _data_status,
@@ -33,7 +33,7 @@ def _next_cycle_text(health: dict | None) -> str:
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     templates = request.app.state.templates
-    config = await run_in_threadpool(load_config)
+    config = await run_in_threadpool(app_config.load_config)
     secrets = _read_secrets()
     llm = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
     models = llm.get("models", {}) if isinstance(llm.get("models"), dict) else {}

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Set up market intelligence{% endblock %}
+{% block content %}
+<main class="setup-shell">
+  <section class="setup-step">
+    <span class="label">Market intelligence</span>
+    <h1>Your economic context, kept on this computer.</h1>
+    <p class="dim">The platform assesses economics, policy, positioning and market context. It never tells you what, when or how to trade.</p>
+  </section>
+  <section class="setup-step">
+    <h2>Secure this dashboard</h2>
+    <input id="setup-password" type="password" minlength="12" required autocomplete="new-password" placeholder="Administrator password">
+  </section>
+  <section class="setup-step">
+    <h2>Connect intelligence</h2>
+    <input id="llm-base-url" value="https://openrouter.ai/api/v1" placeholder="OpenAI-compatible base URL">
+    <input id="llm-model" value="deepseek/deepseek-v4-flash" placeholder="Model identifier">
+    <input id="llm-key" type="password" placeholder="API key">
+    <details><summary>Advanced</summary>
+      <label>Reasoning effort <select id="reasoning"><option value="">Provider default</option><option>low</option><option>medium</option><option selected>high</option></select></label>
+    </details>
+  </section>
+  <section class="setup-step">
+    <h2>Recommended coverage</h2>
+    <p class="dim">Core economic context is selected by default. You can change this later in Settings.</p>
+    <div class="coverage-list">
+      <label><span><strong>US macroeconomics</strong><small>FRED growth, inflation, rates and stress</small></span><input data-coverage="fred" type="checkbox" checked></label>
+      <label><span><strong>Economic calendar</strong><small>Scheduled global economic releases</small></span><input data-coverage="forex_factory" type="checkbox" checked></label>
+      <label><span><strong>Positioning</strong><small>CFTC Commitments of Traders</small></span><input data-coverage="cftc" type="checkbox" checked></label>
+      <label><span><strong>Global cycle</strong><small>OECD regional growth indicators</small></span><input data-coverage="oecd" type="checkbox" checked></label>
+    </div>
+    <details class="coverage-detail">
+      <summary>Add regional and specialist detail</summary>
+      <div class="coverage-list">
+        <label><span><strong>Central-bank communications</strong><small>Decisions, minutes and selected speeches</small></span><input data-coverage="central_banks" type="checkbox"></label>
+        <label><span><strong>Euro area</strong><small>ECB rates, credit, yields and expectations</small></span><input data-coverage="ecb" type="checkbox"></label>
+        <label><span><strong>United Kingdom</strong><small>BoE rates, curves, money and lending</small></span><input data-coverage="boe" type="checkbox"></label>
+        <label><span><strong>Energy</strong><small>EIA inventories and energy fundamentals</small></span><input data-coverage="eia" type="checkbox"></label>
+      </div>
+    </details>
+    <details class="coverage-detail">
+      <summary>Add data credentials</summary>
+      <p class="dim">Only services you enable need credentials. Forex Factory, CFTC, OECD, ECB, BoE and central-bank feeds do not require keys.</p>
+      <label>FRED API key<input id="fred-key" type="password" autocomplete="off" placeholder="Required for US macroeconomics"></label>
+      <label>OANDA API key<input id="oanda-key" type="password" autocomplete="off" placeholder="Required for live market prices"></label>
+      <label>EIA API key<input id="eia-key" type="password" autocomplete="off" placeholder="Required if Energy is enabled"></label>
+    </details>
+  </section>
+  <button class="btn" id="activate-setup">Activate platform</button>
+  <p id="setup-result" class="dim" role="alert" aria-live="polite"></p>
+</main>
+<script>
+document.getElementById('activate-setup').onclick = async function () {
+  const button = this;
+  const password = document.getElementById('setup-password');
+  const result = document.getElementById('setup-result');
+  if (!password.checkValidity()) {
+    result.textContent = 'Use at least 12 characters for the administrator password.';
+    password.reportValidity();
+    return;
+  }
+  const body = {
+    password: password.value,
+    profile: {llm: {
+      base_url: document.getElementById('llm-base-url').value,
+      default_model: document.getElementById('llm-model').value,
+      reasoning_effort: document.getElementById('reasoning').value || null
+    }},
+    coverage: Object.fromEntries(
+      [...document.querySelectorAll('[data-coverage]')].map(input => [input.dataset.coverage, input.checked])
+    ),
+    secrets: {
+      LLM_API_KEY: document.getElementById('llm-key').value,
+      FRED_API_KEY: document.getElementById('fred-key').value,
+      OANDA_API_KEY: document.getElementById('oanda-key').value,
+      EIA_API_KEY: document.getElementById('eia-key').value
+    }
+  };
+  button.disabled = true;
+  result.textContent = 'Activating…';
+  try {
+    const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.detail || 'Setup could not be activated.');
+    result.textContent = 'Ready. Opening dashboard…';
+    setTimeout(() => location.href='/', 600);
+  } catch (error) {
+    result.textContent = error.message || 'Setup could not be activated.';
+    button.disabled = false;
+  }
+};
+</script>
+{% endblock %}

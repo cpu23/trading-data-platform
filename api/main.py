@@ -5,13 +5,30 @@ import httpx
 import os
 import base64
 import binascii
+import hashlib
+import hmac
+import json
 import secrets
-from fastapi import FastAPI, Request
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from auth import CSRF_COOKIE, mint_csrf_token, verify_csrf_token
+from auth import (
+    ACTIVATION_FILE,
+    AUTH_FILE,
+    CSRF_COOKIE,
+    OPERATOR_FILE,
+    STATE_DIR,
+    migrate_legacy_state,
+    load_session_secret,
+    mint_csrf_token,
+    setup_complete,
+    verify_credentials,
+    verify_csrf_token,
+)
 from config import load_config
 from logging_config import setup_logging
 from routes.json import router as json_router
@@ -21,6 +38,7 @@ from routes.views import router as views_router
 def create_app(
     orchestrator_client_factory: Callable[..., httpx.AsyncClient] | None = None,
 ) -> FastAPI:
+    migrate_legacy_state()
     config = load_config()
     log_level = config.get("logging", {}).get("level", "INFO")
     setup_logging(level=log_level)
@@ -46,26 +64,58 @@ def create_app(
         title="Trading Data API",
         version="0.1.0",
         lifespan=lifespan,
+        dependencies=[Depends(verify_credentials)],
     )
 
+    session_secret = load_session_secret()
+    session_max_age = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "43200"))
+    auth_exempt_prefixes = ("/setup", "/login", "/api/setup", "/api/login", "/static")
+
     @app.middleware("http")
-    async def security_contract(request: Request, call_next):
-        is_sse = request.url.path == "/api/quotes/stream"
-        if not is_sse:
-            auth = request.headers.get("authorization", "")
+    async def signed_session(request: Request, call_next):
+        session = {}
+        cookie = request.cookies.get("market_session")
+        if cookie:
             try:
-                scheme, value = auth.split(" ", 1)
-                user, password = base64.b64decode(value, validate=True).decode().split(":", 1)
-                expected_user, expected_password = os.environ.get("DASHBOARD_USER", ""), os.environ.get("DASHBOARD_PASSWORD", "")
-                valid = scheme.lower() == "basic" and expected_user and expected_password and secrets.compare_digest(user, expected_user) and secrets.compare_digest(password, expected_password)
-            except (ValueError, UnicodeDecodeError, binascii.Error):
-                valid = False
-            if not valid:
-                return JSONResponse(status_code=401, content={"detail": "Authentication required"}, headers={"WWW-Authenticate": "Basic"})
+                encoded, signature = cookie.rsplit(".", 1)
+                expected = hmac.new(session_secret, encoded.encode(), hashlib.sha256).hexdigest()
+                if hmac.compare_digest(signature, expected):
+                    session = json.loads(base64.urlsafe_b64decode(encoded + "=="))
+                    issued_at = int(session.get("issued_at", 0))
+                    if session.get("authenticated") and (
+                        not issued_at
+                        or int(datetime.now(timezone.utc).timestamp()) - issued_at > session_max_age
+                    ):
+                        session = {}
+            except Exception:
+                session = {}
+        request.scope["session"] = session
+        before = dict(session)
+        response = await call_next(request)
+        if before and not session:
+            response.delete_cookie("market_session", path="/")
+        elif session != before:
+            encoded = base64.urlsafe_b64encode(json.dumps(session).encode()).decode().rstrip("=")
+            signature = hmac.new(session_secret, encoded.encode(), hashlib.sha256).hexdigest()
+            response.set_cookie(
+                "market_session", f"{encoded}.{signature}", httponly=True,
+                samesite="strict", secure=os.environ.get("COOKIE_SECURE") == "1",
+                max_age=session_max_age, path="/",
+            )
+        return response
+
+    @app.middleware("http")
+    async def csrf_contract(request: Request, call_next):
+        path = request.url.path
+        is_exempt = any(path.startswith(prefix) for prefix in auth_exempt_prefixes)
+        # Skip CSRF for requests without auth credentials; let auth dependency return 401
+        has_auth = bool(request.headers.get("authorization") or request.scope.get("session", {}).get("authenticated"))
+        if not has_auth and not is_exempt:
+            return await call_next(request)
         cookie_token = request.cookies.get(CSRF_COOKIE, "")
         token = cookie_token if verify_csrf_token(cookie_token) else mint_csrf_token()
         request.state.csrf_token = token
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not is_exempt:
             origin = request.headers.get("origin")
             referer = request.headers.get("referer")
             browser_signal = bool(origin or referer or request.cookies.get(CSRF_COOKIE) or request.headers.get("sec-fetch-site"))
@@ -80,7 +130,7 @@ def create_app(
                 if not verify_csrf_token(supplied) or not same_origin:
                     return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
         response = await call_next(request)
-        if request.method == "GET" and response.status_code < 400 and request.url.path not in {"/static", "/api/quotes/stream"}:
+        if request.method == "GET" and response.status_code < 400 and path not in {"/static", "/api/quotes/stream"}:
             secure = os.environ.get("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
             response.set_cookie(CSRF_COOKIE, token or mint_csrf_token(), secure=secure, httponly=False, samesite="strict", path="/")
         return response
@@ -90,6 +140,31 @@ def create_app(
 
     app.include_router(json_router)
     app.include_router(views_router)
+
+    @app.get("/api/meta/build")
+    def build_identity():
+        state_exists = STATE_DIR.exists()
+        state_mounted = state_exists and os.path.ismount(STATE_DIR)
+        return {
+            "commit": os.environ.get("BUILD_COMMIT", "development"),
+            "built_at": os.environ.get("BUILD_TIME", "unknown"),
+            "deployment": os.environ.get("DEPLOYMENT_MODE", "local"),
+            "state": {
+                "path": str(STATE_DIR),
+                "mounted": state_mounted,
+                "activation_marker": ACTIVATION_FILE.exists(),
+                "legacy_state": (
+                    not ACTIVATION_FILE.exists()
+                    and AUTH_FILE.exists()
+                    and OPERATOR_FILE.exists()
+                ),
+                "activated": setup_complete(),
+            },
+        }
+
+    @app.get("/ready")
+    def ready():
+        return {"status": "ok"}
 
     return app
 

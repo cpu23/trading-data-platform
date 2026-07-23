@@ -21,6 +21,7 @@ def get_regime_current():
                so.reasoning
         FROM regime_classifications rc
         JOIN structured_opinions so ON rc.opinion_id = so.opinion_id
+        WHERE so.lifecycle_status = 'published'
         ORDER BY rc.created_at DESC
         LIMIT 1
     """
@@ -91,6 +92,7 @@ def get_regime_history(days: int = Query(default=30, ge=1, le=365)):
         FROM regime_classifications rc
         JOIN structured_opinions so ON rc.opinion_id = so.opinion_id
         WHERE rc.created_at >= :cutoff
+          AND so.lifecycle_status = 'published'
         ORDER BY rc.created_at DESC
     """
     rows = query_many(sql, params={"cutoff": cutoff}, config=config)

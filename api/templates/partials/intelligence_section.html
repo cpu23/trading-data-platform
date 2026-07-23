@@ -1,0 +1,35 @@
+<section class="section intelligence-section" id="intelligence-section"
+         hx-get="/partials/intelligence"
+         hx-trigger="cycleComplete from:body"
+         hx-swap="outerHTML">
+  <div class="section-heading"><span class="label">Market intelligence</span></div>
+  {% if not global_intelligence %}
+    <div class="empty-state">No complete market-intelligence snapshot has been published yet.</div>
+  {% else %}
+    {% set view = global_intelligence.payload or {} %}
+    <div class="intelligence-lead">
+      <div>
+        <span class="bias-text bias-{{ (global_intelligence.direction or 'neutral') | lower }}">{{ global_intelligence.direction or 'neutral' }}</span>
+        <span class="dim">{{ global_intelligence.confidence or '—' }} confidence</span>
+      </div>
+      <p>{{ global_intelligence.summary }}</p>
+    </div>
+    <details class="intelligence-disclosure">
+      <summary>Drivers, contradictions and evidence</summary>
+      {% if view.active_narratives or view.drivers %}
+        <div class="intelligence-column"><span class="expansion-label">Active drivers</span>
+          <ul class="compact-list">{% for item in (view.active_narratives or view.drivers) %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      {% if view.open_questions or view.contradictions %}
+        <div class="intelligence-column"><span class="expansion-label">Contradictions</span>
+          <ul class="compact-list">{% for item in (view.open_questions or view.contradictions) %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <details class="provenance-details" data-opinion-id="{{ global_intelligence.opinion_id }}">
+        <summary>Evidence</summary>
+        <div class="evidence-view" data-evidence-target></div>
+      </details>
+    </details>
+  {% endif %}
+</section>

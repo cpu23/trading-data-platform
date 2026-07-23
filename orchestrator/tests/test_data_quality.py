@@ -56,6 +56,8 @@ class DataQualityTests(unittest.TestCase):
             "Should be unhealthy when latest data is older than max_age_hours",
         )
         self.assertIn("stale", result["detail"].lower())
+        self.assertEqual(result["source_id"], "fred")
+        self.assertEqual(result["state"], "stale")
         self.assertIsNotNone(result["latest_at"])
         self.assertGreater(result["age_hours"], 40)
 
@@ -78,6 +80,7 @@ class DataQualityTests(unittest.TestCase):
 
         self.assertTrue(result["healthy"], "Data should be healthy")
         self.assertEqual(result["detail"], "fresh")
+        self.assertEqual(result["source_id"], "oanda")
         self.assertIsNotNone(result["latest_at"])
         self.assertLess(result["age_hours"], 12)
 
@@ -100,6 +103,21 @@ class DataQualityTests(unittest.TestCase):
         self.assertFalse(result["healthy"])
         self.assertEqual(result["latest_at"], None)
         self.assertEqual(result["age_hours"], None)
+        self.assertEqual(result["state"], "no_data")
+
+    def test_disabled_source_is_not_reported_as_degraded(self):
+        from data_quality import check_source_freshness
+
+        result = check_source_freshness(
+            source_id="eia",
+            table="macro_series",
+            timestamp_column="acquired_at",
+            config={"collectors": {"eia": {"enabled": False}}},
+        )
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["state"], "disabled")
+        self.assertEqual(result["source_id"], "eia")
 
     # ------------------------------------------------------------------
     # check_gaps
@@ -156,6 +174,49 @@ class DataQualityTests(unittest.TestCase):
 
         self.assertTrue(result["healthy"])
         self.assertEqual(len(result["gaps"]), 0)
+
+    @patch("data_quality.get_session")
+    def test_check_gaps_does_not_treat_weekends_as_missing(self, get_session):
+        from data_quality import check_gaps
+
+        today = datetime.now(timezone.utc).date()
+        rows = [
+            ((today - timedelta(days=i)).isoformat(),)
+            for i in range(15)
+            if (today - timedelta(days=i)).weekday() < 5
+        ]
+        session = self._make_session(fetchall=rows)
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_gaps(
+            source_id="fred",
+            table="macro_series",
+            date_column="observed_at",
+            expected_interval="1 day",
+            config={},
+        )
+
+        self.assertTrue(result["healthy"])
+
+    @patch("data_quality.get_session")
+    def test_macro_gap_check_respects_series_frequency(self, get_session):
+        from data_quality import check_macro_series_gaps
+
+        rows = [
+            ("FRED:DAILY", "2026-06-01", "daily"),
+            ("FRED:DAILY", "2026-06-03", "daily"),
+            ("FRED:MONTHLY", "2026-04-01", "monthly"),
+            ("FRED:MONTHLY", "2026-05-01", "monthly"),
+        ]
+        session = self._make_session(fetchall=rows)
+        get_session.return_value.__enter__.return_value = session
+
+        result = check_macro_series_gaps(
+            "fred", {"collectors": {"fred": {"enabled": True}}}
+        )
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["source_id"], "fred")
 
     # ------------------------------------------------------------------
     # check_duplicates
@@ -654,7 +715,12 @@ class DataQualityTests(unittest.TestCase):
             "fred_anomalies",
             "forex_factory_freshness",
             "forex_factory_dupes",
-            "oanda_freshness",
+            "cftc_freshness",
+            "central_banks_freshness",
+            "oecd_freshness",
+            "ecb_freshness",
+            "boe_freshness",
+            "eia_freshness",
         }
         self.assertEqual(set(DATA_QUALITY_CHECKS.keys()), expected_keys)
 
@@ -662,6 +728,22 @@ class DataQualityTests(unittest.TestCase):
         for key, fn in DATA_QUALITY_CHECKS.items():
             with self.subTest(check=key):
                 self.assertTrue(callable(fn), f"{key} is not callable")
+
+    @patch("data_quality.check_source_freshness")
+    def test_official_registry_checks_accept_config_positionally(
+        self, check_source_freshness
+    ):
+        from data_quality import DATA_QUALITY_CHECKS
+
+        check_source_freshness.return_value = {"healthy": True}
+        config = {"collectors": {"cftc": {"enabled": True}}}
+        result = DATA_QUALITY_CHECKS["cftc_freshness"](config)
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(
+            check_source_freshness.call_args.kwargs["config"],
+            config,
+        )
 
 
 if __name__ == "__main__":

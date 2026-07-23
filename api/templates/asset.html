@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ asset.symbol }} — Market intelligence{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div class="page-header-left"><a href="/" class="quiet-link">Dashboard</a><span class="page-header-title">{{ asset.symbol }}</span></div>
+  <nav class="quiet-nav"><a href="/logs">View logs</a><span>·</span><a href="/quality">Data quality</a><span>·</span><a href="/settings">Settings</a></nav>
+</header>
+{% set view = panel.payload or {} %}
+<main class="asset-page">
+  <section class="asset-hero">
+    <span class="bias {{ (panel.direction or 'pending') | lower }}">{{ panel.direction or 'pending' }}</span>
+    <span class="dim">{{ panel.confidence or 'low' }} confidence</span>
+    <h2>{{ panel.summary or 'No published economic assessment yet.' }}</h2>
+  </section>
+  {% if view.drivers %}<details open><summary>Economic drivers</summary><ul class="compact-list">{% for x in view.drivers %}<li>{{ x }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if view.contradictions %}<details><summary>Contradictions</summary><ul class="compact-list">{% for x in view.contradictions %}<li>{{ x }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if view.invalidation_conditions %}<details><summary>What would change the view</summary><ul class="compact-list">{% for x in view.invalidation_conditions %}<li>{{ x }}</li>{% endfor %}</ul></details>{% endif %}
+  <section><span class="label">History</span>
+    {% for item in timeline %}<article class="timeline-row"><time>{{ item.created_at }}</time><span class="bias {{ (item.direction or 'pending') | lower }}">{{ item.direction or 'pending' }}</span><p>{{ item.summary }}</p></article>{% else %}<div class="empty-state">No published history yet.</div>{% endfor %}
+  </section>
+</main>
+{% endblock %}

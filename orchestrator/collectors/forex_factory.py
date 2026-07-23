@@ -47,6 +47,9 @@ EXCLUDED_EVENT_PATTERNS = (
 class ForexFactoryCollector:
     source_id = "forex_factory"
 
+    def __init__(self):
+        self.last_result_metadata: dict = {}
+
     def collect(self, config: dict, correlation_id: str) -> list[dict]:
         ff_config = config.get("collectors", {}).get("forex_factory", {})
         source_url = ff_config.get(
@@ -63,9 +66,9 @@ class ForexFactoryCollector:
         currencies = set(ff_config.get("currencies", DEFAULT_RELEVANT_CURRENCIES))
         target_week = self._determine_target_week(config)
 
-        payload = self._load_cached_payload(config, target_week, correlation_id)
+        cache_entry = self._load_cached_payload(config, target_week, correlation_id)
         payload_source = "cache"
-        tried_live = False
+        fetched_at = None
 
         def _parse_and_check(p: list[dict], source: str) -> list[dict]:
             return self._parse_export_payload(
@@ -75,32 +78,22 @@ class ForexFactoryCollector:
                 currencies=currencies,
                 payload_source=source,
                 correlation_id=correlation_id,
+                fetched_at=fetched_at,
             )
 
-        # Try cache first
-        if payload is not None:
+        # A successfully fetched payload is immutable for its target week. This
+        # deliberately freezes forecasts/revisions after the first weekly fetch.
+        if cache_entry is not None:
+            payload, fetched_at = self._cache_parts(cache_entry)
             records = _parse_and_check(payload, "cache")
-            if records:
-                logger.info(
-                    "weekly_export_parsed",
-                    action="collect",
-                    week=target_week["week_key"],
-                    payload_source="cache",
-                    events_found=len(records),
-                    correlation_id=correlation_id,
-                )
-                return records
-            # Cache exists but produced 0 matching events — try live fetch
-            logger.warning(
-                "cached_payload_yielded_zero_events_retrying_live",
-                action="collect",
-                week=target_week["week_key"],
-                correlation_id=correlation_id,
+            self._set_result_metadata(
+                target_week, "cache", fetched_at, len(payload), len(records)
             )
-            tried_live = True
-            payload = None  # force live fetch below
+            self._log_result(correlation_id)
+            return records
 
-        if payload is None:
+        payload = None
+        if cache_entry is None:
             try:
                 payload = self._fetch_export_payload(
                     source_url=source_url,
@@ -109,13 +102,16 @@ class ForexFactoryCollector:
                     user_agent=user_agent,
                     correlation_id=correlation_id,
                 )
-                self._store_cached_payload(config, target_week, payload, correlation_id)
+                fetched_at = datetime.now(timezone.utc)
+                self._store_cached_payload(
+                    config, target_week, payload, correlation_id, fetched_at=fetched_at
+                )
                 payload_source = "live"
             except Exception as exc:
-                payload = self._load_cached_payload(
+                stale_entry = self._load_cached_payload(
                     config, target_week, correlation_id, allow_stale=True
                 )
-                if payload is None:
+                if stale_entry is None:
                     logger.error(
                         "weekly_export_fetch_failed",
                         action="collect",
@@ -124,6 +120,7 @@ class ForexFactoryCollector:
                         correlation_id=correlation_id,
                     )
                     raise
+                payload, fetched_at = self._cache_parts(stale_entry)
                 logger.warning(
                     "weekly_export_fetch_failed_using_cache",
                     action="collect",
@@ -134,29 +131,51 @@ class ForexFactoryCollector:
                 payload_source = "stale_cache"
 
         records = _parse_and_check(payload, payload_source)
+        self._set_result_metadata(
+            target_week, payload_source, fetched_at, len(payload), len(records)
+        )
+        self._log_result(correlation_id)
+        return records
 
-        if not records:
-            logger.warning(
-                "no_events_parsed",
-                action="collect",
-                message="Zero relevant high/medium events parsed from ForexFactory export",
-                currencies=sorted(currencies),
-                min_impact=min_impact,
-                target_week=target_week["week_key"],
-                payload_source=payload_source,
-                correlation_id=correlation_id,
-            )
+    @staticmethod
+    def _cache_parts(entry) -> tuple[list[dict], datetime | None]:
+        if isinstance(entry, list):
+            return entry, None
+        return entry["payload"], entry.get("fetched_at")
 
+    def _set_result_metadata(
+        self,
+        target_week: dict,
+        payload_source: str,
+        fetched_at: datetime | None,
+        payload_records: int,
+        events_found: int,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        if fetched_at and fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        cache_age_hours = (
+            max(0.0, (now - fetched_at).total_seconds() / 3600)
+            if fetched_at
+            else None
+        )
+        self.last_result_metadata = {
+            "state": "degraded_cache" if payload_source == "stale_cache" else "success",
+            "payload_source": payload_source,
+            "target_week": target_week["week_key"],
+            "fetched_at": fetched_at.isoformat() if fetched_at else None,
+            "cache_age_hours": round(cache_age_hours, 2) if cache_age_hours is not None else None,
+            "payload_records": payload_records,
+            "events_found": events_found,
+        }
+
+    def _log_result(self, correlation_id: str) -> None:
         logger.info(
             "weekly_export_parsed",
             action="collect",
-            week=target_week["week_key"],
-            payload_source=payload_source,
-            events_found=len(records),
             correlation_id=correlation_id,
+            **self.last_result_metadata,
         )
-
-        return records
 
     def _determine_target_week(
         self, config: dict, now: datetime | None = None
@@ -296,7 +315,7 @@ class ForexFactoryCollector:
             )
 
         sql = text(f"""
-            SELECT raw_payload
+            SELECT raw_payload, fetched_at, period_start, period_end
             FROM source_payload_cache
             WHERE cache_key = :cache_key
             {coverage_clause}
@@ -307,17 +326,27 @@ class ForexFactoryCollector:
                 row = session.execute(sql, params).fetchone()
             if row is None:
                 return None
-            payload = dict(row._mapping)["raw_payload"]
+            mapped = dict(row._mapping)
+            payload = mapped["raw_payload"]
             if isinstance(payload, str):
                 payload = json.loads(payload)
             if isinstance(payload, list):
+                fetched_at = mapped.get("fetched_at")
+                if isinstance(fetched_at, str):
+                    fetched_at = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
                 logger.info(
                     "weekly_export_cache_hit",
                     action="load_cache",
                     week=target_week["week_key"],
+                    fetched_at=fetched_at.isoformat() if fetched_at else None,
                     correlation_id=correlation_id,
                 )
-                return payload
+                return {
+                    "payload": payload,
+                    "fetched_at": fetched_at,
+                    "period_start": mapped.get("period_start"),
+                    "period_end": mapped.get("period_end"),
+                }
         except Exception as exc:
             logger.warning(
                 "weekly_export_cache_read_failed",
@@ -334,6 +363,7 @@ class ForexFactoryCollector:
         target_week: dict,
         payload: list[dict],
         correlation_id: str,
+        fetched_at: datetime | None = None,
     ) -> None:
         raw_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         payload_hash = hashlib.sha256(raw_json.encode()).hexdigest()
@@ -349,16 +379,10 @@ class ForexFactoryCollector:
             )
             VALUES (
                 :cache_key, :source, :target_week, CAST(:raw_payload AS JSONB),
-                :payload_hash, NOW(), :period_start, :period_end,
+                :payload_hash, :fetched_at, :period_start, :period_end,
                 CAST(:metadata AS JSONB)
             )
-            ON CONFLICT (cache_key) DO UPDATE SET
-                raw_payload = EXCLUDED.raw_payload,
-                payload_hash = EXCLUDED.payload_hash,
-                fetched_at = EXCLUDED.fetched_at,
-                period_start = EXCLUDED.period_start,
-                period_end = EXCLUDED.period_end,
-                metadata = EXCLUDED.metadata
+            ON CONFLICT (cache_key) DO NOTHING
         """)
         params = {
             "cache_key": target_week["cache_key"],
@@ -366,6 +390,7 @@ class ForexFactoryCollector:
             "target_week": target_week["week_key"],
             "raw_payload": raw_json,
             "payload_hash": payload_hash,
+            "fetched_at": fetched_at or datetime.now(timezone.utc),
             "period_start": target_week["period_start"],
             "period_end": target_week["period_end"],
             "metadata": json.dumps(metadata, sort_keys=True),
@@ -374,13 +399,17 @@ class ForexFactoryCollector:
             with get_session(config) as session:
                 session.execute(sql, params)
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 "weekly_export_cache_write_failed",
                 action="store_cache",
                 week=target_week["week_key"],
                 error=str(exc),
                 correlation_id=correlation_id,
             )
+            raise RuntimeError(
+                f"Could not persist immutable Forex Factory cache for "
+                f"{target_week['week_key']}"
+            ) from exc
 
     def _parse_export_payload(
         self,
@@ -390,6 +419,7 @@ class ForexFactoryCollector:
         currencies: set[str],
         payload_source: str,
         correlation_id: str,
+        fetched_at: datetime | None = None,
     ) -> list[dict]:
         records = []
         skipped = 0
@@ -398,7 +428,9 @@ class ForexFactoryCollector:
 
         for item in payload:
             try:
-                event = self._parse_export_event(item, target_week, payload_source)
+                event = self._parse_export_event(
+                    item, target_week, payload_source, fetched_at=fetched_at
+                )
                 if event is None:
                     continue
                 scheduled_london = event["scheduled_at"].astimezone(
@@ -429,7 +461,11 @@ class ForexFactoryCollector:
         return records
 
     def _parse_export_event(
-        self, item: dict, target_week: dict, payload_source: str
+        self,
+        item: dict,
+        target_week: dict,
+        payload_source: str,
+        fetched_at: datetime | None = None,
     ) -> dict | None:
         title = str(item.get("title") or "").strip()
         currency = str(item.get("country") or "").strip().upper()
@@ -448,10 +484,24 @@ class ForexFactoryCollector:
             "previous": self._clean_value(item.get("previous")),
             "actual": self._clean_value(item.get("actual")),
             "source": self.source_id,
+            "acquired_at": fetched_at or datetime.now(timezone.utc),
             "metadata": {
                 "currency": currency,
                 "target_week": target_week["week_key"],
                 "payload_source": payload_source,
+                "payload_fetched_at": fetched_at.isoformat() if fetched_at else None,
+                "cache_age_hours": (
+                    round(
+                        max(
+                            0.0,
+                            (datetime.now(timezone.utc) - fetched_at).total_seconds()
+                            / 3600,
+                        ),
+                        2,
+                    )
+                    if fetched_at
+                    else None
+                ),
                 "source_date": date_value,
             },
         }
@@ -818,6 +868,22 @@ class ForexFactoryCollector:
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         start_ms = time.monotonic() * 1000
+        target_week = self._determine_target_week(config)
+        cache_entry = self._load_cached_payload(
+            config, target_week, "health-check"
+        )
+        if cache_entry is not None:
+            payload, fetched_at = self._cache_parts(cache_entry)
+            self._set_result_metadata(
+                target_week, "cache", fetched_at, len(payload), events_found=0
+            )
+            return {
+                "healthy": True,
+                "state": "success",
+                "message": "Current-week immutable cache is available",
+                "latency_ms": int(time.monotonic() * 1000 - start_ms),
+                **self.last_result_metadata,
+            }
 
         try:
             headers = {
@@ -837,12 +903,16 @@ class ForexFactoryCollector:
             if response.status_code == 200:
                 return {
                     "healthy": True,
-                    "message": "ForexFactory reachable",
+                    "state": "live_required",
+                    "message": "ForexFactory reachable; current week requires first live fetch",
                     "latency_ms": latency_ms,
+                    "payload_source": "live",
+                    "target_week": target_week["week_key"],
                 }
             else:
                 return {
                     "healthy": False,
+                    "state": "failed",
                     "message": f"ForexFactory returned status {response.status_code}",
                     "latency_ms": latency_ms,
                 }
@@ -850,6 +920,7 @@ class ForexFactoryCollector:
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             return {
                 "healthy": False,
+                "state": "failed",
                 "message": f"ForexFactory unreachable: {exc}",
                 "latency_ms": latency_ms,
             }

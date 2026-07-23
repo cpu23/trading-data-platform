@@ -235,6 +235,71 @@ def _prepare_records(records: list[dict]) -> list[dict]:
     ]
 
 
+def _prepare_record(record: dict, table_name: str = "") -> dict:
+    import json
+
+    return {
+        key: (
+            value
+            if table_name == "processing_log" and key == "output_ids"
+            else json.dumps(value) if isinstance(value, (dict, list)) else value
+        )
+        for key, value in record.items()
+    }
+
+
+def insert_records_in_session(session, table_name: str, records: list[dict]) -> int:
+    """Insert records using the caller's transaction."""
+    if not records:
+        return 0
+    columns = list(records[0])
+    placeholders = [
+        f"CAST(:{column} AS UUID[])"
+        if table_name == "processing_log" and column == "output_ids"
+        else f":{column}"
+        for column in columns
+    ]
+    statement = text(
+        f"INSERT INTO {table_name} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(placeholders)})"
+    )
+    for record in records:
+        if list(record) != columns:
+            raise ValueError(f"Inconsistent columns for {table_name}")
+        session.execute(statement, _prepare_record(record, table_name))
+    return len(records)
+
+
+def upsert_records_in_session(
+    session,
+    table_name: str,
+    records: list[dict],
+    conflict_columns: list[str],
+) -> int:
+    """Upsert records using the caller's transaction."""
+    if not records:
+        return 0
+    columns = list(records[0])
+    updates = [column for column in columns if column not in conflict_columns]
+    conflict = ", ".join(conflict_columns)
+    update_sql = (
+        "DO UPDATE SET "
+        + ", ".join(f"{column} = EXCLUDED.{column}" for column in updates)
+        if updates
+        else "DO NOTHING"
+    )
+    statement = text(
+        f"INSERT INTO {table_name} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f':{column}' for column in columns)}) "
+        f"ON CONFLICT ({conflict}) {update_sql}"
+    )
+    for record in records:
+        if list(record) != columns:
+            raise ValueError(f"Inconsistent columns for {table_name}")
+        session.execute(statement, _prepare_record(record, table_name))
+    return len(records)
+
+
 def _exception_type(exc: Exception) -> str:
     """Return safe diagnostic detail without exception text or record values."""
 

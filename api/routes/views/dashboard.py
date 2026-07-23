@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+import config as app_config
 from db import query_many, query_one
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import get_events_upcoming_data
@@ -42,7 +42,10 @@ def _last_cycle_text(config: dict) -> str:
         ORDER BY completed_at DESC, started_at DESC
         LIMIT 1
     """
-    row = query_one(sql, config=config)
+    try:
+        row = query_one(sql, config=config)
+    except Exception:
+        return "No cycle run yet"
     if row and (row.get("completed_at") or row.get("started_at")):
         ts = row.get("completed_at") or row["started_at"]
         if isinstance(ts, str):
@@ -52,10 +55,13 @@ def _last_cycle_text(config: dict) -> str:
 
 
 def _latest_cycle_status(config: dict) -> str:
-    row = query_one(
-        "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
-        config=config,
-    )
+    try:
+        row = query_one(
+            "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
+            config=config,
+        )
+    except Exception:
+        return "unknown"
     if not row:
         return "unknown"
     return row.get("result_status") or row.get("status") or "unknown"
@@ -454,7 +460,7 @@ router = APIRouter()
 
 @router.get("/")
 async def dashboard(request: Request):
-    config = await run_in_threadpool(load_config)
+    config = await run_in_threadpool(app_config.load_config)
     templates = _get_templates(request)
 
     # Fetch data with graceful error handling per section
@@ -546,7 +552,7 @@ async def dashboard(request: Request):
 
 @router.get("/partials/header")
 async def partial_header(request: Request):
-    config = await run_in_threadpool(load_config)
+    config = await run_in_threadpool(app_config.load_config)
     templates = _get_templates(request)
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
@@ -608,7 +614,7 @@ def partial_regime(request: Request):
 
 @router.get("/partials/events")
 def partial_events(request: Request):
-    config = load_config()
+    config = app_config.load_config()
     templates = _get_templates(request)
     events_data = {}
     try:
@@ -647,7 +653,7 @@ def partial_cards_clear(request: Request):
 
 @router.get("/partials/cards/{symbol}")
 def partial_cards_symbol(request: Request, symbol: str):
-    config = load_config()
+    config = app_config.load_config()
     templates = _get_templates(request)
     briefing = None
     try:
@@ -690,7 +696,7 @@ def partial_cards_symbol(request: Request, symbol: str):
 
 @router.get("/partials/cards")
 def partial_cards(request: Request):
-    config = load_config()
+    config = app_config.load_config()
     templates = _get_templates(request)
     briefing = None
     try:
@@ -709,7 +715,7 @@ def partial_cards(request: Request):
 
 @router.get("/partials/indicators")
 def partial_indicators(request: Request):
-    config = load_config()
+    config = app_config.load_config()
     templates = _get_templates(request)
     indicators = []
     stale = False

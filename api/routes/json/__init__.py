@@ -11,6 +11,8 @@ from routes.json.triggers import router as triggers_router
 from routes.json.evidence import router as evidence_router
 from routes.json.news import router as news_router
 from routes.json.settings import router as settings_router
+from routes.json.assets import router as assets_router
+from routes.json.setup import router as setup_router
 
 router = APIRouter(prefix="/api")
 
@@ -25,3 +27,5 @@ router.include_router(triggers_router)
 router.include_router(evidence_router)
 router.include_router(news_router)
 router.include_router(settings_router)
+router.include_router(assets_router)
+router.include_router(setup_router)

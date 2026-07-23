@@ -2,10 +2,13 @@
          hx-get="/partials/indicators"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
+  {% set section_dot = dot if dot is defined else dots.indicators %}
   <div class="section-heading">
-    <span class="label">Key macro indicators</span>
+    <span class="label">Key macro indicators{% if section_dot and section_dot.state %}<span class="status-dot status-{{ 'failed' if section_dot.state == 'failed' else 'partial' }}" title="{{ section_dot.title }}"></span>{% endif %}</span>
   </div>
-  {% if not indicators %}
+  {% if error or indicators_error %}
+    <div class="error-block">Indicator data unavailable: {{ error or indicators_error }}</div>
+  {% elif not indicators %}
     <div class="empty-state">No indicator data available.</div>
   {% else %}
     <div class="indicators-strip">
@@ -13,6 +16,7 @@
         <div class="indicator"
              role="button"
              tabindex="0"
+             aria-haspopup="dialog"
              data-series-id="{{ ind.series_id }}"
              data-label="{{ ind.label }}">
           <div class="indicator-label">{{ ind.label }}</div>

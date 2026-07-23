@@ -5,12 +5,14 @@ are exceeded at ``recorded spend >= cap``. This is a recorded-spend check, not a
 projected-cost reservation for concurrent requests.
 """
 
+import json
 import math
 from datetime import datetime, timedelta, timezone
 
 from config import load_config
-from db import query_one
+from db import get_session, query_one
 from logging_config import get_logger
+from sqlalchemy import text
 
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
@@ -84,10 +86,12 @@ def budget_status(
     unlimited = daily_cap <= 0
     if unlimited:
         usage_pct, warning, exceeded = 0.0, False, False
+        remaining_usd = None
     else:
         usage_pct = round((cost / daily_cap) * 100, 2)
         exceeded = cost >= daily_cap
         warning = not exceeded and usage_pct >= warn_at
+        remaining_usd = round(max(daily_cap - cost, 0.0), 6)
     return {
         "budget_cap_usd": daily_cap,
         "unlimited": unlimited,
@@ -95,6 +99,9 @@ def budget_status(
         "usage_pct": usage_pct,
         "warning": warning,
         "exceeded": exceeded,
+        "hard_limit_reached": exceeded,
+        "paid_calls_allowed": unlimited or not exceeded,
+        "remaining_usd": remaining_usd,
     }
 
 
@@ -143,3 +150,91 @@ def get_budget_status(config: dict | None = None) -> dict:
         unlimited=result["unlimited"],
     )
     return result
+
+
+
+
+def register_manual_override(
+    correlation_id: str,
+    run_kind: str,
+    requested_component: str | None,
+    reason: str,
+    requested_by: str,
+    config: dict | None = None,
+) -> dict:
+    """Persist an auditable, one-run budget override without a schema change."""
+    if config is None:
+        config = load_config()
+
+    override = {
+        "requested": True,
+        "reason": reason,
+        "requested_by": requested_by,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "scope": "one_run",
+        "run_kind": run_kind,
+        "requested_component": requested_component,
+    }
+    summary = json.dumps({"budget_override": override})
+
+    with get_session(config) as session:
+        session.execute(
+            text(
+                "INSERT INTO cycle_runs "
+                "(correlation_id, status, started_at, triggered_by, run_kind, "
+                "requested_component, summary) "
+                "VALUES (:cid, 'running', :started_at, 'api_manual_override', "
+                ":run_kind, :component, CAST(:summary AS JSONB)) "
+                "ON CONFLICT (correlation_id) DO UPDATE SET "
+                "status = 'running', triggered_by = 'api_manual_override', "
+                "run_kind = EXCLUDED.run_kind, "
+                "requested_component = EXCLUDED.requested_component, "
+                "summary = cycle_runs.summary || EXCLUDED.summary"
+            ),
+            {
+                "cid": correlation_id,
+                "started_at": datetime.now(timezone.utc),
+                "run_kind": run_kind,
+                "component": requested_component,
+                "summary": summary,
+            },
+        )
+
+    logger.warning(
+        "budget_override_registered",
+        correlation_id=correlation_id,
+        run_kind=run_kind,
+        requested_component=requested_component,
+        requested_by=requested_by,
+        reason=reason,
+    )
+    return override
+
+
+def mark_override_dispatch_failed(
+    correlation_id: str,
+    error: str,
+    config: dict | None = None,
+) -> None:
+    """Close an override audit record when dispatch never reached the orchestrator."""
+    if config is None:
+        config = load_config()
+
+    with get_session(config) as session:
+        session.execute(
+            text(
+                "UPDATE cycle_runs SET status = 'failed', result_status = 'failed', "
+                "completed_at = :completed_at, error_message = :error, "
+                "summary = jsonb_set("
+                "COALESCE(summary, '{}'::jsonb), "
+                "'{budget_override,dispatch_failed_at}', "
+                "to_jsonb(CAST(:dispatch_failed_at AS TEXT)), true"
+                ") WHERE correlation_id = :cid"
+            ),
+            {
+                "cid": correlation_id,
+                "completed_at": datetime.now(timezone.utc),
+                "dispatch_failed_at": datetime.now(timezone.utc).isoformat(),
+                "error": error,
+            },
+        )

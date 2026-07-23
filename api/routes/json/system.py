@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+import config as app_config
 from db import query_many, query_one
 from budgets import get_budget_status
 from staleness import get_staleness_config, is_stale
@@ -16,7 +16,7 @@ logger = get_logger("system.health")
 
 
 def _load_local_health_data():
-    config = load_config()
+    config = app_config.load_config()
     thresholds = get_staleness_config(config)
     collector_rows = query_many(
         """SELECT DISTINCT ON (collector)
@@ -477,7 +477,7 @@ def get_system_logs(
     from_date: datetime | None = Query(default=None, alias="from"),
     correlation_id: str = Query(default=""),
 ):
-    config = load_config()
+    config = app_config.load_config()
 
     params: dict = {"limit": limit}
 
@@ -585,7 +585,7 @@ def get_bounded_logs(lines: str = Query(default="200")):
            ORDER BY started_at DESC
            LIMIT :limit""",
         params={"limit": normalized},
-        config=load_config(),
+        config=app_config.load_config(),
     )
     logs = [
         {**row, "started_at": _fmt(row.get("started_at")), "completed_at": _fmt(row.get("completed_at"))}
@@ -621,14 +621,14 @@ def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
     rows = query_many(
         "SELECT * FROM cycle_runs ORDER BY started_at DESC LIMIT :limit",
         {"limit": limit},
-        config=load_config(),
+        config=app_config.load_config(),
     )
     return {"runs": [_run_payload(row) for row in rows], "limit": limit}
 
 
 @router.get("/system/runs/{correlation_id}")
 def get_system_run(correlation_id: str):
-    config = load_config()
+    config = app_config.load_config()
     row = query_one(
         "SELECT * FROM cycle_runs WHERE correlation_id = :cid",
         {"cid": correlation_id},
@@ -672,7 +672,7 @@ def get_system_run(correlation_id: str):
 
 @router.get("/system/cycle-status")
 def get_cycle_status(correlation_id: str = Query(...)):
-    config = load_config()
+    config = app_config.load_config()
 
     row = query_one(
         "SELECT status, result_status, started_at, completed_at, error_message, summary "

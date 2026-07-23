@@ -18,6 +18,7 @@ def get_briefing_latest():
         SELECT briefing_id, briefing_date, created_at, content, sections,
                model_used, prompt_version, opinion_ids
         FROM daily_briefings
+        WHERE lifecycle_status = 'published'
         ORDER BY briefing_date DESC, created_at DESC
         LIMIT 1
     """
@@ -50,6 +51,7 @@ def get_briefing_by_date(briefing_date: str):
                model_used, prompt_version, opinion_ids
         FROM daily_briefings
         WHERE briefing_date = :date
+          AND lifecycle_status = 'published'
         ORDER BY created_at DESC
         LIMIT 1
     """

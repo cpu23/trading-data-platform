@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 
-from config import load_config
+import config as app_config
 from db import query_one, query_many
 from staleness import get_staleness_config, is_stale
 
@@ -19,7 +19,7 @@ def _fmt(value):
 
 @router.get("/macro/dashboard")
 def get_macro_dashboard():
-    config = load_config()
+    config = app_config.load_config()
     thresholds = get_staleness_config(config)
 
     indicator_configs = config.get("dashboard", {}).get("indicators", [])
@@ -127,7 +127,7 @@ def get_macro_series(
     to_date: date | None = Query(default=None, alias="to"),
     days: int | None = Query(default=None, ge=1, le=3650),
 ):
-    config = load_config()
+    config = app_config.load_config()
 
     params: dict = {"sid": series_id}
     date_filter = ""
