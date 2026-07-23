@@ -63,7 +63,7 @@ class BriefingTests(unittest.TestCase):
 
     def test_prompt_assembly_includes_calendar_and_watchlist(self):
         processor = DailyBriefingProcessor()
-        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v3.txt"
+        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v4.txt"
 
         prompt = processor._build_prompt(
             template_path=str(prompt_path),
@@ -87,6 +87,8 @@ class BriefingTests(unittest.TestCase):
                 "bias": "mixed",
                 "confidence": "moderate",
                 "summary": "summary",
+                "reason": "reason",
+                "next_catalyst": "CPI, Thu 13:30",
                 "note": "note",
             }
             for item in WATCHLIST
@@ -161,10 +163,9 @@ class BriefingTests(unittest.TestCase):
 
         valid_json = json.dumps(
             {
-                "macro_trend": "trend",
-                "today": "today",
-                "this_week": "week",
-                "regime_assessment": "regime",
+                "what_changed": "changed",
+                "interpretation": "interpretation",
+                "invalidation": "invalidation",
                 "watchlist_notes": [
                     {
                         "symbol": w["symbol"],
@@ -172,6 +173,8 @@ class BriefingTests(unittest.TestCase):
                         "bias": "neutral",
                         "confidence": "moderate",
                         "summary": "s",
+                        "reason": "r",
+                        "next_catalyst": "CPI, Thu 13:30",
                         "note": "n",
                     }
                     for w in WATCHLIST
@@ -190,10 +193,9 @@ class BriefingTests(unittest.TestCase):
 
         # Sections with empty watchlist_notes will fail validation
         sections = {
-            "macro_trend": "",
-            "today": "",
-            "this_week": "",
-            "regime_assessment": "",
+            "what_changed": "",
+            "interpretation": "",
+            "invalidation": "",
             "watchlist_notes": [],
         }
 

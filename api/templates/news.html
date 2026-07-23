@@ -19,6 +19,12 @@
       </div>
     {% endfor %}
   </div>
+  <div class="news-source-actions">
+    <button class="btn news-run-btn" type="button" data-news-source="reuters">Run Reuters</button>
+    <span class="control-status" data-news-status="reuters" role="status" aria-live="polite"></span>
+    <button class="btn news-run-btn" type="button" data-news-source="kobeissi">Run Twitter</button>
+    <span class="control-status" data-news-status="kobeissi" role="status" aria-live="polite"></span>
+  </div>
 </section>
 
 <form class="logs-filter-bar" method="get" action="/news">
@@ -49,4 +55,28 @@
     </article>{% endfor %}
   </div>{% endif %}
 </section>
+<script>
+document.querySelectorAll('[data-news-source]').forEach(button => {
+  button.addEventListener('click', async () => {
+    const source = button.dataset.newsSource;
+    const status = document.querySelector(`[data-news-status="${source}"]`);
+    const csrf = document.cookie.split(';').map(v => v.trim()).find(v => v.startsWith('csrf-token='));
+    button.disabled = true;
+    status.textContent = 'Starting…';
+    try {
+      const response = await fetch('/api/triggers/news/' + encodeURIComponent(source), {
+        method: 'POST',
+        headers: csrf ? {'X-CSRF-Token': decodeURIComponent(csrf.split('=').slice(1).join('='))} : {}
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'News run rejected');
+      status.textContent = 'Accepted · ' + String(payload.job_id || '').slice(0, 8);
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+</script>
 {% endblock %}

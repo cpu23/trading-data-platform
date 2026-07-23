@@ -23,6 +23,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         cls.regime = (API_ROOT / "templates/partials/regime_section.html").read_text()
         cls.news = (API_ROOT / "templates/partials/news_section.html").read_text()
         cls.navigation = (API_ROOT / "templates/partials/navigation.html").read_text()
+        cls.settings = (API_ROOT / "templates/settings.html").read_text()
 
     def test_page_declares_inline_favicon_to_avoid_browser_404(self):
         self.assertIn('<link rel="icon" href="data:,">', self.base)
@@ -57,38 +58,30 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("events_data.get('error')", self.events)
         self.assertIn("overflow-x: auto", self.css)
 
-    def test_symbol_links_use_only_central_exact_allowlist(self):
-        from routes.views.dashboard import SYMBOL_LINKS
-
-        expected = {
-            "AUDJPY": "https://finance.yahoo.com/quote/AUDJPY=X",
-            "XAUUSD": "https://finance.yahoo.com/quote/GC=F",
-            "XPTUSD": "https://finance.yahoo.com/quote/PL=F",
-            "JP225": "https://finance.yahoo.com/quote/%5EN225",
-            "UK100": "https://finance.yahoo.com/quote/%5EFTSE",
-            "DE40": "https://finance.yahoo.com/quote/%5EGDAXI",
-            "EURCHF": "https://finance.yahoo.com/quote/EURCHF=X",
-        }
-        self.assertEqual({key: value["url"] for key, value in SYMBOL_LINKS.items()}, expected)
-        for source in (self.cards, self.expansion):
-            self.assertIn("symbol_links.get", source)
-            self.assertIn('target="_blank"', source)
-            self.assertIn('rel="noopener noreferrer"', source)
-            self.assertIn("View", source)
-            self.assertNotIn("finance.yahoo.com/quote/{{", source)
-
-    def test_header_wires_timezone_and_operations_without_duplicate_refresh(self):
-        self.assertEqual(self.header.count('id="run-cycle-btn"'), 1)
+    def test_header_is_market_focused_with_collapsible_data_chip(self):
+        # Dashboard header carries no operational cycle controls.
+        self.assertNotIn('id="run-cycle-btn"', self.header)
+        self.assertNotIn('id="force-cycle-btn"', self.header)
+        self.assertNotIn('cycle-mode-select', self.header)
+        # Navigation is present and trimmed to the three market pages.
         self.assertIn('partials/navigation.html', self.header)
-        for label in ('Dashboard', 'Logs', 'Quality', 'News', 'Operations'):
+        for label in ('Dashboard', 'News', 'Settings'):
             self.assertIn(label, self.navigation)
+        for label in ('Logs', 'Quality', 'Operations'):
+            self.assertNotIn("'%s'" % label, self.navigation)
         self.assertIn('aria-current="page"', self.navigation)
         self.assertIn('is-active', self.navigation)
-        self.assertIn('Run due cycle', self.header)
-        self.assertIn('Analyze stored data', self.header)
-        self.assertIn('Rebuild everything (uses budget)', self.header)
-        self.assertNotIn('>More…<', self.header)
-        self.assertIn('id="timezone-status"', self.header)
+        # Collapsible data chip with freshness summary and settings link.
+        self.assertIn('id="data-chip"', self.header)
+        self.assertIn('data-chip-label', self.header)
+        self.assertIn('data-chip-settings', self.header)
+        self.assertIn('initDataChip', self.app_js)
+
+    def test_settings_hosts_cycle_controls_and_operations(self):
+        self.assertEqual(self.settings.count('id="run-cycle-btn"'), 1)
+        self.assertIn('id="force-cycle-btn"', self.settings)
+        self.assertIn('Data &amp; operations', self.settings)
+        self.assertIn('id="timezone-status"', self.settings)
         self.assertIn("initTimezoneControl", self.app_js)
         self.assertIn("fetch('/api/settings/timezone'", self.app_js)
         self.assertIn("method: 'GET'", self.app_js)

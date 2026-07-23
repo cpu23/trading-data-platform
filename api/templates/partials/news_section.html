@@ -6,12 +6,12 @@
       <span class="news-generated tabular">Published {{ news.generated_at }}</span>
     {% endif %}
   </div>
-  {% if news.status == 'published' and news.items %}
+  {% if news.status == 'published' and news['items'] %}
     <div class="news-list">
-      {% for item in news.items %}
+      {% for item in news['items'] %}
         <article class="news-item">
           <div class="news-meta tabular">{{ item.source }}{% if item.published %} · {{ item.published }}{% endif %}</div>
-          <h3>{{ item.title }}</h3>
+          <h3>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
           {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
           {% if item.symbols or item.tags %}<div class="news-tags">{% for value in item.symbols + item.tags %}<span>{{ value }}</span>{% endfor %}</div>{% endif %}
         </article>

@@ -62,7 +62,8 @@ def create_app(
                 valid = False
             if not valid:
                 return JSONResponse(status_code=401, content={"detail": "Authentication required"}, headers={"WWW-Authenticate": "Basic"})
-        token = request.cookies.get(CSRF_COOKIE) or mint_csrf_token()
+        cookie_token = request.cookies.get(CSRF_COOKIE, "")
+        token = cookie_token if verify_csrf_token(cookie_token) else mint_csrf_token()
         request.state.csrf_token = token
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             origin = request.headers.get("origin")

@@ -29,11 +29,12 @@ class DailyBriefingProcessor:
     ) -> dict:
         ff_config = config.get("processors", {}).get("briefing", {})
         prompt_template_path = ff_config.get(
-            "prompt_template", "prompts/briefing_v3.txt"
+            "prompt_template", "prompts/briefing_v4.txt"
         )
 
         regime_summary = self._get_regime_summary(config)
         calendar_bundle = self._get_calendar_bundle(config)
+        previous_briefing = self._get_previous_briefing_text(config)
         watchlist_config = config.get("watchlist", {}).get("trading", [])
         watchlist_str = self._format_watchlist(config)
         london_tz = self._primary_timezone(config)
@@ -53,6 +54,7 @@ class DailyBriefingProcessor:
             today_events=calendar_bundle["today_prompt"],
             this_week_events=calendar_bundle["week_prompt"],
             watchlist=watchlist_str,
+            previous_briefing=previous_briefing,
         )
 
         stage = LLMStage(
@@ -64,7 +66,7 @@ class DailyBriefingProcessor:
         model = stage.policy.model
         llm_result = stage.call(prompt_text)
 
-        raw_response = llm_result["content"]
+        raw_response = llm_result["content"] or ""
         try:
             parsed = self._parse_llm_response(raw_response)
         except ValueError as exc:
@@ -77,7 +79,7 @@ class DailyBriefingProcessor:
                 "the exact schema above. Do not include markdown or commentary."
             )
             llm_result = stage.call(retry_prompt)
-            raw_response = llm_result["content"]
+            raw_response = llm_result["content"] or ""
             try:
                 parsed = self._parse_llm_response(raw_response)
             except ValueError as retry_exc:
@@ -87,10 +89,9 @@ class DailyBriefingProcessor:
                 ) from retry_exc
 
         sections = {
-            "macro_trend": parsed.get("macro_trend", parsed.get("macro_summary", "")),
-            "today": parsed.get("today", ""),
-            "this_week": parsed.get("this_week", parsed.get("upcoming_events", "")),
-            "regime_assessment": parsed.get("regime_assessment", ""),
+            "what_changed": parsed.get("what_changed", ""),
+            "interpretation": parsed.get("interpretation", ""),
+            "invalidation": parsed.get("invalidation", ""),
             "watchlist_notes": parsed.get("watchlist_notes", []),
         }
 
@@ -130,7 +131,7 @@ class DailyBriefingProcessor:
             "direction": direction,
             "confidence": confidence,
             "timeframe": "short_term",
-            "summary": sections.get("macro_trend", "")[:500],
+            "summary": sections.get("interpretation", "")[:500],
             "key_factors": {
                 "today_events": calendar_bundle["today_count"],
                 "this_week_events": calendar_bundle["week_count"],
@@ -185,12 +186,12 @@ class DailyBriefingProcessor:
         }
 
     def get_prompt_version(self) -> str:
-        return "briefing_v3"
+        return "briefing_v4"
 
     def get_prompt_identity(self, config: dict) -> dict[str, str]:
         processor_config = config.get("processors", {}).get("briefing", {})
         template_path = processor_config.get(
-            "prompt_template", "prompts/briefing_v3.txt"
+            "prompt_template", "prompts/briefing_v4.txt"
         )
         _, identity = load_prompt_template(template_path)
         return identity
@@ -280,11 +281,12 @@ class DailyBriefingProcessor:
         is_valid, warnings = self._validate_sections_schema(
             sections, watchlist_config
         )
-        for _warning in warnings:
+        for warning in warnings:
             logger.warning(
                 "briefing_validation_warning",
                 action="validate_briefing",
                 correlation_id=correlation_id,
+                warning=warning,
             )
 
         if not is_valid:
@@ -310,7 +312,7 @@ class DailyBriefingProcessor:
             expected_symbols = ", ".join(
                 w.get("symbol", "") for w in watchlist_config if w.get("symbol")
             )
-            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: The previous response did not match the required schema. Please respond again with the correct JSON format, ensuring watchlist_notes is an array of objects, each with symbol, asset_class, bias, confidence, summary, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
+            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: The previous response did not match the required schema. Please respond again with the correct JSON format: top-level what_changed, interpretation, and invalidation as non-empty strings, and watchlist_notes as an array of objects, each with symbol, asset_class, bias, confidence, summary, reason, next_catalyst, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
 
             try:
                 retry_result = (
@@ -326,14 +328,9 @@ class DailyBriefingProcessor:
                 )
                 retry_parsed = self._parse_llm_response(retry_result["content"])
                 retry_sections = {
-                    "macro_trend": retry_parsed.get(
-                        "macro_trend", retry_parsed.get("macro_summary", "")
-                    ),
-                    "today": retry_parsed.get("today", ""),
-                    "this_week": retry_parsed.get(
-                        "this_week", retry_parsed.get("upcoming_events", "")
-                    ),
-                    "regime_assessment": retry_parsed.get("regime_assessment", ""),
+                    "what_changed": retry_parsed.get("what_changed", ""),
+                    "interpretation": retry_parsed.get("interpretation", ""),
+                    "invalidation": retry_parsed.get("invalidation", ""),
                     "watchlist_notes": retry_parsed.get("watchlist_notes", []),
                 }
 
@@ -400,7 +397,7 @@ class DailyBriefingProcessor:
     ) -> tuple[bool, list[str]]:
         """Validate required briefing fields without exposing model content."""
         is_valid, warnings = validate_briefing_sections(sections, watchlist_config)
-        for field in ("macro_trend", "today", "this_week", "regime_assessment"):
+        for field in ("what_changed", "interpretation", "invalidation"):
             value = sections.get(field)
             if not isinstance(value, str) or not value.strip():
                 warnings.append(f"required section {field} is missing or invalid")
@@ -678,6 +675,7 @@ class DailyBriefingProcessor:
         today_events: str,
         this_week_events: str,
         watchlist: str,
+        previous_briefing: str = "",
     ) -> str:
         template, _ = load_prompt_template(template_path)
 
@@ -687,38 +685,52 @@ class DailyBriefingProcessor:
         result = result.replace("{{today_events}}", today_events)
         result = result.replace("{{this_week_events}}", this_week_events)
         result = result.replace("{{watchlist}}", watchlist)
+        result = result.replace("{{previous_briefing}}", previous_briefing)
 
         return result
+
+    def _get_previous_briefing_text(self, config: dict) -> str:
+        """Fetch the most recent prior briefing content for delta comparison."""
+        sql = text("""
+            SELECT content
+            FROM daily_briefings
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+        try:
+            with get_session(config) as session:
+                result = session.execute(sql)
+                row = result.fetchone()
+            if row:
+                content = dict(row._mapping).get("content")
+                if content:
+                    return str(content)
+        except Exception:
+            pass
+        return "No previous briefing available. Treat all current information as new."
 
     def _format_briefing_content(self, sections: dict, current_date: str) -> str:
         lines = []
 
-        macro = sections.get("macro_trend", sections.get("macro_summary", ""))
-        if macro:
-            lines.append("MACRO TREND")
+        what_changed = sections.get("what_changed", "")
+        if what_changed:
+            lines.append("WHAT CHANGED")
             lines.append("─" * 40)
-            lines.append(macro)
+            lines.append(what_changed)
             lines.append("")
 
-        today = sections.get("today", "")
-        if today:
-            lines.append("TODAY")
+        interpretation = sections.get("interpretation", "")
+        if interpretation:
+            lines.append("CURRENT INTERPRETATION")
             lines.append("─" * 40)
-            lines.append(today)
+            lines.append(interpretation)
             lines.append("")
 
-        this_week = sections.get("this_week", sections.get("upcoming_events", ""))
-        if this_week:
-            lines.append("THIS WEEK")
+        invalidation = sections.get("invalidation", "")
+        if invalidation:
+            lines.append("WHAT WOULD INVALIDATE THIS")
             lines.append("─" * 40)
-            lines.append(this_week)
-            lines.append("")
-
-        regime = sections.get("regime_assessment", "")
-        if regime:
-            lines.append("REGIME ASSESSMENT")
-            lines.append("─" * 40)
-            lines.append(regime)
+            lines.append(invalidation)
             lines.append("")
 
         watchlist_notes = sections.get("watchlist_notes", [])
@@ -733,9 +745,12 @@ class DailyBriefingProcessor:
                         confidence = note.get("confidence", "—")
                         summary = note.get("summary", "")
                         lines.append(f"{symbol} [{bias}/{confidence}]: {summary}")
-                        full_note = note.get("note", "")
-                        if full_note:
-                            lines.append(f"  {full_note}")
+                        reason = note.get("reason", "")
+                        if reason:
+                            lines.append(f"  {reason}")
+                        catalyst = note.get("next_catalyst", "")
+                        if catalyst:
+                            lines.append(f"  Next: {catalyst}")
                     else:
                         lines.append(str(note))
             elif isinstance(watchlist_notes, str):

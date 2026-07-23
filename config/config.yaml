@@ -15,7 +15,7 @@ llm:
     briefing: ${OPENROUTER_MODEL}
   max_output_tokens:
     macro_regime: 1800
-    briefing: 2600
+    briefing: 4096
   temperatures:
     macro_regime: 0.2
     briefing: 0.2
@@ -282,7 +282,7 @@ processors:
   briefing:
     enabled: true
     depends_on: [macro_regime]
-    prompt_template: prompts/briefing_v3.txt
+    prompt_template: prompts/briefing_v4.txt
     schedule: "0 7 * * *"
 
 watchlist:

@@ -9,7 +9,7 @@ import unittest
 import json
 import tempfile
 import httpx
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -719,6 +719,13 @@ class TestMacroRoutes(unittest.TestCase):
         # The one configured indicator appears, albeit with None values
         self.assertEqual(len(data["indicators"]), 1)
         self.assertEqual(data["indicators"][0]["series_id"], "T10Y2Y")
+
+    @patch("routes.json.macro.query_many", return_value=[{"observed_at": "2026-07-01T00:00:00+00:00", "value": 16.0}])
+    def test_series_days_parameter_sets_requested_window(self, query):
+        resp = client.get("/api/macro/VIXCLS?days=90", headers=AUTH)
+        self.assertEqual(resp.status_code, 200)
+        from_date = query.call_args.kwargs["params"]["from_date"]
+        self.assertEqual((date.today() - from_date).days, 90)
 
 
 class TestEvidenceRoutes(unittest.TestCase):

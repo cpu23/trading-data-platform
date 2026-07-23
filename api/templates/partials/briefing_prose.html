@@ -2,19 +2,15 @@
          hx-get="/partials/briefing"
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
-  {% if briefing_bullets %}
+  {% if briefing_sections %}
     <div class="section-heading">
       <span class="label">Briefing</span>
     </div>
     <div class="briefing-prose">
-      {% for section in briefing_bullets %}
+      {% for section in briefing_sections %}
         <div class="briefing-block">
           <div class="briefing-label">{{ section.label }}</div>
-          <ul class="compact-list">
-            {% for bullet in section.bullets %}
-              <li>{{ bullet }}</li>
-            {% endfor %}
-          </ul>
+          <p>{{ section.body }}</p>
         </div>
       {% endfor %}
     </div>

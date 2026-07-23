@@ -1,6 +1,6 @@
 <nav class="header-nav" aria-label="Primary navigation">
   {% set path = request.url.path %}
-  {% set pages = [('/', 'Dashboard'), ('/logs', 'Logs'), ('/quality', 'Quality'), ('/news', 'News'), ('/operations', 'Operations')] %}
+  {% set pages = [('/', 'Dashboard'), ('/news', 'News'), ('/settings', 'Settings')] %}
   {% for href, label in pages %}
     {% if not loop.first %}<span class="nav-separator" aria-hidden="true">·</span>{% endif %}
     {% set active = path == href or (href != '/' and path.startswith(href ~ '/')) %}

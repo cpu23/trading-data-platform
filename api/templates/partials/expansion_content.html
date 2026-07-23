@@ -1,12 +1,7 @@
 <div id="expansion-panel" class="expansion-panel expanded" data-symbol="{{ note.symbol }}">
   <div class="expansion-header">
     <div class="expansion-header-left">
-      {% set symbol_link = symbol_links.get(note.symbol) if symbol_links else none %}
-      {% if symbol_link %}
-        <a class="instrument-symbol symbol-link tabular" href="{{ symbol_link.url }}" target="_blank" rel="noopener noreferrer" title="View {{ note.symbol }} on {{ symbol_link.label }}" aria-label="View {{ note.symbol }} on {{ symbol_link.label }} (opens in a new tab)">{{ note.symbol }}</a>
-      {% else %}
-        <span class="instrument-symbol tabular">{{ note.symbol }}</span>
-      {% endif %}
+      <span class="instrument-symbol tabular">{{ note.symbol }}</span>
       {% if price %}
         <span class="expansion-price tabular" data-live-price="{{ note.symbol }}">{{ "%.5g"|format(price.price) }}</span>
       {% else %}

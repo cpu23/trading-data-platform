@@ -1,16 +1,22 @@
 (function () {
   'use strict';
 
+  function csrfCookieToken() {
+    var prefix = 'csrf-token=';
+    var match = document.cookie.split(';').map(function (part) { return part.trim(); })
+      .find(function (part) { return part.startsWith(prefix); });
+    return match ? decodeURIComponent(match.slice(prefix.length)) : '';
+  }
+
   function csrfHeaders(headers) {
     var meta = document.querySelector('meta[name="csrf-token"]');
-    var token = meta && meta.content;
+    var token = csrfCookieToken() || (meta && meta.content);
     if (token) headers['X-CSRF-Token'] = token;
     return headers;
   }
 
   document.body && document.body.addEventListener('htmx:configRequest', function (evt) {
-    var meta = document.querySelector('meta[name="csrf-token"]');
-    if (meta && meta.content) evt.detail.headers['X-CSRF-Token'] = meta.content;
+    csrfHeaders(evt.detail.headers);
   });
 
   /* Chart.js global defaults */
@@ -174,7 +180,6 @@
   /* Card expand / collapse -------------------------------------------------- */
   function initCards() {
     document.body.addEventListener('click', function (e) {
-      if (e.target.closest('.symbol-link')) return;
       var card = e.target.closest('.instrument-card');
       if (!card) return;
       toggleInstrumentCard(card);
@@ -330,21 +335,32 @@
             .catch(function() { return null; });
         });
         Promise.all(fetchPromises).then(function(results) {
+          var comparisonLabels = Array.from(new Set(results.flatMap(function(data) {
+            return data && data.observations
+              ? data.observations.map(function(o) { return String(o.observed_at).slice(0, 10); })
+              : [];
+          }))).sort();
           var datasets = [];
           results.forEach(function(data, i) {
             if (!data || !data.observations || !data.observations.length) return;
+            var baseValue = Number(data.observations[0].value);
+            if (!Number.isFinite(baseValue) || baseValue === 0) return;
+            var valuesByDate = {};
+            var rawValuesByDate = {};
+            data.observations.forEach(function(o) {
+              var rawValue = Number(o.value);
+              var dateKey = String(o.observed_at).slice(0, 10);
+              valuesByDate[dateKey] = (rawValue / baseValue) * 100;
+              rawValuesByDate[dateKey] = rawValue;
+            });
             datasets.push({
               label: indicators[i],
-              data: data.observations.map(function(o) {
-                var date = new Date(o.observed_at);
-                return {
-                  x: isNaN(date.getTime()) ? o.observed_at : date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
-                  y: o.value
-                };
-              }),
+              data: comparisonLabels.map(function(dateKey) { return valuesByDate[dateKey] ?? Number.NaN; }),
+              rawValues: comparisonLabels.map(function(dateKey) { return rawValuesByDate[dateKey] ?? null; }),
               borderColor: colors[i],
               borderWidth: 1,
               pointRadius: 0,
+              spanGaps: true,
               tension: 0.1,
               fill: false
             });
@@ -360,7 +376,7 @@
           var ctx = canvas.getContext('2d');
           new Chart(ctx, {
             type: 'line',
-            data: { datasets: datasets },
+            data: { labels: comparisonLabels, datasets: datasets },
             options: {
               responsive: true,
               maintainAspectRatio: false,
@@ -372,6 +388,7 @@
                 },
                 y: {
                   grid: { color: 'rgba(220,220,212,0.06)' },
+                  title: { display: true, text: 'Indexed to 100', color: '#6B6B66' },
                   ticks: { color: '#6B6B66', font: { size: 10 } }
                 }
               },
@@ -379,6 +396,15 @@
                 legend: {
                   display: true,
                   labels: { color: '#999992', font: { size: 11 }, usePointStyle: true }
+                },
+                tooltip: {
+                  callbacks: {
+                    label: function(context) {
+                      var rawValue = context.dataset.rawValues[context.dataIndex];
+                      if (rawValue === null || rawValue === undefined) return context.dataset.label;
+                      return context.dataset.label + ': ' + rawValue + ' (' + context.parsed.y.toFixed(1) + ' indexed)';
+                    }
+                  }
                 }
               }
             }
@@ -507,54 +533,51 @@
     });
   }
 
-  /* Run cycle → cycleComplete trigger --------------------------------------- */
-  var spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  var spinnerTimer = null;
-
-  function startBrailleSpinner(spinnerEl) {
-    var frame = 0;
-    if (!spinnerEl) return;
-    stopBrailleSpinner(false);
-    spinnerEl.textContent = spinnerFrames[frame];
-    spinnerEl.classList.add('active');
-    spinnerTimer = setInterval(function () {
-      frame = (frame + 1) % spinnerFrames.length;
-      spinnerEl.textContent = spinnerFrames[frame];
-    }, 90);
-  }
-
-  function stopBrailleSpinner(clearText) {
-    if (spinnerTimer) {
-      clearInterval(spinnerTimer);
-      spinnerTimer = null;
-    }
-    var spinnerEl = document.getElementById('cycle-spinner');
-    if (spinnerEl) {
-      spinnerEl.classList.remove('active');
-      if (clearText !== false) spinnerEl.textContent = '';
-    }
-  }
-
+  /* Cycle controls (Settings page) ------------------------------------------ */
   function initCycleButton() {
+    var runBtn = document.getElementById('run-cycle-btn');
+    var forceBtn = document.getElementById('force-cycle-btn');
+    if (!runBtn) return;
+
+    var progressEl = document.getElementById('cycle-progress');
+    var progressText = document.getElementById('cycle-progress-text');
+    var progressFill = document.getElementById('cycle-progress-fill');
+    var resultEl = document.getElementById('cycle-result');
+
     function dispatchCycleRefresh() {
       document.body.dispatchEvent(new CustomEvent('cycleComplete', { bubbles: true }));
     }
 
-    function triggerCycle(mode, budgetConfirmed) {
-      var btn = document.getElementById('run-cycle-btn');
-      var menu = document.getElementById('cycle-mode-select');
-      if (!btn || btn.disabled) return;
-      var cycleLabel = btn.querySelector('.btn-label');
-      var originalLabel = btn.getAttribute('data-original-label') || 'Run due cycle';
-      startBrailleSpinner(btn.querySelector('#cycle-spinner'));
-      if (cycleLabel) cycleLabel.textContent = 'Starting ' + mode.replace('_', ' ') + '…';
-      btn.disabled = true;
-      if (menu) menu.disabled = true;
+    function setButtons(disabled) {
+      runBtn.disabled = disabled;
+      if (forceBtn) forceBtn.disabled = disabled;
+    }
+
+    function showProgress(text, pct) {
+      if (progressEl) progressEl.hidden = false;
+      if (progressText) progressText.textContent = text;
+      if (progressFill) progressFill.style.width = (pct || 0) + '%';
+      if (resultEl) resultEl.hidden = true;
+    }
+
+    function showResult(text, isError) {
+      if (progressEl) progressEl.hidden = true;
+      if (resultEl) {
+        resultEl.hidden = false;
+        resultEl.textContent = text;
+        resultEl.style.color = isError ? 'var(--bear)' : 'var(--fg-muted)';
+      }
+    }
+
+    function triggerCycle(mode) {
+      if (runBtn.disabled) return;
+      setButtons(true);
+      showProgress('Starting ' + mode.replace('_', ' ') + '…', 5);
 
       fetch('/api/triggers/cycle', {
         method: 'POST',
         headers: csrfHeaders({'Content-Type': 'application/json'}),
-        body: JSON.stringify({mode: mode, budget_confirmed: budgetConfirmed})
+        body: JSON.stringify({mode: mode, budget_confirmed: mode === 'force_full'})
       }).then(function (response) {
         if (response.status === 202) return response.json();
         var labels = {
@@ -567,166 +590,84 @@
         throw error;
       }).then(function (response) {
         htmx.ajax('GET', '/partials/cards/clear', {target: '#expansion-panel', swap: 'outerHTML'});
-        pollCycleCompletion(response.job_id, btn, cycleLabel, originalLabel, dispatchCycleRefresh);
+        pollCycleCompletion(response.job_id);
       }).catch(function (error) {
-        if (cycleLabel) cycleLabel.textContent = error.message;
-        stopBrailleSpinner();
-        btn.disabled = false;
-        if (menu) menu.disabled = false;
+        showResult(error.message, true);
+        setButtons(false);
         dispatchCycleRefresh();
-      }).finally(function () {
-        if (menu) menu.value = '';
       });
     }
 
-    document.body.addEventListener('click', function (event) {
-      if (!event.target.closest('#run-cycle-btn')) return;
-      triggerCycle('refresh', false);
-    });
+    function pollCycleCompletion(correlationId) {
+      var maxAttempts = 100;
+      var attempts = 0;
 
-    document.body.addEventListener('change', function (event) {
-      if (event.target.id !== 'cycle-mode-select') return;
-      var mode = event.target.value;
-      if (!mode) return;
-      if (mode === 'force_full') {
-        if (!window.confirm(
-          'Force full is a daily budget bypass and may incur additional cost. Continue?'
-        )) {
-          event.target.value = '';
+      function poll() {
+        attempts++;
+        if (attempts > maxAttempts) {
+          showResult('Cycle taking longer than expected — check logs', true);
+          setButtons(false);
+          dispatchCycleRefresh();
           return;
         }
+        fetch('/api/system/cycle-status?correlation_id=' + encodeURIComponent(correlationId))
+          .then(function (r) {
+            if (!r.ok) throw new Error('Cycle status unavailable');
+            return r.json();
+          })
+          .then(function (data) {
+            var progress = data.progress || {};
+            var total = progress.total_stages || 1;
+            var completed = progress.completed_stages !== undefined
+              ? progress.completed_stages
+              : (data.stages || []).filter(function (s) { return !['pending', 'running'].includes(s.status); }).length;
+            var pct = Math.min(95, Math.round((completed / total) * 100));
+
+            if (['success', 'partial', 'completed'].includes(data.status)) {
+              showProgress('Cycle finished: ' + data.status, 100);
+              setTimeout(function () { showResult('Cycle completed: ' + data.status, false); }, 600);
+              setButtons(false);
+              dispatchCycleRefresh();
+            } else if (data.status === 'failed') {
+              showResult('Cycle failed — check logs', true);
+              setButtons(false);
+              dispatchCycleRefresh();
+            } else {
+              var current = progress.current_stage;
+              var label = current
+                ? 'Running ' + current.replaceAll('_', ' ') + '…'
+                : 'Cycle running…';
+              showProgress(label + ' (' + completed + '/' + total + ')', pct);
+              setTimeout(poll, 2000);
+            }
+          })
+          .catch(function () {
+            setTimeout(poll, 3000);
+          });
       }
-      triggerCycle(mode, mode === 'force_full');
-    });
-  }
 
-  function stageDetail(stage) {
-    var detail = [];
-    if (stage.records_fetched !== null && stage.records_fetched !== undefined) {
-      detail.push(stage.records_fetched + ' fetched');
+      poll();
     }
-    if (stage.records_written !== null && stage.records_written !== undefined) {
-      detail.push(stage.records_written + ' written');
-    }
-    if (stage.tokens_input || stage.tokens_output) {
-      detail.push(((stage.tokens_input || 0) + (stage.tokens_output || 0)) + ' tokens');
-    }
-    if (stage.cost_usd !== null && stage.cost_usd !== undefined) {
-      detail.push('$' + Number(stage.cost_usd).toFixed(4));
-    }
-    if (stage.duration_ms) detail.push((stage.duration_ms / 1000).toFixed(1) + 's');
-    if (stage.error || stage.error_message) detail.push(stage.error || stage.error_message);
-    return detail.join(' · ');
-  }
 
-  function renderCycleProgress(data) {
-    var panel = document.getElementById('cycle-progress');
-    var headline = document.getElementById('cycle-progress-headline');
-    var count = document.getElementById('cycle-progress-count');
-    var list = document.getElementById('cycle-stage-list');
-    if (!panel || !headline || !count || !list) return;
-
-    var progress = data.progress || {};
-    var snapshotStages = progress.stages || [];
-    var loggedByComponent = {};
-    (data.stages || []).forEach(function (stage) {
-      loggedByComponent[stage.component] = stage;
-    });
-    var stages = snapshotStages.length
-      ? snapshotStages.map(function (stage) {
-          return Object.assign({}, stage, loggedByComponent[stage.component] || {});
-        })
-      : (data.stages || []);
-
-    panel.hidden = false;
-    var current = progress.current_stage;
-    var terminal = ['success', 'partial', 'completed', 'failed'].includes(data.status);
-    headline.textContent = terminal
-      ? 'Cycle finished: ' + data.status
-      : current
-        ? 'Running ' + (progress.current_kind || 'stage') + ': ' + current.replaceAll('_', ' ')
-        : 'Cycle running...';
-    var completedCount = progress.completed_stages !== undefined
-      ? progress.completed_stages
-      : stages.filter(function (stage) {
-          return !['pending', 'running'].includes(stage.status);
-        }).length;
-    count.textContent = completedCount + ' / ' +
-      (progress.total_stages || stages.length) + ' stages';
-    list.replaceChildren();
-
-    stages.forEach(function (stage) {
-      var item = document.createElement('div');
-      var status = stage.status || 'pending';
-      item.className = 'cycle-stage cycle-stage-' + status;
-      var dot = document.createElement('span');
-      dot.className = 'status-dot status-' + (
-        status === 'success' ? 'success' :
-        status === 'failed' ? 'failed' : 'partial'
-      );
-      var name = document.createElement('span');
-      name.textContent = stage.component.replaceAll('_', ' ');
-      var state = document.createElement('span');
-      state.className = 'dim';
-      state.textContent = status;
-      var detail = document.createElement('span');
-      detail.className = 'dim tabular';
-      detail.textContent = stageDetail(stage);
-      item.append(dot, name, state, detail);
-      list.appendChild(item);
-    });
-  }
-
-  function pollCycleCompletion(correlationId, btn, labelEl, originalLabel, dispatchCycleRefresh) {
-    var maxAttempts = 100; // ~5 minutes at 3s intervals
-    var attempts = 0;
-
-    if (labelEl) labelEl.textContent = 'Running cycle...';
-    if (btn) btn.disabled = true;
-
-    function poll() {
-      attempts++;
-      if (attempts > maxAttempts) {
-        if (labelEl) labelEl.textContent = 'Cycle taking longer than expected — check logs';
-        stopBrailleSpinner();
-        if (btn) btn.disabled = false;
-        var timeoutMenu = document.getElementById('cycle-mode-select');
-        if (timeoutMenu) timeoutMenu.disabled = false;
-        dispatchCycleRefresh();
-        return;
+    document.body.addEventListener('click', function (event) {
+      var btn = event.target.closest('#run-cycle-btn, #force-cycle-btn');
+      if (!btn) return;
+      var mode = btn.getAttribute('data-mode') || 'refresh';
+      if (mode === 'force_full') {
+        if (!window.confirm('Force full re-runs every collector and processor. Uses more budget. Continue?')) return;
       }
-      fetch('/api/system/cycle-status?correlation_id=' + encodeURIComponent(correlationId))
-        .then(function (r) {
-          if (!r.ok) throw new Error('Cycle status unavailable');
-          return r.json();
-        })
-        .then(function (data) {
-          renderCycleProgress(data);
-          if (['success', 'partial', 'completed'].includes(data.status)) {
-            if (labelEl) labelEl.textContent = originalLabel;
-            stopBrailleSpinner();
-            if (btn) btn.disabled = false;
-            var completeMenu = document.getElementById('cycle-mode-select');
-            if (completeMenu) completeMenu.disabled = false;
-            dispatchCycleRefresh();
-          } else if (data.status === 'failed') {
-            if (labelEl) labelEl.textContent = 'Cycle failed — check logs';
-            stopBrailleSpinner();
-            if (btn) btn.disabled = false;
-            var failedMenu = document.getElementById('cycle-mode-select');
-            if (failedMenu) failedMenu.disabled = false;
-            dispatchCycleRefresh();
-          } else {
-            setTimeout(poll, 2000);
-          }
-        })
-        .catch(function (err) {
-          console.error('Cycle status poll error', err);
-          setTimeout(poll, 3000);
-        });
-    }
+      triggerCycle(mode);
+    });
+  }
 
-    poll();
+  /* Data chip (header) ------------------------------------------------------ */
+  function initDataChip() {
+    document.addEventListener('click', function (event) {
+      var chip = document.getElementById('data-chip');
+      if (!chip || !chip.open) return;
+      if (event.target.closest('#data-chip')) return;
+      chip.open = false;
+    });
   }
 
   function initTimezoneControl(root) {
@@ -796,6 +737,7 @@
     initLiveQuotes();
     initLogs();
     initCycleButton();
+    initDataChip();
     initTimezoneControl(document);
   });
 

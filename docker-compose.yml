@@ -55,6 +55,7 @@ services:
       - ./prompts:/app/prompts:ro
       - newsdata:/var/lib/trading-data/news
       - logsdata:/var/log/trading-data
+      - operatorstate:/app/state
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +83,7 @@ services:
     environment:
       ORCHESTRATOR_URL: http://orchestrator:8000
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
@@ -91,6 +92,7 @@ services:
       - ./api/templates:/app/api/templates:ro
       - ./api/routes:/app/api/routes:ro
       - newsdata:/var/lib/trading-data/news:ro
+      - operatorstate:/app/state
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,3 +112,4 @@ volumes:
   pgdata:
   newsdata:
   logsdata:
+  operatorstate:

@@ -279,10 +279,9 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         processor = DailyBriefingProcessor()
         final = json.dumps(
             {
-                "macro_trend": "structured briefing",
-                "today": "today",
-                "this_week": "week",
-                "regime_assessment": "neutral",
+                "what_changed": "structured briefing",
+                "interpretation": "interpretation",
+                "invalidation": "invalidation",
                 "watchlist_notes": [],
                 "__raw_marker": RAW_SENTINEL,
             }
@@ -304,7 +303,7 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertEqual((log["tokens_input"], log["tokens_output"]), (12, 4))
         self.assertAlmostEqual(log["cost_usd"], 0.02)
         self.assertEqual(result["opinion"]["tokens_used"], 16)
-        self.assertEqual(result["extra_records"]["daily_briefings"][0]["sections"]["macro_trend"], "structured briefing")
+        self.assertEqual(result["extra_records"]["daily_briefings"][0]["sections"]["what_changed"], "structured briefing")
         self.assertNotIn(PROMPT_SENTINEL, str(log))
         self.assertNotIn(RAW_SENTINEL, str(log))
 
@@ -313,25 +312,25 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         watchlist = [{"symbol": "EURUSD", "type": "forex"}]
         first = json.dumps(
             {
-                "macro_trend": "first",
-                "today": "today",
-                "this_week": "week",
-                "regime_assessment": "neutral",
+                "what_changed": "first",
+                "interpretation": "interpretation",
+                "invalidation": "invalidation",
                 "watchlist_notes": [],
             }
         )
         final = json.dumps(
             {
-                "macro_trend": "corrected",
-                "today": "today",
-                "this_week": "week",
-                "regime_assessment": "neutral",
+                "what_changed": "corrected",
+                "interpretation": "interpretation",
+                "invalidation": "invalidation",
                 "watchlist_notes": [{
                     "symbol": "EURUSD",
                     "asset_class": "forex",
                     "bias": "neutral",
                     "confidence": "moderate",
                     "summary": "safe summary",
+                    "reason": "safe reason",
+                    "next_catalyst": "CPI, Thu 13:30",
                     "note": "safe note",
                 }],
             }
@@ -354,7 +353,7 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertAlmostEqual(log["cost_usd"], 0.03)
         self.assertEqual(result["opinion"]["tokens_used"], 21)
         self.assertEqual(
-            result["extra_records"]["daily_briefings"][0]["sections"]["macro_trend"],
+            result["extra_records"]["daily_briefings"][0]["sections"]["what_changed"],
             "corrected",
         )
 
@@ -362,10 +361,9 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         processor = DailyBriefingProcessor()
         first = json.dumps(
             {
-                "macro_trend": "first",
-                "today": "today",
-                "this_week": "week",
-                "regime_assessment": "neutral",
+                "what_changed": "first",
+                "interpretation": "interpretation",
+                "invalidation": "invalidation",
                 "watchlist_notes": [],
             }
         )

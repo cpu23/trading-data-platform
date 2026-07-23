@@ -3,8 +3,10 @@
          hx-trigger="cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="calendar-toolbar section-heading">
-    <span class="label">Economic calendar</span>
-    <span class="calendar-timezone tabular">Times shown in {{ current_timezone }}</span>
+    <span class="calendar-title-group">
+      <span class="label">Economic calendar</span>
+      <span class="calendar-timezone tabular">Times shown in {{ current_timezone }}</span>
+    </span>
     <div class="impact-legend" aria-label="Impact severity legend">
       <span class="impact-badge impact-high">High</span>
       <span class="impact-badge impact-medium">Medium</span>
@@ -17,7 +19,7 @@
   {% else %}
   <details class="calendar-details">
     <summary class="calendar-toggle">
-      <span class="calendar-title-compact">Upcoming high-impact catalysts</span>
+      <span class="calendar-title-compact">Upcoming high-impact catalysts{% if upcoming_label %} <span class="section-note">{{ upcoming_label }}</span>{% endif %}</span>
       <span class="calendar-title-full">Full economic calendar</span>
       <span class="calendar-toggle-icon" aria-hidden="true"></span>
     </summary>
@@ -39,7 +41,7 @@
             <tr class="event-row event-row-{{ ev.impact_level | lower }}">
               <td class="event-time tabular">{{ ev.time_display }}</td>
               <th scope="row" class="event-name">{{ ev.event_name }}</th>
-              <td class="event-market">{{ ev.currency or '—' }} <span class="dim">{{ ev.country or '' }}</span></td>
+              <td class="event-market">{{ ev.currency or '—' }}</td>
               <td><span class="impact-badge impact-{{ ev.impact_level | lower }}">{{ ev.impact_level | title }}</span></td>
               <td class="event-actual numeric tabular">{{ ev.actual if ev.actual is not none else '—' }}</td>
               <td class="event-consensus numeric tabular">{{ ev.consensus if ev.consensus is not none else '—' }}</td>
@@ -70,7 +72,7 @@
           <tr class="event-row event-row-high">
             <td class="event-time tabular">{{ ev.day_time_display }}</td>
             <th scope="row" class="event-name">{{ ev.event_name }}</th>
-            <td class="event-market">{{ ev.currency or '—' }} <span class="dim">{{ ev.country or '' }}</span></td>
+            <td class="event-market">{{ ev.currency or '—' }}</td>
             <td><span class="impact-badge impact-high">High</span></td>
             <td class="event-actual numeric tabular">{{ ev.actual if ev.actual is not none else '—' }}</td>
             <td class="event-consensus numeric tabular">{{ ev.consensus if ev.consensus is not none else '—' }}</td>

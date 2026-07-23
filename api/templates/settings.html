@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Settings — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;"><div class="page-header-left">{% include "partials/navigation.html" %}</div></header>
+
+<section class="section settings-section" aria-labelledby="settings-title">
+  <div class="section-heading"><span class="label" id="settings-title">Settings</span></div>
+  <p class="settings-intro">Operator controls for the next collection or analysis run. Saved credentials are never displayed.</p>
+
+  <div class="settings-grid">
+    <fieldset class="settings-panel">
+      <legend>Models &amp; budget</legend>
+      <label>Default OpenRouter model<input id="settings-model" value="{{ llm.get('default_model', '') }}" autocomplete="off"></label>
+      <label>Macro regime model<input id="settings-model-macro-regime" value="{{ models.get('macro_regime', llm.get('default_model', '')) }}" autocomplete="off"></label>
+      <label>Event-impact model<input id="settings-model-event-impact" value="{{ models.get('event_impact', llm.get('default_model', '')) }}" autocomplete="off"></label>
+      <label>Briefing model<input id="settings-model-briefing" value="{{ models.get('briefing', llm.get('default_model', '')) }}" autocomplete="off"></label>
+      <label>Daily AI budget ($)<input id="settings-budget" type="number" min="0" max="1000" step="0.01" value="{{ daily_budget }}"></label>
+    </fieldset>
+
+    <fieldset class="settings-panel">
+      <legend>Credentials</legend>
+      <label>OpenRouter key <span class="credential-state">{{ 'Saved' if has_openrouter_key else 'Not added' }}</span><input id="settings-openrouter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_openrouter_key else 'OpenRouter API key' }}" autocomplete="new-password"></label>
+      <label>FRED key <span class="credential-state">{{ 'Saved' if has_fred_key else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_fred_key else 'FRED API key' }}" autocomplete="new-password"></label>
+      <label>OANDA key <span class="credential-state">{{ 'Saved' if has_oanda_key else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_oanda_key else 'OANDA API key' }}" autocomplete="new-password"></label>
+      <label>TwitterAPI.io key <span class="credential-state">{{ 'Saved' if has_twitter_key else 'Not added' }}</span><input id="settings-twitter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_twitter_key else 'TwitterAPI.io key' }}" autocomplete="new-password"></label>
+      <div class="settings-actions"><button class="btn" id="test-connection" type="button">Test OpenRouter</button><span id="connection-result" class="control-status" role="status"></span></div>
+    </fieldset>
+
+    <fieldset class="settings-panel">
+      <legend>Display</legend>
+      <label>Display timezone<select id="display-timezone" class="compact-select" name="timezone" aria-describedby="timezone-status">{% for zone in timezone_choices %}<option value="{{ zone }}"{% if zone == current_timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}</select></label>
+      <span id="timezone-status" class="control-status" role="status" aria-live="polite"></span>
+    </fieldset>
+  </div>
+
+  <div class="settings-save"><button class="btn" id="save-settings" type="button">Save operator settings</button><span id="settings-result" class="control-status" role="status" aria-live="polite"></span></div>
+</section>
+
+<section class="section settings-section" id="data-operations" aria-labelledby="ops-title">
+  <div class="section-heading"><span class="label" id="ops-title">Data &amp; operations</span></div>
+  <p class="settings-intro">Cycle controls, data freshness, and diagnostics live here so the dashboard can stay focused on markets.</p>
+
+  <div class="ops-block">
+    <h3 class="ops-heading">Cycle controls</h3>
+    <div class="cycle-controls">
+      <button id="run-cycle-btn" class="btn" data-mode="refresh"
+              title="Refresh data that is due, stale, or missing. Skips work that is not due yet.">
+        Run due cycle
+      </button>
+      <button id="force-cycle-btn" class="btn btn-secondary" data-mode="force_full"
+              title="Re-run every collector and processor even if data is not due. Uses more budget.">
+        Force full cycle
+      </button>
+    </div>
+    <div id="cycle-progress" class="cycle-progress" hidden aria-live="polite">
+      <div class="cycle-progress-summary">
+        <span class="spinner"></span>
+        <span id="cycle-progress-text">Cycle running...</span>
+      </div>
+      <div class="cycle-progress-bar"><div id="cycle-progress-fill" class="cycle-progress-fill"></div></div>
+    </div>
+    <div id="cycle-result" class="cycle-result" hidden></div>
+    {% if last_cycle_status == 'partial' %}
+      <div class="cycle-outcome-note">Last cycle completed with warnings — some work was skipped or could not be fully saved.</div>
+    {% elif last_cycle_status == 'success' %}
+      <div class="cycle-outcome-note">Last cycle completed successfully.</div>
+    {% endif %}
+    <p class="dim ops-updated">{{ last_cycle_text }} &middot; Next scheduled: {{ next_cycle }}</p>
+  </div>
+
+  <div class="ops-block">
+    <h3 class="ops-heading">Data freshness</h3>
+    {% set health = system_health or {} %}
+    {% set components = health.get('components', []) %}
+    <table class="ops-health-table">
+      <thead>
+        <tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Last run</th></tr>
+      </thead>
+      <tbody>
+        {% for c in components %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td><span class="status-dot status-{{ 'success' if not c.stale else 'delayed' }}"></span>{{ 'Current' if not c.stale else 'Delayed' }}</td>
+          <td class="dim">{{ c.last_run_at or 'never run' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="dim">No sources reporting yet. Run a cycle to populate data.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="ops-block">
+    <h3 class="ops-heading">Diagnostics</h3>
+    <div class="ops-links">
+      <a class="btn btn-secondary" href="/logs">Logs</a>
+      <a class="btn btn-secondary" href="/quality">Quality checks</a>
+      <a class="btn btn-secondary" href="/operations">Operations</a>
+    </div>
+  </div>
+</section>
+<script>
+const csrfHeader = () => {
+  const item = document.cookie.split(';').map(v => v.trim()).find(v => v.startsWith('csrf-token='));
+  return item ? {'X-CSRF-Token': decodeURIComponent(item.split('=').slice(1).join('='))} : {};
+};
+const settingsPayload = () => ({
+  llm: {
+    default_model: document.getElementById('settings-model').value.trim(),
+    models: {
+      macro_regime: document.getElementById('settings-model-macro-regime').value.trim(),
+      event_impact: document.getElementById('settings-model-event-impact').value.trim(),
+      briefing: document.getElementById('settings-model-briefing').value.trim()
+    }
+  },
+  daily_budget_usd: Number(document.getElementById('settings-budget').value),
+  secrets: {
+    OPENROUTER_API_KEY: document.getElementById('settings-openrouter-key').value,
+    FRED_API_KEY: document.getElementById('settings-fred-key').value,
+    OANDA_API_KEY: document.getElementById('settings-oanda-key').value,
+    TWITTERAPI_KEY: document.getElementById('settings-twitter-key').value
+  }
+});
+document.getElementById('test-connection').addEventListener('click', async () => {
+  const status = document.getElementById('connection-result');
+  status.textContent = 'Checking…';
+  const response = await fetch('/api/settings/test-openrouter', {method:'POST', headers:{'Content-Type':'application/json', ...csrfHeader()}, body:JSON.stringify({api_key:document.getElementById('settings-openrouter-key').value})});
+  const data = await response.json().catch(() => ({}));
+  status.textContent = response.ok ? 'Connected' : (data.detail || 'Connection failed');
+});
+document.getElementById('save-settings').addEventListener('click', async () => {
+  const status = document.getElementById('settings-result');
+  status.textContent = 'Saving…';
+  const response = await fetch('/api/settings/operator', {method:'PUT', headers:{'Content-Type':'application/json', ...csrfHeader()}, body:JSON.stringify(settingsPayload())});
+  const data = await response.json().catch(() => ({}));
+  status.textContent = response.ok ? 'Saved — applies to the next run' : (data.detail || 'Could not save settings');
+});
+</script>
+{% endblock %}

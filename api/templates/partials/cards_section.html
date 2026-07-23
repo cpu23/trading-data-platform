@@ -17,33 +17,25 @@
       <div class="instruments-grid">
         {% for note in notes %}
           {% set price = price_map.get(note.symbol) if price_map else none %}
+          {% set decimals = 4 if note.asset_class == 'forex' else 2 %}
           <div class="instrument-card"
                role="button"
                tabindex="0"
                data-symbol="{{ note.symbol }}"
                data-card-index="{{ loop.index0 }}">
-            <div class="instrument-header">
-              {% set symbol_link = symbol_links.get(note.symbol) if symbol_links else none %}
-              {% if symbol_link %}
-                <a class="instrument-symbol symbol-link tabular" href="{{ symbol_link.url }}" target="_blank" rel="noopener noreferrer" title="View {{ note.symbol }} on {{ symbol_link.label }}" aria-label="View {{ note.symbol }} on {{ symbol_link.label }} (opens in a new tab)">{{ note.symbol }}</a>
-              {% else %}
-                <span class="instrument-symbol tabular">{{ note.symbol or '—' }}</span>
-              {% endif %}
-              <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
+            <div class="instrument-symbol tabular">
+              {{ note.symbol or '—' }}
+              <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | capitalize }}</span>
             </div>
-            <div class="instrument-price tabular" data-live-price="{{ note.symbol }}">
-              {% if price %}
-                {{ "%.5g"|format(price.price) }}
-              {% else %}
-                —
+            <div class="instrument-price-line">
+              <span class="instrument-price tabular" data-live-price="{{ note.symbol }}">{{ "%.5g"|format(price.price) if price else '—' }}</span>
+              {% if price and price.change is not none %}
+                <span class="instrument-change tabular{{ ' change-up' if price.change > 0 else ' change-down' if price.change < 0 else '' }}">{{ '%+.*f' | format(decimals, price.change) }}</span>
               {% endif %}
+              {% if note.summary %}<span class="instrument-state bias-{{ (note.bias or 'neutral') | lower }}">· {{ note.summary }}</span>{% endif %}
             </div>
-            {% if price and price.timestamp %}
-              <div class="instrument-meta tabular" data-live-time="{{ note.symbol }}">{{ price.timestamp.strftime('%d %b %H:%M UTC') }}</div>
-            {% endif %}
-            {% if note.summary %}
-              <div class="instrument-summary">{{ note.summary }}</div>
-            {% endif %}
+            {% if note.reason %}<div class="instrument-reason">{{ note.reason }}</div>{% endif %}
+            {% if note.next_catalyst %}<div class="instrument-catalyst">Next: {{ note.next_catalyst }}</div>{% endif %}
           </div>
         {% endfor %}
       </div>

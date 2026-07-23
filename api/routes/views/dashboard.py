@@ -15,13 +15,8 @@ from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.system import get_system_health
 from routes.json.settings import timezone_context
-from budgets import get_budget_status
-from staleness import get_staleness_config, is_stale
-from logging_config import get_logger
 from routes.views.news import load_news_context
-
-router = APIRouter()
-logger = get_logger("dashboard.view")
+from budgets import get_budget_status
 
 ASSET_EVENT_RULES = {
     "EURUSD": {"currencies": {"EUR", "USD"}},
@@ -33,17 +28,6 @@ ASSET_EVENT_RULES = {
     "XPTUSD": {"currencies": {"USD"}, "keywords": {"inflation", "cpi", "ppi", "industrial", "manufacturing", "pmi", "risk", "growth", "china"}},
     "GER40": {"currencies": {"EUR"}, "countries": {"EU", "DE"}, "keywords": {"germany", "german", "ecb", "eurozone"}},
     "UK100": {"currencies": {"GBP"}, "countries": {"GB", "UK"}, "keywords": {"uk", "britain", "boe", "bank of england"}},
-}
-
-# Curated destinations only: never derive an external URL from a rendered symbol.
-SYMBOL_LINKS = {
-    "AUDJPY": {"url": "https://finance.yahoo.com/quote/AUDJPY=X", "label": "Yahoo Finance AUD/JPY"},
-    "XAUUSD": {"url": "https://finance.yahoo.com/quote/GC=F", "label": "Yahoo Finance Gold Futures"},
-    "XPTUSD": {"url": "https://finance.yahoo.com/quote/PL=F", "label": "Yahoo Finance Platinum Futures"},
-    "JP225": {"url": "https://finance.yahoo.com/quote/%5EN225", "label": "Yahoo Finance Nikkei 225"},
-    "UK100": {"url": "https://finance.yahoo.com/quote/%5EFTSE", "label": "Yahoo Finance FTSE 100"},
-    "DE40": {"url": "https://finance.yahoo.com/quote/%5EGDAXI", "label": "Yahoo Finance DAX"},
-    "EURCHF": {"url": "https://finance.yahoo.com/quote/EURCHF=X", "label": "Yahoo Finance EUR/CHF"},
 }
 
 
@@ -171,14 +155,26 @@ def _event_template_context(
         except Exception:
             return day_key
 
+    catalysts = _top_catalysts(events_data)
     return {
         "filtered_events": filtered_events,
         "grouped": grouped,
-        "catalysts": _top_catalysts(filtered_events),
+        "catalysts": catalysts,
+        "upcoming_label": _upcoming_label(high_impact_grouped, day_label_for),
         "high_impact_grouped": high_impact_grouped,
         "today_str": today_str,
         "day_label_for": day_label_for,
     }
+
+
+def _upcoming_label(high_impact_grouped: dict, day_label_for) -> str:
+    """Human label for the catalyst window, e.g. 'Today – Friday'."""
+    days = sorted(high_impact_grouped.keys())
+    if not days:
+        return ""
+    if len(days) == 1:
+        return day_label_for(days[0])
+    return f"{day_label_for(days[0])} – {day_label_for(days[-1])}"
 
 
 def _event_text(event: dict) -> str:
@@ -229,12 +225,26 @@ def _with_event_display(event: dict) -> dict:
     return enriched
 
 
-def _top_catalysts(events: list[dict], limit: int = 6) -> list[dict]:
-    ordered = sorted(
-        [event for event in events if str(event.get("impact_level") or "").lower() == "high"],
-        key=_chronological_event_key,
-    )
-    return [_with_event_display(event) for event in ordered[:limit]]
+def _top_catalysts(events_data: dict, limit: int = 6) -> list[dict]:
+    """High-impact events spread across the week instead of stacking on one busy day."""
+    high = [
+        ev for ev in (events_data.get("events") or [])
+        if (ev.get("impact_level") or "").lower() == "high"
+    ]
+    by_day: dict[str, list[dict]] = {}
+    for ev in high:
+        by_day.setdefault(ev.get("day_key") or "", []).append(ev)
+    picked: list[dict] = []
+    queues = list(by_day.values())
+    while queues and len(picked) < limit:
+        next_queues = []
+        for queue in queues:
+            picked.append(queue.pop(0))
+            if queue:
+                next_queues.append(queue)
+        queues = next_queues
+    picked.sort(key=lambda ev: ev.get("scheduled_at") or "")
+    return [_with_event_display(ev) for ev in picked]
 
 
 def _event_matches_asset(symbol: str, event: dict) -> bool:
@@ -324,21 +334,47 @@ def _list_values(value, limit: int) -> list[str]:
     return []
 
 
-def _briefing_bullets(briefing: dict | None, limit_per_section: int = 4) -> list[dict]:
+def _section_text(value) -> str:
+    """Normalize a briefing section value into a single paragraph string."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(v).strip() for v in value if str(v).strip())
+    return ""
+
+
+def _briefing_sections(briefing: dict | None) -> list[dict]:
+    """Three fixed briefing sections: what changed / interpretation / invalidation.
+
+    Falls back to legacy v3 keys (macro_trend/today/this_week) for briefings
+    generated before the three-section schema.
+    """
     sections = briefing.get("sections", {}) if briefing else {}
     if not isinstance(sections, dict):
         return []
-    section_defs = [
-        ("Macro trend", sections.get("macro_trend") or sections.get("macro_summary")),
-        ("Today", sections.get("today")),
-        ("This week", sections.get("this_week") or sections.get("upcoming_events")),
+
+    what_changed = _section_text(sections.get("what_changed"))
+    interpretation = _section_text(sections.get("interpretation"))
+    invalidation = _section_text(sections.get("invalidation"))
+
+    if not any([what_changed, interpretation, invalidation]):
+        legacy = [
+            ("Macro trend", sections.get("macro_trend") or sections.get("macro_summary")),
+            ("Today", sections.get("today")),
+            ("This week", sections.get("this_week") or sections.get("upcoming_events")),
+        ]
+        return [
+            {"label": label, "body": _section_text(value)}
+            for label, value in legacy
+            if _section_text(value)
+        ]
+
+    defs = [
+        ("What changed", what_changed),
+        ("Current interpretation", interpretation),
+        ("What would invalidate this", invalidation),
     ]
-    result = []
-    for label, value in section_defs:
-        bullets = _list_values(value, limit_per_section)
-        if bullets:
-            result.append({"label": label, "bullets": bullets})
-    return result
+    return [{"label": label, "body": body} for label, body in defs if body]
 
 
 def _asset_drivers(note: dict, limit: int = 4) -> list[str]:
@@ -351,11 +387,14 @@ def _asset_drivers(note: dict, limit: int = 4) -> list[str]:
 
 def _get_latest_prices(config: dict) -> dict:
     sql = """
-        SELECT DISTINCT ON (symbol)
-            symbol, close AS price, timestamp
-        FROM market_data
-        WHERE source IN ('oanda', 'demo') AND timeframe = 'PRICE'
-        ORDER BY symbol, timestamp DESC
+        SELECT symbol, price, timestamp, prev_close FROM (
+            SELECT symbol, close AS price, timestamp,
+                   LAG(close) OVER (PARTITION BY symbol ORDER BY timestamp) AS prev_close,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn
+            FROM market_data
+            WHERE source IN ('oanda', 'demo') AND timeframe = 'PRICE'
+        ) ranked
+        WHERE rn = 1
     """
     rows = query_many(sql, config=config)
     price_map = {}
@@ -363,8 +402,16 @@ def _get_latest_prices(config: dict) -> dict:
         price = row.get("price")
         if price is None:
             continue
+        prev = row.get("prev_close")
+        change = None
+        if prev is not None:
+            try:
+                change = round(float(price) - float(prev), 4)
+            except (TypeError, ValueError):
+                change = None
         price_map[row["symbol"]] = {
             "price": float(price),
+            "change": change,
             "timestamp": _parse_iso(row.get("timestamp")),
         }
     return price_map
@@ -385,6 +432,23 @@ async def _get_dashboard_health(request: Request) -> dict:
             "today_llm_cost_usd": 0,
             "today_token_count": 0,
         }
+
+
+def _data_status(health: dict | None) -> dict:
+    """Compact data-freshness summary for the dashboard header chip."""
+    health = health or {}
+    components = health.get("components") or []
+    delayed = [c for c in components if c.get("stale")]
+    if not components:
+        label, state = "Data unavailable", "unavailable"
+    elif delayed:
+        n = len(delayed)
+        label, state = f"{n} source{'s' if n != 1 else ''} delayed", "delayed"
+    else:
+        label, state = "Data current", "current"
+    return {"label": label, "state": state, "delayed_count": len(delayed), "components": components}
+
+router = APIRouter()
 
 
 
@@ -442,7 +506,7 @@ async def dashboard(request: Request):
             )
             indicators_stale_reason = _format_stale_reason(indicators_stale_reason, "indicators")
     except Exception as exc:
-        indicators = [{"error": str(exc)}]
+        indicators = []
 
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
@@ -453,12 +517,6 @@ async def dashboard(request: Request):
     )
     price_map = await run_in_threadpool(_get_latest_prices, config)
 
-    any_stale = bool(
-        (regime.get("stale") if isinstance(regime, dict) else False)
-        or (events_data.get("stale") if isinstance(events_data, dict) else False)
-        or (briefing and briefing.get("stale"))
-        or any(i.get("stale") for i in indicators if isinstance(i, dict))
-    )
 
     context = {
         "request": request,
@@ -473,12 +531,10 @@ async def dashboard(request: Request):
         "stale_reason": indicators_stale_reason,
         "current_time": now,
         "timedelta": timedelta,
-        "any_stale": any_stale,
-        "dots": _section_dots(regime, events_data, briefing, indicators_stale, indicators_stale_reason),
-        "briefing_bullets": _briefing_bullets(briefing),
+        "data_status": _data_status(await _get_dashboard_health(request)),
+        "briefing_sections": _briefing_sections(briefing),
         "price_map": price_map,
         "budget": await run_in_threadpool(get_budget_status),
-        "symbol_links": SYMBOL_LINKS,
         "news": await run_in_threadpool(load_news_context, config, 5),
         **tz_context,
         **event_context,
@@ -486,13 +542,6 @@ async def dashboard(request: Request):
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 
-@router.get("/partials/system-health")
-async def partial_system_health(request: Request):
-    templates = _get_templates(request)
-    return templates.TemplateResponse(request, "partials/system_health.html", {
-        "request": request,
-        "system_health": await _get_dashboard_health(request),
-    })
 
 
 @router.get("/partials/header")
@@ -527,22 +576,14 @@ async def partial_header(request: Request):
     except Exception:
         pass
 
-    any_stale = bool(
-        (regime.get("stale") if isinstance(regime, dict) else False)
-        or (events_data.get("stale") if isinstance(events_data, dict) else False)
-        or (briefing and briefing.get("stale"))
-        or any(i.get("stale") for i in indicators if isinstance(i, dict))
-    )
 
     return templates.TemplateResponse(request, "partials/header.html", {
         "request": request,
         "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
         "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
         "current_time": now,
-        "any_stale": any_stale,
-        "system_health": await _get_dashboard_health(request),
+        "data_status": _data_status(await _get_dashboard_health(request)),
         "budget": await run_in_threadpool(get_budget_status),
-        "symbol_links": SYMBOL_LINKS,
         **tz_context,
     })
 
@@ -639,7 +680,6 @@ def partial_cards_symbol(request: Request, symbol: str):
             "drivers": _asset_drivers(note),
             "matched_events": _matched_asset_events(symbol, events),
             "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
-            "symbol_links": SYMBOL_LINKS,
         })
 
     # Symbol not found: return empty panel
@@ -664,7 +704,6 @@ def partial_cards(request: Request):
         "request": request,
         "briefing": briefing,
         "price_map": _get_latest_prices(config),
-        "symbol_links": SYMBOL_LINKS,
     })
 
 
@@ -721,5 +760,5 @@ def partial_briefing(request: Request):
         "request": request,
         "briefing": briefing,
         "dot": _section_dots({}, {}, briefing, False, None)["briefing"],
-        "briefing_bullets": _briefing_bullets(briefing),
+        "briefing_sections": _briefing_sections(briefing),
     })

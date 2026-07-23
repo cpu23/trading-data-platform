@@ -125,6 +125,7 @@ def get_macro_series(
     series_id: str,
     from_date: date | None = Query(default=None, alias="from"),
     to_date: date | None = Query(default=None, alias="to"),
+    days: int | None = Query(default=None, ge=1, le=3650),
 ):
     config = load_config()
 
@@ -133,6 +134,9 @@ def get_macro_series(
 
     if from_date:
         params["from_date"] = from_date
+        date_filter += " AND observed_at >= :from_date"
+    elif days:
+        params["from_date"] = date.today() - timedelta(days=days)
         date_filter += " AND observed_at >= :from_date"
     else:
         default_from = date.today() - timedelta(days=365)
