@@ -82,9 +82,14 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: orchestrator/uv.lock
+          cache-dependency-glob: |
+            orchestrator/uv.lock
+            api/uv.lock
       - name: Install validation environment
         working-directory: orchestrator
+        run: uv sync --frozen
+      - name: Install API environment for failure drills
+        working-directory: api
         run: uv sync --frozen
       - name: Compile Python sources
         run: python -m compileall -q -x '/\.venv/' api orchestrator scripts tests
@@ -144,7 +149,7 @@ jobs:
       - name: Build and smoke demo topology
         run: scripts/smoke_test.sh
       - name: Scan application image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: trading-data-platform:0.1.0
           severity: CRITICAL,HIGH
