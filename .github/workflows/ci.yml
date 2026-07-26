@@ -149,7 +149,7 @@ jobs:
       - name: Build and smoke demo topology
         run: scripts/smoke_test.sh
       - name: Scan application image
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: trading-data-platform:0.1.0
           severity: CRITICAL,HIGH
