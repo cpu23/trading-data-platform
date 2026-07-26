@@ -1,6 +1,5 @@
 import hashlib
 import json
-from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from db import get_session

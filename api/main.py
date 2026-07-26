@@ -4,13 +4,10 @@ from contextlib import asynccontextmanager
 import httpx
 import os
 import base64
-import binascii
 import hashlib
 import hmac
 import json
-import secrets
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles

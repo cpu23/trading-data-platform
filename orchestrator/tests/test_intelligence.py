@@ -537,7 +537,7 @@ class IntelligencePolicyTests(unittest.TestCase):
             Path(__file__).resolve().parents[2]
             / "db"
             / "migrations"
-            / "011_generation_attempts.sql"
+            / "018_generation_attempts.sql"
         ).read_text()
         self.assertIn("CREATE TABLE IF NOT EXISTS generation_attempts", migration)
         self.assertIn("'validation_failed'", migration)

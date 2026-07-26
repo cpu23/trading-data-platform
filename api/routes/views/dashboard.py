@@ -17,6 +17,10 @@ from routes.json.system import get_system_health
 from routes.json.settings import timezone_context
 from routes.views.news import load_news_context
 from budgets import get_budget_status
+from logging_config import get_logger
+from staleness import get_staleness_config, is_stale
+
+logger = get_logger("dashboard")
 
 ASSET_EVENT_RULES = {
     "EURUSD": {"currencies": {"EUR", "USD"}},
@@ -539,6 +543,7 @@ async def dashboard(request: Request):
         "timedelta": timedelta,
         "data_status": _data_status(await _get_dashboard_health(request)),
         "briefing_sections": _briefing_sections(briefing),
+        "dots": _section_dots(regime, events_data, briefing, indicators_stale, indicators_stale_reason),
         "price_map": price_map,
         "budget": await run_in_threadpool(get_budget_status),
         "news": await run_in_threadpool(load_news_context, config, 5),

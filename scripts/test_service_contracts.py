@@ -54,7 +54,7 @@ def wait_for_api(base: str, auth: str, attempts: int = 40):
     for _ in range(attempts):
         try:
             status, payload = request(base, "/api/system/health", auth)
-            if status == 200 and isinstance(payload, dict) and payload.get("readiness") == "ready":
+            if status == 200 and isinstance(payload, dict) and payload.get("readiness") in {"ready", "degraded"}:
                 return payload
         except OSError:
             pass

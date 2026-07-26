@@ -10,6 +10,7 @@ x-demo-environment: &demo_environment
   DASHBOARD_USER: demo
   DASHBOARD_PASSWORD: demo
   DEMO_MODE: "true"
+  LEGACY_BASIC_AUTH: "1"
 
 services:
   postgres:
@@ -119,7 +120,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import base64,os,urllib.request; token=base64.b64encode((os.environ['DASHBOARD_USER']+':' + os.environ['DASHBOARD_PASSWORD']).encode()).decode(); request=urllib.request.Request('http://127.0.0.1:8000/api/system/health',headers={'Authorization':'Basic '+token}); urllib.request.urlopen(request,timeout=3)\""]
+      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)\""]
       interval: 5s
       timeout: 4s
       retries: 10

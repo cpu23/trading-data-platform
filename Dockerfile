@@ -24,7 +24,7 @@ COPY prompts /app/prompts
 COPY db/migrations /app/db/migrations
 RUN groupadd --gid 10001 trading-data \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin trading-data \
-    && mkdir -p /var/log/trading-data /var/lib/trading-data/news \
+    && mkdir -p /var/log/trading-data /var/lib/trading-data/news /app/state \
     && chown -R 10001:10001 /var/log/trading-data /var/lib/trading-data /app
 
 USER 10001:10001

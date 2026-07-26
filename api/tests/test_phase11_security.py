@@ -9,7 +9,8 @@ import httpx
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ.update(DASHBOARD_USER="test", DASHBOARD_PASSWORD="test")
+os.environ.update(DASHBOARD_USER="test", DASHBOARD_PASSWORD="test", LEGACY_BASIC_AUTH="1")
+os.environ["STATE_DIR"] = "/tmp/test_state"
 
 with patch("config.load_config", return_value={"logging": {"level": "INFO"}}):
     from main import create_app  # noqa: E402
