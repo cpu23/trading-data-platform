@@ -275,7 +275,6 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertNotIn(PROMPT_SENTINEL, str(log))
         self.assertNotIn(RAW_SENTINEL, str(log))
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
     def test_briefing_json_retry_persists_cumulative_usage_without_raw_data(self):
         processor = DailyBriefingProcessor()
         final = json.dumps(
@@ -305,10 +304,13 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertAlmostEqual(log["cost_usd"], 0.02)
         self.assertEqual(result["opinion"]["tokens_used"], 16)
         self.assertEqual(result["extra_records"]["daily_briefings"][0]["sections"]["what_changed"], "structured briefing")
+        self.assertEqual(
+            result["extra_records"]["daily_briefings"][0]["correlation_id"],
+            "cid",
+        )
         self.assertNotIn(PROMPT_SENTINEL, str(log))
         self.assertNotIn(RAW_SENTINEL, str(log))
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
     def test_briefing_section_retry_persists_cumulative_stage_usage(self):
         processor = DailyBriefingProcessor()
         watchlist = [{"symbol": "EURUSD", "type": "forex"}]

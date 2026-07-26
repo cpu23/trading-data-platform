@@ -36,10 +36,9 @@ EVENTS = [
 
 def valid_briefing():
     return {
-        "macro_trend": "Growth is slowing while inflation remains sticky.",
-        "today": "US inflation is the dominant scheduled catalyst.",
-        "this_week": "Central-bank communication may alter policy expectations.",
-        "regime_assessment": "Restrictive policy and cautious positioning limit risk appetite.",
+        "what_changed": "US inflation is now the dominant scheduled catalyst.",
+        "interpretation": "Restrictive policy and cautious positioning support the dollar.",
+        "invalidation": "A material downside inflation surprise would weaken this interpretation.",
         "watchlist_notes": [
             {
                 "symbol": "EURUSD",
@@ -47,7 +46,9 @@ def valid_briefing():
                 "bias": "bearish",
                 "confidence": "moderate",
                 "summary": "Relative policy expectations favor the dollar.",
-                "note": "Sticky US inflation and cautious positioning support dollar demand.",
+                "reason": "Sticky US inflation supports restrictive policy expectations.",
+                "next_catalyst": "US CPI",
+                "note": "Cautious positioning supports dollar demand.",
             },
             {
                 "symbol": "SP500",
@@ -55,7 +56,9 @@ def valid_briefing():
                 "bias": "mixed",
                 "confidence": "low",
                 "summary": "Earnings resilience offsets restrictive policy.",
-                "note": "Fundamentals remain firm, but policy expectations constrain valuation support.",
+                "reason": "Fundamentals remain firm while policy constrains valuations.",
+                "next_catalyst": "US CPI",
+                "note": "Inflation will shape the discount-rate outlook.",
             },
         ],
     }

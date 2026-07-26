@@ -50,7 +50,7 @@ NARRATIVE_KEYS = {"text", "source_claim_ids", "evidence_ids"}
 class MarketIntelligenceProcessor:
     processor_id = "market_intelligence"
 
-    def process(self, config, correlation_id):
+    def process(self, config, correlation_id, budget_context=None):
         context = self._context(config, correlation_id)
         fingerprint = self._fingerprint(context)
         previous = self._previous(config)
@@ -88,11 +88,12 @@ class MarketIntelligenceProcessor:
                 config=config,
                 correlation_id=correlation_id,
                 call_options=profile["call_options"],
+                budget_context=budget_context,
             )
             roles[role] = parsed
             for attempt in attempts:
                 self._add_usage(usage, attempt["result"])
-                responses.append(attempt["result"].get("content", ""))
+                responses.append(attempt["result"].get("content") or "")
 
         editor_profile = self._stage_profile(config, "editor", default_model)
         stage_models["editor"] = editor_profile["model"]
@@ -108,10 +109,11 @@ class MarketIntelligenceProcessor:
             config=config,
             correlation_id=correlation_id,
             call_options=editor_profile["call_options"],
+            budget_context=budget_context,
         )
         for attempt in attempts:
             self._add_usage(usage, attempt["result"])
-            responses.append(attempt["result"].get("content", ""))
+            responses.append(attempt["result"].get("content") or "")
 
         edited = self._normalize_editor(edited)
         role_claim_ids = self._role_claim_ids(roles)
@@ -533,6 +535,7 @@ class MarketIntelligenceProcessor:
         config,
         correlation_id,
         call_options=None,
+        budget_context=None,
     ):
         call_options = call_options or {}
         attempts = []
@@ -540,8 +543,10 @@ class MarketIntelligenceProcessor:
             prompt,
             model=model,
             config=config,
+            processor_id=self.processor_id,
             correlation_id=correlation_id,
             **call_options,
+            budget_context=budget_context,
         )
         parsed, issues = self._parse_and_validate(result.get("content"), validator)
         attempts.append({"result": result, "issues": issues})
@@ -559,8 +564,10 @@ class MarketIntelligenceProcessor:
                 repair_prompt,
                 model=model,
                 config=config,
+                processor_id=self.processor_id,
                 correlation_id=correlation_id,
                 **call_options,
+                budget_context=budget_context,
             )
         except Exception as exc:
             repair_result = {

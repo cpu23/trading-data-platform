@@ -35,10 +35,9 @@ ALLOWED_VOLATILITY = {"high", "moderate", "low"}
 ALLOWED_SENSITIVITY = {"high", "moderate", "low"}
 
 BRIEFING_KEYS = {
-    "macro_trend",
-    "today",
-    "this_week",
-    "regime_assessment",
+    "what_changed",
+    "interpretation",
+    "invalidation",
     "watchlist_notes",
 }
 WATCHLIST_NOTE_KEYS = {
@@ -47,6 +46,8 @@ WATCHLIST_NOTE_KEYS = {
     "bias",
     "confidence",
     "summary",
+    "reason",
+    "next_catalyst",
     "note",
 }
 MACRO_REGIME_KEYS = {
@@ -450,8 +451,10 @@ def validate_event_impact_output(
     return not issues, issues
 
 
-def coerce_briefing_fields(sections: dict) -> list[str]:
-    """Normalize recognized enum variants before strict validation."""
+def coerce_briefing_fields(
+    sections: dict, watchlist: list[dict] | None = None
+) -> list[str]:
+    """Normalize recognized enum variants and configured asset classes."""
     warnings = []
     watchlist_notes = sections.get("watchlist_notes")
     if not isinstance(watchlist_notes, list):
@@ -487,10 +490,23 @@ def coerce_briefing_fields(sections: dict) -> list[str]:
         "high confidence": "high",
         "low confidence": "low",
     }
+    configured_types = {
+        item.get("symbol"): item.get("type")
+        for item in (watchlist or [])
+        if item.get("symbol") and item.get("type")
+    }
 
     for index, note in enumerate(watchlist_notes):
         if not isinstance(note, dict):
             continue
+        expected_type = configured_types.get(note.get("symbol"))
+        if expected_type and note.get("asset_class") != expected_type:
+            previous_type = note.get("asset_class")
+            note["asset_class"] = expected_type
+            warnings.append(
+                f"watchlist_notes[{index}] ({note.get('symbol', '?')}): "
+                f"coerced asset_class '{previous_type}' -> '{expected_type}'"
+            )
         for field, allowed, coercions in (
             ("bias", ALLOWED_BIAS, bias_coercions),
             ("confidence", ALLOWED_CONFIDENCE, confidence_coercions),

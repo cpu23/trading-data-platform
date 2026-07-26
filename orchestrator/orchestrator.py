@@ -1428,6 +1428,8 @@ def _run_processor_impl(
     reusable_output = None
     processor_processing_log = {}
     durable_output_id = None
+    durable_output_ids = []
+    processing_log_persisted = False
 
     try:
         input_fingerprint = build_processor_fingerprint(processor, config)
@@ -1538,6 +1540,66 @@ def _run_processor_impl(
     duration_ms = int(time.monotonic() * 1000 - start_ms)
 
     if status == "success" and result_payload:
+        opinions = result_payload.get("opinions")
+        if isinstance(opinions, list):
+            try:
+                if not opinions or not all(
+                    isinstance(opinion, dict) for opinion in opinions
+                ):
+                    raise ValueError("multi-opinion result must contain opinion objects")
+                versioned_opinions = [
+                    {
+                        **opinion,
+                        "correlation_id": correlation_id,
+                        "lifecycle_status": "validated",
+                        "schema_version": str(opinion.get("schema_version") or "1"),
+                    }
+                    for opinion in opinions
+                ]
+                durable_output_ids = [
+                    opinion["opinion_id"] for opinion in versioned_opinions
+                ]
+                durable_output_id = durable_output_ids[0]
+                atomic_processing_log = {
+                    **processor_processing_log,
+                    "output_id": durable_output_id,
+                    "output_ids": durable_output_ids,
+                    "prompt_text": None,
+                    "raw_response": None,
+                }
+                _persist_processor_result(
+                    opinions=versioned_opinions,
+                    extra_records=result_payload.get("extra_records", {}),
+                    processing_log=atomic_processing_log,
+                    processor_id=processor_id,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                    correlation_id=correlation_id,
+                    config=config,
+                )
+                processing_log_persisted = True
+                logger.info(
+                    "versioned_processor_records_written",
+                    action="run_processor",
+                    processor=processor_id,
+                    opinion_count=len(versioned_opinions),
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                status = "failed"
+                durable_output_id = None
+                durable_output_ids = []
+                error_message = f"DB write failed: {exc}"
+                logger.error(
+                    "processor_db_write_failed",
+                    action="run_processor",
+                    processor=processor_id,
+                    error=str(exc),
+                    correlation_id=correlation_id,
+                )
+
+    if status == "success" and result_payload and not processing_log_persisted:
         write_outcomes = []
         any_output_written = False
         try:
@@ -1568,7 +1630,7 @@ def _run_processor_impl(
                     count = upsert_records(
                         table_name=table_name,
                         records=records,
-                        conflict_columns=["briefing_date"],
+                        conflict_columns=["briefing_date", "correlation_id"],
                         config=config,
                     )
                 else:
@@ -1649,27 +1711,28 @@ def _run_processor_impl(
     if error_message:
         processing_log["error_message"] = error_message
 
-    _write_processing_log(
-        processor_id=processor_id,
-        started_at=started_at,
-        completed_at=completed_at,
-        status=processing_log.get("status", status),
-        input_summary=processing_log.get("input_summary"),
-        output_id=processing_log.get("output_id"),
-        prompt_text=processing_log.get("prompt_text"),
-        raw_response=processing_log.get("raw_response"),
-        model_used=processing_log.get("model_used"),
-        tokens_input=processing_log.get("tokens_input"),
-        tokens_output=processing_log.get("tokens_output"),
-        cost_usd=processing_log.get("cost_usd"),
-        duration_ms=duration_ms,
-        error_message=error_message,
-        input_fingerprint=input_fingerprint,
-        skip_reason="unchanged_inputs" if status == "skipped" else None,
-        forced=force,
-        config=config,
-        correlation_id=correlation_id,
-    )
+    if not processing_log_persisted:
+        _write_processing_log(
+            processor_id=processor_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            status=processing_log.get("status", status),
+            input_summary=processing_log.get("input_summary"),
+            output_id=processing_log.get("output_id"),
+            prompt_text=processing_log.get("prompt_text"),
+            raw_response=processing_log.get("raw_response"),
+            model_used=processing_log.get("model_used"),
+            tokens_input=processing_log.get("tokens_input"),
+            tokens_output=processing_log.get("tokens_output"),
+            cost_usd=processing_log.get("cost_usd"),
+            duration_ms=duration_ms,
+            error_message=error_message,
+            input_fingerprint=input_fingerprint,
+            skip_reason="unchanged_inputs" if status == "skipped" else None,
+            forced=force,
+            config=config,
+            correlation_id=correlation_id,
+        )
 
     result = {
         "processor": processor_id,
@@ -1682,6 +1745,8 @@ def _run_processor_impl(
         "reusable_output": status == "skipped" and reusable_output is not None,
         "forced": force,
     }
+    if durable_output_ids:
+        result["opinion_ids"] = durable_output_ids
 
     log_result = dict(result)
     if input_fingerprint:

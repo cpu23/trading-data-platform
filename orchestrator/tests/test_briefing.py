@@ -79,7 +79,6 @@ class BriefingTests(unittest.TestCase):
         self.assertIn("EURUSD (forex)", prompt)
         self.assertIn("UK100 (index)", prompt)
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
     def test_validation_requires_all_symbols_once_in_order(self):
         notes = [
             {
@@ -94,14 +93,17 @@ class BriefingTests(unittest.TestCase):
             }
             for item in WATCHLIST
         ]
-        valid, warnings = validate_briefing_sections(
-            {"watchlist_notes": notes}, WATCHLIST
-        )
+        sections = {
+            "what_changed": "changed",
+            "interpretation": "interpretation",
+            "invalidation": "invalidation",
+            "watchlist_notes": notes,
+        }
+        valid, warnings = validate_briefing_sections(sections, WATCHLIST)
         self.assertTrue(valid, warnings)
 
-        invalid_notes = notes[:-1]
         valid, warnings = validate_briefing_sections(
-            {"watchlist_notes": invalid_notes}, WATCHLIST
+            {**sections, "watchlist_notes": notes[:-1]}, WATCHLIST
         )
         self.assertFalse(valid)
         self.assertTrue(any("UK100" in warning for warning in warnings))
@@ -157,8 +159,22 @@ class BriefingTests(unittest.TestCase):
             "Should warn about coerced bias value",
         )
 
+    def test_configured_asset_class_overrides_model_output(self):
+        sections = {
+            "watchlist_notes": [
+                {
+                    "symbol": "DXY",
+                    "asset_class": "forex",
+                }
+            ]
+        }
+
+        warnings = coerce_briefing_fields(sections, WATCHLIST)
+
+        self.assertEqual(sections["watchlist_notes"][0]["asset_class"], "index")
+        self.assertTrue(any("asset_class" in warning for warning in warnings))
+
     @patch("processors.briefing.call_llm")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
     def test_empty_llm_response_triggers_retry(self, call_llm):
         """When validation fails, _validate_and_fix_sections retries the LLM call."""
         processor = DailyBriefingProcessor()

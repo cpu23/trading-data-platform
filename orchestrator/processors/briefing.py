@@ -153,6 +153,7 @@ class DailyBriefingProcessor:
         briefing_record = {
             "briefing_id": briefing_id,
             "briefing_date": briefing_date,
+            "correlation_id": correlation_id,
             "content": full_briefing_content,
             "sections": sections,
             "opinion_ids": "{" + ",".join(opinion_ids_used) + "}",
@@ -270,7 +271,7 @@ class DailyBriefingProcessor:
         correlation_id: str,
         stage: LLMStage | None = None,
     ) -> dict:
-        coercion_warnings = coerce_briefing_fields(sections)
+        coercion_warnings = coerce_briefing_fields(sections, watchlist_config)
         for _warning in coercion_warnings:
             logger.info(
                 "briefing_coercion",
@@ -334,7 +335,9 @@ class DailyBriefingProcessor:
                     "watchlist_notes": retry_parsed.get("watchlist_notes", []),
                 }
 
-                retry_coercion = coerce_briefing_fields(retry_sections)
+                retry_coercion = coerce_briefing_fields(
+                    retry_sections, watchlist_config
+                )
                 retry_valid, retry_warnings = self._validate_sections_schema(
                     retry_sections, watchlist_config
                 )

@@ -364,6 +364,7 @@ class IntelligenceRepairTests(unittest.TestCase):
         self, call_llm, record_attempt
     ):
         processor = MarketIntelligenceProcessor()
+        budget_context = object()
         invalid = valid_role("analyst")
         invalid["global"]["claims"][0]["text"] = "Price action confirms a breakout."
         repaired = valid_role("analyst")
@@ -378,11 +379,24 @@ class IntelligenceRepairTests(unittest.TestCase):
             "test-model",
             {},
             "11111111-1111-1111-1111-111111111111",
+            budget_context=budget_context,
         )
 
         self.assertEqual(parsed, repaired)
         self.assertEqual(len(attempts), 2)
         self.assertEqual(call_llm.call_count, 2)
+        self.assertTrue(
+            all(
+                call.kwargs["budget_context"] is budget_context
+                for call in call_llm.call_args_list
+            )
+        )
+        self.assertTrue(
+            all(
+                call.kwargs["processor_id"] == "market_intelligence"
+                for call in call_llm.call_args_list
+            )
+        )
         self.assertEqual(record_attempt.call_count, 2)
 
     @patch.object(MarketIntelligenceProcessor, "_record_attempt")

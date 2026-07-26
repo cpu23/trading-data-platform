@@ -6,11 +6,10 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db import _prepare_record, insert_records_in_session
-from orchestrator import run_processor
+from orchestrator import _run_processor_impl
 
 
 class VersionedIntelligenceTests(unittest.TestCase):
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
     @patch("orchestrator._get_budget_status")
     @patch("orchestrator._consume_budget_override", return_value=None)
     @patch("orchestrator.ensure_run")
@@ -43,7 +42,12 @@ class VersionedIntelligenceTests(unittest.TestCase):
         }
         get_processor.return_value = processor
 
-        result = run_processor("asset_panel", config={}, correlation_id="cycle-id")
+        result = _run_processor_impl(
+            "asset_panel",
+            config={},
+            correlation_id="cycle-id",
+            manage_lifecycle=False,
+        )
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["opinion_ids"], ["one", "two"])
