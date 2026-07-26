@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
@@ -94,6 +94,26 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(result["cost_usd"], 0.012)
         self.assertEqual(result["provider_request_id"], "header-request-id")
         self.assertEqual(result["usage"]["total_tokens"], 18)
+
+    @patch("llm_client.make_request")
+    def test_sends_openrouter_reasoning_effort(self, request):
+        request.return_value = _response()
+        config = {
+            "llm": {
+                "api_key": "key",
+                "default_model": "openai/gpt-oss-120b",
+            }
+        }
+
+        call_llm(
+            "hello",
+            config=config,
+            reasoning_effort="low",
+            _budget_permit=Mock(valid=True),
+        )
+
+        body = request.call_args.kwargs["json_body"]
+        self.assertEqual(body["reasoning"], {"effort": "low"})
 
     @patch("llm_client.make_request")
     @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")

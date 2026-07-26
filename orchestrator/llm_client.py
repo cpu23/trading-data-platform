@@ -297,6 +297,7 @@ def call_llm(
     max_output_tokens: int | None = None,
     timeout: float | None = None,
     structured_response: bool | None = None,
+    reasoning_effort: str | None = None,
     budget_context: BudgetContext | None = None,
     _budget_permit: BudgetPermit | None = None,
 ) -> dict:
@@ -326,6 +327,8 @@ def call_llm(
     }
     if policy.structured_response:
         request_body["response_format"] = {"type": "json_object"}
+    if reasoning_effort is not None:
+        request_body["reasoning"] = {"effort": reasoning_effort}
 
     headers = {
         "Authorization": f"Bearer {llm_config['api_key']}",

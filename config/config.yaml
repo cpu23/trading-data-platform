@@ -25,6 +25,15 @@ llm:
     macro_regime: true
     briefing: true
     market_intelligence: true
+  intelligence_roles:
+    analyst:
+      reasoning_effort: low
+    skeptic:
+      reasoning_effort: low
+    auditor:
+      reasoning_effort: low
+    editor:
+      reasoning_effort: low
   stage_timeout_seconds: 90
   validation_retries: 1
   # LLM schema validation owns the single bounded retry; source HTTP retry defaults
