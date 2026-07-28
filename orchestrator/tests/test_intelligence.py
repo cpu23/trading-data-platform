@@ -56,7 +56,9 @@ def valid_editor():
             "summary": narrative("analyst.global.1", "Growth and policy signals are mixed."),
             "drivers": [narrative("analyst.global.1")],
             "contradictions": [],
-            "invalidation_conditions": [],
+            "invalidation_conditions": [
+                narrative("analyst.global.1", "This view weakens if policy eases.")
+            ],
         },
         "assets": [
             {
@@ -66,7 +68,12 @@ def valid_editor():
                 "summary": narrative("analyst.asset.EURUSD.1"),
                 "drivers": [narrative("analyst.asset.EURUSD.1")],
                 "contradictions": [],
-                "invalidation_conditions": [],
+                "invalidation_conditions": [
+                    narrative(
+                        "analyst.asset.EURUSD.1",
+                        "This view weakens if relative policy expectations reverse.",
+                    )
+                ],
                 "disagreements": [],
             }
         ],
@@ -274,6 +281,9 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertEqual(value["assets"][0]["bias"], "neutral")
         self.assertEqual(value["assets"][0]["confidence"], "low")
         self.assertIn("Insufficient direct evidence", value["assets"][0]["summary"]["text"])
+        self.assertEqual(value["assets"][0]["drivers"], [])
+        self.assertEqual(value["assets"][0]["invalidation_conditions"], [])
+
 
     def test_prompts_delimit_untrusted_data_and_align_policy_vocabulary(self):
         context = {
@@ -292,6 +302,8 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertIn("risk appetite with physical industrial demand", prompt)
         self.assertIn("weaker dollar as a bearish force", prompt)
         self.assertIn("exactly one participant category", prompt)
+        self.assertIn("eligibility map, not evidence", prompt)
+        self.assertIn("breakeven-inflation series is not a nominal or real yield", prompt)
 
         editor_prompt = self.processor._editor_prompt(
             context,
@@ -299,6 +311,8 @@ class IntelligenceSchemaTests(unittest.TestCase):
         ).lower()
         self.assertIn("risk appetite is not physical industrial demand", editor_prompt)
         self.assertIn("weaker dollar cannot be presented as bearish", editor_prompt)
+        self.assertIn("every non-neutral assessment", editor_prompt)
+        self.assertIn("asset-channel map is not evidence", editor_prompt)
 
     def test_editor_drops_optional_narrative_when_any_source_claim_is_unknown(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}

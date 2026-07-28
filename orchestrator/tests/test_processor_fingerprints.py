@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import UUID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -26,11 +27,18 @@ class FingerprintedProcessor:
 
     def __init__(self, inputs=None):
         self.inputs = inputs or {"series": [{"series_id": "GDP", "value": 1.0}]}
-        self.process = Mock(return_value={
-            "opinion": {"opinion_id": "11111111-1111-1111-1111-111111111111"},
-            "extra_records": {},
-            "processing_log": {"status": "success", "tokens_input": 2, "tokens_output": 3, "cost_usd": 0.1},
-        })
+        self.process = Mock(
+            return_value={
+                "opinion": {"opinion_id": "11111111-1111-1111-1111-111111111111"},
+                "extra_records": {},
+                "processing_log": {
+                    "status": "success",
+                    "tokens_input": 2,
+                    "tokens_output": 3,
+                    "cost_usd": 0.1,
+                },
+            }
+        )
 
     def get_prompt_version(self):
         return "prompt-v1"
@@ -50,10 +58,20 @@ class FingerprintedProcessor:
 
 class CanonicalFingerprintTests(unittest.TestCase):
     def test_canonical_json_is_order_independent_and_normalizes_utc(self):
-        first = {"b": 2, "a": datetime(2026, 1, 2, 3, 4, tzinfo=timezone(timedelta(hours=2)))}
+        first = {
+            "b": 2,
+            "a": datetime(2026, 1, 2, 3, 4, tzinfo=timezone(timedelta(hours=2))),
+        }
         second = {"a": datetime(2026, 1, 2, 1, 4, tzinfo=timezone.utc), "b": 2}
         self.assertEqual(canonical_fingerprint(first), canonical_fingerprint(second))
         self.assertRegex(canonical_fingerprint(first), r"^[0-9a-f]{64}$")
+
+    def test_uuid_values_are_canonicalized_as_strings(self):
+        value = UUID("11111111-1111-4111-8111-111111111111")
+        self.assertEqual(
+            canonical_fingerprint({"opinion_id": value}),
+            canonical_fingerprint({"opinion_id": str(value)}),
+        )
 
     def test_prompt_model_schema_and_input_changes_change_fingerprint(self):
         processor = FingerprintedProcessor()
@@ -61,16 +79,29 @@ class CanonicalFingerprintTests(unittest.TestCase):
         fingerprint = orchestrator.build_processor_fingerprint(processor, base)
 
         processor.get_prompt_version = Mock(return_value="prompt-v2")
-        self.assertNotEqual(fingerprint, orchestrator.build_processor_fingerprint(processor, base))
+        self.assertNotEqual(
+            fingerprint, orchestrator.build_processor_fingerprint(processor, base)
+        )
         processor.get_prompt_version = Mock(return_value="prompt-v1")
-        self.assertNotEqual(fingerprint, orchestrator.build_processor_fingerprint(processor, {"llm": {"default_model": "provider/b"}}))
+        self.assertNotEqual(
+            fingerprint,
+            orchestrator.build_processor_fingerprint(
+                processor, {"llm": {"default_model": "provider/b"}}
+            ),
+        )
         processor.PROCESSOR_SCHEMA_VERSION = "macro-schema-2"
-        self.assertNotEqual(fingerprint, orchestrator.build_processor_fingerprint(processor, base))
+        self.assertNotEqual(
+            fingerprint, orchestrator.build_processor_fingerprint(processor, base)
+        )
         processor.PROCESSOR_SCHEMA_VERSION = "macro-schema-1"
         processor.inputs = {"series": [{"series_id": "GDP", "value": 2.0}]}
-        self.assertNotEqual(fingerprint, orchestrator.build_processor_fingerprint(processor, base))
+        self.assertNotEqual(
+            fingerprint, orchestrator.build_processor_fingerprint(processor, base)
+        )
 
-    def test_prompt_path_and_content_identity_change_fingerprint_without_exposing_text(self):
+    def test_prompt_path_and_content_identity_change_fingerprint_without_exposing_text(
+        self,
+    ):
         processor = FingerprintedProcessor()
         base = {"llm": {"default_model": "provider/a"}}
         first = orchestrator.build_processor_fingerprint(processor, base)
@@ -89,13 +120,17 @@ class CanonicalFingerprintTests(unittest.TestCase):
         )
         self.assertNotEqual(
             first,
-            orchestrator.build_processor_fingerprint(processor, changed_content_same_path),
+            orchestrator.build_processor_fingerprint(
+                processor, changed_content_same_path
+            ),
         )
 
         with patch.object(
             orchestrator, "canonical_fingerprint", wraps=canonical_fingerprint
         ) as canonical:
-            self.assertEqual(first, orchestrator.build_processor_fingerprint(processor, base))
+            self.assertEqual(
+                first, orchestrator.build_processor_fingerprint(processor, base)
+            )
         payload = canonical.call_args.args[0]
         self.assertEqual(payload["prompt_identity"]["path"], "prompts/test.txt")
         self.assertNotIn("raw prompt sentinel", str(payload))
@@ -132,7 +167,9 @@ class PromptIdentityTests(unittest.TestCase):
                             first["sha256"],
                             __import__("hashlib").sha256(raw).hexdigest(),
                         )
-                        self.assertEqual(first, processor.get_prompt_identity(first_config))
+                        self.assertEqual(
+                            first, processor.get_prompt_identity(first_config)
+                        )
                         self.assertNotEqual(
                             first, processor.get_prompt_identity(second_config)
                         )
@@ -148,11 +185,7 @@ class PromptIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as config_dir:
             prompt = Path(config_dir) / "private-prompt.txt"
             prompt.write_bytes(b"safe")
-            config = {
-                "processors": {
-                    "macro_regime": {"prompt_template": str(prompt)}
-                }
-            }
+            config = {"processors": {"macro_regime": {"prompt_template": str(prompt)}}}
             with patch.dict(os.environ, {"CONFIG_DIR": "/app"}):
                 identity = MacroRegimeProcessor().get_prompt_identity(config)
         self.assertNotIn(str(Path.home()), str(identity))
@@ -163,21 +196,35 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.processor = FingerprintedProcessor()
         self.config = {"llm": {"default_model": "provider/a"}}
-        self.writes = patch.object(orchestrator, "insert_records", return_value=Mock()).start()
-        self.upserts = patch.object(orchestrator, "upsert_records", return_value=Mock()).start()
+        self.writes = patch.object(
+            orchestrator, "insert_records", return_value=Mock()
+        ).start()
+        self.upserts = patch.object(
+            orchestrator, "upsert_records", return_value=Mock()
+        ).start()
         self.addCleanup(patch.stopall)
 
     def _run(self, prior=None, force=False, budget_context=None):
-        with patch.object(orchestrator, "get_processor", return_value=self.processor), patch.object(
-            orchestrator, "_find_reusable_processor_output", return_value=prior
-        ), patch.object(orchestrator, "_write_processing_log") as write_log:
+        with (
+            patch.object(orchestrator, "get_processor", return_value=self.processor),
+            patch.object(
+                orchestrator, "_find_reusable_processor_output", return_value=prior
+            ),
+            patch.object(orchestrator, "_write_processing_log") as write_log,
+        ):
             result = orchestrator._run_processor_impl(
-                "macro_regime", self.config, "cid", manage_lifecycle=False,
-                force=force, budget_context=budget_context,
+                "macro_regime",
+                self.config,
+                "cid",
+                manage_lifecycle=False,
+                force=force,
+                budget_context=budget_context,
             )
         return result, write_log
 
-    def test_identical_successful_fingerprint_skips_without_processing_and_persists_history(self):
+    def test_identical_successful_fingerprint_skips_without_processing_and_persists_history(
+        self,
+    ):
         result, write_log = self._run(prior={"output_id": "old-output"})
 
         self.assertEqual(result["status"], "skipped")
@@ -193,16 +240,22 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["tokens_output"], 0)
         self.assertEqual(kwargs["cost_usd"], 0.0)
 
-    def test_force_runs_same_fingerprint_and_is_separate_from_budget_authorization(self):
+    def test_force_runs_same_fingerprint_and_is_separate_from_budget_authorization(
+        self,
+    ):
         context = BudgetContext(force=False, manual_authorized=False)
         result, write_log = self._run(
             prior={"output_id": "old-output"}, force=True, budget_context=context
         )
 
         self.assertEqual(result["status"], "success")
-        self.processor.process.assert_called_once_with(self.config, "cid", budget_context=context)
+        self.processor.process.assert_called_once_with(
+            self.config, "cid", budget_context=context
+        )
         self.assertTrue(write_log.call_args.kwargs["forced"])
-        self.assertIs(self.processor.process.call_args.kwargs["budget_context"], context)
+        self.assertIs(
+            self.processor.process.call_args.kwargs["budget_context"], context
+        )
 
     def test_non_forced_success_stores_fingerprint_with_null_skip_reason(self):
         result, write_log = self._run(prior=None)
@@ -213,9 +266,15 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
         self.assertFalse(kwargs["forced"])
 
     def test_fingerprint_lookup_failure_fails_safe_by_running(self):
-        with patch.object(orchestrator, "get_processor", return_value=self.processor), patch.object(
-            orchestrator, "_find_reusable_processor_output", side_effect=RuntimeError("db down")
-        ), patch.object(orchestrator, "_write_processing_log"):
+        with (
+            patch.object(orchestrator, "get_processor", return_value=self.processor),
+            patch.object(
+                orchestrator,
+                "_find_reusable_processor_output",
+                side_effect=RuntimeError("db down"),
+            ),
+            patch.object(orchestrator, "_write_processing_log"),
+        ):
             result = orchestrator._run_processor_impl(
                 "macro_regime", self.config, "cid", manage_lifecycle=False
             )
@@ -226,10 +285,10 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
         self.processor.get_prompt_identity = Mock(
             side_effect=FileNotFoundError("Prompt template not found")
         )
-        with patch.object(
-            orchestrator, "get_processor", return_value=self.processor
-        ), patch.object(orchestrator, "_find_reusable_processor_output") as lookup, patch.object(
-            orchestrator, "_write_processing_log"
+        with (
+            patch.object(orchestrator, "get_processor", return_value=self.processor),
+            patch.object(orchestrator, "_find_reusable_processor_output") as lookup,
+            patch.object(orchestrator, "_write_processing_log"),
         ):
             result = orchestrator._run_processor_impl(
                 "macro_regime", self.config, "cid", manage_lifecycle=False
@@ -243,7 +302,9 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
         session.execute.return_value.fetchone.return_value = None
         with patch.object(orchestrator, "get_session") as get_session:
             get_session.return_value.__enter__.return_value = session
-            self.assertIsNone(orchestrator._find_reusable_processor_output("macro_regime", "abc", {}))
+            self.assertIsNone(
+                orchestrator._find_reusable_processor_output("macro_regime", "abc", {})
+            )
         sql, params = session.execute.call_args.args
         self.assertIn("status = 'success'", str(sql))
         self.assertIn("input_fingerprint = :fingerprint", str(sql))
@@ -251,11 +312,21 @@ class ProcessorSkipRuntimeTests(unittest.TestCase):
 
 
 class BoundedProcessorInputTests(unittest.TestCase):
-    def test_macro_inputs_are_stable_and_include_latest_two_value_revision_markers(self):
+    def test_macro_inputs_include_all_revision_markers_consumed_by_trend_rules(self):
         processor = MacroRegimeProcessor()
         rows = [
-            Row(series_id="GDP", observed_at=datetime(2026, 1, 2, tzinfo=timezone.utc), value=2.0, updated_at=datetime(2026, 1, 3, tzinfo=timezone.utc)),
-            Row(series_id="GDP", observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc), value=1.0, updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            Row(
+                series_id="GDP",
+                observed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                value=2.0,
+                updated_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+            ),
+            Row(
+                series_id="GDP",
+                observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                value=1.0,
+                updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            ),
         ]
         session = Mock()
         session.execute.return_value = list(reversed(rows))
@@ -264,16 +335,24 @@ class BoundedProcessorInputTests(unittest.TestCase):
             inputs = processor.get_fingerprint_inputs({})
         sql, params = session.execute.call_args.args
         self.assertIn("ROW_NUMBER()", str(sql))
-        self.assertIn("observation_rank <= 2", str(sql))
+        self.assertIn("observation_rank <= :history_limit", str(sql))
         self.assertEqual(params["ids"], sorted(params["ids"]))
-        self.assertEqual(inputs["observations"][0]["observed_at"], datetime(2026, 1, 1, tzinfo=timezone.utc))
+        self.assertEqual(params["history_limit"], 15)
+        self.assertEqual(
+            inputs["observations"][0]["observed_at"],
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
         self.assertEqual(inputs["observations"][1]["value"], 2.0)
         revised = dict(inputs)
         revised["observations"] = [dict(item) for item in inputs["observations"]]
         revised["observations"][1]["value"] = 2.1
-        self.assertNotEqual(canonical_fingerprint(inputs), canonical_fingerprint(revised))
+        self.assertNotEqual(
+            canonical_fingerprint(inputs), canonical_fingerprint(revised)
+        )
 
-    def test_briefing_inputs_include_latest_macro_calendar_window_and_watchlist_but_not_event_opinion(self):
+    def test_briefing_inputs_include_latest_macro_calendar_window_and_watchlist_but_not_event_opinion(
+        self,
+    ):
         processor = DailyBriefingProcessor()
         window = {
             "today": datetime(2026, 1, 5).date(),
@@ -281,12 +360,28 @@ class BoundedProcessorInputTests(unittest.TestCase):
             "period_end": datetime(2026, 1, 9, 23, 59, tzinfo=timezone.utc),
             "friday": datetime(2026, 1, 9).date(),
         }
-        macro = Row(opinion_id="macro-1", opinion_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc), classification_id="class-1", classification_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc))
-        calendar = Row(event_count=1, latest_updated_at=datetime(2026, 1, 5, tzinfo=timezone.utc), latest_scheduled_at=datetime(2026, 1, 6, tzinfo=timezone.utc), max_event_id="event-1")
+        macro = Row(
+            opinion_id="macro-1",
+            opinion_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+            classification_id="class-1",
+            classification_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+        )
+        calendar = Row(
+            event_count=1,
+            latest_updated_at=datetime(2026, 1, 5, tzinfo=timezone.utc),
+            latest_scheduled_at=datetime(2026, 1, 6, tzinfo=timezone.utc),
+            max_event_id="event-1",
+        )
         session = Mock()
-        session.execute.side_effect = [Mock(fetchone=Mock(return_value=macro)), Mock(fetchone=Mock(return_value=calendar))]
+        session.execute.side_effect = [
+            Mock(fetchone=Mock(return_value=macro)),
+            Mock(fetchone=Mock(return_value=calendar)),
+        ]
         config = {"watchlist": {"trading": [{"symbol": "EUR_USD", "type": "forex"}]}}
-        with patch.object(processor, "_calendar_window", return_value=window), patch("processors.briefing.get_session") as get_session:
+        with (
+            patch.object(processor, "_calendar_window", return_value=window),
+            patch("processors.briefing.get_session") as get_session,
+        ):
             get_session.return_value.__enter__.return_value = session
             inputs = processor.get_fingerprint_inputs(config)
         self.assertEqual(inputs["macro"]["opinion_id"], "macro-1")
@@ -294,37 +389,77 @@ class BoundedProcessorInputTests(unittest.TestCase):
         self.assertEqual(inputs["watchlist"], [{"symbol": "EUR_USD", "type": "forex"}])
         self.assertNotIn("event_impact", str(inputs))
         statements = [str(call.args[0]) for call in session.execute.call_args_list]
-        self.assertTrue(all("LIMIT 1" in statement or "COUNT(*)" in statement for statement in statements))
+        self.assertTrue(
+            all(
+                "LIMIT 1" in statement or "COUNT(*)" in statement
+                for statement in statements
+            )
+        )
 
 
 class HealthySkippedStatusTests(unittest.TestCase):
     def test_skipped_is_healthy_in_aggregation(self):
-        self.assertEqual(orchestrator.aggregate_stage_statuses(["success", "skipped"]), "success")
-        self.assertEqual(orchestrator.aggregate_stage_statuses(["skipped", "skipped"]), "success")
+        self.assertEqual(
+            orchestrator.aggregate_stage_statuses(["success", "skipped"]), "success"
+        )
+        self.assertEqual(
+            orchestrator.aggregate_stage_statuses(["skipped", "skipped"]), "success"
+        )
 
     def test_skipped_dependency_is_satisfied_only_with_reusable_output(self):
         macro = Mock()
         macro.get_depends_on.return_value = ["fred"]
         briefing = Mock()
         briefing.get_depends_on.return_value = ["macro_regime"]
-        config = {"processors": {"macro_regime": {"enabled": True}, "briefing": {"enabled": True}}}
+        config = {
+            "processors": {
+                "macro_regime": {"enabled": True},
+                "briefing": {"enabled": True},
+            }
+        }
 
-        with patch.object(orchestrator, "get_all_processors", return_value={"macro_regime": macro, "briefing": briefing}), patch.object(
-            orchestrator, "run_processor", side_effect=[
-                {"processor": "macro_regime", "status": "skipped", "reusable_output": False},
-            ]
-        ) as run:
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_processors",
+                return_value={"macro_regime": macro, "briefing": briefing},
+            ),
+            patch.object(
+                orchestrator,
+                "run_processor",
+                side_effect=[
+                    {
+                        "processor": "macro_regime",
+                        "status": "skipped",
+                        "reusable_output": False,
+                    },
+                ],
+            ) as run,
+        ):
             results = orchestrator._resolve_and_run_processors(config, "cid", {"fred"})
         self.assertEqual(run.call_count, 1)
         self.assertEqual(results["briefing"]["status"], "skipped")
         self.assertIn("Dependencies not met", results["briefing"]["reason"])
 
-        with patch.object(orchestrator, "get_all_processors", return_value={"macro_regime": macro, "briefing": briefing}), patch.object(
-            orchestrator, "run_processor", side_effect=[
-                {"processor": "macro_regime", "status": "skipped", "reusable_output": True},
-                {"processor": "briefing", "status": "success"},
-            ]
-        ) as run:
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_processors",
+                return_value={"macro_regime": macro, "briefing": briefing},
+            ),
+            patch.object(
+                orchestrator,
+                "run_processor",
+                side_effect=[
+                    {
+                        "processor": "macro_regime",
+                        "status": "skipped",
+                        "reusable_output": True,
+                    },
+                    {"processor": "briefing", "status": "success"},
+                ],
+            ) as run,
+        ):
             results = orchestrator._resolve_and_run_processors(config, "cid", {"fred"})
         self.assertEqual(run.call_count, 2)
         self.assertEqual(results["briefing"]["status"], "success")

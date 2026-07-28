@@ -10,6 +10,7 @@ from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
 from processors._validators import validate_briefing_sections, coerce_briefing_fields
 from processors.base import load_prompt_template
+from processors.macro_trends import format_macro_synthesis
 from sqlalchemy import text
 
 logger = get_logger("processor.briefing")
@@ -21,6 +22,72 @@ class DailyBriefingProcessor:
     processor_id = "briefing"
     PROCESSOR_SCHEMA_VERSION = "1"
 
+    @staticmethod
+    def _response_schema(watchlist_config: list[dict]) -> dict:
+        symbols = [
+            item["symbol"]
+            for item in watchlist_config
+            if isinstance(item, dict) and item.get("symbol")
+        ]
+        asset_classes = sorted(
+            {
+                item["type"]
+                for item in watchlist_config
+                if isinstance(item, dict) and item.get("type")
+            }
+        )
+        symbol_schema = {"type": "string"}
+        asset_class_schema = {"type": "string"}
+        if symbols:
+            symbol_schema["enum"] = symbols
+        if asset_classes:
+            asset_class_schema["enum"] = asset_classes
+
+        note_properties = {
+            "symbol": symbol_schema,
+            "asset_class": asset_class_schema,
+            "bias": {
+                "type": "string",
+                "enum": ["bullish", "bearish", "neutral", "mixed"],
+            },
+            "confidence": {
+                "type": "string",
+                "enum": ["high", "moderate", "low"],
+            },
+            "summary": {"type": "string"},
+            "reason": {"type": "string"},
+            "next_catalyst": {"type": "string"},
+            "note": {"type": "string"},
+        }
+        return {
+            "name": "daily_briefing",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "what_changed": {"type": "string"},
+                    "interpretation": {"type": "string"},
+                    "invalidation": {"type": "string"},
+                    "watchlist_notes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": note_properties,
+                            "required": list(note_properties),
+                        },
+                    },
+                },
+                "required": [
+                    "what_changed",
+                    "interpretation",
+                    "invalidation",
+                    "watchlist_notes",
+                ],
+            },
+        }
+
     def process(
         self,
         config: dict,
@@ -29,7 +96,7 @@ class DailyBriefingProcessor:
     ) -> dict:
         ff_config = config.get("processors", {}).get("briefing", {})
         prompt_template_path = ff_config.get(
-            "prompt_template", "prompts/briefing_v4.txt"
+            "prompt_template", "prompts/briefing_v5.txt"
         )
 
         regime_summary = self._get_regime_summary(config)
@@ -37,6 +104,11 @@ class DailyBriefingProcessor:
         previous_briefing = self._get_previous_briefing_text(config)
         watchlist_config = config.get("watchlist", {}).get("trading", [])
         watchlist_str = self._format_watchlist(config)
+        asset_context = (
+            config.get("processors", {})
+            .get("market_intelligence", {})
+            .get("asset_context", {})
+        )
         london_tz = self._primary_timezone(config)
         current_london = datetime.now(london_tz)
         current_date = current_london.strftime("%A, %B %d, %Y")
@@ -54,6 +126,7 @@ class DailyBriefingProcessor:
             today_events=calendar_bundle["today_prompt"],
             this_week_events=calendar_bundle["week_prompt"],
             watchlist=watchlist_str,
+            asset_context=json.dumps(asset_context, sort_keys=True),
             previous_briefing=previous_briefing,
         )
 
@@ -62,6 +135,7 @@ class DailyBriefingProcessor:
             self.processor_id,
             correlation_id=correlation_id,
             budget_context=budget_context,
+            response_schema=self._response_schema(watchlist_config),
         )
         model = stage.policy.model
         llm_result = stage.call(prompt_text)
@@ -72,7 +146,9 @@ class DailyBriefingProcessor:
         except ValueError as exc:
             stage.add_validation_warnings(["response was not valid JSON"])
             if stage.policy.validation_retries < 1:
-                raise LLMValidationError("LLM response validation failed", stage.telemetry) from exc
+                raise LLMValidationError(
+                    "LLM response validation failed", stage.telemetry
+                ) from exc
             retry_prompt = (
                 prompt_text
                 + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
@@ -118,7 +194,11 @@ class DailyBriefingProcessor:
 
         direction = "neutral"
         confidence = "low"
-        if regime_summary and regime_summary != "No macro regime classification available yet. Run the macro_regime processor first.":
+        if (
+            regime_summary
+            and regime_summary
+            != "No macro regime classification available yet. Run the macro_regime processor first."
+        ):
             regime_data = self._get_latest_regime_raw(config)
             if regime_data:
                 direction = regime_data.get("direction", "neutral")
@@ -165,7 +245,8 @@ class DailyBriefingProcessor:
             "processor": self.processor_id,
             "status": "success",
             "input_summary": {
-                "regime_available": regime_summary is not None and "No macro regime classification" not in regime_summary,
+                "regime_available": regime_summary is not None
+                and "No macro regime classification" not in regime_summary,
                 "calendar_events_today": calendar_bundle["today_count"],
                 "calendar_events_this_week": calendar_bundle["week_count"],
                 "missing_context": missing_context,
@@ -187,12 +268,12 @@ class DailyBriefingProcessor:
         }
 
     def get_prompt_version(self) -> str:
-        return "briefing_v4"
+        return "briefing_v5"
 
     def get_prompt_identity(self, config: dict) -> dict[str, str]:
         processor_config = config.get("processors", {}).get("briefing", {})
         template_path = processor_config.get(
-            "prompt_template", "prompts/briefing_v4.txt"
+            "prompt_template", "prompts/briefing_v5.txt"
         )
         _, identity = load_prompt_template(template_path)
         return identity
@@ -233,12 +314,16 @@ class DailyBriefingProcessor:
             macro_row = session.execute(macro_sql).fetchone()
             calendar_row = session.execute(calendar_sql, params).fetchone()
         macro = dict(macro_row._mapping) if macro_row is not None else None
-        calendar = dict(calendar_row._mapping) if calendar_row is not None else {
-            "event_count": 0,
-            "latest_updated_at": None,
-            "latest_scheduled_at": None,
-            "max_event_id": None,
-        }
+        calendar = (
+            dict(calendar_row._mapping)
+            if calendar_row is not None
+            else {
+                "event_count": 0,
+                "latest_updated_at": None,
+                "latest_scheduled_at": None,
+                "max_event_id": None,
+            }
+        )
         watchlist = [
             {"symbol": item.get("symbol"), "type": item.get("type")}
             for item in config.get("watchlist", {}).get("trading", [])
@@ -279,9 +364,7 @@ class DailyBriefingProcessor:
                 correlation_id=correlation_id,
             )
 
-        is_valid, warnings = self._validate_sections_schema(
-            sections, watchlist_config
-        )
+        is_valid, warnings = self._validate_sections_schema(sections, watchlist_config)
         for warning in warnings:
             logger.warning(
                 "briefing_validation_warning",
@@ -303,8 +386,7 @@ class DailyBriefingProcessor:
 
             if (
                 stage is not None
-                and stage.telemetry.attempt_count
-                >= 1 + stage.policy.validation_retries
+                and stage.telemetry.attempt_count >= 1 + stage.policy.validation_retries
             ):
                 raise LLMValidationError(
                     "LLM response validation failed after retry", stage.telemetry
@@ -313,7 +395,12 @@ class DailyBriefingProcessor:
             expected_symbols = ", ".join(
                 w.get("symbol", "") for w in watchlist_config if w.get("symbol")
             )
-            retry_prompt = prompt_text + "\n\nIMPORTANT CORRECTION: The previous response did not match the required schema. Please respond again with the correct JSON format: top-level what_changed, interpretation, and invalidation as non-empty strings, and watchlist_notes as an array of objects, each with symbol, asset_class, bias, confidence, summary, reason, next_catalyst, and note fields. Include each configured symbol exactly once and in this order: " + expected_symbols + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
+            retry_prompt = (
+                prompt_text
+                + "\n\nIMPORTANT CORRECTION: The previous response did not match the required schema. Please respond again with the correct JSON format: top-level what_changed, interpretation, and invalidation as non-empty strings, and watchlist_notes as an array of objects, each with symbol, asset_class, bias, confidence, summary, reason, next_catalyst, and note fields. Include each configured symbol exactly once and in this order: "
+                + expected_symbols
+                + ". bias must be one of: bullish, bearish, neutral, mixed. confidence must be one of: high, moderate, low."
+            )
 
             try:
                 retry_result = (
@@ -325,6 +412,7 @@ class DailyBriefingProcessor:
                         processor_id=self.processor_id,
                         correlation_id=correlation_id,
                         config=config,
+                        response_schema=self._response_schema(watchlist_config),
                     )
                 )
                 retry_parsed = self._parse_llm_response(retry_result["content"])
@@ -444,6 +532,8 @@ class DailyBriefingProcessor:
             momentum = supporting.get("momentum_implications", "")
             caution = supporting.get("caution_flags", [])
             key_indicators = supporting.get("key_indicators", {})
+            deterministic_trends = supporting.get("deterministic_trends", [])
+            deterministic_synthesis = supporting.get("deterministic_synthesis")
 
             lines = [f"Regime: {regime} | Confidence: {confidence}"]
             if summary:
@@ -455,8 +545,26 @@ class DailyBriefingProcessor:
             if caution:
                 lines.append(f"\nCaution Flags: {', '.join(caution)}")
             if key_indicators:
-                indicator_parts = [f"{k}: {v}" for k, v in key_indicators.items() if v is not None]
+                indicator_parts = [
+                    f"{k}: {v}" for k, v in key_indicators.items() if v is not None
+                ]
                 lines.append(f"\nKey Indicators: {', '.join(indicator_parts)}")
+            if isinstance(deterministic_trends, list):
+                statements = [
+                    signal.get("statement")
+                    for signal in deterministic_trends
+                    if isinstance(signal, dict)
+                    and isinstance(signal.get("statement"), str)
+                    and signal["statement"].strip()
+                ]
+                if statements:
+                    lines.append("\nDeterministic Trend Signals (authoritative):")
+                    lines.extend(f"- {statement}" for statement in statements)
+            if isinstance(deterministic_synthesis, dict):
+                lines.append(
+                    "\nDeterministic Economic Synthesis (authoritative rules):"
+                )
+                lines.append(format_macro_synthesis(deterministic_synthesis))
 
             return "\n".join(lines)
         except Exception:
@@ -483,9 +591,7 @@ class DailyBriefingProcessor:
 
     def _primary_timezone(self, config: dict) -> ZoneInfo:
         tz_name = (
-            config.get("timezone", {})
-            .get("primary", {})
-            .get("name", "Europe/London")
+            config.get("timezone", {}).get("primary", {}).get("name", "Europe/London")
         )
         return ZoneInfo(tz_name)
 
@@ -678,6 +784,7 @@ class DailyBriefingProcessor:
         today_events: str,
         this_week_events: str,
         watchlist: str,
+        asset_context: str = "{}",
         previous_briefing: str = "",
     ) -> str:
         template, _ = load_prompt_template(template_path)
@@ -688,14 +795,15 @@ class DailyBriefingProcessor:
         result = result.replace("{{today_events}}", today_events)
         result = result.replace("{{this_week_events}}", this_week_events)
         result = result.replace("{{watchlist}}", watchlist)
+        result = result.replace("{{asset_context}}", asset_context)
         result = result.replace("{{previous_briefing}}", previous_briefing)
 
         return result
 
     def _get_previous_briefing_text(self, config: dict) -> str:
-        """Fetch the most recent prior briefing content for delta comparison."""
+        """Fetch prior top-level analysis without reusable catalysts or thresholds."""
         sql = text("""
-            SELECT content
+            SELECT sections
             FROM daily_briefings
             ORDER BY created_at DESC
             LIMIT 1
@@ -705,9 +813,17 @@ class DailyBriefingProcessor:
                 result = session.execute(sql)
                 row = result.fetchone()
             if row:
-                content = dict(row._mapping).get("content")
-                if content:
-                    return str(content)
+                sections = dict(row._mapping).get("sections")
+                if isinstance(sections, str):
+                    sections = json.loads(sections)
+                if isinstance(sections, dict):
+                    comparison = {
+                        key: sections[key]
+                        for key in ("what_changed", "interpretation")
+                        if isinstance(sections.get(key), str) and sections[key].strip()
+                    }
+                    if comparison:
+                        return json.dumps(comparison, sort_keys=True)
         except Exception:
             pass
         return "No previous briefing available. Treat all current information as new."

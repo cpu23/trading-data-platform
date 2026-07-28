@@ -97,7 +97,9 @@ def _processor_value(llm_config: dict, key: str, processor_id: str, default):
     return configured
 
 
-def resolve_model(config: dict, processor_id: str | None = None, model: str | None = None) -> str:
+def resolve_model(
+    config: dict, processor_id: str | None = None, model: str | None = None
+) -> str:
     """Resolve a provider/model identifier without coupling processors to a provider."""
     if model:
         return model
@@ -144,12 +146,17 @@ def resolve_request_policy(
             processor_id,
             llm_config.get("temperature", 0.2),
         )
-    if not isinstance(effective_temperature, (int, float)) or not 0 <= effective_temperature <= 2:
+    if (
+        not isinstance(effective_temperature, (int, float))
+        or not 0 <= effective_temperature <= 2
+    ):
         raise ValueError(f"llm temperature for {processor_id} must be between 0 and 2")
 
     stage_timeout = timeout
     if stage_timeout is None:
-        stage_timeout = llm_config.get("stage_timeout_seconds", DEFAULT_STAGE_TIMEOUT_SECONDS)
+        stage_timeout = llm_config.get(
+            "stage_timeout_seconds", DEFAULT_STAGE_TIMEOUT_SECONDS
+        )
     if not isinstance(stage_timeout, (int, float)) or stage_timeout <= 0:
         raise ValueError("llm.stage_timeout_seconds must be positive")
 
@@ -166,7 +173,11 @@ def resolve_request_policy(
         )
 
     request_attempts = llm_config.get("max_retries", 1)
-    if not isinstance(request_attempts, int) or isinstance(request_attempts, bool) or request_attempts < 1:
+    if (
+        not isinstance(request_attempts, int)
+        or isinstance(request_attempts, bool)
+        or request_attempts < 1
+    ):
         raise ValueError("llm.max_retries must be at least 1")
 
     if structured_response is None:
@@ -195,12 +206,14 @@ class LLMStage:
         *,
         correlation_id: str | None = None,
         budget_context: BudgetContext | None = None,
+        response_schema: dict | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.config = config
         self.processor_id = processor_id
         self.correlation_id = correlation_id
         self.budget_context = budget_context or BudgetContext()
+        self.response_schema = response_schema
         self.clock = clock
         self.policy = resolve_request_policy(config, processor_id)
         self._deadline = clock() + self.policy.stage_timeout_seconds
@@ -230,13 +243,19 @@ class LLMStage:
         return completed_at
 
     def _record_usage(self, result: dict) -> None:
-        self.telemetry.tokens_input_total += _safe_token_count(result.get("tokens_input"))
-        self.telemetry.tokens_output_total += _safe_token_count(result.get("tokens_output"))
+        self.telemetry.tokens_input_total += _safe_token_count(
+            result.get("tokens_input")
+        )
+        self.telemetry.tokens_output_total += _safe_token_count(
+            result.get("tokens_output")
+        )
         self.telemetry.cost_usd_total += _safe_cost_usd(result.get("cost_usd"))
 
     def call(self, prompt: str) -> dict:
         if self.telemetry.attempt_count >= 1 + self.policy.validation_retries:
-            raise LLMStageFailure("LLM validation retry limit exhausted", self.telemetry)
+            raise LLMStageFailure(
+                "LLM validation retry limit exhausted", self.telemetry
+            )
 
         remaining = self._deadline - self.clock()
         if remaining <= 0:
@@ -263,6 +282,7 @@ class LLMStage:
                 max_output_tokens=self.policy.max_output_tokens,
                 timeout=remaining,
                 structured_response=self.policy.structured_response,
+                response_schema=self.response_schema,
                 max_retries=self.policy.request_attempts,
                 _budget_permit=self._budget_permit,
             )
@@ -297,12 +317,14 @@ def call_llm(
     max_output_tokens: int | None = None,
     timeout: float | None = None,
     structured_response: bool | None = None,
+    response_schema: dict | None = None,
     reasoning_effort: str | None = None,
     budget_context: BudgetContext | None = None,
     _budget_permit: BudgetPermit | None = None,
 ) -> dict:
     if config is None:
         from config_loader import load_config
+
         config = load_config()
 
     llm_config = config["llm"]
@@ -325,8 +347,28 @@ def call_llm(
         "temperature": policy.temperature,
         "max_tokens": policy.max_output_tokens,
     }
-    if policy.structured_response:
+    provider_preferences = {}
+    max_price = _processor_value(llm_config, "max_prices", processor_id, None)
+    if max_price is not None:
+        if not isinstance(max_price, dict) or not max_price:
+            raise ValueError(
+                f"llm.max_prices for {processor_id} must be a non-empty object"
+            )
+        provider_preferences["max_price"] = dict(max_price)
+
+    if response_schema is not None:
+        if not isinstance(response_schema, dict):
+            raise ValueError("response_schema must be a JSON Schema object")
+        request_body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": response_schema,
+        }
+        provider_preferences["require_parameters"] = True
+    elif policy.structured_response:
         request_body["response_format"] = {"type": "json_object"}
+        provider_preferences["require_parameters"] = True
+    if provider_preferences:
+        request_body["provider"] = provider_preferences
     if reasoning_effort is not None:
         request_body["reasoning"] = {"effort": reasoning_effort}
 

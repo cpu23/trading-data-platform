@@ -3,7 +3,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -61,9 +61,30 @@ class BriefingTests(unittest.TestCase):
         self.assertIn("13:00 London / 08:00 NY", prompt)
         self.assertIn("HIGH USD", prompt)
 
+    def test_response_schema_enforces_briefing_shape_and_enums(self):
+        schema = DailyBriefingProcessor._response_schema(WATCHLIST)["schema"]
+
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            schema["required"],
+            ["what_changed", "interpretation", "invalidation", "watchlist_notes"],
+        )
+        note_schema = schema["properties"]["watchlist_notes"]["items"]
+        self.assertFalse(note_schema["additionalProperties"])
+        self.assertEqual(
+            note_schema["properties"]["symbol"]["enum"],
+            [item["symbol"] for item in WATCHLIST],
+        )
+        self.assertEqual(
+            note_schema["properties"]["asset_class"]["enum"],
+            ["forex", "index", "metal"],
+        )
+
     def test_prompt_assembly_includes_calendar_and_watchlist(self):
         processor = DailyBriefingProcessor()
-        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "briefing_v4.txt"
+        prompt_path = (
+            Path(__file__).resolve().parents[2] / "prompts" / "briefing_v5.txt"
+        )
 
         prompt = processor._build_prompt(
             template_path=str(prompt_path),
@@ -71,6 +92,7 @@ class BriefingTests(unittest.TestCase):
             macro_regime_summary="Risk-on but USD firm.",
             today_events="London 13:30 / NY 08:30 | HIGH USD | NFP",
             this_week_events="No high- or medium-impact relevant events scheduled.",
+            asset_context='{"EURUSD": {"channels": ["relative monetary policy"]}}',
             watchlist=processor._format_watchlist(CONFIG),
         )
 
@@ -78,6 +100,64 @@ class BriefingTests(unittest.TestCase):
         self.assertIn("HIGH USD | NFP", prompt)
         self.assertIn("EURUSD (forex)", prompt)
         self.assertIn("UK100 (index)", prompt)
+        self.assertIn("relative monetary policy", prompt)
+        self.assertIn("eligibility rules, not evidence", prompt)
+        self.assertIn("calculated from stored time-series observations", prompt)
+
+    @patch("processors.briefing.get_session")
+    def test_previous_briefing_excludes_old_catalysts_and_thresholds(self, get_session):
+        row = Mock()
+        row._mapping = {
+            "sections": {
+                "what_changed": "Prior change.",
+                "interpretation": "Prior interpretation.",
+                "invalidation": "Old 3.0% threshold.",
+                "watchlist_notes": [{"next_catalyst": "Old event"}],
+            }
+        }
+        session = Mock()
+        session.execute.return_value.fetchone.return_value = row
+        get_session.return_value.__enter__.return_value = session
+
+        previous = json.loads(
+            DailyBriefingProcessor()._get_previous_briefing_text(CONFIG)
+        )
+
+        self.assertEqual(
+            previous,
+            {
+                "interpretation": "Prior interpretation.",
+                "what_changed": "Prior change.",
+            },
+        )
+
+    @patch("processors.briefing.get_session")
+    def test_regime_summary_includes_authoritative_deterministic_trends(
+        self, get_session
+    ):
+        row = Mock()
+        row._mapping = {
+            "regime": "transition",
+            "sub_regime": "policy_hold",
+            "confidence": "moderate",
+            "summary": "Policy is steady.",
+            "supporting_data": {
+                "deterministic_trends": [
+                    {
+                        "series_id": "FEDFUNDS",
+                        "statement": "Federal funds rate held at 5.33%.",
+                    }
+                ]
+            },
+        }
+        session = Mock()
+        session.execute.return_value.fetchone.return_value = row
+        get_session.return_value.__enter__.return_value = session
+
+        summary = DailyBriefingProcessor()._get_regime_summary(CONFIG)
+
+        self.assertIn("Deterministic Trend Signals (authoritative)", summary)
+        self.assertIn("Federal funds rate held at 5.33%.", summary)
 
     def test_validation_requires_all_symbols_once_in_order(self):
         notes = [
@@ -110,9 +190,7 @@ class BriefingTests(unittest.TestCase):
 
     def test_empty_watchlist_handled_gracefully(self):
         """validate_briefing_sections handles empty watchlist_notes without crashing."""
-        valid, warnings = validate_briefing_sections(
-            {"watchlist_notes": []}, WATCHLIST
-        )
+        valid, warnings = validate_briefing_sections({"watchlist_notes": []}, WATCHLIST)
 
         self.assertFalse(valid)
         # Should report all configured symbols as missing

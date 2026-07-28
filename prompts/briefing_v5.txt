@@ -8,6 +8,8 @@ Date: {{current_date}}
 {{macro_regime_summary}}
 </CURRENT_MACRO_REGIME>
 
+CURRENT_MACRO_REGIME may contain "Deterministic Trend Signals (authoritative)" and "Deterministic Economic Synthesis (authoritative rules)" subsections. The trend statements were calculated from stored time-series observations before this prompt. Preserve their values, dates, directions, transitions, and level states exactly. Do not recalculate or contradict them. Respect the synthesis's composite state, domain states, confidence ceiling, maturity-matched real-rate proxy, transmission channels, and observable reversal conditions. Your job is to explain the bounded economic implications, not infer basic changes already supplied.
+
 ## Current Scheduled News Risk: Today
 
 <CURRENT_EVENTS_TODAY>
@@ -44,12 +46,17 @@ Avoid generic trading-coach language. Never mention or recommend trading instruc
 
 Evidence discipline:
 - Treat CURRENT_MACRO_REGIME and CURRENT_EVENTS as the only authoritative current inputs. Treat UNTRUSTED_PREVIOUS_BRIEFING only as a historical comparison; never carry one of its facts, numbers, or conclusions forward unless current inputs independently contain them.
+- Deterministic trend statements are authoritative observations, but they do not prove causality. Keep their observation windows distinct; do not compare unlike frequencies as if they were synchronized.
+- A deterministic confidence ceiling is a hard maximum. Use low confidence when it says low, even if one supplied signal is strong.
+- Claim rising or falling real-rate pressure only when the maturity-matched DGS10-minus-T10YIE proxy is supplied. Never combine a nominal yield and breakeven of different maturities to manufacture a real-rate claim.
+- Use supplied observable reversal conditions for invalidation. Do not invent numerical thresholds, surprise sizes, event outcomes, or single-session moves.
 - Scheduled events list future events, consensus, and previous values—not released outcomes. Use them only as future catalysts or conditional invalidations. Never imply that an event occurred or that its outcome is known.
 - ASSET_CHANNEL_RULES only identify allowed causal channels. They do not prove growth, policy, rates, demand, positioning, or direction.
 - Do not introduce any event, date, time, period label, market level, policy decision, economic comparison, or causal premise absent from the supplied current inputs.
 - Relative-growth and policy- or yield-differential claims require current evidence for both sides. A breakeven-inflation series is not a nominal or real yield. "Flat" is not stronger or weaker.
 - A supplied input must support the whole sentence, not merely its topic. Distinguish observed conditions from forecasts and conditional scenarios.
 - Make every directional causal chain explicit and sign-consistent. If current evidence does not activate an asset's allowed channel and establish direction, use neutral, low confidence, and say direct evidence is insufficient.
+- Explain household and firm transmission when the deterministic synthesis activates a borrowing-cost, corporate-finance, household-income, or margin-and-demand channel. Describe pressure and risk, not a guaranteed behavioral outcome.
 
 Current-source decision rule:
 - The broad US macro regime may support SP500 through US growth, credit, and systemic-stress channels.
@@ -58,7 +65,7 @@ Current-source decision rule:
 
 Structure the top-level narrative into exactly three sections:
 
-1. "what_changed" — only new information established by the current inputs since the previous briefing. Name a new data print or regime change only when it appears in current inputs. A scheduled event is not a change merely because it is approaching. If nothing material has changed, say so plainly.
+1. "what_changed" — summarize material changes from the deterministic trend statements first. A held or unchanged state is not a new change unless it ends a preceding move. Name another new data print or regime change only when it appears in current inputs. A scheduled event is not a change merely because it is approaching. If nothing material has changed, say so plainly.
 
 2. "interpretation" — the most likely explanation of the current picture and its cross-asset implications. State what you think is driving markets and how that should read through to rates, currencies, equities, and metals together.
 
@@ -91,7 +98,7 @@ Return JSON only with this exact shape:
 
 Rules:
 - Include every watchlist symbol exactly once, in the configured watchlist order.
-- asset_class must be "forex", "index", or "metal".
+- Copy asset_class exactly from each Watchlist entry; do not reclassify symbols. It must be "forex", "index", or "metal".
 - bias must be "bullish", "bearish", "neutral", or "mixed".
 - confidence must be "high", "moderate", or "low".
 - what_changed, interpretation, and invalidation must each be non-empty strings.

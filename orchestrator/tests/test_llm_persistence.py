@@ -51,7 +51,9 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         return {
             "opinion": {"opinion_id": "11111111-1111-1111-1111-111111111111"},
             "extra_records": extra_records or {},
-            "processing_log": processing_log if processing_log is not None else {
+            "processing_log": processing_log
+            if processing_log is not None
+            else {
                 "status": "success",
                 "output_id": "untrusted-output-id",
                 "model_used": "provider/cumulative",
@@ -64,18 +66,28 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
             },
         }
 
-    def _run_processor_with_writes(self, processor_result, *, opinion_write, extra_write=None):
+    def _run_processor_with_writes(
+        self, processor_result, *, opinion_write, extra_write=None
+    ):
         import orchestrator
 
         processor = Mock()
         processor.process.return_value = processor_result
-        with patch.object(orchestrator, "get_processor", return_value=processor), patch.object(
-            orchestrator, "build_processor_fingerprint", return_value="f" * 64
-        ), patch.object(orchestrator, "insert_records", return_value=opinion_write) as insert, patch.object(
-            orchestrator,
-            "upsert_records",
-            return_value=extra_write or WriteResult(0, 0, 0, ()),
-        ), patch.object(orchestrator, "_write_processing_log") as write_log:
+        with (
+            patch.object(orchestrator, "get_processor", return_value=processor),
+            patch.object(
+                orchestrator, "build_processor_fingerprint", return_value="f" * 64
+            ),
+            patch.object(
+                orchestrator, "insert_records", return_value=opinion_write
+            ) as insert,
+            patch.object(
+                orchestrator,
+                "upsert_records",
+                return_value=extra_write or WriteResult(0, 0, 0, ()),
+            ),
+            patch.object(orchestrator, "_write_processing_log") as write_log,
+        ):
             result = orchestrator._run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False
             )
@@ -226,14 +238,21 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
             }
         )
         calls = [response(RAW_SENTINEL, 10, 2, 0.01), response(final, 20, 4, 0.02)]
-        macro_data = {"GDP": {"latest": 2.0, "latest_date": "2026-01-02", "previous_date": "2026-01-01"}}
+        macro_data = {
+            "GDP": {
+                "latest": 2.0,
+                "latest_date": "2026-01-02",
+                "previous_date": "2026-01-01",
+            }
+        }
 
-        with patch.object(processor, "_fetch_macro_data", return_value=macro_data), patch.object(
-            processor, "_format_indicator_table", return_value="indicators"
-        ), patch.object(processor, "_format_changes_table", return_value="changes"), patch.object(
-            processor, "_build_cross_indicators", return_value={}
-        ), patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL), patch(
-            "llm_client.call_llm", side_effect=calls
+        with (
+            patch.object(processor, "_fetch_macro_data", return_value=macro_data),
+            patch.object(
+                processor, "_format_indicator_table", return_value="indicators"
+            ),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch("llm_client.call_llm", side_effect=calls),
         ):
             result = processor.process(llm_config("macro_regime"), "cid")
 
@@ -259,11 +278,17 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
             }
         )
         calls = [response(RAW_SENTINEL, 3, 1, 0.004), response(final, 7, 2, 0.006)]
-        with patch.object(processor, "_fetch_upcoming_events", return_value=[{"event_name": "CPI"}]), patch.object(
-            processor, "_format_watchlist", return_value="EURUSD"
-        ), patch.object(processor, "_get_current_regime", return_value="neutral"), patch.object(
-            processor, "_build_prompt", return_value=PROMPT_SENTINEL
-        ), patch("llm_client.call_llm", side_effect=calls):
+        with (
+            patch.object(
+                processor,
+                "_fetch_upcoming_events",
+                return_value=[{"event_name": "CPI"}],
+            ),
+            patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+            patch.object(processor, "_get_current_regime", return_value="neutral"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch("llm_client.call_llm", side_effect=calls),
+        ):
             result = processor.process(llm_config("event_impact"), "cid")
 
         log = result["processing_log"]
@@ -287,13 +312,20 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
             }
         )
         calls = [response(RAW_SENTINEL, 4, 1, 0.005), response(final, 8, 3, 0.015)]
-        calendar = {"today_prompt": "none", "week_prompt": "none", "today_count": 0, "week_count": 0, "window": {}}
-        with patch.object(processor, "_get_regime_summary", return_value=None), patch.object(
-            processor, "_get_calendar_bundle", return_value=calendar
-        ), patch.object(processor, "_format_watchlist", return_value="none"), patch.object(
-            processor, "_build_prompt", return_value=PROMPT_SENTINEL
-        ), patch.object(processor, "_get_latest_opinion_id", return_value=None), patch(
-            "llm_client.call_llm", side_effect=calls
+        calendar = {
+            "today_prompt": "none",
+            "week_prompt": "none",
+            "today_count": 0,
+            "week_count": 0,
+            "window": {},
+        }
+        with (
+            patch.object(processor, "_get_regime_summary", return_value=None),
+            patch.object(processor, "_get_calendar_bundle", return_value=calendar),
+            patch.object(processor, "_format_watchlist", return_value="none"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch.object(processor, "_get_latest_opinion_id", return_value=None),
+            patch("llm_client.call_llm", side_effect=calls),
         ):
             result = processor.process(llm_config("briefing"), "cid")
 
@@ -303,7 +335,10 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertEqual((log["tokens_input"], log["tokens_output"]), (12, 4))
         self.assertAlmostEqual(log["cost_usd"], 0.02)
         self.assertEqual(result["opinion"]["tokens_used"], 16)
-        self.assertEqual(result["extra_records"]["daily_briefings"][0]["sections"]["what_changed"], "structured briefing")
+        self.assertEqual(
+            result["extra_records"]["daily_briefings"][0]["sections"]["what_changed"],
+            "structured briefing",
+        )
         self.assertEqual(
             result["extra_records"]["daily_briefings"][0]["correlation_id"],
             "cid",
@@ -327,28 +362,37 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
                 "what_changed": "corrected",
                 "interpretation": "interpretation",
                 "invalidation": "invalidation",
-                "watchlist_notes": [{
-                    "symbol": "EURUSD",
-                    "asset_class": "forex",
-                    "bias": "neutral",
-                    "confidence": "moderate",
-                    "summary": "safe summary",
-                    "reason": "safe reason",
-                    "next_catalyst": "CPI, Thu 13:30",
-                    "note": "safe note",
-                }],
+                "watchlist_notes": [
+                    {
+                        "symbol": "EURUSD",
+                        "asset_class": "forex",
+                        "bias": "neutral",
+                        "confidence": "moderate",
+                        "summary": "safe summary",
+                        "reason": "safe reason",
+                        "next_catalyst": "CPI, Thu 13:30",
+                        "note": "safe note",
+                    }
+                ],
             }
         )
         calls = [response(first, 6, 2, 0.01), response(final, 9, 4, 0.02)]
         config = llm_config("briefing")
         config["watchlist"]["trading"] = watchlist
-        calendar = {"today_prompt": "none", "week_prompt": "none", "today_count": 0, "week_count": 0, "window": {}}
-        with patch.object(processor, "_get_regime_summary", return_value=None), patch.object(
-            processor, "_get_calendar_bundle", return_value=calendar
-        ), patch.object(processor, "_format_watchlist", return_value="EURUSD"), patch.object(
-            processor, "_build_prompt", return_value=PROMPT_SENTINEL
-        ), patch.object(processor, "_get_latest_opinion_id", return_value=None), patch(
-            "llm_client.call_llm", side_effect=calls
+        calendar = {
+            "today_prompt": "none",
+            "week_prompt": "none",
+            "today_count": 0,
+            "week_count": 0,
+            "window": {},
+        }
+        with (
+            patch.object(processor, "_get_regime_summary", return_value=None),
+            patch.object(processor, "_get_calendar_bundle", return_value=calendar),
+            patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch.object(processor, "_get_latest_opinion_id", return_value=None),
+            patch("llm_client.call_llm", side_effect=calls),
         ):
             result = processor.process(config, "cid")
 
@@ -374,12 +418,21 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         calls = [response(first, 6, 2, 0.01), response(RAW_SENTINEL, 9, 4, 0.02)]
         config = llm_config("briefing")
         config["watchlist"]["trading"] = [{"symbol": "EURUSD", "type": "forex"}]
-        calendar = {"today_prompt": "none", "week_prompt": "none", "today_count": 0, "week_count": 0, "window": {}}
-        with patch.object(processor, "_get_regime_summary", return_value=None), patch.object(
-            processor, "_get_calendar_bundle", return_value=calendar
-        ), patch.object(processor, "_format_watchlist", return_value="EURUSD"), patch.object(
-            processor, "_build_prompt", return_value=PROMPT_SENTINEL
-        ), patch("llm_client.call_llm", side_effect=calls), patch("processors.briefing.logger") as briefing_logger:
+        calendar = {
+            "today_prompt": "none",
+            "week_prompt": "none",
+            "today_count": 0,
+            "week_count": 0,
+            "window": {},
+        }
+        with (
+            patch.object(processor, "_get_regime_summary", return_value=None),
+            patch.object(processor, "_get_calendar_bundle", return_value=calendar),
+            patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch("llm_client.call_llm", side_effect=calls),
+            patch("processors.briefing.logger") as briefing_logger,
+        ):
             with self.assertRaises(LLMValidationError) as raised:
                 processor.process(config, "cid")
 
@@ -390,11 +443,17 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
     def test_event_impact_schema_failure_is_typed_and_preserves_telemetry(self):
         processor = EventImpactProcessor()
         calls = [response("{}", 2, 1, 0.01), response("{}", 3, 1, 0.02)]
-        with patch.object(processor, "_fetch_upcoming_events", return_value=[{"event_name": "CPI"}]), patch.object(
-            processor, "_format_watchlist", return_value="EURUSD"
-        ), patch.object(processor, "_get_current_regime", return_value="neutral"), patch.object(
-            processor, "_build_prompt", return_value=PROMPT_SENTINEL
-        ), patch("llm_client.call_llm", side_effect=calls):
+        with (
+            patch.object(
+                processor,
+                "_fetch_upcoming_events",
+                return_value=[{"event_name": "CPI"}],
+            ),
+            patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+            patch.object(processor, "_get_current_regime", return_value="neutral"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch("llm_client.call_llm", side_effect=calls),
+        ):
             with self.assertRaises(LLMValidationError) as raised:
                 processor.process(llm_config("event_impact"), "cid")
 
@@ -402,22 +461,35 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertEqual(raised.exception.telemetry.tokens_input_total, 5)
         self.assertAlmostEqual(raised.exception.telemetry.cost_usd_total, 0.03)
 
-    def test_event_impact_invalid_after_retry_is_typed_safe_and_persisted_with_usage(self):
+    def test_event_impact_invalid_after_retry_is_typed_safe_and_persisted_with_usage(
+        self,
+    ):
         import orchestrator
 
         processor = EventImpactProcessor()
         calls = [response(RAW_SENTINEL, 5, 2, 0.01), response(RAW_SENTINEL, 6, 3, 0.02)]
-        with patch.object(orchestrator, "get_processor", return_value=processor), patch.object(
-            orchestrator, "build_processor_fingerprint", return_value=None
-        ), patch.object(orchestrator, "_write_processing_log") as write_log, patch.object(
-            processor, "_fetch_upcoming_events", return_value=[{"event_name": "CPI"}]
-        ), patch.object(processor, "_format_watchlist", return_value="EURUSD"), patch.object(
-            processor, "_get_current_regime", return_value="neutral"
-        ), patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL), patch(
-            "llm_client.call_llm", side_effect=calls
-        ), patch("processors.event_impact.logger") as event_logger:
+        with (
+            patch.object(orchestrator, "get_processor", return_value=processor),
+            patch.object(
+                orchestrator, "build_processor_fingerprint", return_value=None
+            ),
+            patch.object(orchestrator, "_write_processing_log") as write_log,
+            patch.object(
+                processor,
+                "_fetch_upcoming_events",
+                return_value=[{"event_name": "CPI"}],
+            ),
+            patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+            patch.object(processor, "_get_current_regime", return_value="neutral"),
+            patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+            patch("llm_client.call_llm", side_effect=calls),
+            patch("processors.event_impact.logger") as event_logger,
+        ):
             result = orchestrator._run_processor_impl(
-                "event_impact", llm_config("event_impact"), "cid", manage_lifecycle=False
+                "event_impact",
+                llm_config("event_impact"),
+                "cid",
+                manage_lifecycle=False,
             )
 
         self.assertEqual(result["status"], "failed")
@@ -433,11 +505,17 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
 
         with self.assertRaises(LLMValidationError) as raised:
             # Assert the public typed contract independently of orchestration's safe conversion.
-            with patch.object(processor, "_fetch_upcoming_events", return_value=[{"event_name": "CPI"}]), patch.object(
-                processor, "_format_watchlist", return_value="EURUSD"
-            ), patch.object(processor, "_get_current_regime", return_value="neutral"), patch.object(
-                processor, "_build_prompt", return_value=PROMPT_SENTINEL
-            ), patch("llm_client.call_llm", side_effect=calls):
+            with (
+                patch.object(
+                    processor,
+                    "_fetch_upcoming_events",
+                    return_value=[{"event_name": "CPI"}],
+                ),
+                patch.object(processor, "_format_watchlist", return_value="EURUSD"),
+                patch.object(processor, "_get_current_regime", return_value="neutral"),
+                patch.object(processor, "_build_prompt", return_value=PROMPT_SENTINEL),
+                patch("llm_client.call_llm", side_effect=calls),
+            ):
                 processor.process(llm_config("event_impact"), "cid")
         self.assertEqual(raised.exception.code, "llm_validation_failed")
         self.assertEqual(raised.exception.telemetry.tokens_input_total, 11)

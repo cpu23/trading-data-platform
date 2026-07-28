@@ -5,6 +5,7 @@ import posixpath
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Protocol
+from uuid import UUID
 
 from budgets import BudgetContext
 
@@ -16,6 +17,8 @@ def _canonical_value(value):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, dict):
         return {str(key): _canonical_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -28,7 +31,10 @@ def _canonical_value(value):
 def canonical_fingerprint(payload: dict) -> str:
     """Return a deterministic SHA-256 over canonical bounded metadata."""
     serialized = json.dumps(
-        _canonical_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        _canonical_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
@@ -47,7 +53,9 @@ def load_prompt_template(template_path: str) -> tuple[str, dict[str, str]]:
     normalized = posixpath.normpath(configured.replace("\\", "/"))
     if candidate.is_absolute():
         try:
-            normalized = resolved.resolve().relative_to(config_root.resolve()).as_posix()
+            normalized = (
+                resolved.resolve().relative_to(config_root.resolve()).as_posix()
+            )
         except ValueError:
             path_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
             normalized = f"external/{candidate.name}:{path_hash}"

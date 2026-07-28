@@ -21,61 +21,101 @@ class OfficialCollectorTests(unittest.TestCase):
             else Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         )
         config = yaml.safe_load(config_path.read_text())
-        ids = {
-            series["id"] for series in config["collectors"]["ecb"]["series"]
-        }
+        ids = {series["id"] for series in config["collectors"]["ecb"]["series"]}
         self.assertNotIn("INFLATION_5Y5Y", ids)
+
+    def test_free_official_sources_are_enabled_with_public_energy_access(self):
+        import yaml
+
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        collectors = yaml.safe_load(config_path.read_text())["collectors"]
+
+        for source_id in ("central_banks", "cftc", "oecd", "ecb", "boe", "eia"):
+            self.assertTrue(collectors[source_id]["enabled"], source_id)
+        self.assertEqual(collectors["eia"]["public_api_key"], "DEMO_KEY")
 
     @patch("collectors.cftc.make_request")
     def test_cftc_normalizes_positioning(self, request):
         response = Mock()
-        response.json.return_value = [{
-            "cftc_contract_market_code": "099741",
-            "contract_market_name": "EURO FX",
-            "report_date_as_yyyy_mm_dd": "2026-06-16",
-            "open_interest_all": "1000",
-            "dealer_positions_long_all": "300",
-            "dealer_positions_short_all": "200",
-        }]
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "099741",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+            }
+        ]
         response.raise_for_status.return_value = None
         request.return_value = response
-        config = {"collectors": {"cftc": {
-            "url": "https://example.test", "categories": [
-                ["dealer", "dealer_positions_long_all", "dealer_positions_short_all"]
-            ],
-            "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
-        }}}
+        config = {
+            "collectors": {
+                "cftc": {
+                    "url": "https://example.test",
+                    "categories": [
+                        [
+                            "dealer",
+                            "dealer_positions_long_all",
+                            "dealer_positions_short_all",
+                        ]
+                    ],
+                    "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
+                }
+            }
+        }
         records = CftcCollector().collect(config, "corr")
         self.assertEqual(records[0]["net_position"], 100)
         self.assertEqual(records[0]["net_pct_open_interest"], 10)
         self.assertEqual(records[0]["metadata"]["assets"], ["EURUSD"])
-        self.assertIn("cftc_contract_market_code", request.call_args.kwargs["params"]["$where"])
+        self.assertIn(
+            "cftc_contract_market_code", request.call_args.kwargs["params"]["$where"]
+        )
+        self.assertIn(
+            "report_date_as_yyyy_mm_dd >=", request.call_args.kwargs["params"]["$where"]
+        )
+        self.assertEqual(
+            request.call_args.kwargs["params"]["$order"],
+            "report_date_as_yyyy_mm_dd DESC",
+        )
 
     @patch("collectors.cftc.make_request")
     def test_cftc_ignores_unmapped_contracts(self, request):
         response = Mock()
-        response.json.return_value = [{
-            "cftc_contract_market_code": "OTHER",
-            "report_date_as_yyyy_mm_dd": "2026-06-16",
-        }]
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "OTHER",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+            }
+        ]
         response.raise_for_status.return_value = None
         request.return_value = response
-        config = {"collectors": {"cftc": {
-            "url": "https://example.test",
-            "categories": [],
-            "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
-        }}}
+        config = {
+            "collectors": {
+                "cftc": {
+                    "url": "https://example.test",
+                    "categories": [],
+                    "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
+                }
+            }
+        }
 
         with self.assertRaises(CollectorNoData):
             CftcCollector().collect(config, "corr")
 
     def test_official_macro_namespaces_series_and_preserves_semantics(self):
         response = Mock()
-        response.json.return_value = {"rows": [{"date": "2026-05-01", "value": "101.2"}]}
+        response.json.return_value = {
+            "rows": [{"date": "2026-05-01", "value": "101.2"}]
+        }
         series = {
-            "id": "CLI_US", "format": "json", "records_path": ["rows"],
-            "date_field": "date", "value_field": "value",
-            "semantic_feature": "growth.us", "region": "US",
+            "id": "CLI_US",
+            "format": "json",
+            "records_path": ["rows"],
+            "date_field": "date",
+            "value_field": "value",
+            "semantic_feature": "growth.us",
+            "region": "US",
         }
         records = OecdCollector()._parse(response, series)
         self.assertEqual(records[0]["series_id"], "OECD:CLI_US")
@@ -131,13 +171,70 @@ class OfficialCollectorTests(unittest.TestCase):
             )
 
     def test_eia_requires_explicit_api_key(self):
-        config = {"collectors": {"eia": {
-            "requires_api_key": True,
-            "api_key": "",
-            "series": [{"id": "BRENT", "url": "https://example.test"}],
-        }}}
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": "",
+                    "series": [{"id": "BRENT", "url": "https://example.test"}],
+                }
+            }
+        }
         with self.assertRaises(CollectorSetupRequired):
             EiaCollector().collect(config, "corr")
+
+    @patch("collectors.official_macro.make_request")
+    def test_eia_uses_public_fallback_key(self, request):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "response": {"data": [{"period": "2026-06", "value": "75.0"}]}
+        }
+        request.return_value = response
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": "",
+                    "public_api_key": "DEMO_KEY",
+                    "api_key_param": "api_key",
+                    "series": [
+                        {
+                            "id": "BRENT",
+                            "url": "https://example.test",
+                            "records_path": ["response", "data"],
+                            "date_field": "period",
+                            "value_field": "value",
+                        }
+                    ],
+                }
+            }
+        }
+
+        records = EiaCollector().collect(config, "corr")
+
+        self.assertEqual(records[0]["value"], 75.0)
+        self.assertEqual(request.call_args.kwargs["params"]["api_key"], "DEMO_KEY")
+
+    @patch("collectors.official_macro.make_request")
+    def test_health_check_sends_configured_headers(self, request):
+        response = Mock(status_code=200)
+        request.return_value = response
+        config = {
+            "collectors": {
+                "boe": {
+                    "headers": {"User-Agent": "collector"},
+                    "series": [{"id": "BANK_RATE", "url": "https://example.test"}],
+                }
+            }
+        }
+
+        result = BoeCollector().health_check(config)
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(
+            request.call_args.kwargs["headers"], {"User-Agent": "collector"}
+        )
 
     @patch("collectors.official_macro.make_request")
     def test_official_collector_reports_partial_series_failure(self, request):
@@ -145,18 +242,28 @@ class OfficialCollectorTests(unittest.TestCase):
         good.raise_for_status.return_value = None
         good.json.return_value = {"rows": [{"date": "2026-05", "value": "101.2"}]}
         request.side_effect = [good, RuntimeError("rate limited")]
-        config = {"collectors": {"oecd": {"series": [
-            {
-                "id": "CLI_US", "url": "https://example.test/us",
-                "records_path": ["rows"], "date_field": "date",
-                "value_field": "value",
-            },
-            {
-                "id": "CLI_GB", "url": "https://example.test/gb",
-                "records_path": ["rows"], "date_field": "date",
-                "value_field": "value",
-            },
-        ]}}}
+        config = {
+            "collectors": {
+                "oecd": {
+                    "series": [
+                        {
+                            "id": "CLI_US",
+                            "url": "https://example.test/us",
+                            "records_path": ["rows"],
+                            "date_field": "date",
+                            "value_field": "value",
+                        },
+                        {
+                            "id": "CLI_GB",
+                            "url": "https://example.test/gb",
+                            "records_path": ["rows"],
+                            "date_field": "date",
+                            "value_field": "value",
+                        },
+                    ]
+                }
+            }
+        }
         collector = OecdCollector()
 
         records = collector.collect(config, "corr")

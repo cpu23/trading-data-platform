@@ -18,19 +18,26 @@ class ConfiguredMacroCollector:
     def __init__(self):
         self.last_result_metadata: dict = {}
 
+    @staticmethod
+    def _api_key(source: dict) -> str:
+        return str(source.get("api_key") or source.get("public_api_key") or "").strip()
+
     def collect(self, config: dict, correlation_id: str) -> list[dict]:
         source = config["collectors"][self.source_id]
         series_list = source.get("series", [])
+        api_key = self._api_key(source)
         if not series_list:
             raise CollectorSetupRequired(
                 f"No {self.source_id.upper()} series configured",
                 source_id=self.source_id,
             )
-        if source.get("requires_api_key") and not source.get("api_key"):
+        if source.get("requires_api_key") and not api_key:
             raise CollectorSetupRequired(
                 f"{self.source_id.upper()} API key is not configured",
                 source_id=self.source_id,
-                credential=source.get("credential_name", f"{self.source_id.upper()}_API_KEY"),
+                credential=source.get(
+                    "credential_name", f"{self.source_id.upper()}_API_KEY"
+                ),
             )
 
         acquired_at = datetime.now(timezone.utc)
@@ -40,16 +47,15 @@ class ConfiguredMacroCollector:
         for series in series_list:
             try:
                 params = dict(series.get("params") or {})
-                if source.get("api_key"):
-                    params.setdefault(
-                        source.get("api_key_param", "api_key"), source["api_key"]
-                    )
+                if api_key:
+                    params.setdefault(source.get("api_key_param", "api_key"), api_key)
                 response = make_request(
                     "GET",
                     series["url"],
                     params=params or None,
                     headers=source.get("headers"),
                     correlation_id=correlation_id,
+                    max_retries=source.get("max_retries", 3),
                 )
                 response.raise_for_status()
                 parsed = self._parse(response, series, acquired_at=acquired_at)
@@ -118,8 +124,12 @@ class ConfiguredMacroCollector:
                     "observed_at": observed,
                     "value": value,
                     "source": self.source_id,
-                    "released_at": self._optional_time(row, series.get("release_field")),
-                    "revision_at": self._optional_time(row, series.get("revision_field")),
+                    "released_at": self._optional_time(
+                        row, series.get("release_field")
+                    ),
+                    "revision_at": self._optional_time(
+                        row, series.get("revision_field")
+                    ),
                     "acquired_at": acquired_at,
                     "metadata": {
                         "frequency": series.get("frequency"),
@@ -137,7 +147,9 @@ class ConfiguredMacroCollector:
         text_value = str(value).strip()
         date_format = series.get("date_format")
         if date_format:
-            return datetime.strptime(text_value, date_format).replace(tzinfo=timezone.utc)
+            return datetime.strptime(text_value, date_format).replace(
+                tzinfo=timezone.utc
+            )
         if len(text_value) == 7 and text_value[4] == "-":
             text_value = f"{text_value}-01"
         elif len(text_value) == 4 and text_value.isdigit():
@@ -171,10 +183,9 @@ class ConfiguredMacroCollector:
                 "message": "No series configured",
                 "latency_ms": 0,
             }
-        if (
-            config["collectors"][self.source_id].get("requires_api_key")
-            and not config["collectors"][self.source_id].get("api_key")
-        ):
+        source = config["collectors"][self.source_id]
+        api_key = self._api_key(source)
+        if source.get("requires_api_key") and not api_key:
             return {
                 "healthy": False,
                 "state": "setup_required",
@@ -182,12 +193,16 @@ class ConfiguredMacroCollector:
                 "latency_ms": 0,
             }
         try:
-            source = config["collectors"][self.source_id]
             params = dict(series[0].get("params") or {})
-            if source.get("api_key"):
-                params.setdefault(source.get("api_key_param", "api_key"), source["api_key"])
+            if api_key:
+                params.setdefault(source.get("api_key_param", "api_key"), api_key)
             response = make_request(
-                "GET", series[0]["url"], params=params or None, timeout=15
+                "GET",
+                series[0]["url"],
+                params=params or None,
+                headers=source.get("headers"),
+                timeout=15,
+                max_retries=source.get("max_retries", 3),
             )
             return {
                 "healthy": response.status_code < 400,
@@ -203,12 +218,27 @@ class ConfiguredMacroCollector:
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 
-    def get_schedule(self, config): return config["collectors"][self.source_id]["schedule"]
-    def get_target_table(self): return "macro_series"
-    def get_conflict_columns(self): return ["series_id", "observed_at"]
+    def get_schedule(self, config):
+        return config["collectors"][self.source_id]["schedule"]
+
+    def get_target_table(self):
+        return "macro_series"
+
+    def get_conflict_columns(self):
+        return ["series_id", "observed_at"]
 
 
-class OecdCollector(ConfiguredMacroCollector): source_id = "oecd"
-class EcbCollector(ConfiguredMacroCollector): source_id = "ecb"
-class BoeCollector(ConfiguredMacroCollector): source_id = "boe"
-class EiaCollector(ConfiguredMacroCollector): source_id = "eia"
+class OecdCollector(ConfiguredMacroCollector):
+    source_id = "oecd"
+
+
+class EcbCollector(ConfiguredMacroCollector):
+    source_id = "ecb"
+
+
+class BoeCollector(ConfiguredMacroCollector):
+    source_id = "boe"
+
+
+class EiaCollector(ConfiguredMacroCollector):
+    source_id = "eia"
