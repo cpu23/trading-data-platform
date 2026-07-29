@@ -16,6 +16,7 @@ llm:
     event_impact: ${OPENROUTER_MODEL}
     briefing: google/gemini-3.5-flash-lite
     market_intelligence: ${OPENROUTER_MODEL}
+    investment_analysis: google/gemini-3.5-flash-lite
   # OpenRouter must fail rather than route above this published unit-price ceiling.
   max_prices:
     briefing:
@@ -24,14 +25,17 @@ llm:
     macro_regime: 1800
     briefing: 4096
     market_intelligence: 4096
+    investment_analysis: 4096
   temperatures:
     macro_regime: 0.2
     briefing: 0.2
     market_intelligence: 0.2
+    investment_analysis: 0.0
   structured_response:
     macro_regime: true
     briefing: true
     market_intelligence: true
+    investment_analysis: true
   intelligence_roles:
     analyst:
       reasoning_effort: low
@@ -710,3 +714,16 @@ data_quality:
 budgets:
   daily_llm_usd: 2.00
   warn_at_pct: 80
+
+investment_filings:
+  enabled: true
+  schedule: "0 8 * * 1-5"  # Weekdays 08:00 UTC
+  lookback_days: 730
+  auto_analyze: false
+  run_on_startup: true
+  company_workers: 4
+  universe: top_us_uk_eu_100
+  sec_user_agent: ${SEC_USER_AGENT:-TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)}
+  companies_house_api_key: ${COMPANIES_HOUSE_API_KEY:-}
+  edinet_api_key: ${EDINET_API_KEY:-}
+  opendart_api_key: ${OPENDART_API_KEY:-}

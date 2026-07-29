@@ -4,12 +4,14 @@ import secrets
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from budgets import (
     BudgetContext,
+    BudgetBlock,
+    BudgetExceeded,
     mint_trusted_manual_authorization,
     trusted_manual_budget_context,
 )
@@ -26,6 +28,14 @@ except ImportError:
 from logging_config import get_logger, setup_logging
 from http_client import close_shared_client
 from locks import RunConflict
+from investment_service import (
+    AnalysisInProgress,
+    analyze_document as analyze_investment_document,
+    get_analysis as get_investment_analysis,
+    get_dashboard as get_investment_dashboard,
+    store_document as store_investment_document,
+    store_document_url as store_investment_document_url,
+)
 from orchestrator import (
     DEFAULT_ACCEPTED_TIMEOUT,
     DEFAULT_HEARTBEAT_TIMEOUT,
@@ -191,6 +201,164 @@ def health():
 @app.get("/quotes")
 def quotes():
     return quote_stream.snapshot()
+
+
+@app.get(
+    "/investment/dashboard",
+    dependencies=[Depends(require_internal_basic)],
+)
+def investment_dashboard():
+    return get_investment_dashboard(_get_config())
+
+
+@app.get(
+    "/investment/analyses/{analysis_id}",
+    dependencies=[Depends(require_internal_basic)],
+)
+def investment_analysis(analysis_id: UUID):
+    payload = get_investment_analysis(_get_config(), str(analysis_id))
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Investment analysis not found")
+    return payload
+
+
+@app.post(
+    "/investment/documents",
+    status_code=201,
+    dependencies=[Depends(require_internal_basic)],
+)
+async def ingest_investment_document(request: Request):
+    metadata = dict(request.query_params)
+    content = await request.body()
+    try:
+        return store_investment_document(
+            _get_config(),
+            metadata,
+            content,
+            request.headers.get("content-type"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "investment_document_ingest_failed",
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Investment document storage unavailable",
+        ) from exc
+
+
+@app.post(
+    "/investment/urls",
+    status_code=201,
+    dependencies=[Depends(require_internal_basic)],
+)
+def ingest_investment_url(body: dict = Body(...)):
+    try:
+        return store_investment_document_url(_get_config(), body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "investment_url_ingest_failed",
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Investment document could not be fetched",
+        ) from exc
+
+
+@app.post(
+    "/investment/documents/{document_id}/analyze",
+    dependencies=[Depends(require_internal_basic)],
+)
+def run_investment_analysis(
+    document_id: UUID,
+    body: dict | None = Body(default=None),
+):
+    market_inputs = body.get("market_inputs") if isinstance(body, dict) else None
+    if market_inputs is not None and not isinstance(market_inputs, dict):
+        raise HTTPException(status_code=422, detail="market_inputs must be an object")
+    try:
+        return analyze_investment_document(
+            _get_config(),
+            str(document_id),
+            market_inputs,
+        )
+    except BudgetBlock as exc:
+        status_code = 429 if isinstance(exc, BudgetExceeded) else 503
+        raise HTTPException(status_code=status_code, detail=exc.safe_reason) from exc
+    except AnalysisInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "investment_analysis_failed",
+            document_id=str(document_id),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Investment analysis failed",
+        ) from exc
+
+
+@app.get(
+    "/investment/filings/status",
+    dependencies=[Depends(require_internal_basic)],
+)
+def investment_filings_status():
+    from investment_filings import get_filing_source_status
+    return get_filing_source_status(_get_config())
+
+
+@app.post(
+    "/investment/filings/collect",
+    status_code=202,
+    dependencies=[Depends(require_internal_basic)],
+)
+def trigger_filing_collection(
+    background_tasks: BackgroundTasks,
+    body: dict | None = Body(default=None),
+):
+    correlation_id = _correlation_id_from_body(body)
+    auto_analyze = bool(body.get("auto_analyze")) if isinstance(body, dict) else False
+    accepted_at = _accept_http_run(correlation_id, "filings", "investment_filings", body)
+    background_tasks.add_task(_run_filings_task, correlation_id, auto_analyze)
+    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
+
+
+def _run_filings_task(correlation_id: str, auto_analyze: bool):
+    from investment_filings import run_filing_collection
+
+    config = _get_config()
+    worker_id = f"api:{uuid4()}"
+    started = _start_http_run(config, correlation_id, worker_id, "filings", "investment_filings")
+    if started is not True:
+        return
+    try:
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            result = run_filing_collection(
+                config, correlation_id=correlation_id, auto_analyze=auto_analyze
+            )
+            finalized = finalize_run_safely(
+                correlation_id, result.get("status", "completed"), result, config,
+                worker_id=worker_id, run_kind="filings", component="investment_filings",
+            )
+            if finalized:
+                logger.info("filings_trigger_completed", correlation_id=correlation_id)
+    except Exception as exc:
+        logger.error("filings_trigger_failed", correlation_id=correlation_id, error=str(exc))
+        finalize_run_safely(
+            correlation_id, "failed", {}, config, str(exc),
+            worker_id=worker_id, run_kind="filings", component="investment_filings",
+        )
 
 
 def _correlation_id_from_body(body: dict | None) -> str:

@@ -82,6 +82,7 @@ services:
     env_file: .env
     environment:
       ORCHESTRATOR_URL: http://orchestrator:8000
+      DISABLE_AUTH: "1"
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:

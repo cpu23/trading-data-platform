@@ -1362,6 +1362,28 @@ class RuntimeFeatureTests(unittest.TestCase):
 
         self.assertEqual(ids, {"collector:fred", "processor:briefing"})
 
+    @patch("scheduler.BackgroundScheduler")
+    def test_filings_job_runs_immediately_on_scheduler_start(self, scheduler_factory):
+        scheduler = Mock()
+        scheduler.running = False
+        scheduler.get_jobs.return_value = []
+        scheduler_factory.return_value = scheduler
+        before = datetime.now(timezone.utc)
+
+        start_scheduler({
+            "collectors": {},
+            "processors": {},
+            "investment_filings": {
+                "enabled": True,
+                "schedule": "0 8 * * 1-5",
+                "run_on_startup": True,
+            },
+        })
+
+        next_run_time = scheduler.add_job.call_args.kwargs["next_run_time"]
+        self.assertGreaterEqual(next_run_time, before)
+        self.assertLessEqual(next_run_time, datetime.now(timezone.utc))
+
     def test_scheduler_registers_enabled_news_but_not_disabled_paid_source(self):
         config = {
             "collectors": {}, "processors": {},

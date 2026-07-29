@@ -8,6 +8,7 @@ from routes.views.news import router as news_router
 from routes.views.settings import router as settings_router
 from routes.views.assets import router as assets_router
 from routes.views.setup import router as setup_router
+from routes.views.investment import router as investment_router
 
 router = APIRouter()
 
@@ -19,3 +20,4 @@ router.include_router(news_router)
 router.include_router(settings_router)
 router.include_router(assets_router)
 router.include_router(setup_router)
+router.include_router(investment_router)

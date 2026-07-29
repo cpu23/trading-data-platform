@@ -231,6 +231,54 @@ def _scheduled_news(source_id: str, config: dict) -> None:
         )
 
 
+def _scheduled_filings(config: dict) -> None:
+    from investment_filings import run_filing_collection
+
+    correlation_id = str(uuid4())
+    worker_id = f"scheduler:{uuid4()}"
+    try:
+        accept_run(config, correlation_id, "scheduler", "filings", "investment_filings")
+    except Exception:
+        logger.warning("scheduled_filings_acceptance_failed", correlation_id=correlation_id)
+        return
+    if _start_scheduled_run(
+        config, correlation_id, worker_id, "filings", "investment_filings"
+    ) is not True:
+        return
+    try:
+        with maintain_run_heartbeat(config, correlation_id, worker_id):
+            filings_config = config.get("investment_filings", {})
+            auto_analyze = filings_config.get("auto_analyze", False)
+            result = run_filing_collection(
+                config, correlation_id=correlation_id, auto_analyze=auto_analyze
+            )
+            finalized = finalize_run_safely(
+                correlation_id,
+                result.get("status", "completed"),
+                result,
+                config,
+                worker_id=worker_id,
+                run_kind="filings",
+                component="investment_filings",
+            )
+            if finalized:
+                logger.info(
+                    "scheduled_filings_completed",
+                    correlation_id=correlation_id,
+                    ingested=result.get("ingested", 0),
+                )
+    except Exception as exc:
+        logger.error(
+            "scheduled_filings_failed",
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
+        finalize_run_safely(
+            correlation_id, "failed", {}, config, str(exc),
+            worker_id=worker_id, run_kind="filings", component="investment_filings",
+        )
+
+
 def start_scheduler(config: dict) -> None:
     global _scheduler
     if _scheduler and _scheduler.running:
@@ -281,6 +329,23 @@ def start_scheduler(config: dict) -> None:
                 coalesce=True,
                 max_instances=1,
             )
+    # Investment filings collection
+    filings_config = config.get("investment_filings", {})
+    filings_schedule = filings_config.get("schedule", "")
+    if filings_config.get("enabled", False) and filings_schedule:
+        filing_job_options = {}
+        if filings_config.get("run_on_startup", True):
+            filing_job_options["next_run_time"] = datetime.now(timezone.utc)
+        _scheduler.add_job(
+            _scheduled_filings,
+            _build_cron_trigger(filings_schedule),
+            args=[config],
+            id="filings:investment_filings",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            **filing_job_options,
+        )
     _scheduler.start()
     logger.info("scheduler_started", jobs=len(_scheduler.get_jobs()))
 

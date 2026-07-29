@@ -1,0 +1,911 @@
+{% extends "base.html" %}
+{% block title %}Investment analysis — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">
+    {% include "partials/navigation.html" %}
+  </div>
+  <div class="page-header-right">
+    <span class="label tabular" id="inv-model" aria-label="Active model">model —</span>
+    <span class="control-status" id="inv-status" role="status" aria-live="polite"></span>
+  </div>
+</header>
+
+<main aria-label="Investment research dashboard" id="inv-main">
+  <!-- Regional coverage strip -->
+  <section class="section" aria-labelledby="inv-regions-title">
+    <div class="section-heading"><span class="label" id="inv-regions-title">Regional coverage</span></div>
+    <div class="inv-region-strip" id="inv-regions" aria-live="polite" data-inv-state="loading">
+      <div class="inv-region"><span class="inv-region-code tabular">US</span><span class="dim">Loading…</span></div>
+      <div class="inv-region"><span class="inv-region-code tabular">EU</span><span class="dim">Loading…</span></div>
+      <div class="inv-region"><span class="inv-region-code tabular">Asia</span><span class="dim">Loading…</span></div>
+    </div>
+  </section>
+
+  <!-- Key industry cards -->
+  <section class="section" aria-labelledby="inv-industries-title">
+    <div class="section-heading"><span class="label" id="inv-industries-title">Key industries</span></div>
+    <div class="inv-industries-grid" id="inv-industries" aria-live="polite" data-inv-state="loading">
+      <div class="empty-state">Loading industries…</div>
+    </div>
+  </section>
+
+  <!-- Intake panel: files + URLs + metadata + valuation inputs -->
+  <section class="section" aria-labelledby="inv-intake-title">
+    <div class="section-heading">
+      <span class="label" id="inv-intake-title">Automated filing intake</span>
+      <span class="section-note">Weekday polling for the top 100 US, UK, and EU companies.</span>
+    </div>
+    <div class="inv-filing-sources" aria-labelledby="inv-filings-title">
+      <span class="label" id="inv-filings-title">Filing sources</span>
+      <div id="inv-filing-status" class="inv-filing-status" aria-live="polite"></div>
+      <button class="btn btn-secondary" id="inv-filing-collect-btn" type="button">Collect filings now</button>
+    </div>
+
+    <details class="inv-manual-intake">
+      <summary class="btn btn-secondary">Manual intake</summary>
+      <div class="inv-manual-intake-panel">
+        <div class="inv-intake">
+          <form id="inv-upload-form" class="inv-form inv-form-upload" aria-labelledby="inv-upload-title">
+            <h2 class="inv-form-title" id="inv-upload-title">Upload a report file</h2>
+            <div class="inv-field inv-field-file">
+              <input type="file" id="inv-file" name="file" accept=".pdf,.docx,.txt,.md,.html,.htm,.csv,.json,.xml,application/pdf,text/plain,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document" aria-label="Report file" required>
+              <span id="inv-file-name" class="control-status" aria-live="polite"></span>
+            </div>
+            <div class="inv-meta-grid">
+              <label class="inv-field"><span class="inv-field-label">Company</span><input type="text" id="inv-company" name="company" maxlength="120" placeholder="e.g. NVIDIA" required></label>
+              <label class="inv-field"><span class="inv-field-label">Symbol</span><input type="text" id="inv-symbol" name="symbol" maxlength="32" placeholder="e.g. NVDA"></label>
+              <label class="inv-field"><span class="inv-field-label">Region</span>
+                <select id="inv-region" name="region">
+                  <option value="US">US</option>
+                  <option value="EU">EU</option>
+                  <option value="Asia">Asia</option>
+                </select>
+              </label>
+              <label class="inv-field"><span class="inv-field-label">Industry</span><input type="text" id="inv-industry" name="industry" maxlength="120" placeholder="e.g. Semiconductors"></label>
+              <label class="inv-field"><span class="inv-field-label">Document type</span>
+                <select id="inv-type" name="document_type">
+                  <option value="annual_report">Annual report</option>
+                  <option value="investor_report">Investor report</option>
+                  <option value="earnings_release">Earnings release</option>
+                  <option value="investor_presentation">Investor presentation</option>
+                  <option value="regulatory_filing">Regulatory filing (10-K / 10-Q / 20-F)</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label class="inv-field"><span class="inv-field-label">Report date</span><input type="date" id="inv-date" name="report_date"></label>
+              <label class="inv-field inv-field-wide"><span class="inv-field-label">Source URL</span><input type="url" id="inv-source-url" name="source_url" maxlength="2048" placeholder="https://ir.example.com/filings/..."></label>
+            </div>
+            <div class="inv-intake-actions">
+              <button class="btn" id="inv-upload-btn" type="submit">Upload file</button>
+            </div>
+          </form>
+          <form id="inv-url-form" class="inv-form inv-form-url" aria-labelledby="inv-url-title">
+            <h2 class="inv-form-title" id="inv-url-title">Ingest a report URL</h2>
+            <div class="inv-field inv-field-wide">
+              <span class="inv-field-label">Report URL</span>
+              <input type="url" id="inv-url" name="url" maxlength="2048" placeholder="https://ir.example.com/filings/..." required>
+            </div>
+            <div class="inv-meta-grid">
+              <label class="inv-field"><span class="inv-field-label">Company</span><input type="text" id="inv-url-company" name="company" maxlength="120" required></label>
+              <label class="inv-field"><span class="inv-field-label">Symbol</span><input type="text" id="inv-url-symbol" name="symbol" maxlength="32"></label>
+              <label class="inv-field"><span class="inv-field-label">Region</span>
+                <select id="inv-url-region" name="region">
+                  <option value="US">US</option>
+                  <option value="EU">EU</option>
+                  <option value="Asia">Asia</option>
+                </select>
+              </label>
+              <label class="inv-field"><span class="inv-field-label">Industry</span><input type="text" id="inv-url-industry" name="industry" maxlength="120"></label>
+              <label class="inv-field"><span class="inv-field-label">Document type</span>
+                <select id="inv-url-type" name="document_type">
+                  <option value="annual_report">Annual report</option>
+                  <option value="investor_report">Investor report</option>
+                  <option value="earnings_release">Earnings release</option>
+                  <option value="investor_presentation">Investor presentation</option>
+                  <option value="regulatory_filing">Regulatory filing (10-K / 10-Q / 20-F)</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label class="inv-field"><span class="inv-field-label">Report date</span><input type="date" id="inv-url-date" name="report_date"></label>
+            </div>
+            <div class="inv-intake-actions">
+              <button class="btn" id="inv-url-btn" type="submit">Ingest URL</button>
+            </div>
+          </form>
+        </div>
+        <div class="inv-filing-sources" aria-labelledby="inv-manual-filings-title">
+          <span class="label" id="inv-manual-filings-title">Manual filing links</span>
+          <a href="https://www.sec.gov/edgar/search/" class="quiet-link" target="_blank" rel="noopener noreferrer">SEC EDGAR (US)</a>
+          <span class="nav-separator" aria-hidden="true">·</span>
+          <a href="https://filings.xbrl.org/" class="quiet-link" target="_blank" rel="noopener noreferrer">ESEF filings (EU)</a>
+          <span class="nav-separator" aria-hidden="true">·</span>
+          <a href="https://disclosure2.edinet-fsa.go.jp/" class="quiet-link" target="_blank" rel="noopener noreferrer">Japan EDINET</a>
+          <span class="nav-separator" aria-hidden="true">·</span>
+          <a href="https://www1.hkexnews.hk/index.htm" class="quiet-link" target="_blank" rel="noopener noreferrer">HKEXnews</a>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <!-- Valuation overrides -->
+  <section class="section" aria-labelledby="inv-valuation-title">
+    <div class="section-heading"><span class="label" id="inv-valuation-title">Valuation overrides</span><span class="section-note">Applied only when finite; engine normalizes percentages.</span></div>
+    <div class="inv-valuation-grid">
+      <label class="inv-field"><span class="inv-field-label">Market price (per share)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-mp" name="market_price" placeholder="auto"></label>
+      <label class="inv-field"><span class="inv-field-label">Shares outstanding (report scale)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-shares" name="shares_outstanding" placeholder="auto"></label>
+      <label class="inv-field"><span class="inv-field-label">Net debt (report currency)</span><input type="number" step="any" inputmode="decimal" id="inv-netdebt" name="net_debt" placeholder="auto"></label>
+      <label class="inv-field"><span class="inv-field-label">WACC / discount rate (%)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-wacc" name="discount_rate" placeholder="auto"></label>
+      <label class="inv-field"><span class="inv-field-label">Terminal growth (%)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-tg" name="terminal_growth" placeholder="auto"></label>
+    </div>
+  </section>
+
+  <!-- Report queue -->
+  <section class="section" aria-labelledby="inv-queue-title">
+    <div class="section-heading"><span class="label" id="inv-queue-title">Report queue</span><span class="section-note" id="inv-queue-meta"></span></div>
+    <div id="inv-documents" data-inv-state="loading" aria-live="polite">
+      <div class="empty-state">Loading reports…</div>
+    </div>
+  </section>
+
+  <!-- Latest analysis cards -->
+  <section class="section" aria-labelledby="inv-analyses-title">
+    <div class="section-heading"><span class="label" id="inv-analyses-title">Latest analyses</span><button class="btn btn-secondary" id="inv-refresh" type="button">Refresh</button></div>
+    <div id="inv-analyses" data-inv-state="loading" aria-live="polite">
+      <div class="empty-state">Loading analyses…</div>
+    </div>
+  </section>
+</main>
+
+<noscript><div class="error-block" role="alert">This page requires JavaScript to fetch and render investment data.</div></noscript>
+
+<script>
+(function () {
+  "use strict";
+
+  var REGION_CODES = ["US", "EU", "Asia"];
+
+  function csrfHeader() {
+    var item = document.cookie.split(';').map(function (v) { return v.trim(); }).find(function (v) { return v.indexOf('csrf-token=') === 0; });
+    return item ? { 'X-CSRF-Token': decodeURIComponent(item.split('=').slice(1).join('=')) } : {};
+  }
+
+  function esc(value) {
+    // Construct via text node so untrusted data can never become HTML.
+    var t = document.createTextNode(value == null ? '' : String(value));
+    var s = document.createElement('span');
+    s.appendChild(t);
+    return s;
+  }
+  function setText(el, value) {
+    if (!el) return;
+    el.textContent = value == null ? '' : String(value);
+  }
+  function clear(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
+
+  function fmtNum(value, digits) {
+    if (value === null || value === undefined || value === '') return '—';
+    var n = Number(value);
+    if (!isFinite(n)) return '—';
+    if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return n.toLocaleString(undefined, { maximumFractionDigits: (digits == null ? 2 : digits) });
+  }
+  function fmtPct(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    var n = Number(value);
+    if (!isFinite(n)) return '—';
+    // Accept decimal (0.05) or percent (5) — engine normalizes; show as percent-ish.
+    if (Math.abs(n) > 0 && Math.abs(n) < 1 && n !== 0) n = n * 100;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 2 }) + '%';
+  }
+  function fmtCompact(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    var n = Number(value);
+    if (!isFinite(n)) return String(value);
+    var abs = Math.abs(n);
+    if (abs >= 1e12) return (n / 1e12).toFixed(2) + 'T';
+    if (abs >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (abs >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+    return String(n);
+  }
+
+  function el(tag, cls) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    return node;
+  }
+
+  // ---- Regional coverage strip ----
+  function renderRegions(regions) {
+    var host = document.getElementById('inv-regions');
+    host.setAttribute('data-inv-state', Array.isArray(regions) && regions.length ? 'success' : 'empty');
+    clear(host);
+    var map = {};
+    if (Array.isArray(regions)) {
+      regions.forEach(function (r) {
+        if (r && r.code) map[String(r.code).toUpperCase()] = r;
+      });
+    }
+    REGION_CODES.forEach(function (code) {
+      var r = map[code.toUpperCase()] || {};
+      var card = el('div', 'inv-region');
+      card.setAttribute('data-region', code);
+      var codeSpan = el('span', 'inv-region-code tabular'); codeSpan.textContent = code;
+      card.appendChild(codeSpan);
+      var meta = el('div', 'inv-region-meta');
+      var count = (r.company_count != null ? r.company_count : 0);
+      var hasState = !!r.state || !!r.stage;
+      var stateLine = el('div', 'inv-region-state');
+      stateLine.textContent = (r.state || r.stage || 'monitor');
+      meta.appendChild(stateLine);
+      var countLine = el('div', 'inv-region-count dim tabular');
+      countLine.textContent = count + (count === 1 ? ' company' : ' companies');
+      meta.appendChild(countLine);
+      card.appendChild(meta);
+      host.appendChild(card);
+    });
+  }
+
+  // ---- Industry cards ----
+  function renderIndustries(industries) {
+    var host = document.getElementById('inv-industries');
+    if (!Array.isArray(industries) || !industries.length) {
+      host.setAttribute('data-inv-state', 'empty');
+      clear(host);
+      var empty = el('div', 'empty-state'); empty.textContent = 'No industries with coverage yet.'; host.appendChild(empty);
+      return;
+    }
+    host.setAttribute('data-inv-state', 'success');
+    clear(host);
+    industries.forEach(function (ind) {
+      var card = el('article', 'inv-industry-card');
+      var head = el('div', 'inv-industry-head');
+      var name = el('h3', 'inv-industry-name'); name.textContent = ind.name || '—'; head.appendChild(name);
+      if (ind.regions) { var regs = el('span', 'inv-industry-regions dim tabular'); regs.textContent = Array.isArray(ind.regions) ? ind.regions.join(' · ') : ind.regions; head.appendChild(regs); }
+      card.appendChild(head);
+
+      var stage = el('div', 'inv-industry-stage');
+      stage.textContent = ind.stage || ind.state || 'monitor';
+      card.appendChild(stage);
+
+      var scoreRow = el('div', 'inv-industry-score-row');
+      var score = el('span', 'inv-industry-score tabular');
+      var sv = ind.score;
+      score.textContent = (sv == null || !isFinite(Number(sv))) ? '—' : Number(sv).toFixed(1);
+      var scoreLabel = el('span', 'dim'); scoreLabel.textContent = 'score';
+      scoreRow.appendChild(score); scoreRow.appendChild(scoreLabel);
+      card.appendChild(scoreRow);
+
+      var cc = el('span', 'inv-industry-counts dim tabular');
+      cc.textContent = (ind.company_count != null ? ind.company_count : '—') + ' companies';
+      card.appendChild(cc);
+
+      addList(card, 'inv-industry-drivers', 'Drivers', ind.drivers);
+      addList(card, 'inv-industry-risks', 'Risks', ind.risks);
+
+      host.appendChild(card);
+    });
+  }
+
+  function addList(parent, cls, label, items) {
+    if (!items || (Array.isArray(items) && !items.length)) return;
+    var block = el('div', cls);
+    var lab = el('span', 'label'); lab.textContent = label; block.appendChild(lab);
+    var ul = el('ul'); ul.className = 'inv-bullets';
+    var arr = Array.isArray(items) ? items : [items];
+    arr.forEach(function (it) {
+      var li = el('li');
+      if (it && typeof it === 'object') {
+        // {risk, mitigation} style
+        li.appendChild(esc(it.risk || it.text || it.label || it.name || ''));
+        if (it.mitigation) {
+          var m = el('span', 'inv-mitigation dim'); m.textContent = ' · mitigation: ' + String(it.mitigation); li.appendChild(m);
+        }
+      } else {
+        li.appendChild(esc(it));
+      }
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
+  // ---- Report queue ----
+  function renderDocuments(docs) {
+    var host = document.getElementById('inv-documents');
+    if (!Array.isArray(docs) || !docs.length) {
+      host.setAttribute('data-inv-state', 'empty');
+      clear(host);
+      var e = el('div', 'empty-state'); e.textContent = 'No reports ingested yet. Automated intake runs on schedule; use Manual intake for an ad hoc report.'; host.appendChild(e);
+      return;
+    }
+    host.setAttribute('data-inv-state', 'success');
+    clear(host);
+    var tableWrap = el('div', 'inv-queue-scroll');
+    var table = el('table'); table.className = 'inv-queue-table';
+    var thead = el('thead');
+    var trh = el('tr');
+    ['Company', 'Symbol', 'Region', 'Industry', 'Type', 'Date', 'Status', ''].forEach(function (h) {
+      var th = el('th'); th.scope = 'col'; th.textContent = h; trh.appendChild(th);
+    });
+    thead.appendChild(trh); table.appendChild(thead);
+    var tbody = el('tbody');
+    docs.forEach(function (d) {
+      var tr = el('tr');
+      function cell(val, cls) {
+        var td = el('td', cls); td.appendChild(esc(val)); tr.appendChild(td); return td;
+      }
+      cell(d.company, 'tabular');
+      cell(d.symbol, 'tabular');
+      cell(d.region);
+      cell(d.industry);
+      cell(d.document_type);
+      cell(d.report_date);
+      var statusCell = el('td'); var stat = el('span', 'inv-status-pill inv-status-' + String(d.status || 'unknown').toLowerCase()); stat.textContent = d.status || '—'; statusCell.appendChild(stat); tr.appendChild(statusCell);
+      var act = el('td');
+      var btn = el('button', 'btn inv-analyze-btn');
+      btn.type = 'button'; btn.textContent = 'Analyze'; btn.dataset.documentId = d.document_id || '';
+      if (!d.document_id) { btn.disabled = true; }
+      act.appendChild(btn); tr.appendChild(act);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); tableWrap.appendChild(table); host.appendChild(tableWrap);
+  }
+
+  // ---- Analyses ----
+  function renderAnalyses(analyses) {
+    var host = document.getElementById('inv-analyses');
+    if (!Array.isArray(analyses) || !analyses.length) {
+      host.setAttribute('data-inv-state', 'empty');
+      clear(host);
+      var e = el('div', 'empty-state'); e.textContent = 'No analyses yet. Wait for automated intake or add a report manually, then run Analyze.'; host.appendChild(e);
+      return;
+    }
+    host.setAttribute('data-inv-state', 'success');
+    clear(host);
+    analyses.forEach(function (a) {
+      host.appendChild(renderAnalysisCard(a));
+    });
+  }
+
+  function renderAnalysisCard(a) {
+    var card = el('article', 'inv-analysis-card');
+    var head = el('header', 'inv-analysis-head');
+    var titleRow = el('div', 'inv-analysis-title-row');
+    var title = el('h3', 'inv-analysis-title tabular');
+    title.textContent = (a.company || '—') + (a.symbol ? ' · ' + a.symbol : '');
+    titleRow.appendChild(title);
+    var meta = el('span', 'inv-analysis-meta dim tabular');
+    var bits = [];
+    if (a.region) bits.push(a.region);
+    if (a.industry) bits.push(a.industry);
+    if (a.report_date) bits.push(a.report_date);
+    meta.textContent = bits.join(' · ');
+    titleRow.appendChild(meta);
+    head.appendChild(titleRow);
+
+    var stageRow = el('div', 'inv-stage-row');
+    var stateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
+    stateValue = String(stateValue || 'monitor').toLowerCase();
+    var stage = el('span', 'inv-stage inv-stage-' + stateValue.replace(/[^a-z-]/g, ''));
+    stage.textContent = stateValue;
+    stageRow.appendChild(stage);
+    var stateScore = a.state && typeof a.state === 'object' ? a.state.score : a.score;
+    if (stateScore != null) {
+      var score = el('span', 'inv-analysis-score tabular');
+      score.textContent = Number(stateScore).toFixed(1);
+      var sl = el('span', 'dim'); sl.textContent = 'score';
+      stageRow.appendChild(score); stageRow.appendChild(sl);
+    }
+    head.appendChild(stageRow);
+    card.appendChild(head);
+
+    if (a.summary) {
+      var sum = el('p', 'inv-summary'); sum.appendChild(esc(a.summary)); card.appendChild(sum);
+    }
+
+    // Key metrics including FCF / P-E / DCF
+    var metricBlock = el('div', 'inv-metrics-block');
+    var mLabel = el('div', 'section-heading'); var mlSpan = el('span', 'label'); mlSpan.textContent = 'Key metrics'; mLabel.appendChild(mlSpan); metricBlock.appendChild(mLabel);
+
+    var metricGrid = el('div', 'inv-metric-grid');
+    var metrics = a.metrics && typeof a.metrics === 'object' ? a.metrics : {};
+    // Standard metrics order; gracefully fall back.
+    var order = ['revenue', 'operating_cash_flow', 'free_cash_flow', 'fcf', 'capex', 'net_income', 'diluted_eps', 'shares_outstanding', 'market_price', 'net_debt', 'gross_margin', 'inventory', 'backlog'];
+    var seen = {};
+    order.forEach(function (name) {
+      if (seen[name] || metrics[name] == null && !(name in metrics)) return;
+      seen[name] = true;
+      metricGrid.appendChild(renderMetric(name, metrics[name]));
+    });
+    Object.keys(metrics).forEach(function (name) {
+      if (seen[name]) return;
+      seen[name] = true;
+      metricGrid.appendChild(renderMetric(name, metrics[name]));
+    });
+    metricBlock.appendChild(metricGrid);
+
+    // Valuation strip: FCF / P-E / DCF
+    var val = a.valuation && typeof a.valuation === 'object' ? a.valuation : {};
+    var valStrip = el('div', 'inv-valuation-strip');
+    var vLabel = el('div', 'section-heading'); var vl = el('span', 'label'); vl.textContent = 'Valuation'; vLabel.appendChild(vl); valStrip.appendChild(vLabel);
+    var vGrid = el('div', 'inv-valuation-grid');
+    vGrid.appendChild(valCell('P/E', val.pe != null ? val.pe : val.pe_ratio));
+    vGrid.appendChild(valCell('FCF', (val.fcf != null ? val.fcf : (metrics.free_cash_flow != null ? metrics.free_cash_flow : (metrics.fcf != null ? metrics.fcf : metrics.fcf_margin))), val.currency_unit));
+    vGrid.appendChild(valCell('DCF / share', val.dcf_per_share != null ? val.dcf_per_share : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
+    vGrid.appendChild(valCell('Intrinsic / share', val.intrinsic_value != null ? val.intrinsic_value : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
+    var marketPrice = metrics.market_price && typeof metrics.market_price === 'object' ? metrics.market_price.value : metrics.market_price;
+    var intrinsicValue = val.dcf && val.dcf.per_share != null ? Number(val.dcf.per_share) : null;
+    var mos = marketPrice != null && intrinsicValue > 0 ? 1 - Number(marketPrice) / intrinsicValue : null;
+    if (val.margin_of_safety != null) mos = val.margin_of_safety;
+    vGrid.appendChild(valCell('Margin of safety', mos, null, true));
+    valStrip.appendChild(vGrid);
+
+    metricBlock.appendChild(valStrip);
+    card.appendChild(metricBlock);
+
+    addSignalsSection(card, a.signals);
+    // Drivers / catalysts / risks / watch items
+    addSection(card, 'inv-drivers', 'Drivers', a.drivers);
+    addSection(card, 'inv-catalysts', 'Catalysts', a.catalysts);
+    addRisksSection(card, a.risks);
+    addSection(card, 'inv-watch', 'Watch items', a.watch_items);
+    addEvidenceSection(card, a.evidence);
+
+    if (a.model) {
+      var foot = el('footer', 'inv-analysis-foot dim tabular');
+      foot.textContent = 'model: ' + a.model;
+      card.appendChild(foot);
+    }
+    return card;
+  }
+
+  function renderMetric(name, m) {
+    var node = el('div', 'inv-metric');
+    var lab = el('div', 'inv-metric-name label');
+    lab.textContent = prettyName(name);
+    node.appendChild(lab);
+    var valRow = el('div', 'inv-metric-value-row');
+    var val = el('span', 'inv-metric-value tabular');
+    var unit = '';
+    var value = m;
+    if (m && typeof m === 'object' && !Array.isArray(m)) {
+      value = m.value;
+      unit = m.unit || '';
+    }
+    var isPct = /margin|growth|roe|roic|yield|wacc|rate/i.test(name) || unit === '%';
+    var sval;
+    if (value == null || value === '') {
+      sval = '—';
+    } else {
+      var n = Number(value);
+      if (!isFinite(n)) sval = String(value);
+      else if (isPct) sval = fmtCompact(Math.abs(n) < 1 && n !== 0 ? n * 100 : n) + '%';
+      else sval = (unit === '$' ? '$' : '') + fmtCompact(n) + (unit && unit !== '$' && unit !== '%' ? ' ' + unit : '');
+    }
+    val.textContent = sval;
+    valRow.appendChild(val);
+    if (m && typeof m === 'object' && m.change != null) {
+      var ch = el('span', 'inv-metric-change tabular');
+      ch.textContent = numberChange(m.change, m.change_pct);
+      valRow.appendChild(ch);
+    }
+    if (m && typeof m === 'object' && m.period) {
+      var per = el('span', 'inv-metric-period dim tabular'); per.textContent = m.period; valRow.appendChild(per);
+    }
+    node.appendChild(valRow);
+    if (m && typeof m === 'object' && m.evidence) {
+      var ev = el('div', 'inv-metric-evidence dim'); ev.appendChild(esc(m.evidence)); node.appendChild(ev);
+    }
+    return node;
+  }
+
+  function numberChange(change, pct) {
+    if (change == null) return '';
+    var n = Number(change);
+    if (!isFinite(n)) return String(change);
+    var sign = n > 0 ? '+' : '';
+    var out = sign + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    if (pct != null) { var p = Number(pct); if (isFinite(p)) out += ' (' + sign + p.toFixed(1) + '%)'; }
+    return out;
+  }
+
+  function valCell(label, value, unit, isPct) {
+    var node = el('div', 'inv-valuation-cell');
+    var lab = el('span', 'inv-valuation-label label'); lab.textContent = label; node.appendChild(lab);
+    var v = el('span', 'inv-valuation-value tabular');
+    if (value == null || value === '') v.textContent = '—';
+    else {
+      var n = Number(value);
+      if (!isFinite(n)) v.textContent = String(value);
+      else if (isPct) { if (Math.abs(n) > 0 && Math.abs(n) < 1 && n !== 0) n = n * 100; v.textContent = (n >= 0 ? '' : '') + n.toFixed(1) + '%'; }
+      else { v.textContent = (unit === '$' ? '$' : '') + fmtCompact(n) + (unit && unit !== '$' ? ' ' + unit : ''); }
+    }
+    node.appendChild(v);
+    return node;
+  }
+
+  function prettyName(name) {
+    return String(name).replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function addSection(parent, cls, label, items) {
+    if (!items || (Array.isArray(items) && !items.length)) return;
+    var block = el('div', 'inv-subsection ' + cls);
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = label; h.appendChild(l); block.appendChild(h);
+    var ul = el('ul'); ul.className = 'inv-bullets';
+    var arr = Array.isArray(items) ? items : [items];
+    arr.forEach(function (it) {
+      var li = el('li');
+      if (it && typeof it === 'object') li.appendChild(esc(it.text || it.risk || it.label || it.name || ''));
+      else li.appendChild(esc(it));
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
+  function addSignalsSection(parent, signals) {
+    if (!signals || typeof signals !== 'object' || !Object.keys(signals).length) return;
+    var block = el('div', 'inv-subsection inv-signals');
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Deterministic signal ledger'; h.appendChild(l); block.appendChild(h);
+    var ledger = el('div', 'inv-signal-ledger');
+    Object.keys(signals).forEach(function (name) {
+      var signal = signals[name] && typeof signals[name] === 'object' ? signals[name] : {};
+      var row = el('div', 'inv-signal-row');
+      var title = el('span', 'inv-signal-name'); title.textContent = prettyName(name); row.appendChild(title);
+      var score = el('span', 'inv-signal-score tabular'); var scoreValue = Number(signal.score); score.textContent = isFinite(scoreValue) ? (scoreValue > 0 ? '+' : '') + scoreValue : '—'; row.appendChild(score);
+      var observed = el('span', 'inv-signal-observed dim tabular');
+      observed.textContent = 'current ' + (signal.observed_value == null ? '—' : fmtCompact(signal.observed_value)) + ' · prior ' + (signal.prior_value == null ? '—' : fmtCompact(signal.prior_value));
+      row.appendChild(observed);
+      var rule = el('span', 'inv-signal-rule dim'); rule.textContent = signal.rule || ''; row.appendChild(rule);
+      ledger.appendChild(row);
+    });
+    block.appendChild(ledger);
+    parent.appendChild(block);
+  }
+
+
+  function addRisksSection(parent, risks) {
+    if (!risks || (Array.isArray(risks) && !risks.length)) return;
+    var block = el('div', 'inv-subsection inv-risks');
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Risks'; h.appendChild(l); block.appendChild(h);
+    var ul = el('ul'); ul.className = 'inv-bullets inv-risks-list';
+    var arr = Array.isArray(risks) ? risks : [risks];
+    arr.forEach(function (r) {
+      var li = el('li');
+      if (r && typeof r === 'object' && (r.risk || r.risk_text)) {
+        li.appendChild(esc(r.risk || r.risk_text));
+        if (r.mitigation || r.mitigation_text) {
+          var m = el('div', 'inv-mitigation dim'); m.appendChild(esc('Mitigation: ' + (r.mitigation || r.mitigation_text))); li.appendChild(m);
+        }
+      } else if (r && typeof r === 'object') {
+        li.appendChild(esc(r.text || r.label || r.name || ''));
+      } else {
+        li.appendChild(esc(r));
+      }
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
+  function addEvidenceSection(parent, evidence) {
+    if (!evidence || (Array.isArray(evidence) && !evidence.length)) return;
+    var block = el('div', 'inv-subsection inv-evidence');
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Evidence'; h.appendChild(l); block.appendChild(h);
+    var ul = el('ul'); ul.className = 'inv-evidence-list';
+    var arr = Array.isArray(evidence) ? evidence : [evidence];
+    arr.forEach(function (e) {
+      var li = el('li');
+      if (e && typeof e === 'object') {
+        var q = el('div', 'inv-evidence-quote'); q.appendChild(esc(e.quote || e.fact || e.text || e.claim || '')); li.appendChild(q);
+        var meta = el('div', 'inv-evidence-meta dim tabular'); meta.appendChild(esc([e.source || e.page || '', e.section || '', e.confidence || ''].filter(Boolean).join(' · '))); li.appendChild(meta);
+      } else {
+        li.appendChild(esc(e));
+      }
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
+  // ---- State banner ----
+  function setStatus(text) { var s = document.getElementById('inv-status'); if (s) s.textContent = text || ''; }
+
+  // ---- Dashboard fetch ----
+  function loadDashboard() {
+    setStatus('Loading…');
+    fetch('/api/investment/dashboard', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('Dashboard returned ' + r.status);
+        return r.json().catch(function () { return {}; });
+      })
+      .then(function (data) {
+        setText(document.getElementById('inv-model'), data.model ? ('model ' + data.model) : 'model —');
+        renderRegions(data.regions);
+        renderIndustries(data.industries);
+        renderDocuments(data.documents);
+        renderAnalyses(data.analyses);
+        decorateQueueMeta(data);
+        setStatus(data.documents && data.documents.length ? '' : '');
+      })
+      .catch(function (err) {
+        var msg = 'Unable to load dashboard: ' + (err && err.message ? err.message : err);
+        [['inv-regions', '1'], ['inv-industries', '1'], ['inv-documents', '1'], ['inv-analyses', '1']].forEach(function (p) {
+          var host = document.getElementById(p[0]);
+          if (host) { host.setAttribute('data-inv-state', 'error'); clear(host); var e = el('div', 'error-block'); e.setAttribute('role', 'alert'); e.textContent = msg; host.appendChild(e); }
+        });
+        setStatus(msg);
+      });
+  }
+
+  function decorateQueueMeta(data) {
+    var meta = document.getElementById('inv-queue-meta');
+    if (!meta) return;
+    var n = Array.isArray(data.documents) ? data.documents.length : 0;
+    var a = Array.isArray(data.analyses) ? data.analyses.length : 0;
+    meta.textContent = n + (n === 1 ? ' report' : ' reports') + ' · ' + a + (a === 1 ? ' analysis' : ' analyses');
+  }
+
+  // ---- Upload (raw bytes via query params) ----
+  function bindUpload() {
+    var form = document.getElementById('inv-upload-form');
+    if (!form) return;
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var fileInput = document.getElementById('inv-file');
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) { setStatus('Select a report file first.'); return; }
+      var btn = document.getElementById('inv-upload-btn');
+      var params = collectParams(form, ['company', 'symbol', 'region', 'industry', 'document_type', 'report_date', 'source_url']);
+      params.filename = file.name;
+      var qs = buildQuery(params);
+      if (!qs) { setStatus('Provide at least a company or symbol.'); return; }
+      btn.disabled = true; setStatus('Uploading “' + file.name + '”…');
+      var nameSpan = document.getElementById('inv-file-name'); if (nameSpan) nameSpan.textContent = '';
+      fetch('/api/investment/documents?' + qs, {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/octet-stream' }, csrfHeader()),
+        body: file
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.detail || ('Upload failed (' + r.status + ')'));
+          return data;
+        });
+      }).then(function () {
+        setStatus('Uploaded · “' + file.name + '”');
+        fileInput.value = '';
+        loadDashboard();
+      }).catch(function (err) {
+        setStatus(err && err.message ? err.message : String(err));
+      }).then(function () { btn.disabled = false; });
+    });
+  }
+
+  // ---- URL ingest (JSON) ----
+  function bindUrl() {
+    var form = document.getElementById('inv-url-form');
+    if (!form) return;
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var url = (document.getElementById('inv-url').value || '').trim();
+      if (!url) { setStatus('Enter a report URL.'); return; }
+      var btn = document.getElementById('inv-url-btn');
+      var body = collectObject(form, ['company', 'symbol', 'region', 'industry', 'document_type', 'report_date']);
+      body.url = url;
+      btn.disabled = true; setStatus('Ingesting URL…');
+      fetch('/api/investment/urls', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeader()),
+        body: JSON.stringify(body)
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.detail || ('Ingest failed (' + r.status + ')'));
+          return data;
+        });
+      }).then(function () {
+        setStatus('Ingested · ' + url.slice(0, 48) + (url.length > 48 ? '…' : ''));
+        form.reset();
+        loadDashboard();
+      }).catch(function (err) {
+        setStatus(err && err.message ? err.message : String(err));
+      }).then(function () { btn.disabled = false; });
+    });
+  }
+
+  function collectParams(form, names) {
+    var params = {};
+    names.forEach(function (name) {
+      var node = form.querySelector('[name="' + name + '"]');
+      if (!node) return;
+      var v = (node.value || '').toString().trim();
+      if (v) params[name] = v;
+    });
+    return params;
+  }
+  function collectObject(form, names) {
+    var obj = {};
+    names.forEach(function (name) {
+      var node = form.querySelector('[name="' + name + '"]');
+      if (!node) return;
+      var v = (node.value || '').toString().trim();
+      if (v) obj[name] = v;
+    });
+    return obj;
+  }
+  function buildQuery(params) {
+    var parts = [];
+    Object.keys(params).forEach(function (k) {
+      parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    });
+    return parts.join('&');
+  }
+
+  // ---- Analyze (with optional market_inputs) ----
+  function bindAnalyze() {
+    document.addEventListener('click', function (ev) {
+      var btn = ev.target.closest && ev.target.closest('.inv-analyze-btn');
+      if (!btn) return;
+      ev.preventDefault();
+      var documentId = btn.dataset.documentId;
+      if (!documentId) return;
+      btn.disabled = true; setStatus('Analyzing document ' + String(documentId).slice(0, 8) + '…');
+      var body = { market_inputs: collectMarketInputs() };
+      // Strip null/non-finite so service only gets finite entered values.
+      var clean = {};
+      Object.keys(body.market_inputs).forEach(function (k) {
+        var v = body.market_inputs[k];
+        if (v != null && isFinite(v)) clean[k] = v;
+      });
+      body.market_inputs = clean;
+      fetch('/api/investment/documents/' + encodeURIComponent(documentId) + '/analyze', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeader()),
+        body: JSON.stringify(Object.keys(body.market_inputs).length ? body : {})
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.detail || ('Analyze rejected (' + r.status + ')'));
+          return data;
+        });
+      }).then(function (data) {
+        var aid = data.analysis_id || '';
+        setStatus('Analysis complete · ' + String(aid).slice(0, 8));
+        btn.disabled = false;
+        loadDashboard();
+      }).catch(function (err) {
+        setStatus(err && err.message ? err.message : String(err));
+        btn.disabled = false;
+      });
+    });
+  }
+
+  function collectMarketInputs() {
+    var ids = { market_price: 'inv-mp', shares_outstanding: 'inv-shares', net_debt: 'inv-netdebt', discount_rate: 'inv-wacc', terminal_growth: 'inv-tg' };
+    var out = {};
+    Object.keys(ids).forEach(function (k) {
+      var node = document.getElementById(ids[k]);
+      if (!node) return;
+      var v = (node.value || '').toString().trim();
+      if (!v) return;
+      var n = Number(v);
+      if (isFinite(n)) out[k] = n;
+    });
+    return out;
+  }
+
+  // ---- Filing source status & collection ----
+  function loadFilingStatus() {
+    var host = document.getElementById('inv-filing-status');
+    if (!host) return;
+    fetch('/api/investment/filings/status').then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(data.detail || 'Filing status failed');
+        return data;
+      });
+    }).then(function (data) {
+      renderFilingStatus(host, data);
+    }).catch(function () {
+      host.textContent = 'Filing status unavailable';
+    });
+  }
+
+  function renderFilingStatus(host, data) {
+    clear(host);
+    if (!data || !data.sources) {
+      host.textContent = 'Filing collection not configured';
+      return;
+    }
+    var enabled = data.enabled;
+    var schedule = data.schedule || '';
+    var lastRun = data.last_run;
+    var header = el('div', 'inv-filing-header');
+    var stateSpan = el('span', enabled ? 'inv-filing-enabled' : 'inv-filing-disabled');
+    stateSpan.textContent = enabled ? 'Active' : 'Disabled';
+    header.appendChild(stateSpan);
+    if (schedule) {
+      var schedSpan = el('span', 'dim tabular');
+      schedSpan.textContent = ' · schedule: ' + schedule;
+      header.appendChild(schedSpan);
+    }
+    if (lastRun && lastRun.completed_at) {
+      var lastSpan = el('span', 'dim tabular');
+      lastSpan.textContent = ' · last run: ' + String(lastRun.completed_at).slice(0, 16) + ' (' + (lastRun.status || '?') + ')';
+      header.appendChild(lastSpan);
+    }
+    host.appendChild(header);
+
+    var srcList = el('div', 'inv-filing-source-list');
+    (data.sources || []).forEach(function (src) {
+      var row = el('div', 'inv-filing-source-row');
+      var nameSpan = el('span', 'inv-filing-source-name');
+      nameSpan.textContent = src.name || src.id;
+      row.appendChild(nameSpan);
+      var badge = el('span', src.enabled ? 'inv-filing-badge-on' : 'inv-filing-badge-off');
+      badge.textContent = src.enabled ? 'on' : 'off';
+      row.appendChild(badge);
+      if (src.companies != null) {
+        var countSpan = el('span', 'dim tabular');
+        countSpan.textContent = src.companies + (src.companies === 1 ? ' company' : ' companies');
+        row.appendChild(countSpan);
+      }
+      if (src.api_key_required && !src.api_key_configured) {
+        var keyWarn = el('span', 'inv-filing-key-warn');
+        keyWarn.textContent = ' · key missing';
+        row.appendChild(keyWarn);
+      }
+      if (src.note) {
+        var noteSpan = el('span', 'dim');
+        noteSpan.textContent = ' · ' + src.note;
+        row.appendChild(noteSpan);
+      }
+      srcList.appendChild(row);
+    });
+    host.appendChild(srcList);
+  }
+
+  function bindFilingCollect() {
+    var btn = document.getElementById('inv-filing-collect-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      setStatus('Collecting filings…');
+      fetch('/api/investment/filings/collect', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeader()),
+        body: JSON.stringify({})
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.detail || 'Collection trigger failed');
+          return data;
+        });
+      }).then(function (data) {
+        setStatus('Filing collection started · ' + (data.job_id || '').slice(0, 8));
+        btn.disabled = false;
+        // Reload status after a short delay
+        setTimeout(function () { loadFilingStatus(); loadDashboard(); }, 3000);
+      }).catch(function (err) {
+        setStatus(err && err.message ? err.message : String(err));
+        btn.disabled = false;
+      });
+    });
+  }
+
+  function bindRefresh() {
+    var btn = document.getElementById('inv-refresh');
+    if (btn) btn.addEventListener('click', loadDashboard);
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    bindUpload();
+    bindUrl();
+    bindAnalyze();
+    bindRefresh();
+    bindFilingCollect();
+    loadDashboard();
+    loadFilingStatus();
+  });
+})();
+</script>
+{% endblock %}
