@@ -615,6 +615,14 @@ separate from stored records:
   than prominent warning banners.
 - Logs poll every few seconds while the page is open, and the header refreshes
   after a cycle finishes so cost/token usage stays current.
+- Initial dashboard loaders execute concurrently rather than serializing
+  independent database and internal-service reads. Section failures retain
+  local fallbacks.
+- One consolidated health result supplies both detailed component state and the
+  compact header status. The orchestrator bounds its expensive quality snapshot
+  to a 30-second default TTL, while the Quality page remains a live diagnostic.
+- The macro indicator strip is populated by one batched query using lateral
+  index probes for current/previous values and a bounded trend aggregate.
 
 ### 4.4 Orchestrator
 
@@ -948,9 +956,9 @@ GET  /api/opinions/{type}           Opinions filtered by type
 GET  /api/events/upcoming           Economic calendar (next 14 days)
 GET  /api/events/recent             Recent releases with actual vs consensus
 GET  /api/macro/{series_id}         Time series data for a specific indicator
-GET  /api/macro/dashboard           Key indicators with latest values + trends
+GET  /api/macro/dashboard           Batched key-indicator values + trends
 GET  /api/watchlist                 Current watchlist from config
-GET  /api/system/health             Collector/processor health status
+GET  /api/system/health             Local state + bounded orchestrator quality snapshot
 GET  /api/system/logs               Recent collection and processing logs
 POST /api/collect/{source_id}       Trigger on-demand collection
 POST /api/process/{processor_id}    Trigger on-demand analysis

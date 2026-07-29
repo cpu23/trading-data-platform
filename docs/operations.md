@@ -114,7 +114,20 @@ Health separates process survival from dependency and data quality:
 - `readiness: unready` returns HTTP 503 when the database or required orchestrator contract is unavailable.
 - `data_health: degraded` reports stale or unhealthy data without pretending the process is dead.
 
-The dashboard may therefore truthfully show **Degraded** while API readiness remains ready. `/api/system/health` is authenticated. The orchestrator health port is internal to Compose.
+The dashboard may therefore truthfully show **Degraded** while API readiness
+remains ready. `/api/system/health` is authenticated and makes one internal
+orchestrator `/health` request. That response carries a configuration-aware
+quality snapshot cached for 30 seconds by default. The cache TTL is bounded by
+`HEALTH_QUALITY_CACHE_SECONDS`; changing activated configuration replaces the
+configuration object and forces a new snapshot. Refreshes run under a lock so
+concurrent dashboard, settings, API, and Compose probes do not duplicate the
+quality sweep.
+
+The orchestrator `/quality` endpoint is intentionally uncached and is used by
+the operator Quality page for an explicit live diagnostic. The orchestrator
+health port remains internal to Compose. A stale snapshot can therefore affect
+summary health for at most the configured TTL, while the live Quality page is
+available when immediate confirmation is required.
 
 ## Authentication, CSRF, and SSE
 
@@ -157,5 +170,19 @@ docker compose -f docker-compose.demo.yml config --quiet
 scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 ```
+
+For a warm read-path check that avoids external or paid calls:
+
+```bash
+curl -sS -o /dev/null -w 'dashboard %{http_code} %{time_total}s\n' \
+  http://127.0.0.1:8000/
+curl -sS -o /dev/null -w 'settings %{http_code} %{time_total}s\n' \
+  http://127.0.0.1:8000/settings
+curl -sS -o /dev/null -w 'health %{http_code} %{time_total}s\n' \
+  http://127.0.0.1:8000/api/system/health
+```
+
+The first health request after cache expiry can include one live quality sweep.
+Record warm and refresh-path measurements separately.
 
 `failure_drills.py` is unit-only by default. `--docker` opts into the full smoke test. Neither default path calls paid or external data sources.

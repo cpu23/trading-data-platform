@@ -35,7 +35,13 @@ Split services make independent failure, restart, health, logs, and resource own
 
 ## Health, restart, and migration ordering
 
-Orchestrator health reports liveness and returns 503 when its database dependency is unavailable. API health is authenticated and proxies the orchestrator health contract, so dependency loss makes API readiness unhealthy rather than falsely green. Bounded healthcheck timeouts prevent hung probes. Compose restarts crashed long-running processes independently; migrations are never crash-looped.
+Orchestrator health reports liveness and returns 503 when its database
+dependency is unavailable. Its response includes a configuration-aware quality
+snapshot with a 30-second default TTL; the separate `/quality` endpoint remains
+an uncached live diagnostic. API health is authenticated and consumes that
+single orchestrator health contract, so dependency loss makes API readiness
+unhealthy rather than falsely green without duplicating the quality sweep.
+Bounded healthcheck timeouts prevent hung probes.
 
 ## Shared storage
 

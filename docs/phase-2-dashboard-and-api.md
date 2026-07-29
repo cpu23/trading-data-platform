@@ -5,6 +5,13 @@
 > collectors, server-side budgets, and current dashboard navigation. For the
 > deployed system, use
 > [Current Architecture and Operations](current-architecture-and-operations.md).
+>
+> The current read path also differs from this original design: dashboard
+> loaders execute concurrently, `/api/macro/dashboard` uses one batched query,
+> and `/api/system/health` consumes one bounded orchestrator quality snapshot.
+> See
+> [Current Architecture and Operations](current-architecture-and-operations.md)
+> and [Performance acceptance baseline](performance-baseline.md).
 
 **Version:** 1.0
 **Status:** Ready for implementation

@@ -1,6 +1,6 @@
 # Current Architecture and Operations
 
-This document describes the deployed platform as of June 2026. Older phase
+This document describes the deployed platform as of 29 July 2026. Older phase
 documents remain in the repository as historical design records and should not
 be treated as current operator instructions.
 
@@ -9,8 +9,8 @@ be treated as current operator instructions.
 The production Compose project contains:
 
 - `postgres`: PostgreSQL 16 with TimescaleDB.
-- `orchestrator`: collectors, scheduler, quality checks, OANDA stream, and
-  analytical processors.
+- `orchestrator`: collectors, scheduler, live and cached quality checks, OANDA
+  stream, and analytical processors.
 - `api`: session-authenticated JSON API and server-rendered HTMX interface.
 - `state-init`: one-shot migration of compatible legacy state into the private
   state volume.
@@ -169,6 +169,33 @@ The interface uses progressive disclosure:
 Primary navigation remains Dashboard, asset deep links, Settings, Logs, and
 Data quality. Desktop and mobile layouts are supported.
 
+## Read Path and Health Snapshot
+
+Dashboard rendering is a concurrent fan-in over stored regime, briefing,
+calendar, macro, price, cycle, budget, news, and health data. Each independent
+loader retains a section-level fallback, so one unavailable dataset does not
+serialize or suppress unrelated sections. The completed health response is
+fetched once per page and reused for both the detailed component state and the
+compact data-status chip.
+
+`GET /api/macro/dashboard` uses one batched PostgreSQL statement for every
+configured dashboard series. Lateral index probes select the latest and
+previous observations, while a bounded five-day aggregate derives the trend.
+This replaces per-indicator query fanout without changing the response
+contract.
+
+`GET /api/system/health` performs local API checks and one internal
+orchestrator `/health` request. The orchestrator response includes its quality
+result. The expensive quality suite is protected by a process-local,
+configuration-aware snapshot with a 30-second default TTL; set
+`HEALTH_QUALITY_CACHE_SECONDS` to change that bound. An expired snapshot is
+refreshed under a lock so concurrent probes do not duplicate the sweep.
+
+The operator-facing `/quality` page deliberately calls the uncached
+orchestrator `/quality` endpoint. It is the explicit live diagnostic path;
+ordinary dashboard, settings, readiness, and Compose health probes consume the
+bounded snapshot.
+
 ## Authentication and Request Security
 
 Before activation, only setup/login-safe routes are available. Activation
@@ -196,7 +223,7 @@ collectors can still run when the paid inference budget is exhausted.
 ```bash
 # Service state
 docker compose ps
-curl http://127.0.0.1:8001/api/meta/build
+curl http://127.0.0.1:8000/api/meta/build
 
 # Full cycle
 docker compose exec orchestrator python cli.py collect --all

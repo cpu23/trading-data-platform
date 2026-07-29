@@ -2,21 +2,81 @@
 
 ## Scope
 
-These are measured local acceptance numbers from 17 July 2026 after the reliability and UI remediation. They are not production-SLA claims and do not include live FRED, OANDA, OpenRouter, Reuters, or TwitterAPI.io latency.
+This document records local read-path acceptance measurements. They are not
+production SLAs and do not include collector, market-data-provider, or paid
+model latency.
+
+## Current warm baseline — 29 July 2026
 
 Environment:
 
-- credential-free deterministic Docker demo;
-- API bound to `127.0.0.1:18080`;
-- warm local PostgreSQL/TimescaleDB and application containers;
-- five sequential authenticated requests per route;
-- response time measured client-side with Python `urllib` and `time.perf_counter()`;
-- response size is the final body size from the fifth request.
+- production Compose topology with the API bound to `127.0.0.1:18082`;
+- warm local PostgreSQL/TimescaleDB, API, and orchestrator containers;
+- the deployed local dataset and configured dashboard series;
+- five sequential requests per route after warm-up;
+- response time measured client-side with Python `urllib` and
+  `time.perf_counter()`;
+- no collection cycle, external provider request, or paid inference triggered.
 
-## HTTP baseline
+### HTTP measurements
+
+| Route | Status | Response bytes | Median ms | Min ms | Max ms | Samples ms |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Dashboard `/` | 200 | 66,533 | 141.53 | 138.69 | 152.56 | 152.56, 144.96, 139.03, 138.69, 141.53 |
+| Settings `/settings` | 200 | 11,803 | 7.16 | 7.00 | 9.80 | 9.80, 7.38, 7.00, 7.13, 7.16 |
+| System health `/api/system/health` | 200 | 23,300 | 6.82 | 6.61 | 7.16 | 6.74, 6.61, 7.16, 6.82, 7.07 |
+| Macro summary `/api/macro/dashboard` | 200 | 1,329 | 124.29 | 121.34 | 128.41 | 121.34, 128.41, 121.44, 127.00, 124.29 |
+
+### Browser measurements
+
+A local Chromium run loaded the real server-rendered pages and vendored static
+assets:
+
+| Page | TTFB ms | DOM content loaded ms | Load ms | First contentful paint ms | Render check |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Dashboard | 131.4 | 197.6 | 197.9 | 204 | Six rendered sections |
+| Settings | 13.4 | 33.1 | 34.2 | 40 | Three settings panels |
+
+### Read-path design represented by the baseline
+
+- Dashboard regime, briefing, event, macro, price, cycle, budget, news, and
+  health loaders execute concurrently with section-level fallbacks.
+- One system-health result supplies both the detailed page state and compact
+  status chip.
+- `/api/system/health` performs one orchestrator `/health` request; that
+  response includes the quality result.
+- Orchestrator health uses a configuration-aware quality snapshot with a
+  30-second default TTL. `/quality` remains an uncached live diagnostic.
+- `/api/macro/dashboard` uses one batched SQL statement instead of three
+  queries per configured indicator plus a collector-status query.
+
+An expired quality snapshot can make one health request pay for a live quality
+sweep. A refresh-path diagnostic measured approximately 0.9 seconds; warm and
+refresh-path numbers must be recorded separately.
+
+## Remediation evidence
+
+Before the 29 July read-path remediation, direct diagnostics observed:
+
+| Path | Before | Current warm result |
+| --- | ---: | ---: |
+| Dashboard HTTP | 3.66–3.81 s | 141.53 ms median |
+| Settings HTTP | 1.68–1.74 s | 7.16 ms median |
+| System health HTTP | 1.98 s | 6.82 ms median |
+| Dashboard first contentful paint | 3.62 s | 204 ms |
+| Settings first contentful paint | 1.79 s | 40 ms |
+
+The pre-remediation values were focused incident diagnostics rather than a
+five-sample benchmark. They are retained only to show the failure mode: repeated
+quality sweeps and serial page loaders dominated time to first byte.
+
+## Historical deterministic demo baseline — 17 July 2026
+
+The credential-free demo used warm containers, fictional fixtures, and five
+sequential authenticated requests:
 
 | Route | Status | Response bytes | Median ms | Min ms | Max ms |
-|---|---:|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: | ---: |
 | `/` | 200 | 25,347 | 135.36 | 131.13 | 137.83 |
 | `/logs` | 200 | 8,212 | 3.69 | 3.34 | 4.26 |
 | `/quality` | 200 | 18,739 | 55.82 | 53.64 | 59.67 |
@@ -24,34 +84,13 @@ Environment:
 | `/news` | 200 | 3,322 | 1.84 | 1.65 | 3.30 |
 | `/api/system/health` | 200 | 20,880 | 132.23 | 124.86 | 134.31 |
 
-The demo health response reported `liveness: ok`, `readiness: ready`, and `data_health: degraded`. That degraded state is expected because external collection is disabled; it proves that readiness and data freshness are reported separately.
-
-## Browser acceptance
-
-A fully local Chromium/CDP run used vendored Chart.js and HTMX assets and blocked non-local hostnames. Measured browser state:
-
-- six comparison-chart datasets, each with three dated fixture points;
-- chart loading completed with `aria-busy=false`;
-- selected and expanded instrument: `AUDJPY`;
-- News section rendered the truthful unpublished empty state;
-- desktop page overflow: false;
-- 390 px page overflow: false (`scrollWidth=390`, `clientWidth=390`);
-- console errors: zero.
-- dedicated News page navigation and filters remained usable at desktop and 390 px;
-- News source state and unpublished empty state were truthful, with no visible clipping, overlap, or overflow.
-
-Acceptance screenshots were written outside the repository:
-
-- `/home/mrw/trading-dashboard-phase12-interactive.png`
-- `/home/mrw/trading-dashboard-phase12-interactive-mobile.png`
-- `/home/mrw/trading-news-phase12-final-desktop.png`
-- `/home/mrw/trading-news-phase12-final-mobile.png`
+The degraded demo data-health state is expected because external collection is
+disabled; readiness and data freshness are intentionally separate.
 
 ## Pipeline timings and deferred live measurements
 
-The deterministic demo fixtures record representative fictional stage durations only; they are not live benchmark evidence. No legitimate pre-remediation timing dataset was retained, so this document does not invent a before/after percentage.
-
-The following production measurements remain intentionally unverified because acceptance was required to avoid live and paid upstream calls:
+The following production workload measurements remain separate from read-path
+acceptance:
 
 1. warm FRED collection;
 2. no-change production refresh;
@@ -59,7 +98,9 @@ The following production measurements remain intentionally unverified because ac
 4. forced full production cycle;
 5. real OpenRouter stage latency and cost.
 
-When production credentials and an approved call budget are available, record those runs from persisted `collection_log`, `processing_log`, and `cycle_runs` rows. Compare correlation-linked stage durations and API-call counts; do not infer performance from wall-clock impressions or demo fixture values.
+Record those runs from persisted `collection_log`, `processing_log`, and
+`cycle_runs` rows. Compare correlation-linked stage durations and API-call
+counts; do not infer pipeline performance from dashboard response time.
 
 ## Reproduction
 
@@ -71,4 +112,7 @@ scripts/smoke_test.sh
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 ```
 
-For route measurements, start `docker-compose.demo.yml`, warm each route once, then issue five authenticated sequential requests against localhost. Record all samples rather than reporting only the fastest request.
+For route measurements, warm each route once, then issue five sequential
+requests against the same local deployment. Record every sample, response size,
+authentication mode, cache state, and container topology rather than reporting
+only the fastest request.

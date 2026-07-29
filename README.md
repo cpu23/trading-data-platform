@@ -51,6 +51,7 @@ flowchart LR
         Regime["Macro regime processor"]
         Events["Event impact processor"]
         Briefing["Daily briefing processor"]
+        Quality["Data-quality checks<br/>30-second health snapshot"]
     end
 
     subgraph Storage["PostgreSQL and TimescaleDB"]
@@ -61,8 +62,9 @@ flowchart LR
 
     subgraph Delivery["Delivery Layer"]
         API["FastAPI JSON API"]
+        Fanout["Concurrent dashboard loader"]
         Dashboard["HTMX dashboard"]
-        Health["Health and logs views"]
+        Health["Health, live quality, and logs"]
     end
 
     FRED --> Collectors
@@ -82,11 +84,13 @@ flowchart LR
     Events --> Derived
     Briefing --> Derived
     Cycle --> Operations
+    Raw --> Quality
+    Quality --> API
 
     Raw --> API
     Derived --> API
     Operations --> API
-    API --> Dashboard
+    API --> Fanout --> Dashboard
     API --> Health
 ```
 
@@ -111,6 +115,9 @@ derived outputs inspectable without mixing raw source data with analysis.
   LLM spend are available through both the API and dashboard.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
+- **Bounded read latency:** dashboard datasets load concurrently, macro
+  indicators use one batched query, and the health path reuses a 30-second
+  quality snapshot while `/quality` remains an explicit live diagnostic.
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
@@ -135,6 +142,27 @@ signal engine. It includes:
 - Daily briefing and analytical summaries
 - Refresh, analyze, and explicit force-full cycle controls with live status
 - Persistent Dashboard, Logs, Quality, News, and Operations navigation
+
+Independent dashboard datasets are loaded concurrently. The dashboard and
+settings pages each consume one consolidated system-health response instead of
+rerunning the quality suite, and macro indicator summaries are fetched in one
+batched database query.
+
+### Current read-path baseline
+
+Warm local measurements from 29 July 2026:
+
+| Route | Median response time |
+| --- | ---: |
+| Dashboard `/` | 141.53 ms |
+| Settings `/settings` | 7.16 ms |
+| System health `/api/system/health` | 6.82 ms |
+| Macro summary `/api/macro/dashboard` | 124.29 ms |
+
+Chromium first contentful paint was 204 ms for the dashboard and 40 ms for
+settings. These are local acceptance measurements, not a production SLA. See
+[docs/performance-baseline.md](docs/performance-baseline.md) for the environment,
+samples, cache semantics, and reproduction procedure.
 
 ![System logs](docs/assets/system-logs-full-page.png)
 
