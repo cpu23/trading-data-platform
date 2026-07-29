@@ -1,6 +1,8 @@
 import json
 import os
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -79,6 +81,35 @@ def require_internal_basic(credentials: HTTPBasicCredentials | None = Depends(op
 
 def _get_config():
     return load_config()
+
+_quality_cache_lock = threading.Lock()
+_quality_cache_config: dict | None = None
+_quality_cache_until = 0.0
+_quality_cache_results: dict[str, dict] = {}
+
+
+def _health_quality_snapshot(config: dict) -> dict[str, dict]:
+    try:
+        ttl_seconds = max(
+            float(os.environ.get("HEALTH_QUALITY_CACHE_SECONDS", "30")),
+            0.0,
+        )
+    except (TypeError, ValueError):
+        ttl_seconds = 30.0
+
+    now = time.monotonic()
+    global _quality_cache_config, _quality_cache_until, _quality_cache_results
+    with _quality_cache_lock:
+        if (
+            _quality_cache_config is config
+            and now < _quality_cache_until
+        ):
+            return _quality_cache_results
+        results = run_quality_checks(config)
+        _quality_cache_config = config
+        _quality_cache_until = time.monotonic() + ttl_seconds
+        _quality_cache_results = results
+        return results
 
 
 def _job_timeout(config: dict, key: str, default: timedelta) -> timedelta:
@@ -167,7 +198,7 @@ def health():
         "status": "available", "reason": None,
     }]
     try:
-        quality_results = run_quality_checks(config)
+        quality_results = _health_quality_snapshot(config)
     except Exception as exc:
         logger.error("health_quality_checks_failed", error=str(exc))
         quality_results = {"quality_runner": {"healthy": False, "detail": str(exc)}}
@@ -185,16 +216,22 @@ def health():
             ),
         })
 
-    data_health = "degraded" if unhealthy else "healthy"
+    quality_payload = {
+        "overall": "degraded" if unhealthy else "healthy",
+        "checks": quality_results,
+    }
+
+    data_health = quality_payload["overall"]
     return {
         "liveness": "ok",
         "readiness": "ready",
         "data_health": data_health,
-        "status": "degraded" if unhealthy else "healthy",
+        "status": data_health,
         "components": components,
         "scheduler": scheduler,
         "stream": stream,
         "collectors": collectors_status,
+        "quality": quality_payload,
     }
 
 

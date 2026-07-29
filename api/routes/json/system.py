@@ -247,10 +247,10 @@ async def get_system_health(request: Request):
     quality = {}
     quality_warn_map = {}
 
-    # ── Fetch and validate orchestrator contracts ──
+    # ── Fetch and validate the orchestrator snapshot once ──
     try:
         health_response = await request.app.state.orchestrator_client.get(
-            "http://orchestrator:8000/health", timeout=2.0,
+            "http://orchestrator:8000/health", timeout=5.0,
         )
         health_response.raise_for_status()
         orchestration = health_response.json()
@@ -259,12 +259,7 @@ async def get_system_health(request: Request):
             raise ValueError(
                 f"orchestrator is not ready ({orchestration['readiness']})"
             )
-
-        quality_response = await request.app.state.orchestrator_client.get(
-            "http://orchestrator:8000/quality", timeout=5.0,
-        )
-        quality_response.raise_for_status()
-        quality = quality_response.json()
+        quality = orchestration.get("quality")
         _validate_orchestrator_quality_contract(quality)
     except Exception as exc:
         reason = str(exc) or type(exc).__name__

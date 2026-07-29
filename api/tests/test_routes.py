@@ -235,7 +235,6 @@ class TestSystemRoutes(unittest.TestCase):
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
     def test_health_returns_200(self, mock_httpx_get, _mock_qm):
         """GET /api/system/health with empty DB should return 200 + contract keys."""
-        # Mock orchestrator health response
         mock_health_resp = MagicMock()
         mock_health_resp.json.return_value = {
             "liveness": "ok",
@@ -245,14 +244,9 @@ class TestSystemRoutes(unittest.TestCase):
             "components": [],
             "scheduler": {"jobs": []},
             "stream": {"status": "connected", "last_heartbeat": "2026-01-01T00:00:00Z"},
+            "quality": {"overall": "healthy", "checks": {}},
         }
-        # Mock orchestrator quality response
-        mock_quality_resp = MagicMock()
-        mock_quality_resp.json.return_value = {
-            "overall": "healthy",
-            "checks": {},
-        }
-        mock_httpx_get.side_effect = [mock_health_resp, mock_quality_resp]
+        mock_httpx_get.return_value = mock_health_resp
 
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -266,6 +260,7 @@ class TestSystemRoutes(unittest.TestCase):
         # With healthy stream and no stale components, should be ready/healthy
         self.assertEqual(data["readiness"], "ready")
         self.assertEqual(data["data_health"], "healthy")
+        mock_httpx_get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
@@ -276,13 +271,12 @@ class TestSystemRoutes(unittest.TestCase):
             "status": "healthy", "components": [],
             "scheduler": {"jobs": []},
             "stream": {"status": "connected"},
+            "quality": {
+                "overall": "degraded",
+                "checks": {"fred_freshness": {"healthy": False, "detail": "stale"}},
+            },
         }
-        quality = MagicMock()
-        quality.json.return_value = {
-            "overall": "degraded",
-            "checks": {"fred_freshness": {"healthy": False, "detail": "stale"}},
-        }
-        mock_get.side_effect = [health, quality]
+        mock_get.return_value = health
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -293,6 +287,7 @@ class TestSystemRoutes(unittest.TestCase):
         quality_component = next(c for c in data["components"] if c["name"] == "quality_checks")
         self.assertEqual(quality_component["last_status"], "degraded")
         self.assertIn("fred_freshness", quality_component["error_message"])
+        mock_get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(
@@ -381,15 +376,12 @@ class TestSystemRoutes(unittest.TestCase):
             },
         }
 
-        valid_quality = MagicMock()
-        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
 
         for case, payload in malformed_payloads.items():
             with self.subTest(case=case):
                 health = MagicMock()
                 health.json.return_value = payload
-                mock_get.reset_mock(side_effect=True)
-                mock_get.side_effect = [health, valid_quality]
+                mock_get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -413,8 +405,6 @@ class TestSystemRoutes(unittest.TestCase):
             "invalid kind": {"name": "database", "kind": "nonsense", "status": "available"},
             "blank name": {"name": "   ", "kind": "service", "status": "available"},
         }
-        valid_quality = MagicMock()
-        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
 
         for case, component in malformed_components.items():
             with self.subTest(case=case):
@@ -423,9 +413,10 @@ class TestSystemRoutes(unittest.TestCase):
                     "liveness": "ok", "readiness": "ready", "data_health": "healthy",
                     "components": [component], "scheduler": {"jobs": []},
                     "stream": {"status": "connected"},
+                    "quality": {"overall": "healthy", "checks": {}},
                 }
-                mock_get.reset_mock(side_effect=True)
-                mock_get.side_effect = [health, valid_quality]
+                mock_get.reset_mock()
+                mock_get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -454,8 +445,6 @@ class TestSystemRoutes(unittest.TestCase):
             "invalid stream status type": {"scheduler": {"jobs": []}, "stream": {"status": ["connected"]}},
             "invalid stream heartbeat type": {"scheduler": {"jobs": []}, "stream": {"status": "connected", "last_heartbeat": []}},
         }
-        valid_quality = MagicMock()
-        valid_quality.json.return_value = {"overall": "healthy", "checks": {}}
 
         for case, fields in malformed_fields.items():
             with self.subTest(case=case):
@@ -463,9 +452,10 @@ class TestSystemRoutes(unittest.TestCase):
                 health.json.return_value = {
                     "liveness": "ok", "readiness": "ready", "data_health": "healthy",
                     "components": [], **fields,
+                    "quality": {"overall": "healthy", "checks": {}},
                 }
-                mock_get.reset_mock(side_effect=True)
-                mock_get.side_effect = [health, valid_quality]
+                mock_get.reset_mock()
+                mock_get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -485,11 +475,6 @@ class TestSystemRoutes(unittest.TestCase):
         self, mock_get, _query
     ):
         health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok", "readiness": "ready", "data_health": "healthy",
-            "components": [], "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-        }
 
         malformed_checks = {
             "non-dict list entry": ["fresh"],
@@ -504,10 +489,14 @@ class TestSystemRoutes(unittest.TestCase):
         }
         for case, checks in malformed_checks.items():
             with self.subTest(case=case):
-                quality = MagicMock()
-                quality.json.return_value = {"overall": "healthy", "checks": checks}
-                mock_get.reset_mock(side_effect=True)
-                mock_get.side_effect = [health, quality]
+                health.json.return_value = {
+                    "liveness": "ok", "readiness": "ready", "data_health": "healthy",
+                    "components": [], "scheduler": {"jobs": []},
+                    "stream": {"status": "connected"},
+                    "quality": {"overall": "healthy", "checks": checks},
+                }
+                mock_get.reset_mock()
+                mock_get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -707,9 +696,8 @@ class TestRegimeRoutes(unittest.TestCase):
 class TestMacroRoutes(unittest.TestCase):
     """Integration tests for /api/macro/* endpoints."""
 
-    @patch("routes.json.macro.query_one", return_value=None)
     @patch("routes.json.macro.query_many", return_value=[])
-    def test_dashboard_returns_indicators(self, _mock_qm, _mock_qo):
+    def test_dashboard_returns_indicators(self, query):
         """GET /api/macro/dashboard returns 'indicators' key even with no DB rows."""
         resp = client.get("/api/macro/dashboard", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -719,6 +707,7 @@ class TestMacroRoutes(unittest.TestCase):
         # The one configured indicator appears, albeit with None values
         self.assertEqual(len(data["indicators"]), 1)
         self.assertEqual(data["indicators"][0]["series_id"], "T10Y2Y")
+        query.assert_called_once()
 
     @patch("routes.json.macro.query_many", return_value=[{"observed_at": "2026-07-01T00:00:00+00:00", "value": 16.0}])
     def test_series_days_parameter_sets_requested_window(self, query):
@@ -847,10 +836,9 @@ class TestHealthContract(unittest.TestCase):
             "liveness": "ok", "readiness": "ready", "data_health": "healthy",
             "components": [], "scheduler": {"jobs": []},
             "stream": {"status": "connected"},
+            "quality": {"overall": "healthy", "checks": {}},
         }
-        quality = MagicMock()
-        quality.json.return_value = {"overall": "healthy", "checks": {}}
-        mock_get.side_effect = [health, quality]
+        mock_get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -881,13 +869,17 @@ class TestHealthContract(unittest.TestCase):
             "liveness": "ok", "readiness": "ready", "data_health": "degraded",
             "components": [], "scheduler": {"jobs": []},
             "stream": {"status": "connected"},
+            "quality": {
+                "overall": "degraded",
+                "checks": {
+                    "fred_DGS10_freshness": {
+                        "healthy": False,
+                        "detail": "stale",
+                    }
+                },
+            },
         }
-        quality = MagicMock()
-        quality.json.return_value = {
-            "overall": "degraded",
-            "checks": {"fred_DGS10_freshness": {"healthy": False, "detail": "stale"}},
-        }
-        mock_get.side_effect = [health, quality]
+        mock_get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()

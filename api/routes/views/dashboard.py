@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -467,56 +468,81 @@ async def dashboard(request: Request):
     config = await run_in_threadpool(app_config.load_config)
     templates = _get_templates(request)
 
-    # Fetch data with graceful error handling per section
-    regime = {}
-    try:
-        regime = await run_in_threadpool(get_regime_current)
-        if regime.get("stale") and regime.get("stale_reason"):
-            regime = dict(regime)
-            regime["stale_reason"] = _format_stale_reason(regime["stale_reason"], "regime")
-    except Exception as exc:
-        regime = {"error": str(exc)}
+    (
+        regime_result,
+        briefing_result,
+        events_result,
+        macro_result,
+        price_result,
+        last_cycle_text,
+        last_cycle_status,
+        system_health,
+        budget,
+        news,
+    ) = await asyncio.gather(
+        run_in_threadpool(get_regime_current),
+        run_in_threadpool(get_briefing_latest),
+        run_in_threadpool(get_events_upcoming_data, request=request, days=14),
+        run_in_threadpool(get_macro_dashboard),
+        run_in_threadpool(_get_latest_prices, config),
+        run_in_threadpool(_last_cycle_text, config),
+        run_in_threadpool(_latest_cycle_status, config),
+        _get_dashboard_health(request),
+        run_in_threadpool(get_budget_status),
+        run_in_threadpool(load_news_context, config, 5),
+        return_exceptions=True,
+    )
 
-    briefing = None
-    try:
-        briefing = await run_in_threadpool(get_briefing_latest)
-        if briefing and briefing.get("stale") and briefing.get("stale_reason"):
-            briefing = dict(briefing)
-            briefing["stale_reason"] = _format_stale_reason(briefing["stale_reason"], "briefing")
-    except Exception:
-        briefing = None
+    regime = (
+        {"error": str(regime_result)}
+        if isinstance(regime_result, Exception)
+        else regime_result
+    )
+    if regime.get("stale") and regime.get("stale_reason"):
+        regime = dict(regime)
+        regime["stale_reason"] = _format_stale_reason(regime["stale_reason"], "regime")
 
-    events_data = {}
-    try:
-        events_data = await run_in_threadpool(get_events_upcoming_data, request=request, days=14)
-        # Parse ISO strings to datetime for template convenience
-        for ev in events_data.get("events", []):
-            ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
-    except Exception as exc:
-        events_data = {"error": str(exc)}
+    briefing = None if isinstance(briefing_result, Exception) else briefing_result
+    if briefing and briefing.get("stale") and briefing.get("stale_reason"):
+        briefing = dict(briefing)
+        briefing["stale_reason"] = _format_stale_reason(
+            briefing["stale_reason"], "briefing"
+        )
+
+    events_data = (
+        {"error": str(events_result)}
+        if isinstance(events_result, Exception)
+        else events_result
+    )
+    for event in events_data.get("events", []):
+        event["scheduled_at"] = _parse_iso(event.get("scheduled_at"))
 
     indicators = []
     indicators_stale = False
     indicators_stale_reason = None
-    try:
-        macro_data = await run_in_threadpool(get_macro_dashboard)
+    if not isinstance(macro_result, Exception):
         indicator_configs = config.get("dashboard", {}).get("indicators", [])
-        precision_map = {ic["series_id"]: ic.get("precision", 2) for ic in indicator_configs}
-        note_map = {ic["series_id"]: ic.get("note") for ic in indicator_configs}
-        for ind in macro_data.get("indicators", []):
-            ind["precision"] = precision_map.get(ind["series_id"], 2)
-            ind["note"] = note_map.get(ind["series_id"])
-            indicators.append(ind)
-        # Stale check for indicators section (fred collector)
-        last_run = macro_data.get("last_collector_run")
+        precision_map = {
+            item["series_id"]: item.get("precision", 2)
+            for item in indicator_configs
+        }
+        note_map = {
+            item["series_id"]: item.get("note")
+            for item in indicator_configs
+        }
+        for indicator in macro_result.get("indicators", []):
+            indicator["precision"] = precision_map.get(indicator["series_id"], 2)
+            indicator["note"] = note_map.get(indicator["series_id"])
+            indicators.append(indicator)
+        last_run = macro_result.get("last_collector_run")
         if last_run:
             thresholds = get_staleness_config(config)
             indicators_stale, indicators_stale_reason = is_stale(
                 _parse_iso(last_run), thresholds.get("macro_hours", 30)
             )
-            indicators_stale_reason = _format_stale_reason(indicators_stale_reason, "indicators")
-    except Exception as exc:
-        indicators = []
+            indicators_stale_reason = _format_stale_reason(
+                indicators_stale_reason, "indicators"
+            )
 
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
@@ -525,14 +551,27 @@ async def dashboard(request: Request):
         config,
         display_zone=tz_context["display_zone"],
     )
-    price_map = await run_in_threadpool(_get_latest_prices, config)
 
+    if isinstance(system_health, Exception):
+        system_health = {
+            "overall": "unavailable",
+            "error": "Health data unavailable.",
+            "components": [],
+        }
 
     context = {
         "request": request,
-        "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
-        "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
-        "system_health": await _get_dashboard_health(request),
+        "last_cycle_text": (
+            "No cycle run yet"
+            if isinstance(last_cycle_text, Exception)
+            else last_cycle_text
+        ),
+        "last_cycle_status": (
+            "unknown"
+            if isinstance(last_cycle_status, Exception)
+            else last_cycle_status
+        ),
+        "system_health": system_health,
         "regime": regime,
         "briefing": briefing,
         "events_data": events_data,
@@ -541,12 +580,18 @@ async def dashboard(request: Request):
         "stale_reason": indicators_stale_reason,
         "current_time": now,
         "timedelta": timedelta,
-        "data_status": _data_status(await _get_dashboard_health(request)),
+        "data_status": _data_status(system_health),
         "briefing_sections": _briefing_sections(briefing),
-        "dots": _section_dots(regime, events_data, briefing, indicators_stale, indicators_stale_reason),
-        "price_map": price_map,
-        "budget": await run_in_threadpool(get_budget_status),
-        "news": await run_in_threadpool(load_news_context, config, 5),
+        "dots": _section_dots(
+            regime,
+            events_data,
+            briefing,
+            indicators_stale,
+            indicators_stale_reason,
+        ),
+        "price_map": {} if isinstance(price_result, Exception) else price_result,
+        "budget": {} if isinstance(budget, Exception) else budget,
+        "news": {"items": []} if isinstance(news, Exception) else news,
         **tz_context,
         **event_context,
     }

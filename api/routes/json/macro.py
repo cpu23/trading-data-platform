@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 
 import config as app_config
-from db import query_one, query_many
+from db import query_many
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
@@ -33,73 +33,102 @@ def get_macro_dashboard():
             {"series_id": "T5YIE", "label": "5Y breakeven", "precision": 2, "category": "inflation"},
         ]
 
+    series_ids = [item["series_id"] for item in indicator_configs]
+    rows = query_many(
+        """
+        WITH requested(series_id) AS (
+            SELECT unnest(CAST(:series_ids AS TEXT[]))
+        )
+        SELECT requested.series_id,
+               latest.observed_at AS latest_observed_at,
+               latest.value AS latest_value,
+               previous.value AS previous_value,
+               trend.sample_count AS trend_sample_count,
+               trend.first_value AS trend_first_value,
+               trend.last_value AS trend_last_value,
+               (
+                   SELECT started_at
+                   FROM collection_log
+                   WHERE collector = 'fred'
+                   ORDER BY started_at DESC
+                   LIMIT 1
+               ) AS last_collector_run
+        FROM requested
+        LEFT JOIN LATERAL (
+            SELECT observed_at, value
+            FROM macro_series
+            WHERE series_id = requested.series_id
+            ORDER BY observed_at DESC
+            LIMIT 1
+        ) latest ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT value
+            FROM macro_series
+            WHERE series_id = requested.series_id
+            ORDER BY observed_at DESC
+            LIMIT 1 OFFSET 1
+        ) previous ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS sample_count,
+                   (ARRAY_AGG(value ORDER BY observed_at ASC))[1] AS first_value,
+                   (ARRAY_AGG(value ORDER BY observed_at DESC))[1] AS last_value
+            FROM macro_series
+            WHERE series_id = requested.series_id
+              AND observed_at >= :cutoff
+        ) trend ON TRUE
+        """,
+        params={
+            "series_ids": series_ids,
+            "cutoff": datetime.now(timezone.utc) - timedelta(days=5),
+        },
+        config=config,
+    )
+    data_by_series = {row["series_id"]: row for row in rows}
+
     indicators = []
-    for ic in indicator_configs:
-        series_id = ic["series_id"]
-        precision = ic.get("precision", 2)
+    for item in indicator_configs:
+        series_id = item["series_id"]
+        precision = item.get("precision", 2)
+        row = data_by_series.get(series_id, {})
+        latest = row.get("latest_value")
+        previous = row.get("previous_value")
+        latest_value = round(latest, precision) if latest is not None else None
+        previous_value = round(previous, precision) if previous is not None else None
+        latest_at = row.get("latest_observed_at")
 
-        latest_sql = """
-            SELECT observed_at, value FROM macro_series
-            WHERE series_id = :sid
-            ORDER BY observed_at DESC LIMIT 1
-        """
-        latest_row = query_one(latest_sql, params={"sid": series_id}, config=config)
-
-        previous_sql = """
-            SELECT observed_at, value FROM macro_series
-            WHERE series_id = :sid
-            ORDER BY observed_at DESC LIMIT 1 OFFSET 1
-        """
-        previous_row = query_one(previous_sql, params={"sid": series_id}, config=config)
-
-        latest_value = None
-        latest_observed_at = None
-        previous_value = None
         change_abs = None
         change_pct = None
-        trend_5d = None
-
-        if latest_row:
-            latest_value = round(latest_row["value"], precision) if latest_row["value"] is not None else None
-            latest_observed_at = latest_row["observed_at"].strftime("%Y-%m-%d") if hasattr(latest_row["observed_at"], "strftime") else str(latest_row["observed_at"])[:10]
-
-        if previous_row:
-            previous_value = round(previous_row["value"], precision) if previous_row["value"] is not None else None
-
         if latest_value is not None and previous_value is not None:
             change_abs = round(latest_value - previous_value, precision)
             if previous_value != 0:
-                change_pct = round(((latest_value - previous_value) / abs(previous_value)) * 100, 2)
+                change_pct = round(
+                    ((latest_value - previous_value) / abs(previous_value)) * 100,
+                    2,
+                )
 
-        trend_sql = """
-            SELECT observed_at, value FROM macro_series
-            WHERE series_id = :sid AND observed_at >= :cutoff
-            ORDER BY observed_at ASC
-        """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=5)
-        trend_rows = query_many(trend_sql, params={"sid": series_id, "cutoff": cutoff}, config=config)
-        if len(trend_rows) >= 2:
-            first_val = trend_rows[0]["value"]
-            last_val = trend_rows[-1]["value"]
-            if first_val is not None and last_val is not None:
-                if last_val > first_val:
+        trend_5d = None
+        if (row.get("trend_sample_count") or 0) >= 2:
+            first_value = row.get("trend_first_value")
+            last_value = row.get("trend_last_value")
+            if first_value is not None and last_value is not None:
+                if last_value > first_value:
                     trend_5d = "up"
-                elif last_val < first_val:
+                elif last_value < first_value:
                     trend_5d = "down"
                 else:
                     trend_5d = "flat"
 
-        stale, _ = is_stale(
-            latest_row["observed_at"] if latest_row else None,
-            thresholds["macro_hours"],
-        )
-
+        stale, _ = is_stale(latest_at, thresholds["macro_hours"])
         indicators.append({
             "series_id": series_id,
-            "label": ic.get("label", series_id),
-            "category": ic.get("category"),
+            "label": item.get("label", series_id),
+            "category": item.get("category"),
             "latest_value": latest_value,
-            "latest_observed_at": latest_observed_at,
+            "latest_observed_at": (
+                latest_at.strftime("%Y-%m-%d")
+                if hasattr(latest_at, "strftime")
+                else str(latest_at)[:10] if latest_at is not None else None
+            ),
             "previous_value": previous_value,
             "change_abs": change_abs,
             "change_pct": change_pct,
@@ -107,16 +136,10 @@ def get_macro_dashboard():
             "stale": stale,
         })
 
-    last_collector_sql = """
-        SELECT started_at FROM collection_log
-        WHERE collector = 'fred'
-        ORDER BY started_at DESC LIMIT 1
-    """
-    last_collector = query_one(last_collector_sql, config=config)
-
+    last_collector_run = rows[0].get("last_collector_run") if rows else None
     return {
         "indicators": indicators,
-        "last_collector_run": _fmt(last_collector["started_at"]) if last_collector else None,
+        "last_collector_run": _fmt(last_collector_run),
     }
 
 

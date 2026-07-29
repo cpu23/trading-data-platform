@@ -1520,6 +1520,24 @@ class HealthContractTests(unittest.TestCase):
         self.assertIn("scheduler", data)
         self.assertIn("stream", data)
         self.assertIn("collectors", data)
+        self.assertEqual(data["quality"], {"overall": "healthy", "checks": {}})
+        _mock_quality.assert_called_once_with(mock_get_config.return_value)
+
+    @patch("main.run_quality_checks", return_value={})
+    @patch("main.check_connection", return_value=True)
+    @patch("main.get_last_collection_runs", return_value=[])
+    @patch("main._get_config")
+    def test_health_reuses_quality_snapshot_within_ttl(
+        self, mock_get_config, _mock_runs, _mock_db, quality
+    ):
+        mock_get_config.return_value = {}
+
+        first = self.client.get("/health")
+        second = self.client.get("/health")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        quality.assert_called_once_with(mock_get_config.return_value)
 
     @patch("main.check_connection", return_value=False)
     @patch("main._get_config", return_value={})
