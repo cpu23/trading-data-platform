@@ -76,6 +76,8 @@ Schedules are UTC cron expressions from `config/config.yaml`.
 - Reuters: minute `15` every two hours.
 - Kobeissi: configured for every six hours but `schedule_enabled: false` and `on_demand_only: true` by default.
 - Briefing: after its macro-regime dependency, with the configured daily schedule retained for orchestration.
+- Investment filings: weekdays at `08:00`, plus an optional startup run;
+  bounded to one scheduled instance with four company workers by default.
 
 The Operations page and authenticated health API expose scheduler state and next due times. In demo mode the scheduler starts but external jobs are disabled.
 
@@ -101,7 +103,10 @@ Current production defaults:
 - validation retries: one bounded correction attempt;
 - output caps: 1,800 tokens for macro regime and 2,600 for briefing;
 - collector workers: 3 by default, hard-capped at 8;
-- FRED concurrency: 4.
+- FRED concurrency: 4;
+- filing company workers: 4;
+- filing lookback: 730 days;
+- automatic model analysis after filing ingestion: disabled.
 
 Budget accounting includes failed attempts. If the budget state cannot be read, processing fails closed. Raw model responses and secrets are not persisted in failure telemetry.
 
@@ -146,6 +151,33 @@ docker compose exec orchestrator python cli.py news all
 ```
 
 Publication is atomic: source snapshots and the unified feed are written before cursor advancement. A publication failure leaves the previous feed valid and the cursor unchanged. The dashboard shows a bounded summary; `/news` provides source and symbol/tag filters without a search database.
+
+## Investment filing operations and cost caution
+
+The built-in filing universe scans 300 US, UK, and EU companies. SEC collection
+requires a descriptive contact user agent. Companies House, EDINET, and
+OpenDART stay disabled unless their source keys and permanent issuer identifiers
+are configured. The source status endpoint makes those omissions explicit:
+
+```bash
+curl http://127.0.0.1:8000/api/investment/filings/status
+curl http://127.0.0.1:8000/api/investment/dashboard
+```
+
+Use **Investments → Collect filings now** for an authenticated manual run. The
+API creates a durable `filings` job with a correlation ID; monitor it through
+cycle status, Operations, and structured orchestrator logs. Successful company
+results survive failures from unrelated companies or filing sources.
+
+Do not enable `auto_analyze` merely to test collection. Filing discovery and
+ingestion are free apart from regulator traffic; analysis calls the configured
+model and consumes the daily LLM budget. Ingested documents remain queued when
+analysis is disabled, budget-blocked, or fails.
+
+Regulator secrets belong in environment or private operator state:
+`COMPANIES_HOUSE_API_KEY`, `EDINET_API_KEY`, and `OPENDART_API_KEY`. Never place
+them in `config/config.yaml`. See
+[Investment Research and Filing Intake](investment-research.md).
 
 ## Logging, redaction, and retention
 

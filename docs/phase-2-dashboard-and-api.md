@@ -10,8 +10,9 @@
 > loaders execute concurrently, `/api/macro/dashboard` uses one batched query,
 > and `/api/system/health` consumes one bounded orchestrator quality snapshot.
 > See
-> [Current Architecture and Operations](current-architecture-and-operations.md)
-> and [Performance acceptance baseline](performance-baseline.md).
+> [Current Architecture and Operations](current-architecture-and-operations.md),
+> [Investment Research and Filing Intake](investment-research.md), and
+> [Performance acceptance baseline](performance-baseline.md).
 
 **Version:** 1.0
 **Status:** Ready for implementation

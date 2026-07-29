@@ -175,20 +175,23 @@ All timestamps stored as UTC. All tables include `created_at` and `updated_at` c
 | source | TEXT | |
 | **PK** | | (symbol, timeframe, timestamp) |
 
-#### filings (future phase)
+#### investment_documents
 
 | Column | Type | Notes |
 |---|---|---|
-| filing_id | TEXT | EDGAR accession number |
-| entity | TEXT | Company name |
-| ticker | TEXT | Nullable — not all filers have tickers |
-| filing_type | TEXT | "10-K", "10-Q", "8-K", "13F", "4" |
-| filed_at | TIMESTAMPTZ | |
-| period_end | DATE | Reporting period |
-| raw_url | TEXT | EDGAR URL |
-| raw_text | TEXT | Full text content |
-| source | TEXT | |
-| **PK** | | (filing_id) |
+| document_id | UUID | Primary key |
+| company, symbol | TEXT | Issuer identity |
+| region, industry | TEXT | Canonical dashboard grouping |
+| document_type | TEXT | Annual report, earnings release, presentation, regulatory filing, or other |
+| report_date | DATE | Reported period/date when available |
+| source_url | TEXT | Public source location |
+| filing_source, filing_id | TEXT | Source-native deduplication identity |
+| filename, mime_type | TEXT | Intake metadata |
+| content_sha256 | TEXT | Unique content identity |
+| extracted_text | TEXT | Bounded normalized report evidence |
+| status, error_message | TEXT | Ingestion/analysis lifecycle |
+| created_at, updated_at | TIMESTAMPTZ | Audit timestamps |
+| **Indexes** | | company/date, industry/region, unique source filing identity |
 
 #### news_items (future phase)
 
@@ -288,6 +291,23 @@ All timestamps stored as UTC. All tables include `created_at` and `updated_at` c
 | prompt_version | TEXT | |
 | **PK** | | (briefing_id) |
 | **Unique** | | (briefing_date) — one per day |
+
+#### investment_analyses
+
+| Column | Type | Notes |
+|---|---|---|
+| analysis_id | UUID | Primary key |
+| document_id | UUID | Unique FK to `investment_documents` |
+| previous_document_id | UUID | Prior comparable report; cleared if the prior document is deleted |
+| model_used | TEXT | Actual model returned by the provider |
+| analysis | JSONB | Strict facts plus deterministic scoring and valuation |
+| tokens_input, tokens_output | INTEGER | Accounted model usage |
+| cost_usd | NUMERIC | Accounted model cost |
+| created_at, updated_at | TIMESTAMPTZ | Version timestamps |
+| **Indexes** | | latest analyses and prior-document lookup |
+
+See [Investment Research and Filing Intake](investment-research.md) for the
+evidence contract, source coverage, and lifecycle.
 
 ### 3.3 System Tables
 
@@ -706,15 +726,19 @@ collectors:
     lookback_days: 7
     lookahead_days: 14
 
-  # Future collectors — disabled by default
-  edgar:
-    enabled: false
-    schedule: "0 8 * * *"
-    # ...
-
   news:
     enabled: false
     # ...
+
+# Regulatory filing intake is a durable orchestrator job, not a cycle collector.
+investment_filings:
+  enabled: true
+  schedule: "0 8 * * 1-5"
+  lookback_days: 730
+  auto_analyze: false
+  run_on_startup: true
+  company_workers: 4
+  universe: top_us_uk_eu_100
 
 processors:
   macro_regime:
@@ -963,6 +987,12 @@ GET  /api/system/logs               Recent collection and processing logs
 POST /api/collect/{source_id}       Trigger on-demand collection
 POST /api/process/{processor_id}    Trigger on-demand analysis
 POST /api/cycle                     Trigger full collection + analysis cycle
+GET  /api/investment/dashboard       Investment documents, analyses, regions, and industries
+GET  /api/investment/filings/status Filing-source configuration and last run
+POST /api/investment/documents       Upload and extract one bounded report
+POST /api/investment/urls            Fetch and extract one validated public report URL
+POST /api/investment/documents/{id}/analyze  Run strict and deterministic analysis
+POST /api/investment/filings/collect Trigger a durable regulatory filing job
 ```
 
 ### 8.2 Dashboard Frontend
@@ -1026,10 +1056,13 @@ These are the interfaces where future systems plug in. The architecture accommod
 
 ### 9.1 Additional Collectors (plug into collection layer)
 
+SEC/Companies House/EDINET/OpenDART filing intake and the Reuters/Kobeissi news
+feed are now implemented. See
+[Investment Research and Filing Intake](investment-research.md) and
+[News Provider Reference](news-sources.md). Remaining expansion candidates:
+
 | Collector | Source | Table | Notes |
 |---|---|---|---|
-| EDGAR filings | SEC EDGAR API | filings | 10-K, 10-Q, 8-K, 13F, Form 4 |
-| News | RSS feeds, NewsAPI, or Benzinga | news_items | LLM tags relevance to watchlist |
 | CFTC COT | CFTC bulk CSV downloads | cot_reports | Weekly positioning data |
 | Central bank comms | Fed/ECB/BOE/BOJ websites | cb_communications | Minutes, speeches, statements |
 | Broker market data | IB API or Polygon.io | market_data | OHLCV for watchlist instruments |
@@ -1040,7 +1073,6 @@ Each is a new Python file in `collectors/`, a new section in config, and possibl
 
 | Processor | Input | Output | Notes |
 |---|---|---|---|
-| Earnings analyser | filings (10-Q, 10-K) | structured_opinion | Extract key metrics, compare to consensus |
 | News classifier | news_items | structured_opinion | Relevance scoring, catalyst detection |
 | COT positioning | cot_reports | structured_opinion | Crowding indicators, positioning shifts |
 | Fed language tracker | cb_communications | structured_opinion | Hawkish/dovish scoring, language diff |
@@ -1059,12 +1091,18 @@ Each is a new Python file in `processors/`, a new prompt template in `prompts/`,
 
 ### 9.4 Investing Research Extensions
 
-The investing use case shares the same data backbone but needs additional processing:
+The implemented investment subsystem already provides automated regulatory
+filing intake, bounded document and URL ingestion, strict evidence extraction,
+comparable-report linkage, deterministic signals and valuation, regional and
+industry aggregation, and a dedicated dashboard. Remaining extensions include:
 
-- **Sector/industry screening:** EDGAR data + LLM analysis to identify interesting sectors based on macro regime
-- **Earnings calendar tracking:** Upcoming earnings for watchlist stocks with historical surprise rates
-- **Institutional positioning:** 13F analysis to track what large funds are buying/selling
-- **Thesis tracking:** A structured way to log your investment theses and the data points that would confirm or invalidate them (this is a future dashboard feature)
+- **Sector/industry screening:** rank stored deterministic company state against
+  the macro regime without inventing advisory output.
+- **Earnings calendar tracking:** upcoming earnings with historical surprise
+  rates from a separately licensed source.
+- **Institutional positioning:** 13F ownership-change analysis.
+- **Thesis tracking:** operator-authored claims and explicit
+  confirmation/invalidation evidence.
 
 ---
 
@@ -1109,14 +1147,13 @@ The investing use case shares the same data backbone but needs additional proces
 
 ### Future Phases (sequence based on value to your trading)
 
-- **Phase 3:** News collector + classifier (highest value add after macro)
-- **Phase 4:** EDGAR collector + earnings analyser (investing use case)
-- **Phase 5:** Central bank comms + language tracker
-- **Phase 6:** Broker market data + cross-asset regime classification
-- **Phase 7:** COT reports + positioning analysis
-- **Phase 8:** Alerting (Telegram/Discord)
-- **Phase 9:** MT5 bridge for position sizing
-- **Phase 10:** Investing research features (thesis tracking, sector screening)
+- **Implemented:** News feed and source-state view.
+- **Implemented:** Regulatory filing intake and investment analysis.
+- **Candidate:** Central-bank communications and language tracking.
+- **Candidate:** Broader broker market data and cross-asset classification.
+- **Candidate:** COT positioning expansion.
+- **Candidate:** Alerting channels.
+- **Candidate:** Research thesis tracking and sector screening.
 
 This ordering prioritises what adds the most context to your current trading style. Adjust based on what you actually find useful after Phase 1.
 

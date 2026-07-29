@@ -9,8 +9,9 @@ be treated as current operator instructions.
 The production Compose project contains:
 
 - `postgres`: PostgreSQL 16 with TimescaleDB.
-- `orchestrator`: collectors, scheduler, live and cached quality checks, OANDA
-  stream, and analytical processors.
+- `orchestrator`: collectors, scheduler, regulatory-filing intake, investment
+  analysis, live and cached quality checks, OANDA stream, and analytical
+  processors.
 - `api`: session-authenticated JSON API and server-rendered HTMX interface.
 - `state-init`: one-shot migration of compatible legacy state into the private
   state volume.
@@ -154,6 +155,35 @@ Contracts enforced in code include:
 The currently selected production profile is documented in
 `docs/intelligence_model_benchmark.md`.
 
+## Investment Research and Filing Intake
+
+The Investments view is backed by a separate report lifecycle:
+
+1. The weekday `08:00 UTC` scheduler or an authenticated operator creates a
+   durable `filings` run.
+2. Bounded workers discover source-native filing IDs from SEC, Companies House,
+   EDINET, or OpenDART for configured permanent company identifiers.
+3. New report content is extracted, hashed, deduplicated, and stored in
+   `investment_documents`.
+4. Operator-requested analysis claims the document, extracts strict
+   evidence-linked facts through the provider-neutral AI client, and applies
+   deterministic signal, comparison, valuation, and state rules.
+5. The result, model, tokens, cost, and comparable-document link are stored in
+   `investment_analyses` and `processing_log`.
+
+The built-in universe contains top-100 US, UK, and EU snapshots. SEC requires a
+descriptive user agent but no key. Companies House, EDINET, and OpenDART are
+enabled only when their keys and permanent issuer identifiers are present. EU
+ESEF coverage outside cross-listed SEC filers remains manual because national
+OAMs are decentralized.
+
+Automatic analysis after filing ingestion is disabled by default. This keeps
+scheduled regulatory collection free of accidental model spend. Manual file and
+public-URL intake remains available through `/investment`.
+
+See [Investment Research and Filing Intake](investment-research.md) for source
+coverage, HTTP contracts, storage, failure semantics, and measurements.
+
 ## Dashboard Design
 
 The interface uses progressive disclosure:
@@ -166,8 +196,9 @@ The interface uses progressive disclosure:
 - sparse asset history pages
 - no permanent sidebar or competing dashboard grid
 
-Primary navigation remains Dashboard, asset deep links, Settings, Logs, and
-Data quality. Desktop and mobile layouts are supported.
+Primary navigation exposes Dashboard, News, Investments, and Settings, with
+asset, Logs, Operations, and Data quality deep links. Desktop and mobile
+layouts are supported.
 
 ## Read Path and Health Snapshot
 
@@ -177,6 +208,10 @@ loader retains a section-level fallback, so one unavailable dataset does not
 serialize or suppress unrelated sections. The completed health response is
 fetched once per page and reused for both the detailed component state and the
 compact data-status chip.
+
+The Investments page separately loads one aggregated report/analysis dashboard
+and one filing-source status payload; it does not join the market-dashboard
+fan-in or run model analysis during an ordinary read.
 
 `GET /api/macro/dashboard` uses one batched PostgreSQL statement for every
 configured dashboard series. Lateral index probes select the latest and
@@ -231,6 +266,10 @@ docker compose exec orchestrator python cli.py collect --all
 # Individual source or processor
 docker compose exec orchestrator python cli.py collect ecb
 docker compose exec orchestrator python cli.py process market_intelligence
+
+# Investment read state and filing sources
+curl http://127.0.0.1:8000/api/investment/dashboard
+curl http://127.0.0.1:8000/api/investment/filings/status
 
 # Collector status and connectivity
 docker compose exec orchestrator python cli.py status

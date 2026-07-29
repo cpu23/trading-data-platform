@@ -11,14 +11,16 @@ major components inside the application services.
 
 ```mermaid
 flowchart LR
-    Operator["Market operator<br/>Configures coverage, runs cycles, and reviews economic assessments"]
-    Platform["Market Intelligence Platform<br/>Collects market context and publishes evidence-linked, economics-only assessments"]
+    Operator["Market operator<br/>Configures coverage, runs cycles and filing jobs,<br/>and reviews economic and company assessments"]
+    Platform["Market Intelligence Platform<br/>Collects market and report evidence and publishes traceable assessments"]
     Data["External data providers<br/>FRED, CFTC, central banks, OECD, ECB, BoE, EIA, Forex Factory"]
+    Filings["Regulatory filing providers<br/>SEC, Companies House, EDINET, OpenDART"]
     Oanda["OANDA<br/>Live market prices"]
     AI["OpenAI-compatible AI provider<br/>Structured analytical generation"]
 
     Operator -->|"HTTPS/HTTP through a trusted local or private-network boundary"| Platform
     Platform -->|"Scheduled and operator-triggered requests"| Data
+    Platform -->|"Bounded filing discovery and document requests"| Filings
     Platform -->|"Authenticated streaming API"| Oanda
     Platform -->|"OpenAI-compatible JSON requests"| AI
 ```
@@ -31,23 +33,23 @@ flowchart LR
 
 ### System boundary
 
-The platform is decision support. It assesses economic conditions and their
-market relevance but does not recommend trades, entries, exits, stops, targets,
-position sizing, or allocation.
+The platform is decision support. It assesses economic conditions, report
+evidence, company fundamentals, and market relevance but does not recommend
+trades, entries, exits, stops, targets, position sizing, or allocation.
 
 ## Level 2 — Container Model
 
 ```mermaid
 flowchart TB
     Operator["Market operator"]
-    Providers["Economic and positioning providers"]
+    Providers["Economic, positioning, news,<br/>and regulatory-filing providers"]
     Oanda["OANDA streaming API"]
     AI["OpenAI-compatible AI endpoint"]
 
     subgraph Platform["Market Intelligence Platform"]
         API["Web/API container<br/>Python, FastAPI, Jinja, HTMX<br/>Session-authenticated UI and JSON API"]
-        Orchestrator["Orchestrator container<br/>Python, FastAPI, APScheduler<br/>Collection, processing, bounded quality snapshot, and live quotes"]
-        DB[("Database container<br/>PostgreSQL 16 + TimescaleDB<br/>Raw data, opinions, lineage, runs, and costs")]
+        Orchestrator["Orchestrator container<br/>Python, FastAPI, APScheduler<br/>Collection, filing intake, investment analysis,<br/>bounded quality snapshot, and live quotes"]
+        DB[("Database container<br/>PostgreSQL 16 + TimescaleDB<br/>Raw data, report evidence, analyses,<br/>lineage, runs, and costs")]
         Init["State-init container<br/>One-shot Python process<br/>Migrates compatible legacy private state"]
         State[("Private state volume<br/>Credentials, operator profile, sessions, activation")]
         Repo["Read-only repository configuration<br/>YAML configuration and prompts"]
@@ -76,9 +78,9 @@ flowchart TB
 
 | Container | Responsibility | Exposed interface |
 | --- | --- | --- |
-| Web/API | Authentication, onboarding, settings, concurrent dashboard rendering, evidence/history APIs, budgets, and orchestration proxying. | Loopback-bound port `8000` by default; deterministic demo uses `8001`. |
-| Orchestrator | Scheduler, isolated collectors, live and cached data quality, cycle coordination, analytical processors, atomic snapshot publication, and OANDA quote stream. | Internal port `8000`; not host-published by Compose. |
-| PostgreSQL/TimescaleDB | Normalized source records, derived intelligence, version history, evidence lineage, operational runs, generation attempts, and retention functions. | Loopback-bound port `5432` by default. |
+| Web/API | Authentication, onboarding, settings, concurrent dashboard rendering, investment/report views and APIs, evidence/history APIs, budgets, and orchestration proxying. | Loopback-bound port `8000` by default; deterministic demo uses `8001`. |
+| Orchestrator | Scheduler, isolated collectors, regulatory filing intake, document extraction, deterministic investment analysis, live and cached data quality, cycle coordination, analytical processors, atomic snapshot publication, and OANDA quote stream. | Internal port `8000`; not host-published by Compose. |
+| PostgreSQL/TimescaleDB | Normalized source records, filing documents, investment analyses, derived intelligence, version history, evidence lineage, operational runs, generation attempts, and retention functions. | Loopback-bound port `5432` by default. |
 | State init | Moves compatible legacy state into the private persistent volume before the application starts. | No network interface. |
 
 ### Trust boundaries
@@ -102,6 +104,7 @@ flowchart LR
     Proxy["Orchestrator proxy"]
     Fanout["Concurrent page-data fan-in"]
     Health["System-health adapter"]
+    Investment["Investment page, document intake,<br/>and report query adapter"]
     Templates["Jinja templates and HTMX interactions"]
     DB[("PostgreSQL")]
     State[("Private state")]
@@ -114,6 +117,8 @@ flowchart LR
     Fanout --> Health
     Routes --> Budget
     Routes --> Proxy
+    Routes --> Investment
+    Investment --> Proxy
     Health --> Proxy
     Routes --> Templates --> Browser
     Setup --> State
@@ -130,9 +135,10 @@ flowchart LR
 | Authentication and request security | `api/auth.py`, middleware in `api/main.py` | Signed sessions, login enforcement, CSRF, origin checks, trusted hosts, activation state, and secret-file handling. |
 | Setup and settings | `api/routes/json/setup.py`, `api/routes/views/setup.py` | Resumable onboarding, endpoint diagnostics, credential updates, coverage/watchlist configuration, and atomic activation. |
 | Dashboard and query routes | `api/routes/json/*`, `api/routes/views/*` | Concurrent page-data fan-in; current and historical intelligence; batched macro summaries; evidence, events, source state, logs, and rendered pages. |
+| Investment adapter | `api/routes/json/investment.py`, `api/routes/views/investment.py` | Bounded upload and URL intake, analysis and filing triggers, status mapping, internal proxying, and investment-page delivery. |
 | Budget enforcement | `api/budgets.py`, trigger routes | Daily paid-inference cap and audited explicit overrides. |
-| Orchestrator proxy | trigger, watchlist, system, and quality routes | Sends internal triggers, consumes one consolidated health snapshot, and requests live quality or quote state explicitly. |
-| Presentation | `api/templates`, `api/static` | Progressive-disclosure server-rendered interface with focused HTMX updates and SSE quote polling. |
+| Orchestrator proxy | trigger, watchlist, system, quality, and investment routes | Sends internal triggers, consumes one consolidated health snapshot, and requests live quality, quote, filing, or investment state explicitly. |
+| Presentation | `api/templates`, `api/static` | Progressive-disclosure server-rendered interface with focused HTMX updates, investment rendering, and SSE quote polling. |
 
 ## Level 3 — Orchestrator Components
 
@@ -142,6 +148,9 @@ flowchart TB
     HTTP["Internal control API and CLI"]
     Coordinator["Cycle coordinator and runtime lock"]
     Collectors["Collector registry and isolated adapters"]
+    Filing["Regulatory filing discovery and intake"]
+    Investment["Document extraction and investment analysis"]
+    Rules["Deterministic signal and valuation engine"]
     Quality["Data-quality checks"]
     QualitySnapshot["30-second health snapshot"]
     Processors["Processor dependency resolver"]
@@ -152,13 +161,21 @@ flowchart TB
     Stream["OANDA quote stream"]
     Config["Configuration loader"]
     DB[("PostgreSQL")]
-    Sources["External data sources"]
+    Sources["Market, news, and regulatory sources"]
     AI["OpenAI-compatible endpoint"]
     State[("Operator profile and secrets")]
 
     Scheduler --> Coordinator
     HTTP --> Coordinator
     Coordinator --> Collectors --> Sources
+    Scheduler --> Filing --> Sources
+    HTTP --> Filing
+    Filing --> Investment
+    Investment --> DB
+    Investment --> Rules --> DB
+    HTTP --> Investment
+    Investment --> Client
+    Investment --> Policy
     Coordinator --> Quality
     HTTP --> QualitySnapshot -->|"Refresh on expiry"| Quality
     HTTP -->|"Live /quality"| Quality
@@ -173,6 +190,8 @@ flowchart TB
     HTTP --> Stream
     Config --> Coordinator
     Config --> Collectors
+    Config --> Filing
+    Config --> Investment
     Config --> Processors
     State --> Config
 ```
@@ -187,6 +206,8 @@ flowchart TB
 | Collectors | `orchestrator/collectors/` | Source-specific acquisition behind normalized contracts and shared persistence. |
 | Data quality | `orchestrator/data_quality.py` | Freshness, gap, duplicate, anomaly, and acquisition-state checks; health snapshots bound reuse while `/quality` executes the suite live. |
 | Analytical processors | `orchestrator/processors/` | Macro regime, event impact, briefing, and market-intelligence production. |
+| Filing intake | `orchestrator/investment_filings.py`, `orchestrator/investment_universe.py` | Scheduled and manual regulator discovery, source-rate-limited downloads, source-native filing identity, deduplication, and partial-result summaries. |
+| Investment analysis | `orchestrator/investment_service.py`, `orchestrator/investment_engine.py` | Bounded document extraction, strict fact schema, evidence constraints, comparable-report linkage, deterministic signals and valuation, lifecycle state, and persistence. |
 | AI client | `orchestrator/llm_client.py` | OpenAI-compatible calls, capability fallback, retries, provider metadata, tokens, cost, and latency. |
 | Intelligence policy | `orchestrator/processors/_validators.py`, intelligence validators | Structured schemas, prohibited-language checks, evidence eligibility, repair-once behavior, and safe failure. |
 | Quote stream | `orchestrator/price_stream.py` | Continuous OANDA or deterministic demo quotes independent of collection cycles. |
@@ -221,6 +242,48 @@ sequenceDiagram
     end
     API->>API: Reuse health result and render fallbacks
     API-->>Browser: Complete server-rendered HTML
+```
+
+### Investment filing and analysis path
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant Browser
+    participant API
+    participant Orchestrator
+    participant Regulator
+    participant DB
+    participant AI
+
+    alt Scheduled or manual filing collection
+        Operator->>API: Optional Collect filings now
+        API->>Orchestrator: POST /investment/filings/collect
+        Orchestrator->>DB: Accept durable filings run
+        loop Configured companies with bounded workers
+            Orchestrator->>Regulator: Discover source-native filing IDs
+            Orchestrator->>DB: Skip existing filing identity
+            Orchestrator->>Regulator: Fetch bounded report content
+            Orchestrator->>DB: Store extracted document and content hash
+        end
+        Orchestrator->>DB: Finalize partial or completed run summary
+    else Manual document intake
+        Operator->>Browser: Upload report or submit public URL
+        Browser->>API: Bounded document request
+        API->>Orchestrator: Authenticated internal proxy
+        Orchestrator->>DB: Store deduplicated extracted document
+    end
+    Operator->>Browser: Analyze document
+    Browser->>API: POST document analysis
+    API->>Orchestrator: Analyze with optional valuation inputs
+    Orchestrator->>AI: Strict evidence extraction
+    AI-->>Orchestrator: Structured report facts
+    Orchestrator->>Orchestrator: Deterministic scoring, comparison, and valuation
+    Orchestrator->>DB: Store analysis, tokens, cost, and provenance
+    Browser->>API: GET investment dashboard
+    API->>Orchestrator: GET aggregated report state
+    Orchestrator-->>API: Documents, analyses, regions, and industries
+    API-->>Browser: Aggregated investment state
 ```
 
 ### Full analytical cycle

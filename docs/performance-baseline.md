@@ -26,6 +26,9 @@ Environment:
 | Settings `/settings` | 200 | 11,803 | 7.16 | 7.00 | 9.80 | 9.80, 7.38, 7.00, 7.13, 7.16 |
 | System health `/api/system/health` | 200 | 23,300 | 6.82 | 6.61 | 7.16 | 6.74, 6.61, 7.16, 6.82, 7.07 |
 | Macro summary `/api/macro/dashboard` | 200 | 1,329 | 124.29 | 121.34 | 128.41 | 121.34, 128.41, 121.44, 127.00, 124.29 |
+| Investments `/investment` | 200 | 45,233 | 2.04 | 1.10 | 37.51 | 37.51, 2.77, 2.04, 1.53, 1.10 |
+| Investment dashboard `/api/investment/dashboard` | 200 | 43,103 | 9.14 | 8.77 | 66.05 | 66.05, 10.59, 9.10, 8.77, 9.14 |
+| Filing status `/api/investment/filings/status` | 200 | 1,445 | 5.88 | 5.05 | 910.81 | 910.81, 6.67, 5.21, 5.88, 5.05 |
 
 ### Browser measurements
 
@@ -36,6 +39,7 @@ assets:
 | --- | ---: | ---: | ---: | ---: | --- |
 | Dashboard | 131.4 | 197.6 | 197.9 | 204 | Six rendered sections |
 | Settings | 13.4 | 33.1 | 34.2 | 40 | Three settings panels |
+| Investments | 3.9 | 50.5 | 67.0 | 76 | Documents loaded; analyses empty |
 
 ### Read-path design represented by the baseline
 
@@ -49,10 +53,18 @@ assets:
   30-second default TTL. `/quality` remains an uncached live diagnostic.
 - `/api/macro/dashboard` uses one batched SQL statement instead of three
   queries per configured indicator plus a collector-status query.
+- The Investments shell is server-rendered, then independently fetches one
+  aggregated report/analysis payload and one filing-source status payload.
+  Those browser resource timings were 13.5 ms and 8.9 ms in the measured run.
 
 An expired quality snapshot can make one health request pay for a live quality
 sweep. A refresh-path diagnostic measured approximately 0.9 seconds; warm and
 refresh-path numbers must be recorded separately.
+
+The 910.81 ms maximum for filing status is likewise the first observed sample
+and is retained rather than excluded; subsequent samples were 5.05–6.67 ms.
+Filing collection, downloads, and model analysis are not part of these read
+measurements.
 
 ## Remediation evidence
 

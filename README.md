@@ -7,9 +7,9 @@
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
 A local-first market intelligence platform that collects macroeconomic,
-economic-calendar, and price data; runs dependency-aware analytical processors;
-and presents traceable daily market context through a FastAPI and HTMX
-dashboard.
+economic-calendar, price, news, and regulatory-filing data; runs
+dependency-aware analytical processors; and presents traceable daily market
+and company context through a FastAPI and HTMX dashboard.
 
 This public-safe repository demonstrates the platform architecture, collectors,
 processors, API, database schema, operational views, and dashboard. It excludes
@@ -24,11 +24,11 @@ Market context often lives across unrelated websites, spreadsheets, API
 responses, and manually written notes. This platform turns those inputs into a
 repeatable data workflow:
 
-1. Collect and normalise source data.
-2. Store raw observations separately from derived analysis.
+1. Collect and normalise source data and company reports.
+2. Store raw observations and report evidence separately from derived analysis.
 3. Run processors only when their dependencies have succeeded.
 4. Record lineage, status, duration, model usage, and cost.
-5. Present the latest context and operational health in one dashboard.
+5. Present market, investment, and operational context in authenticated views.
 
 The platform is decision support, not a signal or execution engine. Analytical
 outputs provide context for human review and do not produce trade calls,
@@ -42,21 +42,24 @@ flowchart LR
         FRED["FRED macro data"]
         Calendar["Economic calendar"]
         OANDA["OANDA price snapshots"]
-        LLM["OpenRouter LLM"]
+        News["Reuters and Kobeissi"]
+        Filings["SEC, Companies House,<br/>EDINET, OpenDART"]
+        LLM["OpenAI-compatible LLM"]
     end
 
     subgraph Orchestration["Collection and Processing"]
         Collectors["Normalising collectors"]
         Cycle["Dependency-aware cycle runner"]
-        Regime["Macro regime processor"]
-        Events["Event impact processor"]
-        Briefing["Daily briefing processor"]
+        FilingIntake["Scheduled filing intake"]
+        Investment["Investment fact extraction<br/>and deterministic engine"]
+        Intelligence["Regime, event, and<br/>briefing processors"]
         Quality["Data-quality checks<br/>30-second health snapshot"]
     end
 
     subgraph Storage["PostgreSQL and TimescaleDB"]
         Raw["Raw time-series and events"]
-        Derived["Derived intelligence"]
+        Reports["Report documents and analyses"]
+        Derived["Derived market intelligence"]
         Operations["Run history, logs, costs"]
     end
 
@@ -64,33 +67,34 @@ flowchart LR
         API["FastAPI JSON API"]
         Fanout["Concurrent dashboard loader"]
         Dashboard["HTMX dashboard"]
+        Investments["Investment research view"]
         Health["Health, live quality, and logs"]
     end
 
     FRED --> Collectors
     Calendar --> Collectors
     OANDA --> Collectors
+    News --> Collectors
     Collectors --> Raw
     Collectors --> Cycle
 
-    Cycle --> Regime
-    Cycle --> Events
-    Regime --> Briefing
-    LLM --> Regime
-    LLM --> Events
-    LLM --> Briefing
+    Cycle --> Intelligence
+    LLM --> Intelligence --> Derived
+    Raw --> Quality --> API
 
-    Regime --> Derived
-    Events --> Derived
-    Briefing --> Derived
+    Filings --> FilingIntake --> Reports
+    Reports --> Investment
+    News --> Investment
+    LLM --> Investment --> Reports
     Cycle --> Operations
-    Raw --> Quality
-    Quality --> API
+    FilingIntake --> Operations
 
     Raw --> API
+    Reports --> API
     Derived --> API
     Operations --> API
     API --> Fanout --> Dashboard
+    API --> Investments
     API --> Health
 ```
 
@@ -118,6 +122,11 @@ derived outputs inspectable without mixing raw source data with analysis.
 - **Bounded read latency:** dashboard datasets load concurrently, macro
   indicators use one batched query, and the health path reuses a 30-second
   quality snapshot while `/quality` remains an explicit live diagnostic.
+- **Investment research:** automated SEC and Companies House filing intake,
+  optional EDINET/OpenDART adapters, strict evidence extraction, deterministic
+  signal/valuation rules, durable report history, and a dedicated Investments
+  view. See
+  [docs/investment-research.md](docs/investment-research.md).
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
@@ -140,8 +149,10 @@ signal engine. It includes:
 - Upcoming high-impact economic events
 - Bounded Reuters/Kobeissi dashboard summary plus a full source/symbol-filtered News view
 - Daily briefing and analytical summaries
+- A dedicated Investments view for automated filings, report evidence,
+  deterministic company analysis, and valuation context
 - Refresh, analyze, and explicit force-full cycle controls with live status
-- Persistent Dashboard, Logs, Quality, News, and Operations navigation
+- Authenticated Dashboard, Investments, Settings, Logs, Quality, News, and Operations views
 
 Independent dashboard datasets are loaded concurrently. The dashboard and
 settings pages each consume one consolidated system-health response instead of
@@ -164,6 +175,12 @@ settings. These are local acceptance measurements, not a production SLA. See
 [docs/performance-baseline.md](docs/performance-baseline.md) for the environment,
 samples, cache semantics, and reproduction procedure.
 
+The Investments page measured 2.04 ms median server response time and 76 ms
+first contentful paint in the same local environment. Its dashboard JSON route
+measured 9.14 ms median. See
+[docs/investment-research.md](docs/investment-research.md) for filing-status
+measurements and operating semantics.
+
 ![System logs](docs/assets/system-logs-full-page.png)
 
 ## API Surface
@@ -178,6 +195,8 @@ FastAPI exposes JSON endpoints for:
 - System health, logs, and cycle status
 - Manually triggered collectors, processors, and full cycles
 - Read-only Reuters and Kobeissi feed and source-state views
+- Investment documents, report URLs, analyses, dashboard aggregates, filing
+  source status, and durable filing-collection triggers
 
 Reuters and Kobeissi collection can be invoked through the orchestrator CLI or
 the authenticated durable API trigger. Reuters is scheduled every two hours;
@@ -192,8 +211,8 @@ The database keeps responsibilities explicit:
 
 | Layer | Tables | Purpose |
 | --- | --- | --- |
-| Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache` | Normalised source observations and cached upstream payloads |
-| Derived | `regime_classifications`, `structured_opinions`, `daily_briefings` | Versioned analytical outputs |
+| Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache`, `investment_documents` | Normalised source observations, report evidence, and cached upstream payloads |
+| Derived | `regime_classifications`, `structured_opinions`, `daily_briefings`, `investment_analyses` | Versioned market and company analytical outputs |
 | Operations | `collection_log`, `processing_log`, `cycle_runs` | Status, lineage, errors, duration, token usage, and cost |
 
 ## Quick Start
@@ -215,6 +234,8 @@ makes no external or paid API calls.
 - A free [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html)
 - An OpenRouter API key for the enabled analytical processors
 - An OANDA personal access token for the enabled watchlist price collector
+- A descriptive SEC user agent; Companies House, EDINET, and OpenDART keys are
+  optional and enable only their corresponding filing sources
 
 The production configuration treats those three credentials as required because
 the corresponding sources/processors are enabled. Empty values fail startup
@@ -304,12 +325,15 @@ and pull request.
 ├── config/                 # Collectors, processors, models, schedules, dashboard
 ├── db/
 │   ├── init/               # Initial TimescaleDB and PostgreSQL schema
-│   └── migrations/         # Incremental schema changes
-├── docs/                   # Architecture notes and dashboard design decisions
+│   └── migrations/         # Incremental schema and investment tables
+├── docs/                   # Architecture, operations, performance, investment
 ├── orchestrator/
 │   ├── collectors/         # FRED, economic-calendar, and OANDA collectors
 │   ├── processors/         # Regime, event-impact, and briefing processors
-│   ├── tests/              # Focused collector and processor unit tests
+│   ├── investment_filings.py  # Regulatory discovery and ingestion
+│   ├── investment_service.py  # Document extraction and analysis lifecycle
+│   ├── investment_engine.py   # Deterministic scoring and valuation
+│   ├── tests/              # Focused service and processor unit tests
 │   ├── cli.py              # Operator commands
 │   └── orchestrator.py     # Dependency-aware cycle execution
 ├── prompts/                # Versioned public-safe analytical prompt templates
