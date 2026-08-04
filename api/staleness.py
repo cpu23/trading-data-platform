@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from config import load_config
 
@@ -10,9 +10,9 @@ def is_stale(
     if timestamp is None:
         return True, "No data available"
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.replace(tzinfo=UTC)
 
     age_hours = (now - timestamp).total_seconds() / 3600
 
@@ -25,9 +25,12 @@ def is_stale(
 def get_staleness_config(config: dict | None = None) -> dict:
     if config is None:
         config = load_config()
-    return config.get("dashboard", {}).get("stale_thresholds", {
-        "briefing_hours": 18,
-        "regime_hours": 18,
-        "macro_hours": 30,
-        "events_hours": 8,
-    })
+    return config.get("dashboard", {}).get(
+        "stale_thresholds",
+        {
+            "briefing_hours": 18,
+            "regime_hours": 18,
+            "macro_hours": 30,
+            "events_hours": 8,
+        },
+    )

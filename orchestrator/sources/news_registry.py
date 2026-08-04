@@ -1,4 +1,5 @@
 """Strict registry for supported news collection sources."""
+
 from __future__ import annotations
 
 NEWS_SOURCE_IDS = frozenset({"reuters", "kobeissi"})

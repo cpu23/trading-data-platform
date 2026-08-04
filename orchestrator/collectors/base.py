@@ -51,7 +51,9 @@ class CollectorNoData(CollectorStateError):
 class Collector(Protocol):
     source_id: str
 
-    def collect(self, config: dict, correlation_id: str) -> "CollectionResult | list[dict]":
+    def collect(
+        self, config: dict, correlation_id: str
+    ) -> "CollectionResult | list[dict]":
         """Fetch and normalise data. Returns CollectionResult or list of dicts matching target table schema."""
         ...
 

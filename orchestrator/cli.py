@@ -1,19 +1,18 @@
 import click
+from sqlalchemy import text
 
+from collectors import get_all_collectors
 from config_loader import load_config
 from db import check_connection, check_tables_exist, get_session
 from logging_config import setup_logging
-from collectors import get_all_collectors
-from processors import get_all_processors
 from migrate import run_migrations
 from orchestrator import (
+    get_last_collection_runs,
     run_collector,
     run_full_cycle,
     run_processor,
-    get_last_collection_runs,
 )
-from sqlalchemy import text
-
+from processors import get_all_processors
 
 REQUIRED_TABLES = [
     "macro_series",
@@ -127,7 +126,7 @@ def process(processor_id, run_all):
             click.echo(f"Opinion ID: {result['opinion_id']}")
     else:
         available = list(get_all_processors().keys())
-        click.echo(f"Specify a processor name or use --all", err=True)
+        click.echo("Specify a processor name or use --all", err=True)
         click.echo(f"Available processors: {', '.join(available)}", err=True)
         raise SystemExit(1)
 
@@ -266,28 +265,28 @@ def regime():
         click.echo(f"  Timeframe:  {timeframe_display}")
 
         if r.get("summary"):
-            click.echo(f"\n  Summary:")
+            click.echo("\n  Summary:")
             for line in r["summary"].split("\n"):
                 click.echo(f"    {line.strip()}")
 
         if key_factors:
-            click.echo(f"\n  Key Factors:")
+            click.echo("\n  Key Factors:")
             for factor in key_factors:
                 click.echo(f"    * {factor}")
 
         if key_indicators:
-            click.echo(f"\n  Key Indicators:")
+            click.echo("\n  Key Indicators:")
             for indicator, value in key_indicators.items():
                 if value is not None:
                     click.echo(f"    {indicator}: {value}")
 
         if momentum_implications:
-            click.echo(f"\n  Momentum Implications:")
+            click.echo("\n  Momentum Implications:")
             for line in momentum_implications.split("\n"):
                 click.echo(f"    {line.strip()}")
 
         if caution_flags:
-            click.echo(f"\n  Caution Flags:")
+            click.echo("\n  Caution Flags:")
             for flag in caution_flags:
                 click.echo(click.style(f"    ! {flag}", fg="yellow"))
 
@@ -295,7 +294,7 @@ def regime():
 
     except Exception as exc:
         click.echo(click.style(f"Error fetching regime: {exc}", fg="red"))
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 @cli.command()
@@ -329,7 +328,9 @@ def briefing():
 
             if row is None:
                 click.echo("No briefings have been generated yet.")
-                click.echo("Run 'collect --all' then 'process --all' to generate a briefing.")
+                click.echo(
+                    "Run 'collect --all' then 'process --all' to generate a briefing."
+                )
                 return
 
             r = dict(row._mapping)
@@ -372,7 +373,7 @@ def briefing():
 
     except Exception as exc:
         click.echo(click.style(f"Error fetching briefing: {exc}", fg="red"))
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 @cli.command("db-check")
@@ -419,6 +420,7 @@ def migrate():
 
 # ── News feed commands ────────────────────────────────────────────────────
 
+
 @cli.group()
 def news():
     """News feed: Reuters sitemap, Kobeissi tweets, unified feed."""
@@ -430,8 +432,9 @@ def news():
 @click.option("--json", "output_json", is_flag=True)
 def news_reuters(pages, output_json):
     """Poll Reuters sitemap for market-relevant articles."""
-    from sources.reuters import run_reuters
     from sources.news_feed import collect_and_publish
+    from sources.reuters import run_reuters
+
     config = load_config()
     reuters_config = config.get("reuters", {})
     if not reuters_config.get("enabled"):
@@ -447,6 +450,7 @@ def news_reuters(pages, output_json):
     articles = result.items
     if output_json:
         import json as json_mod
+
         click.echo(json_mod.dumps(articles, indent=2, default=str))
     else:
         click.echo(f"Found {len(articles)} new market-relevant articles:")
@@ -465,6 +469,7 @@ def news_kobeissi(count, output_json):
     """Fetch Kobeissi Letter tweets."""
     from sources.kobeissi import run_kobeissi
     from sources.news_feed import collect_and_publish
+
     config = load_config()
     kobeissi_config = config.get("kobeissi", {})
     if not kobeissi_config.get("enabled"):
@@ -480,6 +485,7 @@ def news_kobeissi(count, output_json):
     tweets = result.items
     if output_json:
         import json as json_mod
+
         click.echo(json_mod.dumps(tweets, indent=2, default=str))
     else:
         click.echo(f"Found {len(tweets)} new tweets:")
@@ -496,14 +502,20 @@ def news_kobeissi(count, output_json):
 def news_feed_cmd(days, output_json):
     """Build unified feed.json from all sources."""
     from sources.news_feed import build_feed
+
     config = load_config()
-    days = days if days is not None else config.get("news_feed", {}).get("history_days", 7)
+    days = (
+        days if days is not None else config.get("news_feed", {}).get("history_days", 7)
+    )
     feed = build_feed(config, days=days)
     if output_json:
         import json as json_mod
+
         click.echo(json_mod.dumps(feed, indent=2, default=str))
     else:
-        click.echo(f"Feed built: {feed['count']} items from {len(feed['sources'])} sources")
+        click.echo(
+            f"Feed built: {feed['count']} items from {len(feed['sources'])} sources"
+        )
         for item in feed["items"][:10]:
             click.echo(f"  [{item['source']}] {item['title'][:80]}")
         if feed["count"] > 10:
@@ -516,15 +528,21 @@ def news_feed_cmd(days, output_json):
 @click.option("--days", type=int, default=None, help="Feed history days")
 def news_all(pages, count, days):
     """Run all news sources and build feed."""
-    from sources.reuters import run_reuters
-    from sources.kobeissi import run_kobeissi
     from pathlib import Path
+
+    from sources.kobeissi import run_kobeissi
     from sources.news_feed import collect_and_publish
     from sources.news_storage import read_json
+    from sources.reuters import run_reuters
+
     config = load_config()
-    pages = pages if pages is not None else config.get("reuters", {}).get("max_pages", 3)
+    pages = (
+        pages if pages is not None else config.get("reuters", {}).get("max_pages", 3)
+    )
     count = count if count is not None else config.get("kobeissi", {}).get("count", 20)
-    days = days if days is not None else config.get("news_feed", {}).get("history_days", 7)
+    days = (
+        days if days is not None else config.get("news_feed", {}).get("history_days", 7)
+    )
     failed = False
 
     if config.get("reuters", {}).get("enabled", False):
@@ -551,7 +569,9 @@ def news_all(pages, count, days):
     else:
         click.echo("Kobeissi: disabled")
 
-    output_dir = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    output_dir = Path(
+        config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news")
+    )
     feed = read_json(output_dir / "feed.json", {"count": 0})
     click.echo(f"Feed: {feed.get('count', 0)} items total")
     if failed:

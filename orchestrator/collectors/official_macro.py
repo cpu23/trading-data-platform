@@ -1,7 +1,7 @@
 import csv
 import io
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
@@ -40,7 +40,7 @@ class ConfiguredMacroCollector:
                 ),
             )
 
-        acquired_at = datetime.now(timezone.utc)
+        acquired_at = datetime.now(UTC)
         records = []
         failures = []
         empty_series = []
@@ -108,13 +108,13 @@ class ConfiguredMacroCollector:
             if fmt == "csv"
             else self._json_rows(response.json(), series.get("records_path", []))
         )
-        acquired_at = acquired_at or datetime.now(timezone.utc)
+        acquired_at = acquired_at or datetime.now(UTC)
         output = []
         for row in rows:
             try:
                 observed = self._parse_time(row[series["date_field"]], series)
                 if observed.tzinfo is None:
-                    observed = observed.replace(tzinfo=timezone.utc)
+                    observed = observed.replace(tzinfo=UTC)
                 value = float(row[series["value_field"]])
             except (KeyError, TypeError, ValueError):
                 continue
@@ -147,9 +147,7 @@ class ConfiguredMacroCollector:
         text_value = str(value).strip()
         date_format = series.get("date_format")
         if date_format:
-            return datetime.strptime(text_value, date_format).replace(
-                tzinfo=timezone.utc
-            )
+            return datetime.strptime(text_value, date_format).replace(tzinfo=UTC)
         if len(text_value) == 7 and text_value[4] == "-":
             text_value = f"{text_value}-01"
         elif len(text_value) == 4 and text_value.isdigit():
@@ -169,7 +167,7 @@ class ConfiguredMacroCollector:
             return None
         try:
             value = datetime.fromisoformat(str(row[field]).replace("Z", "+00:00"))
-            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
         except ValueError:
             return None
 

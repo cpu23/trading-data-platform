@@ -2,9 +2,10 @@ import hashlib
 import os
 import re
 
+from sqlalchemy import text
+
 from db import get_session
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("migrate")
 
@@ -162,8 +163,7 @@ def run_migrations(config, allow_checksum_backfill: bool = False):
 
         if version not in inventory:
             errors.append(
-                f"Applied migration version {version} is missing "
-                f"from {migrations_dir}"
+                f"Applied migration version {version} is missing from {migrations_dir}"
             )
             continue
 
@@ -172,8 +172,7 @@ def run_migrations(config, allow_checksum_backfill: bool = False):
         if stored_checksum is None:
             if not allow_checksum_backfill:
                 errors.append(
-                    f"Applied migration {version} at {filepath} "
-                    f"has a null checksum"
+                    f"Applied migration {version} at {filepath} has a null checksum"
                 )
             else:
                 backfill_candidates.append((version, filepath))
@@ -181,8 +180,7 @@ def run_migrations(config, allow_checksum_backfill: bool = False):
             disk_checksum = compute_checksum(filepath)
             if stored_checksum != disk_checksum:
                 errors.append(
-                    f"Checksum mismatch for applied migration "
-                    f"{version} at {filepath}"
+                    f"Checksum mismatch for applied migration {version} at {filepath}"
                 )
 
     if errors:

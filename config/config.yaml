@@ -8,15 +8,17 @@ database:
 llm:
   provider: openrouter
   api_key: ${OPENROUTER_API_KEY}
-  # 2026-07-28 strict-schema benchmark: Gemini 3.5 Flash Lite provides the best
-  # latency/evidence-discipline balance at the capped non-priority endpoint rate.
+  api_keys:
+    investment_analysis: ${OPENROUTER_API_KEY}
+  # 2026-08-01 five-report benchmark: Luna returned valid first-pass schemas
+  # with disciplined abstention; deterministic XBRL supplies financial facts.
   default_model: ${OPENROUTER_MODEL}
   models:
     macro_regime: ${OPENROUTER_MODEL}
     event_impact: ${OPENROUTER_MODEL}
     briefing: google/gemini-3.5-flash-lite
     market_intelligence: ${OPENROUTER_MODEL}
-    investment_analysis: google/gemini-3.5-flash-lite
+    investment_analysis: openai/gpt-5.6-luna
   # OpenRouter must fail rather than route above this published unit-price ceiling.
   max_prices:
     briefing:
@@ -36,6 +38,10 @@ llm:
     briefing: true
     market_intelligence: true
     investment_analysis: true
+  # Luna supports strict schemas, but OpenRouter does not currently advertise
+  # that capability for require_parameters endpoint filtering.
+  require_parameters:
+    investment_analysis: false
   intelligence_roles:
     analyst:
       reasoning_effort: low
@@ -719,9 +725,9 @@ investment_filings:
   enabled: true
   schedule: "0 8 * * 1-5"  # Weekdays 08:00 UTC
   lookback_days: 730
-  auto_analyze: false
+  auto_analyze: true
   run_on_startup: true
-  company_workers: 4
+  company_workers: 1
   universe: top_us_uk_eu_100
   sec_user_agent: ${SEC_USER_AGENT:-TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)}
   companies_house_api_key: ${COMPANIES_HOUSE_API_KEY:-}

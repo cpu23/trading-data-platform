@@ -1,5 +1,5 @@
 import re
-from datetime import timezone
+from datetime import UTC
 
 from apscheduler.triggers.cron import CronTrigger
 
@@ -37,4 +37,4 @@ def build_cron_trigger(schedule: str) -> CronTrigger:
     if len(fields) == 5:
         fields[4] = normalize_posix_weekdays(fields[4])
         schedule = " ".join(fields)
-    return CronTrigger.from_crontab(schedule, timezone=timezone.utc)
+    return CronTrigger.from_crontab(schedule, timezone=UTC)

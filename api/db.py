@@ -1,18 +1,19 @@
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
+from typing import Any
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
-from config import load_config
+from config import AppConfig, load_config
 from logging_config import get_logger
 
 logger = get_logger("db")
+_engine: Engine | None = None
+_SessionFactory: sessionmaker[Session] | None = None
 
-_engine = None
-_SessionFactory = None
 
-
-def get_engine(config: dict | None = None):
+def get_engine(config: AppConfig | None = None) -> Engine:
     global _engine
     if _engine is not None:
         return _engine
@@ -29,7 +30,7 @@ def get_engine(config: dict | None = None):
     return _engine
 
 
-def _get_session_factory(config: dict | None = None):
+def _get_session_factory(config: AppConfig | None = None) -> sessionmaker[Session]:
     global _SessionFactory
     if _SessionFactory is not None:
         return _SessionFactory
@@ -39,7 +40,7 @@ def _get_session_factory(config: dict | None = None):
 
 
 @contextmanager
-def get_session(config: dict | None = None):
+def get_session(config: AppConfig | None = None) -> Generator[Session, None, None]:
     factory = _get_session_factory(config)
     session = factory()
     try:
@@ -52,7 +53,11 @@ def get_session(config: dict | None = None):
         session.close()
 
 
-def query_one(sql, params: dict | None = None, config: dict | None = None) -> dict | None:
+def query_one(
+    sql: str,
+    params: Mapping[str, Any] | None = None,
+    config: AppConfig | None = None,
+) -> dict[str, Any] | None:
     with get_session(config) as session:
         result = session.execute(text(sql), params or {})
         row = result.fetchone()
@@ -61,7 +66,11 @@ def query_one(sql, params: dict | None = None, config: dict | None = None) -> di
     return dict(row._mapping)
 
 
-def query_many(sql, params: dict | None = None, config: dict | None = None) -> list[dict]:
+def query_many(
+    sql: str,
+    params: Mapping[str, Any] | None = None,
+    config: AppConfig | None = None,
+) -> list[dict[str, Any]]:
     with get_session(config) as session:
         result = session.execute(text(sql), params or {})
         return [dict(row._mapping) for row in result]

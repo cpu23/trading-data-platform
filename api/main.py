@@ -1,13 +1,13 @@
-from collections.abc import Callable
-from contextlib import asynccontextmanager
-
-import httpx
-import os
 import base64
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
+import os
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,8 +19,8 @@ from auth import (
     CSRF_COOKIE,
     OPERATOR_FILE,
     STATE_DIR,
-    migrate_legacy_state,
     load_session_secret,
+    migrate_legacy_state,
     mint_csrf_token,
     setup_complete,
     verify_credentials,
@@ -75,13 +75,16 @@ def create_app(
         if cookie:
             try:
                 encoded, signature = cookie.rsplit(".", 1)
-                expected = hmac.new(session_secret, encoded.encode(), hashlib.sha256).hexdigest()
+                expected = hmac.new(
+                    session_secret, encoded.encode(), hashlib.sha256
+                ).hexdigest()
                 if hmac.compare_digest(signature, expected):
                     session = json.loads(base64.urlsafe_b64decode(encoded + "=="))
                     issued_at = int(session.get("issued_at", 0))
                     if session.get("authenticated") and (
                         not issued_at
-                        or int(datetime.now(timezone.utc).timestamp()) - issued_at > session_max_age
+                        or int(datetime.now(UTC).timestamp()) - issued_at
+                        > session_max_age
                     ):
                         session = {}
             except Exception:
@@ -92,12 +95,22 @@ def create_app(
         if before and not session:
             response.delete_cookie("market_session", path="/")
         elif session != before:
-            encoded = base64.urlsafe_b64encode(json.dumps(session).encode()).decode().rstrip("=")
-            signature = hmac.new(session_secret, encoded.encode(), hashlib.sha256).hexdigest()
+            encoded = (
+                base64.urlsafe_b64encode(json.dumps(session).encode())
+                .decode()
+                .rstrip("=")
+            )
+            signature = hmac.new(
+                session_secret, encoded.encode(), hashlib.sha256
+            ).hexdigest()
             response.set_cookie(
-                "market_session", f"{encoded}.{signature}", httponly=True,
-                samesite="strict", secure=os.environ.get("COOKIE_SECURE") == "1",
-                max_age=session_max_age, path="/",
+                "market_session",
+                f"{encoded}.{signature}",
+                httponly=True,
+                samesite="strict",
+                secure=os.environ.get("COOKIE_SECURE") == "1",
+                max_age=session_max_age,
+                path="/",
             )
         return response
 
@@ -106,7 +119,10 @@ def create_app(
         path = request.url.path
         is_exempt = any(path.startswith(prefix) for prefix in auth_exempt_prefixes)
         # Skip CSRF for requests without auth credentials; let auth dependency return 401
-        has_auth = bool(request.headers.get("authorization") or request.scope.get("session", {}).get("authenticated"))
+        has_auth = bool(
+            request.headers.get("authorization")
+            or request.scope.get("session", {}).get("authenticated")
+        )
         if not has_auth and not is_exempt:
             return await call_next(request)
         cookie_token = request.cookies.get(CSRF_COOKIE, "")
@@ -115,21 +131,53 @@ def create_app(
         if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not is_exempt:
             origin = request.headers.get("origin")
             referer = request.headers.get("referer")
-            browser_signal = bool(origin or referer or request.cookies.get(CSRF_COOKIE) or request.headers.get("sec-fetch-site"))
-            machine_json = request.headers.get("content-type", "").split(";", 1)[0].lower() == "application/json" and not browser_signal
+            browser_signal = bool(
+                origin
+                or referer
+                or request.cookies.get(CSRF_COOKIE)
+                or request.headers.get("sec-fetch-site")
+            )
+            machine_json = (
+                request.headers.get("content-type", "").split(";", 1)[0].lower()
+                == "application/json"
+                and not browser_signal
+            )
             if not machine_json:
                 supplied = request.headers.get("x-csrf-token", "")
                 from urllib.parse import urlsplit
-                expected_origin = (urlsplit(str(request.base_url)).scheme, urlsplit(str(request.base_url)).netloc)
+
+                expected_origin = (
+                    urlsplit(str(request.base_url)).scheme,
+                    urlsplit(str(request.base_url)).netloc,
+                )
                 supplied_origin = origin or referer
                 parsed = urlsplit(supplied_origin) if supplied_origin else None
-                same_origin = parsed and (parsed.scheme, parsed.netloc) == expected_origin
+                same_origin = (
+                    parsed and (parsed.scheme, parsed.netloc) == expected_origin
+                )
                 if not verify_csrf_token(supplied) or not same_origin:
-                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
+                    return JSONResponse(
+                        status_code=403, content={"detail": "CSRF validation failed"}
+                    )
         response = await call_next(request)
-        if request.method == "GET" and response.status_code < 400 and path not in {"/static", "/api/quotes/stream"}:
-            secure = os.environ.get("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
-            response.set_cookie(CSRF_COOKIE, token or mint_csrf_token(), secure=secure, httponly=False, samesite="strict", path="/")
+        if (
+            request.method == "GET"
+            and response.status_code < 400
+            and path not in {"/static", "/api/quotes/stream"}
+        ):
+            secure = os.environ.get("COOKIE_SECURE", "0").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            response.set_cookie(
+                CSRF_COOKIE,
+                token or mint_csrf_token(),
+                secure=secure,
+                httponly=False,
+                samesite="strict",
+                path="/",
+            )
         return response
 
     app.mount("/static", StaticFiles(directory="static"), name="static")

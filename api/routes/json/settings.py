@@ -1,7 +1,7 @@
-from typing import Literal
-from zoneinfo import ZoneInfo
 import os
 from pathlib import Path
+from typing import Literal
+from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
@@ -30,7 +30,13 @@ COOKIE_NAME = "display_timezone"
 STATE_DIR = Path(os.environ.get("OPERATOR_STATE_DIR", "/app/state"))
 OPERATOR_CONFIG = STATE_DIR / "operator.yaml"
 SECRETS_FILE = STATE_DIR / "secrets.env"
-ALLOWED_SECRET_KEYS = {"OPENROUTER_API_KEY", "FRED_API_KEY", "OANDA_API_KEY", "TWITTERAPIKEY", "TWITTERAPI_KEY"}
+ALLOWED_SECRET_KEYS = {
+    "OPENROUTER_API_KEY",
+    "FRED_API_KEY",
+    "OANDA_API_KEY",
+    "TWITTERAPIKEY",
+    "TWITTERAPI_KEY",
+}
 ALLOWED_PROCESSORS = {"macro_regime", "event_impact", "briefing"}
 
 
@@ -82,20 +88,37 @@ def _write_secrets(updates: dict) -> None:
     values = _read_secrets()
     for key, value in updates.items():
         normalized = "TWITTERAPI_KEY" if key == "TWITTERAPIKEY" else str(key)
-        if normalized in ALLOWED_SECRET_KEYS and isinstance(value, str) and value.strip():
+        if (
+            normalized in ALLOWED_SECRET_KEYS
+            and isinstance(value, str)
+            and value.strip()
+        ):
             values[normalized] = value.strip()
-    _atomic_private_write(SECRETS_FILE, "".join(f"{key}={value}\n" for key, value in sorted(values.items())))
+    _atomic_private_write(
+        SECRETS_FILE,
+        "".join(f"{key}={value}\n" for key, value in sorted(values.items())),
+    )
 
 
 @router.get("/settings/timezone")
 def get_timezone_setting(request: Request):
     context = timezone_context(request)
-    return {"current": context["current_timezone"], "choices": context["timezone_choices"]}
+    return {
+        "current": context["current_timezone"],
+        "choices": context["timezone_choices"],
+    }
 
 
 @router.post("/settings/timezone")
 def set_timezone_setting(update: TimezoneUpdate, response: Response):
-    response.set_cookie(COOKIE_NAME, update.timezone, httponly=True, secure=False, samesite="strict", path="/")
+    response.set_cookie(
+        COOKIE_NAME,
+        update.timezone,
+        httponly=True,
+        secure=False,
+        samesite="strict",
+        path="/",
+    )
     return {"current": update.timezone, "choices": list(TIMEZONE_CHOICES)}
 
 
@@ -109,7 +132,10 @@ def update_operator_settings(body: dict):
     clean_models = {
         key: str(value).strip()
         for key, value in models.items()
-        if key in ALLOWED_PROCESSORS and isinstance(value, str) and value.strip() and len(value) <= 200
+        if key in ALLOWED_PROCESSORS
+        and isinstance(value, str)
+        and value.strip()
+        and len(value) <= 200
     }
     try:
         daily_budget = float(body.get("daily_budget_usd"))
@@ -130,7 +156,11 @@ def update_operator_settings(body: dict):
 @router.post("/settings/test-openrouter")
 def test_openrouter(body: dict):
     supplied = str(body.get("api_key") or "").strip()
-    api_key = supplied or _read_secrets().get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+    api_key = (
+        supplied
+        or _read_secrets().get("OPENROUTER_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY", "")
+    )
     if not api_key:
         raise HTTPException(400, "Add an OpenRouter key before testing")
     try:
@@ -141,7 +171,9 @@ def test_openrouter(body: dict):
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(400, f"OpenRouter rejected the key ({exc.response.status_code})") from exc
+        raise HTTPException(
+            400, f"OpenRouter rejected the key ({exc.response.status_code})"
+        ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(400, "Could not reach OpenRouter") from exc
     return {"connected": True}

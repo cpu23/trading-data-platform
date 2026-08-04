@@ -8,11 +8,12 @@ automatic stages are blocked.
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import text
 
 from db import get_session
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
@@ -34,10 +35,10 @@ def _finite_number(value, name: str) -> float:
 
 
 def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    current = current.astimezone(timezone.utc)
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
     start = current.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=1)
 
@@ -56,9 +57,7 @@ def get_budget_config(config: dict) -> tuple[float, float]:
     return cap, warn_at
 
 
-def get_today_spend(
-    config: dict, *, now: datetime | None = None
-) -> tuple[float, int]:
+def get_today_spend(config: dict, *, now: datetime | None = None) -> tuple[float, int]:
     today_start, tomorrow_start = utc_day_bounds(now)
     sql = text(
         "SELECT COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS total_cost, "
@@ -67,9 +66,13 @@ def get_today_spend(
         "WHERE started_at >= :today_start AND started_at < :tomorrow_start"
     )
     with get_session(config) as session:
-        row = session.execute(
-            sql, {"today_start": today_start, "tomorrow_start": tomorrow_start}
-        ).mappings().one_or_none()
+        row = (
+            session.execute(
+                sql, {"today_start": today_start, "tomorrow_start": tomorrow_start}
+            )
+            .mappings()
+            .one_or_none()
+        )
     if row is None:
         return 0.0, 0
     return float(row.get("total_cost") or 0), int(row.get("total_tokens") or 0)
@@ -170,7 +173,10 @@ def trusted_manual_budget_context(
     """Bind force flags to an internally minted authenticated capability."""
     if not (force and manual_authorized):
         raise ValueError("trusted manual force requires force and manual authorization")
-    if not isinstance(authorization, ManualBudgetAuthorization) or not authorization.valid:
+    if (
+        not isinstance(authorization, ManualBudgetAuthorization)
+        or not authorization.valid
+    ):
         raise ValueError("trusted manual force requires trusted authorization")
     return BudgetContext(
         force=True,

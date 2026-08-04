@@ -63,7 +63,7 @@ Use persisted run timing, not subjective browser timing.
 
 **Files:**
 - Review: all files from `git status --short`
-- Preserve: `.hermes/plans/2026-07-13_155833-platform-reliability-performance-ui-remediation.md`
+- Preserve: `docs/archive/plans/2026-07-13_155833-platform-reliability-performance-ui-remediation.md`
 
 **Step 1: Capture the current state**
 

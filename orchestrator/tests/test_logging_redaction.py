@@ -9,7 +9,6 @@ import structlog
 
 import logging_config
 
-
 SENTINELS = {
     "dict-secret-91",
     "nested-secret-92",
@@ -46,7 +45,9 @@ class LoggingRedactionTests(unittest.TestCase):
 
         self.assertIsNot(sanitized, original)
         self.assertEqual(original["API_KEY"], "dict-secret-91")
-        self.assertEqual(original["headers"]["Authorization"], "Bearer header-secret-96")
+        self.assertEqual(
+            original["headers"]["Authorization"], "Bearer header-secret-96"
+        )
         self.assertEqual(sanitized["API_KEY"], "[REDACTED]")
         self.assertEqual(sanitized["headers"]["Authorization"], "[REDACTED]")
         self.assertEqual(sanitized["headers"]["X-Trace"], "keep")
@@ -58,17 +59,32 @@ class LoggingRedactionTests(unittest.TestCase):
 
     def test_processor_sanitizes_every_explicit_credential_key_case_insensitively(self):
         credential_keys = (
-            "api_key", "APIKEY", "Token", "ACCESS_TOKEN", "refresh-token", "key",
-            "Authorization", "PROXY_AUTHORIZATION", "password", "PASSWD", "secret",
-            "CLIENT_SECRET", "Cookie", "set-cookie",
+            "api_key",
+            "APIKEY",
+            "Token",
+            "ACCESS_TOKEN",
+            "refresh-token",
+            "key",
+            "Authorization",
+            "PROXY_AUTHORIZATION",
+            "password",
+            "PASSWD",
+            "secret",
+            "CLIENT_SECRET",
+            "Cookie",
+            "set-cookie",
         )
-        event = {name: f"sentinel-{index}" for index, name in enumerate(credential_keys)}
+        event = {
+            name: f"sentinel-{index}" for index, name in enumerate(credential_keys)
+        }
 
         sanitized = logging_config.redact_credentials(None, "info", event)
 
         self.assertEqual(set(sanitized), set(event))
         self.assertTrue(all(value == "[REDACTED]" for value in sanitized.values()))
-        self.assertFalse(any(value in json.dumps(sanitized) for value in event.values()))
+        self.assertFalse(
+            any(value in json.dumps(sanitized) for value in event.values())
+        )
 
     def test_processor_sanitizes_embedded_urls_and_free_form_credentials(self):
         message = (
@@ -87,8 +103,12 @@ class LoggingRedactionTests(unittest.TestCase):
 
     def test_processor_redacts_serialized_credentials_and_url_userinfo(self):
         sentinels = (
-            "json-secret-201", "json-spaced secret-202", "repr-secret-203",
-            "equals-secret-204", "userinfo-secret-205", "query-secret-206",
+            "json-secret-201",
+            "json-spaced secret-202",
+            "repr-secret-203",
+            "equals-secret-204",
+            "userinfo-secret-205",
+            "query-secret-206",
             "encoded-user-secret-207",
         )
         message = (
@@ -111,7 +131,9 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertIn("{'api_key': '[REDACTED]'}", event)
         self.assertIn("client_secret=[REDACTED]", event)
         self.assertIn("https://[REDACTED]@example.test/path", event)
-        self.assertIn("https://[REDACTED]@example.test:8443/path?token=[REDACTED]#frag", event)
+        self.assertIn(
+            "https://[REDACTED]@example.test:8443/path?token=[REDACTED]#frag", event
+        )
         self.assertIn("https://[REDACTED]@example.test/encoded", event)
         self.assertIn("token_count=12 monkey=banana keyboard=qwerty", event)
         for sentinel in sentinels:

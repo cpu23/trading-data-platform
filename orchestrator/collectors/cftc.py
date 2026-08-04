@@ -1,5 +1,5 @@
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
@@ -27,7 +27,7 @@ class CftcCollector:
         except (TypeError, ValueError):
             lookback_days = 400
         lookback_days = max(30, min(lookback_days, 3650))
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date()
+        cutoff = (datetime.now(UTC) - timedelta(days=lookback_days)).date()
         market_filter = (
             "cftc_contract_market_code in("
             + ",".join(f"'{code}'" for code in sorted(market_codes))
@@ -46,7 +46,7 @@ class CftcCollector:
         )
         response.raise_for_status()
         records = []
-        acquired_at = datetime.now(timezone.utc)
+        acquired_at = datetime.now(UTC)
         mapping_by_market = {item["market_id"]: item for item in mappings}
         for row in response.json():
             market = row.get("cftc_contract_market_code") or row.get(

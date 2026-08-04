@@ -2,6 +2,8 @@ import hashlib
 import json
 from uuid import UUID, uuid4
 
+from sqlalchemy import text
+
 from db import get_session
 from llm_client import call_llm, resolve_model
 from logging_config import get_logger
@@ -11,8 +13,6 @@ from processors._validators import (
     OutputPolicyError,
     scan_prohibited_language,
 )
-from sqlalchemy import text
-
 
 logger = get_logger("market_intelligence")
 
@@ -130,8 +130,8 @@ class MarketIntelligenceProcessor:
         }
 
         for asset in edited["assets"]:
-            asset_baseline_id = (previous or {}).get("asset_baselines", {}).get(
-                asset["symbol"]
+            asset_baseline_id = (
+                (previous or {}).get("asset_baselines", {}).get(asset["symbol"])
             )
             opinions.append(
                 self._opinion(
@@ -176,7 +176,13 @@ class MarketIntelligenceProcessor:
                 delta["headline"],
                 fingerprint,
                 editor_profile["model"],
-                {**shared_inputs, "opinion_ids": [*shared_inputs["opinion_ids"], memory_opinion["opinion_id"]]},
+                {
+                    **shared_inputs,
+                    "opinion_ids": [
+                        *shared_inputs["opinion_ids"],
+                        memory_opinion["opinion_id"],
+                    ],
+                },
                 (previous or {}).get("delta_baseline_id") or baseline_id,
                 usage,
             )
@@ -210,8 +216,7 @@ class MarketIntelligenceProcessor:
 
     def _context(self, config, correlation_id):
         symbols = [
-            item["symbol"]
-            for item in config.get("watchlist", {}).get("trading", [])
+            item["symbol"] for item in config.get("watchlist", {}).get("trading", [])
         ]
         with get_session(config) as session:
             regime = session.execute(
@@ -386,7 +391,9 @@ class MarketIntelligenceProcessor:
             return None
         value = dict(row._mapping)
         value["opinion_id"] = str(value["opinion_id"])
-        value["correlation_id"] = str(value["correlation_id"]) if value.get("correlation_id") else None
+        value["correlation_id"] = (
+            str(value["correlation_id"]) if value.get("correlation_id") else None
+        )
         if isinstance(value["payload"], str):
             value["payload"] = json.loads(value["payload"])
         value["asset_baselines"] = {
@@ -610,15 +617,11 @@ class MarketIntelligenceProcessor:
         )
         parsed, issues = self._parse_and_validate(result.get("content"), validator)
         attempts.append({"result": result, "issues": issues})
-        self._record_attempt(
-            config, correlation_id, stage, 1, prompt, result, issues
-        )
+        self._record_attempt(config, correlation_id, stage, 1, prompt, result, issues)
         if not issues:
             return parsed, attempts
 
-        repair_prompt = self._repair_prompt(
-            prompt, result.get("content"), issues
-        )
+        repair_prompt = self._repair_prompt(prompt, result.get("content"), issues)
         try:
             repair_result = call_llm(
                 repair_prompt,
@@ -825,9 +828,7 @@ class MarketIntelligenceProcessor:
         self._prune_unsupported_role_claims(
             value, allowed_evidence_ids, asset_evidence_ids or {}
         )
-        return self._validate_role(
-            value, symbols, role, allowed_evidence_ids
-        )
+        return self._validate_role(value, symbols, role, allowed_evidence_ids)
 
     @staticmethod
     def _canonicalize_role_claim_ids(value, role):
@@ -884,9 +885,7 @@ class MarketIntelligenceProcessor:
                     sequence += 1
 
     @staticmethod
-    def _prune_unsupported_role_claims(
-        value, allowed_evidence_ids, asset_evidence_ids
-    ):
+    def _prune_unsupported_role_claims(value, allowed_evidence_ids, asset_evidence_ids):
         if not isinstance(value, dict):
             return
         allowed = set(allowed_evidence_ids)
@@ -1041,7 +1040,9 @@ class MarketIntelligenceProcessor:
             summary = assessment.get("summary")
             if isinstance(summary, dict):
                 self._prepare_editor_item(summary, claims, scope)
-                if not summary.get("source_claim_ids") or not summary.get("evidence_ids"):
+                if not summary.get("source_claim_ids") or not summary.get(
+                    "evidence_ids"
+                ):
                     fallback_ids = self._fallback_claim_ids(claims, scope)
                     if fallback_ids:
                         summary["text"] = (
@@ -1108,14 +1109,10 @@ class MarketIntelligenceProcessor:
     def _fallback_claim_ids(claims, scope):
         if scope != "global":
             marker = f".asset.{scope}."
-            asset_ids = sorted(
-                claim_id for claim_id in claims if marker in claim_id
-            )
+            asset_ids = sorted(claim_id for claim_id in claims if marker in claim_id)
             if asset_ids:
                 return asset_ids[:2]
-        return sorted(
-            claim_id for claim_id in claims if ".global." in claim_id
-        )[:1]
+        return sorted(claim_id for claim_id in claims if ".global." in claim_id)[:1]
 
     @staticmethod
     def _claim_ids_for_scope(claims, scope):
@@ -1210,9 +1207,7 @@ class MarketIntelligenceProcessor:
             supported = set()
             if isinstance(source_ids, list) and source_ids:
                 for claim_id in source_ids:
-                    supported.update(
-                        claims.get(claim_id, {}).get("evidence_ids", [])
-                    )
+                    supported.update(claims.get(claim_id, {}).get("evidence_ids", []))
             self._validate_id_list(
                 evidence_ids,
                 f"{item_path}.evidence_ids",
@@ -1319,14 +1314,10 @@ class MarketIntelligenceProcessor:
         prior = previous["payload"]
         prior_global = prior.get("global", prior)
         global_delta = self._assessment_delta(prior_global, edited["global"])
-        prior_assets = {
-            asset["symbol"]: asset for asset in prior.get("assets", [])
-        }
+        prior_assets = {asset["symbol"]: asset for asset in prior.get("assets", [])}
         asset_deltas = []
         for asset in edited["assets"]:
-            delta = self._assessment_delta(
-                prior_assets.get(asset["symbol"], {}), asset
-            )
+            delta = self._assessment_delta(prior_assets.get(asset["symbol"], {}), asset)
             if delta:
                 asset_deltas.append({"symbol": asset["symbol"], **delta})
         material = bool(global_delta or asset_deltas)
@@ -1402,8 +1393,7 @@ class MarketIntelligenceProcessor:
                     "input_fingerprint": fingerprint,
                     "reused": True,
                     "baseline_opinion_id": (
-                        previous.get("delta_baseline_id")
-                        or previous["opinion_id"]
+                        previous.get("delta_baseline_id") or previous["opinion_id"]
                     ),
                 },
                 "prompt_text": None,
@@ -1530,8 +1520,12 @@ class MarketIntelligenceProcessor:
         for key in previous.keys() & current.keys():
             old = previous[key]
             new = current[key]
-            old_support = len(old.get("evidence_ids", [])) if isinstance(old, dict) else 0
-            new_support = len(new.get("evidence_ids", [])) if isinstance(new, dict) else 0
+            old_support = (
+                len(old.get("evidence_ids", [])) if isinstance(old, dict) else 0
+            )
+            new_support = (
+                len(new.get("evidence_ids", [])) if isinstance(new, dict) else 0
+            )
             if new_support > old_support:
                 strengthened.append(new)
             elif new_support < old_support:

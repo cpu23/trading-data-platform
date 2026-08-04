@@ -3,7 +3,7 @@ import threading
 import time
 import unittest
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -39,7 +39,7 @@ class FredMetadataPersistenceTests(unittest.TestCase):
             "units": "Percent",
             "seasonal_adjustment": "SA",
             "frequency": "Quarterly",
-            "fetched_at": fetched_at or datetime.now(timezone.utc),
+            "fetched_at": fetched_at or datetime.now(UTC),
         }
 
     def _query_with_metadata(self, rows):
@@ -55,9 +55,15 @@ class FredMetadataPersistenceTests(unittest.TestCase):
 
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
-    def test_fresh_persisted_metadata_skips_metadata_http_call(self, query_latest, make_request):
+    def test_fresh_persisted_metadata_skips_metadata_http_call(
+        self, query_latest, make_request
+    ):
         query_latest.side_effect = self._query_with_metadata(
-            {"GDP": self._metadata_row(fetched_at=datetime.now(timezone.utc) - timedelta(days=29))}
+            {
+                "GDP": self._metadata_row(
+                    fetched_at=datetime.now(UTC) - timedelta(days=29)
+                )
+            }
         )
         make_request.return_value = self._response(
             {"observations": [{"date": "2025-01-01", "value": "1.5"}]}
@@ -78,7 +84,11 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         query_latest.side_effect = self._query_with_metadata({})
         make_request.side_effect = [
             self._response(
-                {"seriess": [{"title": "GDP", "units": "USD", "frequency": "Quarterly"}]}
+                {
+                    "seriess": [
+                        {"title": "GDP", "units": "USD", "frequency": "Quarterly"}
+                    ]
+                }
             ),
             self._response({"observations": []}),
         ]
@@ -125,8 +135,12 @@ class FredMetadataPersistenceTests(unittest.TestCase):
 
         get_session.side_effect = session_context
 
-        first = FredCollector()._fetch_series_metadata("GDP", "test-key", "cid", self._config())
-        second = FredCollector()._fetch_series_metadata("GDP", "test-key", "cid", self._config())
+        first = FredCollector()._fetch_series_metadata(
+            "GDP", "test-key", "cid", self._config()
+        )
+        second = FredCollector()._fetch_series_metadata(
+            "GDP", "test-key", "cid", self._config()
+        )
 
         self.assertEqual(first, second)
         self.assertEqual(make_request.call_count, 1)
@@ -160,7 +174,9 @@ class FredMetadataPersistenceTests(unittest.TestCase):
     ):
         malformed = self._metadata_row("BAD", fetched_at="not-a-date")
         good = self._metadata_row("GOOD")
-        query_latest.side_effect = self._query_with_metadata({"BAD": malformed, "GOOD": good})
+        query_latest.side_effect = self._query_with_metadata(
+            {"BAD": malformed, "GOOD": good}
+        )
 
         def request(*, url, params, **kwargs):
             if url == FRED_SERIES_URL:
@@ -203,7 +219,10 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertEqual(result.successful_series, 3)
         self.assertEqual(make_request.call_count, 3)
         self.assertTrue(
-            all(call.kwargs["url"] == FRED_OBSERVATIONS_URL for call in make_request.call_args_list)
+            all(
+                call.kwargs["url"] == FRED_OBSERVATIONS_URL
+                for call in make_request.call_args_list
+            )
         )
         self.assertEqual(result.metrics["metadata_api_calls"], 0)
         self.assertEqual(result.metrics["observation_api_calls"], 3)
@@ -289,12 +308,16 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertTrue(second.partial_failure)
         self.assertEqual(get_session.call_count, 2)
         self.assertEqual(
-            [call.kwargs["url"] for call in make_request.call_args_list].count(FRED_SERIES_URL),
+            [call.kwargs["url"] for call in make_request.call_args_list].count(
+                FRED_SERIES_URL
+            ),
             2,
         )
         self.assertEqual(first.errors[0]["code"], "cache_degraded")
         self.assertEqual(second.errors[0]["code"], "cache_degraded")
-        self.assertNotIn("SENTINEL-PERSISTENCE-SECRET", repr(first.errors + second.errors))
+        self.assertNotIn(
+            "SENTINEL-PERSISTENCE-SECRET", repr(first.errors + second.errors)
+        )
 
     @patch("collectors.fred.get_session")
     @patch("collectors.fred.make_request")
@@ -321,7 +344,9 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertEqual(result.metrics["observation_api_calls"], 3)
         self.assertEqual(result.metrics["api_calls_made"], 6)
 
-    @patch("collectors.fred.make_request", side_effect=RuntimeError("metadata unavailable"))
+    @patch(
+        "collectors.fred.make_request", side_effect=RuntimeError("metadata unavailable")
+    )
     @patch("collectors.fred.query_latest")
     def test_metadata_preflight_failure_reports_actual_calls_before_observation(
         self, query_latest, make_request
@@ -338,6 +363,7 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertEqual(result.errors[0]["stage"], "metadata")
         self.assertEqual(result.errors[0]["code"], "metadata_request_failed")
         self.assertEqual(result.errors[0]["exception_type"], "RuntimeError")
+        self.assertEqual(result.errors[0]["error_class"], "transient_source")
 
 
 class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
@@ -451,8 +477,12 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
         self.assertGreaterEqual(max_active, 2)
         self.assertLessEqual(max_active, 2)
         self.assertNotEqual(completed, ["A", "B", "C"])
-        self.assertEqual([record["series_id"] for record in result.records], ["A", "B", "C"])
-        self.assertEqual(len(set(query_threads)), 1, "database metadata reads must stay sequential")
+        self.assertEqual(
+            [record["series_id"] for record in result.records], ["A", "B", "C"]
+        )
+        self.assertEqual(
+            len(set(query_threads)), 1, "database metadata reads must stay sequential"
+        )
 
     def test_max_concurrency_is_validated_and_clamped(self):
         self.assertEqual(FredCollector._max_concurrency({}), 4)
@@ -513,13 +543,18 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
         self.assertTrue(result.all_failed)
         self.assertEqual(len(result.errors), 2)
         self.assertEqual(make_request.call_count, 2)
+        self.assertTrue(
+            all(error["error_class"] == "transient_source" for error in result.errors)
+        )
 
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
     def test_failed_observation_retains_attempt_timing_and_safe_error(
         self, query_latest, make_request
     ):
-        query_latest.side_effect = self._query_with_metadata({"GDP": self._metadata_row()})
+        query_latest.side_effect = self._query_with_metadata(
+            {"GDP": self._metadata_row()}
+        )
 
         def fail_after_delay(**kwargs):
             time.sleep(0.012)
@@ -536,13 +571,16 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
         self.assertNotIn("SENTINEL-OBSERVATION-SECRET", repr(result.errors))
         self.assertEqual(result.errors[0]["stage"], "observation")
         self.assertEqual(result.errors[0]["code"], "request_failed")
+        self.assertEqual(result.errors[0]["error_class"], "transient_source")
 
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
     def test_parse_failure_retains_parse_attempt_duration(
         self, query_latest, make_request
     ):
-        query_latest.side_effect = self._query_with_metadata({"GDP": self._metadata_row()})
+        query_latest.side_effect = self._query_with_metadata(
+            {"GDP": self._metadata_row()}
+        )
 
         class SlowMalformedObservation:
             def get(self, *args, **kwargs):
@@ -559,6 +597,7 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
         self.assertGreaterEqual(result.metrics["parse_normalize_duration_ms"], 10)
         self.assertEqual(result.metrics["observation_api_calls"], 1)
         self.assertEqual(result.errors[0]["code"], "parse_failed")
+        self.assertEqual(result.errors[0]["error_class"], "invalid_source_data")
 
     @patch("collectors.fred.logger.warning")
     @patch("collectors.fred.make_request")
@@ -588,7 +627,9 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
     def test_collection_propagates_real_substage_metrics(
         self, query_latest, make_request
     ):
-        query_latest.side_effect = self._query_with_metadata({"GDP": self._metadata_row()})
+        query_latest.side_effect = self._query_with_metadata(
+            {"GDP": self._metadata_row()}
+        )
         make_request.return_value = self._response(
             {"observations": [{"date": "2025-01-01", "value": "1"}]}
         )
@@ -668,14 +709,20 @@ class FredOrchestratorMetricTests(unittest.TestCase):
             ],
             total_series=1,
             successful_series=1,
-            metrics={"metadata_api_calls": 0, "observation_api_calls": 3, "api_calls_made": 3},
+            metrics={
+                "metadata_api_calls": 0,
+                "observation_api_calls": 3,
+                "api_calls_made": 3,
+            },
         )
         collector.get_target_table.return_value = "macro_series"
         collector.get_conflict_columns.return_value = ["series_id", "observed_at"]
 
         with (
             patch.object(runtime, "get_collector", return_value=collector),
-            patch.object(runtime, "upsert_records", return_value=WriteResult(1, 1, 0, ())),
+            patch.object(
+                runtime, "upsert_records", return_value=WriteResult(1, 1, 0, ())
+            ),
             patch.object(runtime, "_write_collection_log") as write_log,
             patch.object(runtime, "_estimate_api_calls") as estimate,
         ):
@@ -707,12 +754,16 @@ class FredOrchestratorMetricTests(unittest.TestCase):
 
         with (
             patch.object(runtime, "get_collector", return_value=collector),
-            patch.object(runtime, "upsert_records", side_effect=RuntimeError("write unavailable")),
+            patch.object(
+                runtime, "upsert_records", side_effect=RuntimeError("write unavailable")
+            ),
             patch.object(runtime, "_write_collection_log") as write_log,
             patch.object(runtime, "_estimate_api_calls") as estimate,
             patch.object(runtime.time, "monotonic", side_effect=[1.0, 1.1, 1.14, 1.2]),
         ):
-            result = runtime._run_collector_impl("fred", {"collectors": {"fred": {}}}, "cid", False)
+            result = runtime._run_collector_impl(
+                "fred", {"collectors": {"fred": {}}}, "cid", False
+            )
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["metrics"]["db_write_duration_ms"], 40)

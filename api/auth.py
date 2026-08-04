@@ -8,7 +8,6 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-
 from urllib.parse import quote
 
 from fastapi import Depends, HTTPException, Request, status
@@ -31,7 +30,6 @@ STATE_FILENAMES = (
     "activated.json",
     "session_secret",
 )
-
 
 
 def is_html_request(request: Request) -> bool:
@@ -73,7 +71,11 @@ def verify_credentials(
         return "bootstrap"
     if request.url.path == "/" and not setup_complete():
         return "bootstrap"
-    session = request.scope.get("session", {}) if hasattr(request, "scope") else getattr(request, "session", {})
+    session = (
+        request.scope.get("session", {})
+        if hasattr(request, "scope")
+        else getattr(request, "session", {})
+    )
     if session.get("authenticated"):
         return "admin"
     if setup_complete():
@@ -83,9 +85,15 @@ def verify_credentials(
 
     expected_user = os.environ.get("DASHBOARD_USER", "")
     expected_pass = os.environ.get("DASHBOARD_PASSWORD", "")
-    legacy_enabled = os.environ.get("LEGACY_BASIC_AUTH", "").lower() in {"1", "true", "yes"}
+    legacy_enabled = os.environ.get("LEGACY_BASIC_AUTH", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if legacy_enabled and credentials and expected_user and expected_pass:
-        if secrets.compare_digest(credentials.username, expected_user) and secrets.compare_digest(credentials.password, expected_pass):
+        if secrets.compare_digest(
+            credentials.username, expected_user
+        ) and secrets.compare_digest(credentials.password, expected_pass):
             return credentials.username
     if is_html_request(request):
         raise login_redirect(request)
@@ -103,7 +111,11 @@ def _secret() -> bytes:
 
 
 def _signed(payload: dict) -> str:
-    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    encoded = (
+        base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode())
+        .decode()
+        .rstrip("=")
+    )
     secret = _secret()
     if not secret:
         raise RuntimeError("signing key unavailable")
@@ -111,13 +123,23 @@ def _signed(payload: dict) -> str:
 
 
 def mint_sse_token(path: str = "/api/quotes/stream", ttl: int = 60) -> str:
-    payload = {"path": path, "purpose": SSE_PURPOSE, "exp": int(time.time()) + ttl, "jti": uuid.uuid4().hex}
-    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    payload = {
+        "path": path,
+        "purpose": SSE_PURPOSE,
+        "exp": int(time.time()) + ttl,
+        "jti": uuid.uuid4().hex,
+    }
     return _signed(payload)
 
 
 def mint_csrf_token(ttl: int = 3600) -> str:
-    return _signed({"purpose": CSRF_PURPOSE, "exp": int(time.time()) + ttl, "jti": uuid.uuid4().hex})
+    return _signed(
+        {
+            "purpose": CSRF_PURPOSE,
+            "exp": int(time.time()) + ttl,
+            "jti": uuid.uuid4().hex,
+        }
+    )
 
 
 def verify_sse_token(token: str | None, path: str) -> bool:
@@ -130,7 +152,11 @@ def verify_sse_token(token: str | None, path: str) -> bool:
             return False
         padded = encoded + "=" * (-len(encoded) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded))
-        valid = payload.get("path") == path and payload.get("purpose") == SSE_PURPOSE and int(payload.get("exp", 0)) > int(time.time())
+        valid = (
+            payload.get("path") == path
+            and payload.get("purpose") == SSE_PURPOSE
+            and int(payload.get("exp", 0)) > int(time.time())
+        )
         return valid
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, OverflowError):
         return False
@@ -142,17 +168,25 @@ def verify_csrf_token(token: str | None) -> bool:
     try:
         encoded, supplied = token.split(".", 1)
         expected = hmac.new(_secret(), encoded.encode(), hashlib.sha256).hexdigest()
-        payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-        return hmac.compare_digest(supplied, expected) and payload.get("purpose") == CSRF_PURPOSE and int(payload.get("exp", 0)) > int(time.time())
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        return (
+            hmac.compare_digest(supplied, expected)
+            and payload.get("purpose") == CSRF_PURPOSE
+            and int(payload.get("exp", 0)) > int(time.time())
+        )
     except (ValueError, TypeError, json.JSONDecodeError, OverflowError):
         return False
-
 
 
 def hash_password(password: str) -> dict:
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
-    return {"salt": base64.b64encode(salt).decode(), "hash": base64.b64encode(digest).decode()}
+    return {
+        "salt": base64.b64encode(salt).decode(),
+        "hash": base64.b64encode(digest).decode(),
+    }
 
 
 def verify_password(password: str, record: dict) -> bool:

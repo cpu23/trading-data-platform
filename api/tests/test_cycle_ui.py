@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 API_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -17,15 +16,15 @@ class CycleModeSettingsTests(unittest.TestCase):
         self.assertEqual(self.settings.count('id="force-cycle-btn"'), 1)
         self.assertIn('data-mode="refresh"', self.settings)
         self.assertIn('data-mode="force_full"', self.settings)
-        self.assertIn('Run due cycle', self.settings)
-        self.assertIn('Force full cycle', self.settings)
+        self.assertIn("Run due cycle", self.settings)
+        self.assertIn("Force full cycle", self.settings)
         self.assertIn('id="cycle-progress"', self.settings)
         self.assertIn('id="cycle-progress-text"', self.settings)
         self.assertIn('id="cycle-progress-fill"', self.settings)
         self.assertIn('id="cycle-result"', self.settings)
 
     def test_javascript_uses_one_json_trigger_path_with_force_confirmation(self):
-        self.assertIn('function triggerCycle(mode)', self.app_js)
+        self.assertIn("function triggerCycle(mode)", self.app_js)
         self.assertIn("budget_confirmed: mode === 'force_full'", self.app_js)
         self.assertIn("triggerCycle(mode)", self.app_js)
         self.assertRegex(

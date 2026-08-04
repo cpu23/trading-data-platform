@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -37,8 +37,11 @@ class ConfigurableRetryTests(unittest.TestCase):
 
         with self.assertRaises(httpx.HTTPStatusError):
             http_client.make_request(
-                "GET", "https://example.test/resource", max_retries=1,
-                client=client, sleep=Mock(),
+                "GET",
+                "https://example.test/resource",
+                max_retries=1,
+                client=client,
+                sleep=Mock(),
             )
 
         self.assertEqual(len(client.requests), 1)
@@ -50,8 +53,11 @@ class ConfigurableRetryTests(unittest.TestCase):
                 sleeper = Mock()
 
                 result = http_client.make_request(
-                    "GET", "https://example.test/resource", max_retries=2,
-                    client=client, sleep=sleeper,
+                    "GET",
+                    "https://example.test/resource",
+                    max_retries=2,
+                    client=client,
+                    sleep=sleeper,
                 )
 
                 self.assertEqual(result.status_code, 200)
@@ -59,15 +65,20 @@ class ConfigurableRetryTests(unittest.TestCase):
                 sleeper.assert_called_once_with(1.0)
 
     def test_429_respects_retry_after_seconds(self):
-        client = ScriptedClient([
-            response(429, headers={"Retry-After": "7"}),
-            response(200),
-        ])
+        client = ScriptedClient(
+            [
+                response(429, headers={"Retry-After": "7"}),
+                response(200),
+            ]
+        )
         sleeper = Mock()
 
         http_client.make_request(
-            "GET", "https://example.test/resource", max_retries=2,
-            client=client, sleep=sleeper,
+            "GET",
+            "https://example.test/resource",
+            max_retries=2,
+            client=client,
+            sleep=sleeper,
         )
 
         sleeper.assert_called_once_with(7.0)
@@ -76,15 +87,20 @@ class ConfigurableRetryTests(unittest.TestCase):
         cases = (("not-seconds", 1.0), ("999999", 60.0), ("-3", 1.0))
         for retry_after, expected in cases:
             with self.subTest(retry_after=retry_after):
-                client = ScriptedClient([
-                    response(429, headers={"Retry-After": retry_after}),
-                    response(200),
-                ])
+                client = ScriptedClient(
+                    [
+                        response(429, headers={"Retry-After": retry_after}),
+                        response(200),
+                    ]
+                )
                 sleeper = Mock()
 
                 http_client.make_request(
-                    "GET", "https://example.test/resource", max_retries=2,
-                    client=client, sleep=sleeper,
+                    "GET",
+                    "https://example.test/resource",
+                    max_retries=2,
+                    client=client,
+                    sleep=sleeper,
                 )
 
                 sleeper.assert_called_once_with(expected)
@@ -92,10 +108,12 @@ class ConfigurableRetryTests(unittest.TestCase):
     def test_429_non_finite_retry_after_uses_fallback_and_retries(self):
         for retry_after in ("NaN", "Infinity", "+inf", "-inf"):
             with self.subTest(retry_after=retry_after):
-                client = ScriptedClient([
-                    response(429, headers={"Retry-After": retry_after}),
-                    response(200),
-                ])
+                client = ScriptedClient(
+                    [
+                        response(429, headers={"Retry-After": retry_after}),
+                        response(200),
+                    ]
+                )
                 delays = []
 
                 def finite_only_sleep(delay):
@@ -104,42 +122,71 @@ class ConfigurableRetryTests(unittest.TestCase):
                     delays.append(delay)
 
                 result = http_client.make_request(
-                    "GET", "https://example.test/resource", max_retries=2,
-                    client=client, sleep=finite_only_sleep,
+                    "GET",
+                    "https://example.test/resource",
+                    max_retries=2,
+                    client=client,
+                    sleep=finite_only_sleep,
                 )
 
                 self.assertEqual(result.status_code, 200)
                 self.assertEqual(delays, [1.0])
 
     def test_429_future_http_date_is_respected_and_capped(self):
-        now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
         cases = ((timedelta(seconds=17), 17.0), (timedelta(minutes=5), 60.0))
         for offset, expected in cases:
             with self.subTest(offset=offset):
-                client = ScriptedClient([
-                    response(429, headers={"Retry-After": format_datetime(now + offset, usegmt=True)}),
-                    response(200),
-                ])
+                client = ScriptedClient(
+                    [
+                        response(
+                            429,
+                            headers={
+                                "Retry-After": format_datetime(
+                                    now + offset, usegmt=True
+                                )
+                            },
+                        ),
+                        response(200),
+                    ]
+                )
                 sleeper = Mock()
 
                 http_client.make_request(
-                    "GET", "https://example.test/resource", max_retries=2,
-                    client=client, sleep=sleeper, wall_clock=lambda: now,
+                    "GET",
+                    "https://example.test/resource",
+                    max_retries=2,
+                    client=client,
+                    sleep=sleeper,
+                    wall_clock=lambda: now,
                 )
 
                 sleeper.assert_called_once_with(expected)
 
     def test_429_past_http_date_retries_with_zero_delay(self):
-        now = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
-        client = ScriptedClient([
-            response(429, headers={"Retry-After": format_datetime(now - timedelta(seconds=30), usegmt=True)}),
-            response(200),
-        ])
+        now = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
+        client = ScriptedClient(
+            [
+                response(
+                    429,
+                    headers={
+                        "Retry-After": format_datetime(
+                            now - timedelta(seconds=30), usegmt=True
+                        )
+                    },
+                ),
+                response(200),
+            ]
+        )
         sleeper = Mock()
 
         result = http_client.make_request(
-            "GET", "https://example.test/resource", max_retries=2,
-            client=client, sleep=sleeper, wall_clock=lambda: now,
+            "GET",
+            "https://example.test/resource",
+            max_retries=2,
+            client=client,
+            sleep=sleeper,
+            wall_clock=lambda: now,
         )
 
         self.assertEqual(result.status_code, 200)
@@ -150,8 +197,11 @@ class ConfigurableRetryTests(unittest.TestCase):
         sleeper = Mock()
 
         result = http_client.make_request(
-            "GET", "https://example.test/resource", max_retries=3,
-            client=client, sleep=sleeper,
+            "GET",
+            "https://example.test/resource",
+            max_retries=3,
+            client=client,
+            sleep=sleeper,
         )
 
         self.assertEqual(result.status_code, 400)
@@ -169,8 +219,11 @@ class ConfigurableRetryTests(unittest.TestCase):
                 client = ScriptedClient([error, response(200)])
 
                 result = http_client.make_request(
-                    "GET", "https://example.test/resource", max_retries=2,
-                    client=client, sleep=Mock(),
+                    "GET",
+                    "https://example.test/resource",
+                    max_retries=2,
+                    client=client,
+                    sleep=Mock(),
                 )
 
                 self.assertEqual(result.status_code, 200)
@@ -184,8 +237,11 @@ class ConfigurableRetryTests(unittest.TestCase):
 
         with self.assertRaises(httpx.ReadTimeout) as raised:
             http_client.make_request(
-                "GET", "https://example.test/resource", max_retries=2,
-                client=client, sleep=Mock(),
+                "GET",
+                "https://example.test/resource",
+                max_retries=2,
+                client=client,
+                sleep=Mock(),
             )
 
         self.assertIs(raised.exception, final)
@@ -196,9 +252,14 @@ class ConfigurableRetryTests(unittest.TestCase):
         body = {"hello": "world"}
 
         http_client.make_request(
-            "post", "https://example.test/resource", params={"q": "term"},
-            headers=headers, json_body=body, follow_redirects=True,
-            max_retries=1, client=client,
+            "post",
+            "https://example.test/resource",
+            params={"q": "term"},
+            headers=headers,
+            json_body=body,
+            follow_redirects=True,
+            max_retries=1,
+            client=client,
         )
 
         sent = client.requests[0]
@@ -218,8 +279,11 @@ class ConfigurableRetryTests(unittest.TestCase):
         client = ScriptedClient([response(200)])
 
         http_client.make_request(
-            "POST", "https://example.test/llm", timeout=120.0,
-            max_retries=1, client=client,
+            "POST",
+            "https://example.test/llm",
+            timeout=120.0,
+            max_retries=1,
+            client=client,
         )
 
         self.assertEqual(client.requests[0]["timeout"], 120.0)
@@ -230,9 +294,13 @@ class ConfigurableRetryTests(unittest.TestCase):
         ticks = iter((10.0, 10.1, 10.2, 10.3))
 
         http_client.make_request(
-            "GET", "https://example.test/path?api_key=secret",
-            headers={"Authorization": "Bearer secret"}, max_retries=2,
-            client=client, sleep=Mock(), clock=lambda: next(ticks),
+            "GET",
+            "https://example.test/path?api_key=secret",
+            headers={"Authorization": "Bearer secret"},
+            max_retries=2,
+            client=client,
+            sleep=Mock(),
+            clock=lambda: next(ticks),
         )
 
         events = logger.warning.call_args_list + logger.info.call_args_list
@@ -260,10 +328,14 @@ class SharedClientLifecycleTests(unittest.TestCase):
         client_class.return_value = shared
 
         first = http_client.make_request(
-            "GET", "https://example.test/one", max_retries=1,
+            "GET",
+            "https://example.test/one",
+            max_retries=1,
         )
         second = http_client.make_request(
-            "GET", "https://example.test/two", max_retries=1,
+            "GET",
+            "https://example.test/two",
+            max_retries=1,
         )
 
         self.assertEqual(first.status_code, 200)

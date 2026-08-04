@@ -4,8 +4,8 @@ import os
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from auth import mint_sse_token, verify_sse_token
 
+from auth import mint_sse_token, verify_sse_token
 from config import load_config
 
 router = APIRouter()
@@ -22,7 +22,8 @@ def get_watchlist():
 @router.get("/quotes")
 async def get_quotes(request: Request):
     response = await request.app.state.orchestrator_client.get(
-        f"{ORCHESTRATOR_URL}/quotes", timeout=5.0,
+        f"{ORCHESTRATOR_URL}/quotes",
+        timeout=5.0,
     )
     response.raise_for_status()
     return response.json()
@@ -32,7 +33,8 @@ async def _quote_events(request: Request, sleep=asyncio.sleep):
     while not await request.is_disconnected():
         try:
             response = await request.app.state.orchestrator_client.get(
-                f"{ORCHESTRATOR_URL}/quotes", timeout=5.0,
+                f"{ORCHESTRATOR_URL}/quotes",
+                timeout=5.0,
             )
             response.raise_for_status()
             yield f"data: {json.dumps(response.json())}\n\n"
@@ -49,7 +51,11 @@ async def _quote_events(request: Request, sleep=asyncio.sleep):
 async def stream_quotes(request: Request):
     token = request.cookies.get("sse-auth")
     if not verify_sse_token(token, "/api/quotes/stream"):
-        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     return StreamingResponse(_quote_events(request), media_type="text/event-stream")
 
 

@@ -11,14 +11,21 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from budgets import (
-    BudgetContext,
     BudgetBlock,
+    BudgetContext,
     BudgetExceeded,
     mint_trusted_manual_authorization,
     trusted_manual_budget_context,
 )
 from config_loader import load_config
-from db import check_connection, get_session as get_session
+from contracts import (
+    CycleStatusResponse,
+    OrchestratorHealthResponse,
+    QualityResponse,
+    RunAcceptedResponse,
+)
+from db import check_connection
+from db import get_session as get_session
 
 try:
     from data_quality import DATA_QUALITY_CHECKS, run_quality_checks
@@ -27,17 +34,29 @@ except ImportError:
 
     def run_quality_checks(config):
         return {}
-from logging_config import get_logger, setup_logging
+
+
 from http_client import close_shared_client
-from locks import RunConflict
 from investment_service import (
     AnalysisInProgress,
+)
+from investment_service import (
     analyze_document as analyze_investment_document,
+)
+from investment_service import (
     get_analysis as get_investment_analysis,
+)
+from investment_service import (
     get_dashboard as get_investment_dashboard,
+)
+from investment_service import (
     store_document as store_investment_document,
+)
+from investment_service import (
     store_document_url as store_investment_document_url,
 )
+from locks import RunConflict
+from logging_config import get_logger, setup_logging
 from orchestrator import (
     DEFAULT_ACCEPTED_TIMEOUT,
     DEFAULT_HEARTBEAT_TIMEOUT,
@@ -54,7 +73,6 @@ from orchestrator import (
     run_processor,
     start_run,
 )
-
 from price_stream import quote_stream
 from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
@@ -67,20 +85,30 @@ VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
 _cycle_correlation_id: str | None = None
 
 
-def require_internal_basic(credentials: HTTPBasicCredentials | None = Depends(optional_basic)):
+def require_internal_basic(
+    credentials: HTTPBasicCredentials | None = Depends(optional_basic),
+):
     username = os.environ.get("DASHBOARD_USER", "")
     password = os.environ.get("DASHBOARD_PASSWORD", "")
     supplied_user = credentials.username if credentials else ""
     supplied_pass = credentials.password if credentials else ""
-    valid = bool(username and password) and secrets.compare_digest(supplied_user, username) and secrets.compare_digest(supplied_pass, password)
+    valid = (
+        bool(username and password)
+        and secrets.compare_digest(supplied_user, username)
+        and secrets.compare_digest(supplied_pass, password)
+    )
     if not valid:
-        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     return supplied_user
-
 
 
 def _get_config():
     return load_config()
+
 
 _quality_cache_lock = threading.Lock()
 _quality_cache_config: dict | None = None
@@ -100,10 +128,7 @@ def _health_quality_snapshot(config: dict) -> dict[str, dict]:
     now = time.monotonic()
     global _quality_cache_config, _quality_cache_until, _quality_cache_results
     with _quality_cache_lock:
-        if (
-            _quality_cache_config is config
-            and now < _quality_cache_until
-        ):
+        if _quality_cache_config is config and now < _quality_cache_until:
             return _quality_cache_results
         results = run_quality_checks(config)
         _quality_cache_config = config
@@ -160,7 +185,7 @@ def on_shutdown():
     close_shared_client()
 
 
-@app.get("/health")
+@app.get("/health", response_model=OrchestratorHealthResponse)
 def health():
     config = _get_config()
     scheduler = scheduler_status()
@@ -171,10 +196,15 @@ def health():
             "readiness": "unready",
             "data_health": "degraded",
             "status": "unhealthy",
-            "components": [{
-                "name": "database", "kind": "service", "critical": True,
-                "status": "unavailable", "reason": "database connection failed",
-            }],
+            "components": [
+                {
+                    "name": "database",
+                    "kind": "service",
+                    "critical": True,
+                    "status": "unavailable",
+                    "reason": "database connection failed",
+                }
+            ],
             "scheduler": scheduler,
             "stream": stream,
             "collectors": {},
@@ -187,34 +217,48 @@ def health():
         started = run.get("started_at")
         collectors_status[run.get("collector")] = {
             "last_status": run.get("status"),
-            "last_run_at": started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None,
+            "last_run_at": started.isoformat()
+            if hasattr(started, "isoformat")
+            else str(started)
+            if started
+            else None,
             "records_fetched": run.get("records_fetched"),
             "records_written": run.get("records_written"),
             "error_message": run.get("error_message"),
         }
 
-    components = [{
-        "name": "database", "kind": "service", "critical": True,
-        "status": "available", "reason": None,
-    }]
+    components = [
+        {
+            "name": "database",
+            "kind": "service",
+            "critical": True,
+            "status": "available",
+            "reason": None,
+        }
+    ]
     try:
         quality_results = _health_quality_snapshot(config)
     except Exception as exc:
         logger.error("health_quality_checks_failed", error=str(exc))
         quality_results = {"quality_runner": {"healthy": False, "detail": str(exc)}}
     unhealthy = {
-        check_id: result for check_id, result in quality_results.items()
+        check_id: result
+        for check_id, result in quality_results.items()
         if not result.get("healthy", True)
     }
     if unhealthy:
-        components.append({
-            "name": "data_quality", "kind": "data", "critical": False,
-            "status": "degraded",
-            "reason": "; ".join(
-                f"{check_id}: {result.get('detail', 'unhealthy')}"
-                for check_id, result in unhealthy.items()
-            ),
-        })
+        components.append(
+            {
+                "name": "data_quality",
+                "kind": "data",
+                "critical": False,
+                "status": "degraded",
+                "reason": "; ".join(
+                    f"{check_id}: {result.get('detail', 'unhealthy')}"
+                    for check_id, result in unhealthy.items()
+                ),
+            }
+        )
 
     quality_payload = {
         "overall": "degraded" if unhealthy else "healthy",
@@ -352,6 +396,7 @@ def run_investment_analysis(
 )
 def investment_filings_status():
     from investment_filings import get_filing_source_status
+
     return get_filing_source_status(_get_config())
 
 
@@ -366,7 +411,9 @@ def trigger_filing_collection(
 ):
     correlation_id = _correlation_id_from_body(body)
     auto_analyze = bool(body.get("auto_analyze")) if isinstance(body, dict) else False
-    accepted_at = _accept_http_run(correlation_id, "filings", "investment_filings", body)
+    accepted_at = _accept_http_run(
+        correlation_id, "filings", "investment_filings", body
+    )
     background_tasks.add_task(_run_filings_task, correlation_id, auto_analyze)
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
@@ -376,7 +423,9 @@ def _run_filings_task(correlation_id: str, auto_analyze: bool):
 
     config = _get_config()
     worker_id = f"api:{uuid4()}"
-    started = _start_http_run(config, correlation_id, worker_id, "filings", "investment_filings")
+    started = _start_http_run(
+        config, correlation_id, worker_id, "filings", "investment_filings"
+    )
     if started is not True:
         return
     try:
@@ -385,16 +434,29 @@ def _run_filings_task(correlation_id: str, auto_analyze: bool):
                 config, correlation_id=correlation_id, auto_analyze=auto_analyze
             )
             finalized = finalize_run_safely(
-                correlation_id, result.get("status", "completed"), result, config,
-                worker_id=worker_id, run_kind="filings", component="investment_filings",
+                correlation_id,
+                result.get("status", "completed"),
+                result,
+                config,
+                worker_id=worker_id,
+                run_kind="filings",
+                component="investment_filings",
             )
             if finalized:
                 logger.info("filings_trigger_completed", correlation_id=correlation_id)
     except Exception as exc:
-        logger.error("filings_trigger_failed", correlation_id=correlation_id, error=str(exc))
+        logger.error(
+            "filings_trigger_failed", correlation_id=correlation_id, error=str(exc)
+        )
         finalize_run_safely(
-            correlation_id, "failed", {}, config, str(exc),
-            worker_id=worker_id, run_kind="filings", component="investment_filings",
+            correlation_id,
+            "failed",
+            {},
+            config,
+            str(exc),
+            worker_id=worker_id,
+            run_kind="filings",
+            component="investment_filings",
         )
 
 
@@ -402,11 +464,11 @@ def _correlation_id_from_body(body: dict | None) -> str:
     if isinstance(body, dict) and body.get("correlation_id"):
         try:
             return str(UUID(str(body["correlation_id"])))
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="correlation_id must be a valid UUID",
-            )
+            ) from exc
     return str(uuid4())
 
 
@@ -480,10 +542,17 @@ def _accept_http_run(
             run_kind=run_kind,
             error=str(exc),
         )
-        raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="Run acceptance unavailable"
+        ) from exc
 
 
-@app.post("/runs/{correlation_id}/retry", status_code=202, dependencies=[Depends(require_internal_basic)])
+@app.post(
+    "/runs/{correlation_id}/retry",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+    dependencies=[Depends(require_internal_basic)],
+)
 def retry_abandoned_run(
     correlation_id: UUID,
     background_tasks: BackgroundTasks,
@@ -498,14 +567,18 @@ def retry_abandoned_run(
     if previous is None:
         raise HTTPException(status_code=404, detail="Run not found")
     if previous.get("status") != "abandoned":
-        raise HTTPException(status_code=409, detail="Only abandoned runs can be retried")
+        raise HTTPException(
+            status_code=409, detail="Only abandoned runs can be retried"
+        )
 
     run_kind = previous.get("run_kind")
     component = previous.get("requested_component")
     if run_kind not in {"cycle", "collector", "processor", "news"}:
         raise HTTPException(status_code=409, detail="Run kind cannot be retried")
     if run_kind in {"collector", "processor", "news"} and not component:
-        raise HTTPException(status_code=409, detail="Run is missing its requested component")
+        raise HTTPException(
+            status_code=409, detail="Run is missing its requested component"
+        )
     if run_kind == "collector":
         from collectors import get_all_collectors
 
@@ -568,16 +641,20 @@ def retry_abandoned_run(
             correlation_id=new_correlation_id,
             error=str(exc),
         )
-        raise HTTPException(status_code=503, detail="Run acceptance unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="Run acceptance unavailable"
+        ) from exc
 
     if run_kind == "cycle":
-        background_tasks.add_task(
-            _run_cycle_task, new_correlation_id, cycle_mode, None
-        )
+        background_tasks.add_task(_run_cycle_task, new_correlation_id, cycle_mode, None)
     elif run_kind == "collector":
-        background_tasks.add_task(_run_collector_task, str(component), new_correlation_id)
+        background_tasks.add_task(
+            _run_collector_task, str(component), new_correlation_id
+        )
     elif run_kind == "processor":
-        background_tasks.add_task(_run_processor_task, str(component), new_correlation_id)
+        background_tasks.add_task(
+            _run_processor_task, str(component), new_correlation_id
+        )
     else:
         background_tasks.add_task(_run_news_task, str(component), new_correlation_id)
 
@@ -623,7 +700,9 @@ def _run_cycle_task(
                 run_kind="cycle",
             )
             if finalized:
-                logger.info("cycle_completed", correlation_id=correlation_id, result=result)
+                logger.info(
+                    "cycle_completed", correlation_id=correlation_id, result=result
+                )
     except Exception as exc:
         logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
         finalize_run_safely(
@@ -640,7 +719,12 @@ def _run_cycle_task(
             _cycle_correlation_id = None
 
 
-@app.post("/run_cycle", status_code=202, dependencies=[Depends(require_internal_basic)])
+@app.post(
+    "/run_cycle",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+    dependencies=[Depends(require_internal_basic)],
+)
 def trigger_cycle(
     background_tasks: BackgroundTasks,
     body: dict | None = Body(default=None),
@@ -670,9 +754,11 @@ def trigger_cycle(
                 status_code=503, detail="Internal authentication unavailable"
             )
         supplied = credentials if hasattr(credentials, "username") else None
-        authenticated = bool(supplied) and secrets.compare_digest(
-            supplied.username, username
-        ) and secrets.compare_digest(supplied.password, password)
+        authenticated = (
+            bool(supplied)
+            and secrets.compare_digest(supplied.username, username)
+            and secrets.compare_digest(supplied.password, password)
+        )
         if not authenticated:
             raise HTTPException(
                 status_code=401,
@@ -708,7 +794,7 @@ def trigger_cycle(
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 
-@app.get("/cycle_status")
+@app.get("/cycle_status", response_model=CycleStatusResponse)
 def get_cycle_status():
     return {
         "running": _cycle_correlation_id is not None,
@@ -719,12 +805,14 @@ def get_cycle_status():
 def _run_collector_task(source_id: str, correlation_id: str):
     config = _get_config()
     worker_id = f"api:{uuid4()}"
-    started = _start_http_run(
-        config, correlation_id, worker_id, "collector", source_id
-    )
+    started = _start_http_run(config, correlation_id, worker_id, "collector", source_id)
     if started is not True:
         if started is False:
-            logger.info("collector_start_lost", source_id=source_id, correlation_id=correlation_id)
+            logger.info(
+                "collector_start_lost",
+                source_id=source_id,
+                correlation_id=correlation_id,
+            )
         return
     try:
         with maintain_run_heartbeat(config, correlation_id, worker_id):
@@ -747,9 +835,19 @@ def _run_collector_task(source_id: str, correlation_id: str):
                 component=source_id,
             )
             if finalized:
-                logger.info("collector_trigger_completed", source_id=source_id, correlation_id=correlation_id, result=result)
+                logger.info(
+                    "collector_trigger_completed",
+                    source_id=source_id,
+                    correlation_id=correlation_id,
+                    result=result,
+                )
     except Exception as exc:
-        logger.error("collector_trigger_failed", source_id=source_id, correlation_id=correlation_id, error=str(exc))
+        logger.error(
+            "collector_trigger_failed",
+            source_id=source_id,
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
         finalize_run_safely(
             correlation_id,
             "failed",
@@ -762,7 +860,12 @@ def _run_collector_task(source_id: str, correlation_id: str):
         )
 
 
-@app.post("/run_collector/{source_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
+@app.post(
+    "/run_collector/{source_id}",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+    dependencies=[Depends(require_internal_basic)],
+)
 def trigger_collector(
     source_id: str,
     background_tasks: BackgroundTasks,
@@ -782,15 +885,23 @@ def trigger_collector(
 def _news_failure_summary(exc: Exception, correlation_id: str) -> dict:
     if isinstance(exc, RunConflict):
         return {
-            "status": "failed", "state": "conflict", "error": str(exc),
-            "code": "news_run_conflict", "feed_published": False,
-            "new_item_count": 0, "duration_ms": 0,
+            "status": "failed",
+            "state": "conflict",
+            "error": str(exc),
+            "code": "news_run_conflict",
+            "feed_published": False,
+            "new_item_count": 0,
+            "duration_ms": 0,
             "correlation_id": correlation_id,
         }
     return {
-        "status": "failed", "state": "failed", "error": "news run failed",
-        "code": "news_run_failed", "feed_published": False,
-        "new_item_count": 0, "duration_ms": 0,
+        "status": "failed",
+        "state": "failed",
+        "error": "news run failed",
+        "code": "news_run_failed",
+        "feed_published": False,
+        "new_item_count": 0,
+        "duration_ms": 0,
         "correlation_id": correlation_id,
     }
 
@@ -801,7 +912,9 @@ def _run_news_task(source_id: str, correlation_id: str):
     started = _start_http_run(config, correlation_id, worker_id, "news", source_id)
     if started is not True:
         if started is False:
-            logger.info("news_start_lost", source_id=source_id, correlation_id=correlation_id)
+            logger.info(
+                "news_start_lost", source_id=source_id, correlation_id=correlation_id
+            )
         return
     try:
         with maintain_run_heartbeat(config, correlation_id, worker_id):
@@ -811,27 +924,47 @@ def _run_news_task(source_id: str, correlation_id: str):
             if result is None:
                 raise RuntimeError("run returned no result after ownership was claimed")
             finalized = finalize_run_safely(
-                correlation_id, result["status"], result, config, result.get("error"),
-                worker_id=worker_id, run_kind="news", component=source_id,
+                correlation_id,
+                result["status"],
+                result,
+                config,
+                result.get("error"),
+                worker_id=worker_id,
+                run_kind="news",
+                component=source_id,
             )
             if finalized:
                 logger.info(
-                    "news_trigger_completed", source_id=source_id,
+                    "news_trigger_completed",
+                    source_id=source_id,
                     correlation_id=correlation_id,
                 )
     except Exception as exc:
         summary = _news_failure_summary(exc, correlation_id)
         logger.error(
-            "news_trigger_failed", source_id=source_id,
-            correlation_id=correlation_id, code=summary["code"],
+            "news_trigger_failed",
+            source_id=source_id,
+            correlation_id=correlation_id,
+            code=summary["code"],
         )
         finalize_run_safely(
-            correlation_id, "failed", summary, config, summary["error"],
-            worker_id=worker_id, run_kind="news", component=source_id,
+            correlation_id,
+            "failed",
+            summary,
+            config,
+            summary["error"],
+            worker_id=worker_id,
+            run_kind="news",
+            component=source_id,
         )
 
 
-@app.post("/run_news/{source_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
+@app.post(
+    "/run_news/{source_id}",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+    dependencies=[Depends(require_internal_basic)],
+)
 def trigger_news(
     source_id: str,
     background_tasks: BackgroundTasks,
@@ -855,7 +988,11 @@ def _run_processor_task(processor_id: str, correlation_id: str):
     )
     if started is not True:
         if started is False:
-            logger.info("processor_start_lost", processor_id=processor_id, correlation_id=correlation_id)
+            logger.info(
+                "processor_start_lost",
+                processor_id=processor_id,
+                correlation_id=correlation_id,
+            )
         return
     try:
         with maintain_run_heartbeat(config, correlation_id, worker_id):
@@ -878,9 +1015,19 @@ def _run_processor_task(processor_id: str, correlation_id: str):
                 component=processor_id,
             )
             if finalized:
-                logger.info("processor_trigger_completed", processor_id=processor_id, correlation_id=correlation_id, result=result)
+                logger.info(
+                    "processor_trigger_completed",
+                    processor_id=processor_id,
+                    correlation_id=correlation_id,
+                    result=result,
+                )
     except Exception as exc:
-        logger.error("processor_trigger_failed", processor_id=processor_id, correlation_id=correlation_id, error=str(exc))
+        logger.error(
+            "processor_trigger_failed",
+            processor_id=processor_id,
+            correlation_id=correlation_id,
+            error=str(exc),
+        )
         finalize_run_safely(
             correlation_id,
             "failed",
@@ -893,7 +1040,12 @@ def _run_processor_task(processor_id: str, correlation_id: str):
         )
 
 
-@app.post("/run_processor/{processor_id}", status_code=202, dependencies=[Depends(require_internal_basic)])
+@app.post(
+    "/run_processor/{processor_id}",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+    dependencies=[Depends(require_internal_basic)],
+)
 def trigger_processor(
     processor_id: str,
     background_tasks: BackgroundTasks,
@@ -902,7 +1054,9 @@ def trigger_processor(
     from processors import get_all_processors
 
     if processor_id not in get_all_processors():
-        raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown processor: {processor_id}"
+        )
 
     correlation_id = _correlation_id_from_body(body)
     accepted_at = _accept_http_run(correlation_id, "processor", processor_id, body)
@@ -910,8 +1064,7 @@ def trigger_processor(
     return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
 
 
-
-@app.get("/quality")
+@app.get("/quality", response_model=QualityResponse)
 def quality():
     config = _get_config()
     logger.info("quality_endpoint_called")

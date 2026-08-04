@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 import posixpath
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -13,8 +13,8 @@ from budgets import BudgetContext
 def _canonical_value(value):
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, UUID):

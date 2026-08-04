@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
@@ -19,7 +18,9 @@ class Phase10FrontendContracts(unittest.TestCase):
         cls.header = (API_ROOT / "templates/partials/header.html").read_text()
         cls.events = (API_ROOT / "templates/partials/events_section.html").read_text()
         cls.cards = (API_ROOT / "templates/partials/cards_section.html").read_text()
-        cls.expansion = (API_ROOT / "templates/partials/expansion_content.html").read_text()
+        cls.expansion = (
+            API_ROOT / "templates/partials/expansion_content.html"
+        ).read_text()
         cls.regime = (API_ROOT / "templates/partials/regime_section.html").read_text()
         cls.news = (API_ROOT / "templates/partials/news_section.html").read_text()
         cls.navigation = (API_ROOT / "templates/partials/navigation.html").read_text()
@@ -48,9 +49,23 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("Unable to load", self.app_js)
 
     def test_calendar_is_semantic_dense_and_scroll_contained(self):
-        for marker in ('class="calendar-scroll scroll-affordance"', '<table class="calendar-table">', '<thead>', 'scope="col"', '<tbody>'):
+        for marker in (
+            'class="calendar-scroll scroll-affordance"',
+            '<table class="calendar-table">',
+            "<thead>",
+            'scope="col"',
+            "<tbody>",
+        ):
             self.assertIn(marker, self.events)
-        for heading in ("Time", "Event", "Market", "Impact", "Actual", "Forecast", "Previous"):
+        for heading in (
+            "Time",
+            "Event",
+            "Market",
+            "Impact",
+            "Actual",
+            "Forecast",
+            "Previous",
+        ):
             self.assertIn(heading, self.events)
         for impact in ("High", "Medium", "Low"):
             self.assertIn(impact, self.events)
@@ -62,25 +77,25 @@ class Phase10FrontendContracts(unittest.TestCase):
         # Dashboard header carries no operational cycle controls.
         self.assertNotIn('id="run-cycle-btn"', self.header)
         self.assertNotIn('id="force-cycle-btn"', self.header)
-        self.assertNotIn('cycle-mode-select', self.header)
+        self.assertNotIn("cycle-mode-select", self.header)
         # Navigation is present and trimmed to the three market pages.
-        self.assertIn('partials/navigation.html', self.header)
-        for label in ('Dashboard', 'News', 'Settings'):
+        self.assertIn("partials/navigation.html", self.header)
+        for label in ("Dashboard", "News", "Settings"):
             self.assertIn(label, self.navigation)
-        for label in ('Logs', 'Quality', 'Operations'):
-            self.assertNotIn("'%s'" % label, self.navigation)
+        for label in ("Logs", "Quality", "Operations"):
+            self.assertNotIn(f"'{label}'", self.navigation)
         self.assertIn('aria-current="page"', self.navigation)
-        self.assertIn('is-active', self.navigation)
+        self.assertIn("is-active", self.navigation)
         # Collapsible data chip with freshness summary and settings link.
         self.assertIn('id="data-chip"', self.header)
-        self.assertIn('data-chip-label', self.header)
-        self.assertIn('data-chip-settings', self.header)
-        self.assertIn('initDataChip', self.app_js)
+        self.assertIn("data-chip-label", self.header)
+        self.assertIn("data-chip-settings", self.header)
+        self.assertIn("initDataChip", self.app_js)
 
     def test_settings_hosts_cycle_controls_and_operations(self):
         self.assertEqual(self.settings.count('id="run-cycle-btn"'), 1)
         self.assertIn('id="force-cycle-btn"', self.settings)
-        self.assertIn('Data &amp; operations', self.settings)
+        self.assertIn("Data &amp; operations", self.settings)
         self.assertIn('id="timezone-status"', self.settings)
         self.assertIn("initTimezoneControl", self.app_js)
         self.assertIn("fetch('/api/settings/timezone'", self.app_js)
@@ -99,11 +114,17 @@ class Phase10FrontendContracts(unittest.TestCase):
 
     def test_dashboard_health_forwards_request_context(self):
         from unittest.mock import patch
+
         from routes.views.dashboard import _get_dashboard_health
 
         request = object()
-        with patch("routes.views.dashboard.get_system_health", return_value={"overall": "healthy"}) as health:
-            self.assertEqual(asyncio.run(_get_dashboard_health(request)), {"overall": "healthy"})
+        with patch(
+            "routes.views.dashboard.get_system_health",
+            return_value={"overall": "healthy"},
+        ) as health:
+            self.assertEqual(
+                asyncio.run(_get_dashboard_health(request)), {"overall": "healthy"}
+            )
         health.assert_awaited_once_with(request)
 
     def test_dashboard_news_is_bounded_and_has_truthful_empty_state(self):
@@ -113,14 +134,24 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("not_published", self.news)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.json"
-            path.write_text(json.dumps({
-                "generated_at": "2026-07-16T12:00:00+00:00",
-                "items": [
-                    {"title": f"Item {index}", "source_label": "Demo", "published": "2026-07-16T12:00:00+00:00"}
-                    for index in range(7)
-                ],
-            }))
-            context = load_news_context({"news_feed": {"output_path": directory}}, limit=5)
+            path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-07-16T12:00:00+00:00",
+                        "items": [
+                            {
+                                "title": f"Item {index}",
+                                "source_label": "Demo",
+                                "published": "2026-07-16T12:00:00+00:00",
+                            }
+                            for index in range(7)
+                        ],
+                    }
+                )
+            )
+            context = load_news_context(
+                {"news_feed": {"output_path": directory}}, limit=5
+            )
         self.assertEqual(context["status"], "published")
         self.assertEqual(len(context["items"]), 5)
 

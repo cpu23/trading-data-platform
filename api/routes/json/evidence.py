@@ -78,7 +78,9 @@ def get_evidence(opinion_id: str):
             config=config,
         )
 
-    opinion_ids = data_inputs.get("opinion_ids") or data_inputs.get("opinions_used") or []
+    opinion_ids = (
+        data_inputs.get("opinion_ids") or data_inputs.get("opinions_used") or []
+    )
     if isinstance(opinion_ids, list) and opinion_ids:
         records["structured_opinions"] = query_many(
             "SELECT opinion_id, created_at, opinion_type, scope, direction, confidence, summary FROM structured_opinions WHERE opinion_id::text = ANY(:opinion_ids)",
@@ -103,10 +105,12 @@ def get_evidence(opinion_id: str):
             config=config,
         )
 
-    return _json_value({
-        "opinion": opinion,
-        "data_inputs": data_inputs,
-        "processing": processing,
-        "generation_attempts": generation_attempts,
-        "records": records,
-    })
+    return _json_value(
+        {
+            "opinion": opinion,
+            "data_inputs": data_inputs,
+            "processing": processing,
+            "generation_attempts": generation_attempts,
+            "records": records,
+        }
+    )

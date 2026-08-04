@@ -4,14 +4,14 @@ import argparse
 import copy
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
+
+from sqlalchemy import text
 
 from config_loader import load_config
 from db import get_session
 from processors.intelligence import MarketIntelligenceProcessor
-from sqlalchemy import text
-
 
 V4 = "deepseek/deepseek-v4-flash"
 GPT_OSS = "openai/gpt-oss-120b"
@@ -72,10 +72,7 @@ V4_EDITOR_SILICONFLOW = {**PROFILES["v4_siliconflow"], "max_tokens": 7500}
 
 VARIANTS = {
     "v4_baidu_all": {
-        **{
-            role: PROFILES["v4_baidu"]
-            for role in ("analyst", "skeptic", "auditor")
-        },
+        **{role: PROFILES["v4_baidu"] for role in ("analyst", "skeptic", "auditor")},
         "editor": V4_EDITOR_BAIDU,
     },
     "gpt_wandb_all": {
@@ -97,10 +94,7 @@ VARIANTS = {
         "editor": PROFILES["gpt_wandb_high"],
     },
     "gpt_wandb_compact": {
-        **{
-            role: PROFILES["gpt_wandb"]
-            for role in ("analyst", "skeptic", "auditor")
-        },
+        **{role: PROFILES["gpt_wandb"] for role in ("analyst", "skeptic", "auditor")},
         "editor": PROFILES["gpt_wandb_editor"],
     },
     "gpt_wandb_fast_all": {
@@ -126,17 +120,11 @@ VARIANTS = {
         "editor": PROFILES["gpt_wandb_fast"],
     },
     "gpt_novita_compact": {
-        **{
-            role: PROFILES["gpt_novita"]
-            for role in ("analyst", "skeptic", "auditor")
-        },
+        **{role: PROFILES["gpt_novita"] for role in ("analyst", "skeptic", "auditor")},
         "editor": PROFILES["gpt_novita_editor"],
     },
     "gpt_roles_v4_editor": {
-        **{
-            role: PROFILES["gpt_wandb"]
-            for role in ("analyst", "skeptic", "auditor")
-        },
+        **{role: PROFILES["gpt_wandb"] for role in ("analyst", "skeptic", "auditor")},
         "editor": V4_EDITOR_SILICONFLOW,
     },
     "v4_analyst_editor_gpt_checks": {
@@ -225,9 +213,9 @@ def _deterministic_score(output, attempts):
 
 def run_variant(base_config, name, profiles):
     config = copy.deepcopy(base_config)
-    config.setdefault("processors", {}).setdefault(
-        "market_intelligence", {}
-    )["force_inference"] = True
+    config.setdefault("processors", {}).setdefault("market_intelligence", {})[
+        "force_inference"
+    ] = True
     config["llm"]["intelligence_roles"] = copy.deepcopy(profiles)
     correlation_id = str(uuid4())
     with get_session(config) as session:
@@ -265,9 +253,7 @@ def run_variant(base_config, name, profiles):
         "wall_ms": wall_ms,
         "tokens_input": sum(item.get("tokens_input") or 0 for item in attempts),
         "tokens_output": sum(item.get("tokens_output") or 0 for item in attempts),
-        "cost_usd": round(
-            sum(item.get("cost_usd") or 0 for item in attempts), 8
-        ),
+        "cost_usd": round(sum(item.get("cost_usd") or 0 for item in attempts), 8),
         "attempts": attempts,
     }
     if output:
@@ -310,9 +296,7 @@ def main():
         default=",".join(VARIANTS),
         help="Comma-separated variant names",
     )
-    parser.add_argument(
-        "--output", default="/tmp/intelligence-benchmark.json"
-    )
+    parser.add_argument("--output", default="/tmp/intelligence-benchmark.json")
     args = parser.parse_args()
     selected = [item.strip() for item in args.variants.split(",") if item.strip()]
     unknown = [item for item in selected if item not in VARIANTS]
@@ -321,7 +305,7 @@ def main():
 
     config = load_config()
     report = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "variants": [],
     }
     for name in selected:

@@ -2,7 +2,7 @@ import logging
 import re
 import sys
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import structlog
@@ -64,10 +64,25 @@ def _redact_url(url: str) -> str:
         for item in parts.query.split("&"):
             name, separator, value = item.partition("=")
             if _normalized_key(unquote_plus(name)) in _SENSITIVE_KEYS:
-                query_parts.append(f"{name}{separator}{_REDACTED}" if separator else f"{name}={_REDACTED}")
+                query_parts.append(
+                    f"{name}{separator}{_REDACTED}"
+                    if separator
+                    else f"{name}={_REDACTED}"
+                )
             else:
                 query_parts.append(item)
-        return urlunsplit((parts.scheme, netloc, parts.path, "&".join(query_parts), parts.fragment)) + trailing
+        return (
+            urlunsplit(
+                (
+                    parts.scheme,
+                    netloc,
+                    parts.path,
+                    "&".join(query_parts),
+                    parts.fragment,
+                )
+            )
+            + trailing
+        )
     except Exception:
         # Never return a raw query string when parsing fails.
         prefix, marker, _query = url.partition("?")
@@ -77,7 +92,9 @@ def _redact_url(url: str) -> str:
 def _sanitize_string(value: str) -> str:
     value = _URL_RE.sub(lambda match: _redact_url(match.group(0)), value)
     value = _AUTH_RE.sub(lambda match: f"{match.group(1)}: {_REDACTED}", value)
-    value = _SCHEME_CREDENTIAL_RE.sub(lambda match: f"{match.group(1)} {_REDACTED}", value)
+    value = _SCHEME_CREDENTIAL_RE.sub(
+        lambda match: f"{match.group(1)} {_REDACTED}", value
+    )
 
     def redact_named(match: re.Match[str]) -> str:
         if match.group("double_value") is not None:
@@ -87,8 +104,8 @@ def _sanitize_string(value: str) -> str:
         else:
             quote = ""
         return (
-            f'{match.group("key_quote")}{match.group("key")}{match.group("key_quote")}'
-            f'{match.group("separator")}{quote}{_REDACTED}{quote}'
+            f"{match.group('key_quote')}{match.group('key')}{match.group('key_quote')}"
+            f"{match.group('separator')}{quote}{_REDACTED}{quote}"
         )
 
     return _NAMED_CREDENTIAL_RE.sub(redact_named, value)
@@ -160,13 +177,15 @@ def _rename_level(logger, method_name, event_dict):
 
 
 def _iso_timestamp(logger, method_name, event_dict):
-    event_dict["timestamp"] = datetime.now(timezone.utc).isoformat()
+    event_dict["timestamp"] = datetime.now(UTC).isoformat()
     return event_dict
 
 
 def setup_logging(level: str = "INFO", correlation_id: str | None = None):
     stdlib_level = getattr(logging, level.upper(), logging.INFO)
-    dependency_level = logging.DEBUG if stdlib_level <= logging.DEBUG else logging.WARNING
+    dependency_level = (
+        logging.DEBUG if stdlib_level <= logging.DEBUG else logging.WARNING
+    )
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,

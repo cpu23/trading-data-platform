@@ -363,17 +363,36 @@ def call_llm(
             "type": "json_schema",
             "json_schema": response_schema,
         }
-        provider_preferences["require_parameters"] = True
+        if _processor_value(
+            llm_config,
+            "require_parameters",
+            processor_id,
+            True,
+        ):
+            provider_preferences["require_parameters"] = True
     elif policy.structured_response:
         request_body["response_format"] = {"type": "json_object"}
-        provider_preferences["require_parameters"] = True
+        if _processor_value(
+            llm_config,
+            "require_parameters",
+            processor_id,
+            True,
+        ):
+            provider_preferences["require_parameters"] = True
     if provider_preferences:
         request_body["provider"] = provider_preferences
     if reasoning_effort is not None:
         request_body["reasoning"] = {"effort": reasoning_effort}
 
+    api_key = _processor_value(
+        llm_config,
+        "api_keys",
+        processor_id,
+        llm_config["api_key"],
+    )
+
     headers = {
-        "Authorization": f"Bearer {llm_config['api_key']}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/trading-data-platform",
     }

@@ -105,6 +105,51 @@ class LLMRequestPolicyTests(unittest.TestCase):
         )
 
     @patch("llm_client.make_request")
+    def test_stage_can_disable_openrouter_parameter_filtering(self, make_request):
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {},
+        }
+        make_request.return_value = response
+        self.config["llm"]["models"]["investment_analysis"] = "openai/luna"
+        self.config["llm"]["structured_response"]["investment_analysis"] = True
+        self.config["llm"]["require_parameters"] = {
+            "investment_analysis": False,
+        }
+        self.config["llm"]["api_keys"] = {
+            "investment_analysis": "stage-specific-key",
+        }
+        schema = {
+            "name": "result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        }
+
+        call_llm(
+            "exact JSON schema",
+            processor_id="investment_analysis",
+            config=self.config,
+            response_schema=schema,
+        )
+
+        body = make_request.call_args.kwargs["json_body"]
+        self.assertNotIn("provider", body)
+        self.assertEqual(
+            body["response_format"],
+            {"type": "json_schema", "json_schema": schema},
+        )
+        self.assertEqual(
+            make_request.call_args.kwargs["headers"]["Authorization"],
+            "Bearer stage-specific-key",
+        )
+
+    @patch("llm_client.make_request")
     def test_briefing_uses_its_own_larger_bounded_policy(self, make_request):
         response = Mock()
         response.json.return_value = {

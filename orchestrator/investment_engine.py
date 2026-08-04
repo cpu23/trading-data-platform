@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from typing import Any, Mapping
-
+from collections.abc import Mapping
+from typing import Any
 
 CURRENCY_CODES = ("USD", "EUR", "GBP", "JPY", "CNY", "KRW", "TWD", "HKD", "SGD", "INR")
 
@@ -27,6 +27,14 @@ STANDARD_METRICS = (
     "gross_margin",
     "inventory",
     "backlog",
+    "gross_profit",
+    "cash",
+    "total_debt",
+    "total_assets",
+    "total_liabilities",
+    "equity",
+    "current_assets",
+    "current_liabilities",
 )
 
 # Weights are intentionally part of the public deterministic table.  A score
@@ -77,19 +85,31 @@ SIGNAL_RULES = OrderedDict(
         ),
         (
             "ai_demand",
-            {"weight": 1, "rule": "reported AI demand present; strength maps weak/moderate/strong to +1"},
+            {
+                "weight": 1,
+                "rule": "reported AI demand present; strength maps weak/moderate/strong to +1",
+            },
         ),
         (
             "data_centre_demand",
-            {"weight": 1, "rule": "reported data-centre demand present; strength maps weak/moderate/strong to +1"},
+            {
+                "weight": 1,
+                "rule": "reported data-centre demand present; strength maps weak/moderate/strong to +1",
+            },
         ),
         (
             "supply_constraints",
-            {"weight": 1, "rule": "reported supply constraint supports cycle pricing: +1; also retained as an operating risk"},
+            {
+                "weight": 1,
+                "rule": "reported supply constraint supports cycle pricing: +1; also retained as an operating risk",
+            },
         ),
         (
             "pricing_power",
-            {"weight": 1, "rule": "reported pricing power present; strength maps weak/moderate/strong to +1"},
+            {
+                "weight": 1,
+                "rule": "reported pricing power present; strength maps weak/moderate/strong to +1",
+            },
         ),
         (
             "guidance_direction",
@@ -131,7 +151,9 @@ def _metric_value(facts: Any, name: str) -> float | None:
     return _finite(value)
 
 
-def _effective_value(current_facts: Any, name: str, market_inputs: Mapping[str, Any]) -> float | None:
+def _effective_value(
+    current_facts: Any, name: str, market_inputs: Mapping[str, Any]
+) -> float | None:
     override = market_inputs.get(name, _MISSING)
     if override is not _MISSING:
         converted = _finite(override)
@@ -159,7 +181,9 @@ def _clean_evidence(item: Mapping[str, Any]) -> Any:
     return evidence if evidence is not None else []
 
 
-def _metric_output(current_facts: Any, previous_facts: Any, name: str) -> dict[str, Any]:
+def _metric_output(
+    current_facts: Any, previous_facts: Any, name: str
+) -> dict[str, Any]:
     current_item = _record(current_facts, name)
     current = _metric_value(current_facts, name)
     prior = _metric_value(previous_facts, name) if previous_facts is not None else None
@@ -168,18 +192,23 @@ def _metric_output(current_facts: Any, previous_facts: Any, name: str) -> dict[s
         "unit": current_item.get("unit"),
         "period": current_item.get("period"),
         "evidence": _clean_evidence(current_item),
+        "source": current_item.get("source"),
+        "concept": current_item.get("concept"),
         "prior_value": prior,
         "change": _change(current, prior),
         "change_pct": _pct_change(current, prior),
     }
 
 
-def _derived_metric(value: float | None, unit: str, evidence: Any, prior: float | None = None) -> dict[str, Any]:
+def _derived_metric(
+    value: float | None, unit: str, evidence: Any, prior: float | None = None
+) -> dict[str, Any]:
     return {
         "value": value,
         "unit": unit,
         "period": None,
         "evidence": evidence,
+        "source": "derived",
         "prior_value": prior,
         "change": _change(value, prior),
         "change_pct": _pct_change(value, prior),
@@ -233,36 +262,82 @@ def _qual_score(present: Any, strength: Any, *, negative: bool = False) -> int:
     direction = str(strength).strip().lower() if strength is not None else ""
     if direction in {"negative", "down", "declining", "weakening", "weak", "-1", "-2"}:
         score = -1
-    elif direction in {"strong", "high", "positive", "up", "raised", "accelerating", "+2"}:
+    elif direction in {
+        "strong",
+        "high",
+        "positive",
+        "up",
+        "raised",
+        "accelerating",
+        "+2",
+    }:
         score = 1
-    elif direction in {"moderate", "medium", "flat", "maintained", "stable", "unchanged", "+1"}:
-        score = 1 if direction not in {"flat", "maintained", "stable", "unchanged"} else 0
+    elif direction in {
+        "moderate",
+        "medium",
+        "flat",
+        "maintained",
+        "stable",
+        "unchanged",
+        "+1",
+    }:
+        score = (
+            1 if direction not in {"flat", "maintained", "stable", "unchanged"} else 0
+        )
     else:
         numeric = _finite(strength)
         if numeric is not None:
             score = 1 if numeric > 0 else -1 if numeric < 0 else 0
         else:
             score = 1 if bool(present) else 0
-    if isinstance(present, str) and present.strip().lower() in {"false", "no", "absent", "none"}:
+    if isinstance(present, str) and present.strip().lower() in {
+        "false",
+        "no",
+        "absent",
+        "none",
+    }:
         score = 0
     if negative:
         score = -score
     return score
 
 
-def _signal(rule_name: str, score: int, observed: Any, prior: Any, evidence: Any) -> dict[str, Any]:
+def _signal(
+    rule_name: str,
+    score: int,
+    observed: Any,
+    prior: Any,
+    evidence: Any,
+    *,
+    basis: str = "deterministic_metric",
+    comparable: bool | None = None,
+) -> dict[str, Any]:
     rule = SIGNAL_RULES[rule_name]
+    observed_number = _finite(observed) if basis == "deterministic_metric" else None
+    prior_number = _finite(prior) if basis == "deterministic_metric" else None
+    if comparable is None:
+        comparable = observed is not None and prior is not None
     return {
         "rule": rule["rule"],
         "weight": rule["weight"],
         "score": score,
         "observed_value": observed,
         "prior_value": prior,
+        "change": _change(observed_number, prior_number),
+        "change_pct": _pct_change(observed_number, prior_number),
+        "basis": basis,
+        "comparable": bool(comparable),
         "evidence": evidence,
     }
 
 
-def _infer_growth(current_facts: Any, previous_facts: Any, fcf: float | None, prior_fcf: float | None, revenue_change: float | None) -> float | None:
+def _infer_growth(
+    current_facts: Any,
+    previous_facts: Any,
+    fcf: float | None,
+    prior_fcf: float | None,
+    revenue_change: float | None,
+) -> float | None:
     fcf_growth = _pct_change(fcf, prior_fcf)
     if fcf_growth is not None:
         return max(-0.20, min(0.20, fcf_growth / 100.0))
@@ -278,7 +353,14 @@ def _rate_input(value: Any, default: float) -> float | None:
     return parsed
 
 
-def _valuation(current_facts: Any, previous_facts: Any, market_inputs: Mapping[str, Any], fcf: float | None, prior_fcf: float | None, revenue_change: float | None) -> dict[str, Any]:
+def _valuation(
+    current_facts: Any,
+    previous_facts: Any,
+    market_inputs: Mapping[str, Any],
+    fcf: float | None,
+    prior_fcf: float | None,
+    revenue_change: float | None,
+) -> dict[str, Any]:
     raw_price = _effective_value(current_facts, "market_price", market_inputs)
     price = raw_price if raw_price is not None and raw_price > 0 else None
     raw_shares = _effective_value(current_facts, "shares_outstanding", market_inputs)
@@ -287,17 +369,34 @@ def _valuation(current_facts: Any, previous_facts: Any, market_inputs: Mapping[s
     eps = _metric_value(current_facts, "diluted_eps")
     net_income = _metric_value(current_facts, "net_income")
     market_cap_override = _finite(market_inputs.get("market_cap"))
-    market_cap = market_cap_override if market_cap_override is not None else (price * shares if price is not None and shares is not None else None)
-    pe = price / eps if price is not None and eps is not None and eps > 0 and price > 0 else None
+    market_cap = (
+        market_cap_override
+        if market_cap_override is not None
+        else (price * shares if price is not None and shares is not None else None)
+    )
+    pe = (
+        price / eps
+        if price is not None and eps is not None and eps > 0 and price > 0
+        else None
+    )
     pe_method = "price_eps" if pe is not None else None
-    if pe is None and market_cap is not None and net_income is not None and net_income > 0:
+    if (
+        pe is None
+        and market_cap is not None
+        and net_income is not None
+        and net_income > 0
+    ):
         pe = market_cap / net_income
         pe_method = "market_cap_net_income"
 
-    wacc = _rate_input(market_inputs.get("discount_rate", market_inputs.get("wacc")), 0.10)
+    wacc = _rate_input(
+        market_inputs.get("discount_rate", market_inputs.get("wacc")), 0.10
+    )
     terminal_growth = _rate_input(market_inputs.get("terminal_growth"), 0.03)
     growth_cap = 0.20
-    inferred_growth = _infer_growth(current_facts, previous_facts, fcf, prior_fcf, revenue_change)
+    inferred_growth = _infer_growth(
+        current_facts, previous_facts, fcf, prior_fcf, revenue_change
+    )
     forecast: list[dict[str, Any]] = []
     enterprise_value = None
     terminal_value = None
@@ -308,7 +407,9 @@ def _valuation(current_facts: Any, previous_facts: Any, market_inputs: Mapping[s
         dcf_reason = "starting FCF is not positive"
     elif inferred_growth is None:
         dcf_reason = "comparable growth unavailable"
-    elif wacc is None or terminal_growth is None or wacc <= terminal_growth or wacc <= 0:
+    elif (
+        wacc is None or terminal_growth is None or wacc <= terminal_growth or wacc <= 0
+    ):
         dcf_reason = "discount rate must exceed terminal growth"
     else:
         dcf_reason = None
@@ -318,13 +419,23 @@ def _valuation(current_facts: Any, previous_facts: Any, market_inputs: Mapping[s
         for year in range(1, 6):
             projected *= 1.0 + inferred_growth
             discounted = projected / ((1.0 + wacc) ** year)
-            forecast.append({"year": year, "fcf": projected, "present_value": discounted})
+            forecast.append(
+                {"year": year, "fcf": projected, "present_value": discounted}
+            )
             present_value += discounted
         terminal_value = projected * (1.0 + terminal_growth) / (wacc - terminal_growth)
         present_value_of_terminal = terminal_value / ((1.0 + wacc) ** 5)
         enterprise_value = present_value + present_value_of_terminal
-    equity_value = enterprise_value - net_debt if enterprise_value is not None and net_debt is not None else None
-    per_share = equity_value / shares if equity_value is not None and shares is not None and shares != 0 else None
+    equity_value = (
+        enterprise_value - net_debt
+        if enterprise_value is not None and net_debt is not None
+        else None
+    )
+    per_share = (
+        equity_value / shares
+        if equity_value is not None and shares is not None and shares != 0
+        else None
+    )
     if enterprise_value is not None and per_share is None:
         dcf_reason = "net debt and positive shares are required for per-share value"
     assumptions = {
@@ -355,7 +466,11 @@ def _valuation(current_facts: Any, previous_facts: Any, market_inputs: Mapping[s
         "per_share": per_share,
         "assumptions": assumptions,
     }
-    margin_of_safety = 1.0 - price / per_share if price is not None and per_share is not None and per_share > 0 else None
+    margin_of_safety = (
+        1.0 - price / per_share
+        if price is not None and per_share is not None and per_share > 0
+        else None
+    )
     return {
         "fcf": fcf,
         "pe": pe,
@@ -380,7 +495,13 @@ def _news_crowding(news_items: Any) -> tuple[int, bool]:
     return count, count >= 3
 
 
-def _state(score: int, previous_state: Any, prior_analysis_count: Any, valuation: Mapping[str, Any], news_items: Any) -> str:
+def _state(
+    score: int,
+    previous_state: Any,
+    prior_analysis_count: Any,
+    valuation: Mapping[str, Any],
+    news_items: Any,
+) -> str:
     if score <= -2:
         return "weakening"
     if score < 2:
@@ -405,7 +526,13 @@ def _state(score: int, previous_state: Any, prior_analysis_count: Any, valuation
         and market_price is not None
         and market_price >= dcf_per_share * 1.20
     )
-    if score >= 5 and previous in {"confirmed", "accelerating", "mature"} and count >= 2 and valuation_crowded and crowded_news:
+    if (
+        score >= 5
+        and previous in {"confirmed", "accelerating", "mature"}
+        and count >= 2
+        and valuation_crowded
+        and crowded_news
+    ):
         return "mature"
     if previous == "weakening" and score < 2:
         return "weakening"
@@ -444,32 +571,114 @@ def build_deterministic_analysis(
             "unit": metrics[name]["unit"] or fallback_unit,
             "period": "valuation input",
             "evidence": "manual valuation override",
+            "source": "manual_input",
+            "concept": None,
             "change": _change(override, prior_value),
             "change_pct": _pct_change(override, prior_value),
         }
     ocf = _metric_value(current_facts, "operating_cash_flow")
     capex = _metric_value(current_facts, "capex")
-    prior_ocf = _metric_value(previous_facts, "operating_cash_flow") if previous_facts else None
+    prior_ocf = (
+        _metric_value(previous_facts, "operating_cash_flow") if previous_facts else None
+    )
     prior_capex = _metric_value(previous_facts, "capex") if previous_facts else None
     ocf_unit = str(_record(current_facts, "operating_cash_flow").get("unit") or "")
     capex_unit = str(_record(current_facts, "capex").get("unit") or "")
-    prior_ocf_unit = str(_record(previous_facts, "operating_cash_flow").get("unit") or "") if previous_facts else ""
-    prior_capex_unit = str(_record(previous_facts, "capex").get("unit") or "") if previous_facts else ""
-    current_units_match = not ocf_unit or not capex_unit or ocf_unit.casefold() == capex_unit.casefold()
-    prior_units_match = not prior_ocf_unit or not prior_capex_unit or prior_ocf_unit.casefold() == prior_capex_unit.casefold()
-    fcf = ocf - capex if current_units_match and ocf is not None and capex is not None else None
-    prior_fcf = prior_ocf - prior_capex if prior_units_match and prior_ocf is not None and prior_capex is not None else None
+    prior_ocf_unit = (
+        str(_record(previous_facts, "operating_cash_flow").get("unit") or "")
+        if previous_facts
+        else ""
+    )
+    prior_capex_unit = (
+        str(_record(previous_facts, "capex").get("unit") or "")
+        if previous_facts
+        else ""
+    )
+    current_units_match = (
+        not ocf_unit or not capex_unit or ocf_unit.casefold() == capex_unit.casefold()
+    )
+    prior_units_match = (
+        not prior_ocf_unit
+        or not prior_capex_unit
+        or prior_ocf_unit.casefold() == prior_capex_unit.casefold()
+    )
+    fcf = (
+        ocf - capex
+        if current_units_match and ocf is not None and capex is not None
+        else None
+    )
+    prior_fcf = (
+        prior_ocf - prior_capex
+        if prior_units_match and prior_ocf is not None and prior_capex is not None
+        else None
+    )
     revenue = _metric_value(current_facts, "revenue")
     prior_revenue = _metric_value(previous_facts, "revenue") if previous_facts else None
-    fcf_margin = fcf / revenue * 100.0 if fcf is not None and revenue not in (None, 0) else None
-    prior_fcf_margin = prior_fcf / prior_revenue * 100.0 if prior_fcf is not None and prior_revenue not in (None, 0) else None
-    metrics["fcf"] = _derived_metric(fcf, ocf_unit or capex_unit or "currency", [metrics["operating_cash_flow"]["evidence"], metrics["capex"]["evidence"]], prior_fcf)
+    fcf_margin = (
+        fcf / revenue * 100.0 if fcf is not None and revenue not in (None, 0) else None
+    )
+    prior_fcf_margin = (
+        prior_fcf / prior_revenue * 100.0
+        if prior_fcf is not None and prior_revenue not in (None, 0)
+        else None
+    )
+    metrics["fcf"] = _derived_metric(
+        fcf,
+        ocf_unit or capex_unit or "currency",
+        [metrics["operating_cash_flow"]["evidence"], metrics["capex"]["evidence"]],
+        prior_fcf,
+    )
     metrics["free_cash_flow"] = metrics["fcf"].copy()
-    metrics["fcf_margin"] = _derived_metric(fcf_margin, "percent", metrics["fcf"]["evidence"], prior_fcf_margin)
+    metrics["fcf_margin"] = _derived_metric(
+        fcf_margin, "percent", metrics["fcf"]["evidence"], prior_fcf_margin
+    )
+
+    net_income = _metric_value(current_facts, "net_income")
+    assets = _metric_value(current_facts, "total_assets")
+    equity = _metric_value(current_facts, "equity")
+    debt = _metric_value(current_facts, "total_debt")
+    current_assets = _metric_value(current_facts, "current_assets")
+    current_liabilities = _metric_value(current_facts, "current_liabilities")
+    net_margin = _ratio(net_income, revenue)
+    roa = _ratio(net_income, assets)
+    roe = _ratio(net_income, equity)
+    debt_to_equity = _ratio(debt, equity)
+    current_ratio = _ratio(current_assets, current_liabilities)
+    capex_intensity = _ratio(capex, revenue)
+    cash_conversion = _ratio(ocf, net_income)
+    fundamentals = {
+        "net_margin_pct": net_margin,
+        "return_on_assets_pct": roa,
+        "return_on_equity_pct": roe,
+        "debt_to_equity": (
+            debt_to_equity / 100.0 if debt_to_equity is not None else None
+        ),
+        "current_ratio": (current_ratio / 100.0 if current_ratio is not None else None),
+        "capex_to_revenue_pct": capex_intensity,
+        "operating_cash_conversion": (
+            cash_conversion / 100.0 if cash_conversion is not None else None
+        ),
+    }
+    metrics["net_margin"] = _derived_metric(
+        fundamentals["net_margin_pct"],
+        "percent",
+        [metrics["net_income"]["evidence"], metrics["revenue"]["evidence"]],
+    )
+    metrics["return_on_equity"] = _derived_metric(
+        fundamentals["return_on_equity_pct"],
+        "percent",
+        [metrics["net_income"]["evidence"], metrics["equity"]["evidence"]],
+    )
 
     signals: OrderedDict[str, dict[str, Any]] = OrderedDict()
     revenue_change = metrics["revenue"]["change_pct"]
-    signals["revenue"] = _signal("revenue", _direction_score(revenue_change, 2), revenue, prior_revenue, metrics["revenue"]["evidence"])
+    signals["revenue"] = _signal(
+        "revenue",
+        _direction_score(revenue_change, 2),
+        revenue,
+        prior_revenue,
+        metrics["revenue"]["evidence"],
+    )
 
     capex_change = metrics["capex"]["change_pct"]
     signals["capex"] = _signal(
@@ -482,64 +691,153 @@ def build_deterministic_analysis(
 
     backlog = _metric_value(current_facts, "backlog")
     prior_backlog = _metric_value(previous_facts, "backlog") if previous_facts else None
-    signals["backlog"] = _signal("backlog", _direction_score(_pct_change(backlog, prior_backlog), 1), backlog, prior_backlog, metrics["backlog"]["evidence"])
+    signals["backlog"] = _signal(
+        "backlog",
+        _direction_score(_pct_change(backlog, prior_backlog), 1),
+        backlog,
+        prior_backlog,
+        metrics["backlog"]["evidence"],
+    )
 
     inventory = _metric_value(current_facts, "inventory")
-    prior_inventory = _metric_value(previous_facts, "inventory") if previous_facts else None
+    prior_inventory = (
+        _metric_value(previous_facts, "inventory") if previous_facts else None
+    )
     inventory_growth = _pct_change(inventory, prior_inventory)
     revenue_growth = _pct_change(revenue, prior_revenue)
     inventory_gap = _change(inventory_growth, revenue_growth)
-    inventory_score = 0 if inventory_gap is None else (-2 if inventory_gap > 5 else -1 if inventory_gap > 0 else 1)
-    signals["inventory_vs_revenue"] = _signal("inventory_vs_revenue", inventory_score, inventory, prior_inventory, metrics["inventory"]["evidence"])
+    inventory_score = (
+        0
+        if inventory_gap is None
+        else (-2 if inventory_gap > 5 else -1 if inventory_gap > 0 else 1)
+    )
+    signals["inventory_vs_revenue"] = _signal(
+        "inventory_vs_revenue",
+        inventory_score,
+        inventory,
+        prior_inventory,
+        metrics["inventory"]["evidence"],
+    )
 
     fcf_score = _direction_score(_pct_change(fcf, prior_fcf), 2)
     if fcf_score == 0 and fcf is not None:
         fcf_score = 2 if fcf > 0 else -2 if fcf < 0 else 0
-    signals["fcf"] = _signal("fcf", fcf_score, fcf, prior_fcf, metrics["fcf"]["evidence"])
+    signals["fcf"] = _signal(
+        "fcf", fcf_score, fcf, prior_fcf, metrics["fcf"]["evidence"]
+    )
 
     margin = _metric_value(current_facts, "gross_margin")
-    prior_margin = _metric_value(previous_facts, "gross_margin") if previous_facts else None
+    prior_margin = (
+        _metric_value(previous_facts, "gross_margin") if previous_facts else None
+    )
     margin_delta = _change(margin, prior_margin)
-    margin_threshold = 1.0 if (margin is not None and abs(margin) > 1) or (prior_margin is not None and abs(prior_margin) > 1) else 0.02
-    margin_score = 0 if margin_delta is None else 2 if margin_delta >= margin_threshold else -2 if margin_delta <= -margin_threshold else 1 if margin_delta > 0 else -1
-    signals["gross_margin_delta"] = _signal("gross_margin_delta", margin_score, margin, prior_margin, metrics["gross_margin"]["evidence"])
+    margin_threshold = (
+        1.0
+        if (margin is not None and abs(margin) > 1)
+        or (prior_margin is not None and abs(prior_margin) > 1)
+        else 0.02
+    )
+    margin_score = (
+        0
+        if margin_delta is None
+        else 2
+        if margin_delta >= margin_threshold
+        else -2
+        if margin_delta <= -margin_threshold
+        else 1
+        if margin_delta > 0
+        else -1
+    )
+    signals["gross_margin_delta"] = _signal(
+        "gross_margin_delta",
+        margin_score,
+        margin,
+        prior_margin,
+        metrics["gross_margin"]["evidence"],
+    )
 
     qualitative_specs = (
         ("ai_demand", ("ai_demand", "ai"), False),
-        ("data_centre_demand", ("data_centre_demand", "data_center_demand", "datacenter_demand", "datacentre_demand"), False),
+        (
+            "data_centre_demand",
+            (
+                "data_centre_demand",
+                "data_center_demand",
+                "datacenter_demand",
+                "datacentre_demand",
+            ),
+            False,
+        ),
         ("supply_constraints", ("supply_constraints", "supply_constraint"), False),
         ("pricing_power", ("pricing_power",), False),
     )
     for name, aliases, negative in qualitative_specs:
         present, strength, evidence = _qualitative(current_facts, aliases)
-        prior_present, prior_strength, _ = _qualitative(previous_facts, aliases) if previous_facts else (None, None, [])
+        prior_present, prior_strength, _ = (
+            _qualitative(previous_facts, aliases)
+            if previous_facts
+            else (None, None, [])
+        )
         observed = present if present is not None else strength
         prior_observed = prior_present if prior_present is not None else prior_strength
-        signals[name] = _signal(name, _qual_score(present, strength, negative=negative), observed, prior_observed, evidence)
+        signals[name] = _signal(
+            name,
+            _qual_score(present, strength, negative=negative),
+            observed,
+            prior_observed,
+            evidence,
+            basis="report_qualitative",
+        )
 
-    guidance_up, _, guidance_up_evidence = _qualitative(
-        current_facts, ("guidance_up",)
-    )
+    guidance_up, _, guidance_up_evidence = _qualitative(current_facts, ("guidance_up",))
     guidance_down, _, guidance_down_evidence = _qualitative(
         current_facts, ("guidance_down",)
+    )
+    prior_guidance_up, _, _ = (
+        _qualitative(previous_facts, ("guidance_up",))
+        if previous_facts
+        else (None, None, [])
+    )
+    prior_guidance_down, _, _ = (
+        _qualitative(previous_facts, ("guidance_down",))
+        if previous_facts
+        else (None, None, [])
+    )
+    prior_direction = (
+        "up" if prior_guidance_up else "down" if prior_guidance_down else None
     )
     direction = "up" if guidance_up else "down" if guidance_down else None
     if direction is None:
         legacy_direction, legacy_strength, legacy_evidence = _qualitative(
             current_facts, ("guidance_direction", "guidance")
         )
-        direction = legacy_direction if legacy_direction is not None else legacy_strength
+        direction = (
+            legacy_direction if legacy_direction is not None else legacy_strength
+        )
         evidence = legacy_evidence
     else:
         evidence = guidance_up_evidence if direction == "up" else guidance_down_evidence
     direction_text = str(direction or "").lower()
-    guidance_score = 2 if direction_text in {"up", "raised", "raise", "positive", "higher"} else -2 if direction_text in {"down", "cut", "lower", "negative", "reduced"} else 0
+    guidance_score = (
+        2
+        if direction_text in {"up", "raised", "raise", "positive", "higher"}
+        else -2
+        if direction_text in {"down", "cut", "lower", "negative", "reduced"}
+        else 0
+    )
     signals["guidance_direction"] = _signal(
-        "guidance_direction", guidance_score, direction, None, evidence
+        "guidance_direction",
+        guidance_score,
+        direction,
+        prior_direction,
+        evidence,
+        basis="report_qualitative",
     )
 
     score = sum(item["score"] for item in signals.values())
-    valuation = _valuation(current_facts, previous_facts, market_inputs, fcf, prior_fcf, revenue_change)
+    valuation = _valuation(
+        current_facts, previous_facts, market_inputs, fcf, prior_fcf, revenue_change
+    )
     currency_unit = str(metrics["fcf"]["unit"] or "")
     currency_code = next(
         (code for code in CURRENCY_CODES if currency_unit.upper().startswith(code)),
@@ -595,11 +893,14 @@ def build_deterministic_analysis(
         watch_items.append("valuation: DCF per-share value unavailable")
     news_count, crowded = _news_crowding(news_items)
     if crowded:
-        watch_items.append(f"news attention: {news_count} items may indicate crowded expectations")
+        watch_items.append(
+            f"news attention: {news_count} items may indicate crowded expectations"
+        )
 
     return {
         "metrics": metrics,
         "valuation": valuation,
+        "fundamentals": fundamentals,
         "signals": signals,
         "score": score,
         "state": {

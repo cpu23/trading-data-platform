@@ -9,16 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
 
-
 CONFIG = {"database": {"password": "DB_PASSWORD_SENTINEL"}}
 
 
 def _call_write(kind, records, *, config=CONFIG):
     if kind == "insert":
         return db.insert_records("events", records, config=config)
-    return db.upsert_records(
-        "events", records, conflict_columns=["id"], config=config
-    )
+    return db.upsert_records("events", records, conflict_columns=["id"], config=config)
 
 
 def _transaction(session, events, name):
@@ -176,7 +173,10 @@ class BatchFirstWriteTests(unittest.TestCase):
 
     def test_empty_records_return_zero_without_session_work(self):
         for kind in ("insert", "upsert"):
-            with self.subTest(kind=kind), patch.object(db, "get_session") as get_session:
+            with (
+                self.subTest(kind=kind),
+                patch.object(db, "get_session") as get_session,
+            ):
                 result = _call_write(kind, [])
             self.assertEqual(result, db.WriteResult(0, 0, 0, ()))
             get_session.assert_not_called()
@@ -200,7 +200,13 @@ class BatchFirstWriteTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     params,
-                    [{"id": 7, "payload": json.dumps({"secret": "value"}), "status": "new"}],
+                    [
+                        {
+                            "id": 7,
+                            "payload": json.dumps({"secret": "value"}),
+                            "status": "new",
+                        }
+                    ],
                 )
                 if kind == "upsert":
                     self.assertIn("ON CONFLICT (id) DO UPDATE SET", sql)
@@ -215,7 +221,9 @@ class BatchFirstWriteTests(unittest.TestCase):
             db, "get_session", return_value=_transaction(session, [], "batch")
         ):
             db.upsert_records("events", [{"id": 1}], ["id"], config=CONFIG)
-        self.assertIn("ON CONFLICT (id) DO NOTHING", str(session.execute.call_args.args[0]))
+        self.assertIn(
+            "ON CONFLICT (id) DO NOTHING", str(session.execute.call_args.args[0])
+        )
 
 
 class DiagnosticFallbackTests(unittest.TestCase):
@@ -263,14 +271,18 @@ class DiagnosticFallbackTests(unittest.TestCase):
                 self.assertEqual(fallback.execute.call_count, 3)
                 self.assertEqual(fallback.begin_nested.call_count, 3)
                 self.assertIsNot(batch, fallback)
-                self.assertEqual(get_session.call_args_list, [call(CONFIG), call(CONFIG)])
+                self.assertEqual(
+                    get_session.call_args_list, [call(CONFIG), call(CONFIG)]
+                )
                 batch.rollback.assert_called_once_with()
                 batch.commit.assert_not_called()
                 batch.close.assert_called_once_with()
                 fallback.commit.assert_called_once_with()
                 fallback.rollback.assert_not_called()
                 fallback.close.assert_called_once_with()
-                self.assertLess(events.index("batch:close"), events.index("fallback:open"))
+                self.assertLess(
+                    events.index("batch:close"), events.index("fallback:open")
+                )
                 self.assertIn("nested:1:rollback", events)
 
     def test_batch_failure_then_all_rows_fail_counts_only_isolated_rows(self):
@@ -316,7 +328,9 @@ class DiagnosticFallbackTests(unittest.TestCase):
                 self.assertNotIn("RECORD_SECRET_SENTINEL", result.errors[0])
                 batch.rollback.assert_called_once_with()
                 batch.close.assert_called_once_with()
-                self.assertEqual(events, ["batch:open", "batch:rollback", "batch:close"])
+                self.assertEqual(
+                    events, ["batch:open", "batch:rollback", "batch:close"]
+                )
 
 
 class SessionCleanupBoundaryTests(unittest.TestCase):
@@ -376,7 +390,9 @@ class SessionCleanupBoundaryTests(unittest.TestCase):
                     if logged.args == (f"{kind}_batch_failed",)
                 ]
                 self.assertEqual(len(batch_failure_calls), 1)
-                self.assertEqual(batch_failure_calls[0].kwargs["error_type"], "RuntimeError")
+                self.assertEqual(
+                    batch_failure_calls[0].kwargs["error_type"], "RuntimeError"
+                )
                 self.assertNotIn("RAW_COMMIT_SENTINEL", repr(warning.call_args_list))
 
     def test_execute_failure_remains_primary_when_rollback_and_close_fail(self):
@@ -403,8 +419,12 @@ class SessionCleanupBoundaryTests(unittest.TestCase):
                     if logged.args == (f"{kind}_batch_failed",)
                 ]
                 self.assertEqual(len(batch_failure_calls), 1)
-                self.assertEqual(batch_failure_calls[0].kwargs["error_type"], "LookupError")
-                self.assertIn("db_session_rollback_failed", repr(warning.call_args_list))
+                self.assertEqual(
+                    batch_failure_calls[0].kwargs["error_type"], "LookupError"
+                )
+                self.assertIn(
+                    "db_session_rollback_failed", repr(warning.call_args_list)
+                )
                 self.assertIn("db_session_close_failed", repr(warning.call_args_list))
                 self.assertNotIn("RAW_EXECUTE_SENTINEL", repr(warning.call_args_list))
                 self.assertNotIn("RAW_ROLLBACK_SENTINEL", repr(warning.call_args_list))
@@ -435,7 +455,9 @@ class SessionCleanupBoundaryTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(cleanup_calls), 1)
                 self.assertEqual(cleanup_calls[0].kwargs["error_type"], "OSError")
-                self.assertNotIn("RAW_FALLBACK_CLOSE_SENTINEL", repr(warning.call_args_list))
+                self.assertNotIn(
+                    "RAW_FALLBACK_CLOSE_SENTINEL", repr(warning.call_args_list)
+                )
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
 
 from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, query_latest
+from errors import InvalidSourceData, PersistenceError, TransientSourceError
 from http_client import make_request
 from logging_config import get_logger
 
@@ -23,6 +24,14 @@ BACKFILL_YEARS = {
     "quarterly": 10,
     "annual": 10,
 }
+
+
+def _failure_class(code: str) -> str:
+    if code in {"metadata_request_failed", "request_failed"}:
+        return TransientSourceError.error_class
+    if code == "cache_degraded":
+        return PersistenceError.error_class
+    return InvalidSourceData.error_class
 
 
 @dataclass(frozen=True)
@@ -78,9 +87,15 @@ class FredCollector:
 
         backfill_overrides = {
             "daily": fred_config.get("backfill_years_daily", BACKFILL_YEARS["daily"]),
-            "weekly": fred_config.get("backfill_years_weekly", BACKFILL_YEARS["weekly"]),
-            "monthly": fred_config.get("backfill_years_monthly", BACKFILL_YEARS["monthly"]),
-            "quarterly": fred_config.get("backfill_years_quarterly", BACKFILL_YEARS["quarterly"]),
+            "weekly": fred_config.get(
+                "backfill_years_weekly", BACKFILL_YEARS["weekly"]
+            ),
+            "monthly": fred_config.get(
+                "backfill_years_monthly", BACKFILL_YEARS["monthly"]
+            ),
+            "quarterly": fred_config.get(
+                "backfill_years_quarterly", BACKFILL_YEARS["quarterly"]
+            ),
         }
 
         all_records: list[dict] = []
@@ -92,9 +107,7 @@ class FredCollector:
         observation_api_calls = 0
 
         # Keep database-backed metadata resolution on the coordinator thread.
-        prepared: list[
-            tuple[dict, datetime, dict[str, Any]] | PreparationFailure
-        ] = []
+        prepared: list[tuple[dict, datetime, dict[str, Any]] | PreparationFailure] = []
         for series_entry in series_list:
             series_id = series_entry["id"]
             frequency = series_entry.get("frequency", "monthly")
@@ -196,6 +209,7 @@ class FredCollector:
                     "code": outcome.code,
                     "exception_type": outcome.exception_type,
                     "frequency": frequency,
+                    "error_class": _failure_class(outcome.code),
                 }
                 errors.append(error_entry)
             elif outcome.error_code is not None:
@@ -205,6 +219,7 @@ class FredCollector:
                     "code": outcome.error_code,
                     "exception_type": outcome.exception_type or "Exception",
                     "frequency": frequency,
+                    "error_class": _failure_class(outcome.error_code),
                 }
                 errors.append(error_entry)
             else:
@@ -220,6 +235,7 @@ class FredCollector:
                         "code": normalized.error_code,
                         "exception_type": normalized.exception_type or "Exception",
                         "frequency": frequency,
+                        "error_class": _failure_class(normalized.error_code),
                     }
                     errors.append(error_entry)
                 else:
@@ -343,7 +359,7 @@ class FredCollector:
                 date_str = obs.get("date", "")
                 try:
                     observed_at = datetime.strptime(date_str, "%Y-%m-%d").replace(
-                        tzinfo=timezone.utc
+                        tzinfo=UTC
                     )
                 except ValueError:
                     continue
@@ -388,7 +404,9 @@ class FredCollector:
             if latest:
                 last_observed = latest[0]["observed_at"]
                 if isinstance(last_observed, str):
-                    last_observed = datetime.fromisoformat(last_observed.replace("Z", "+00:00"))
+                    last_observed = datetime.fromisoformat(
+                        last_observed.replace("Z", "+00:00")
+                    )
                 return last_observed + timedelta(days=1)
         except Exception as exc:
             logger.warning(
@@ -398,7 +416,7 @@ class FredCollector:
                 error=str(exc),
             )
 
-        return datetime.now(timezone.utc) - timedelta(days=backfill_years * 365)
+        return datetime.now(UTC) - timedelta(days=backfill_years * 365)
 
     @staticmethod
     def _metadata_values(row: dict[str, Any]) -> dict[str, Any]:
@@ -410,9 +428,7 @@ class FredCollector:
         }
 
     @staticmethod
-    def _fresh_metadata(
-        row: dict[str, Any], ttl: timedelta, now: datetime
-    ) -> bool:
+    def _fresh_metadata(row: dict[str, Any], ttl: timedelta, now: datetime) -> bool:
         fetched_at = row.get("fetched_at")
         if isinstance(fetched_at, str):
             try:
@@ -421,7 +437,7 @@ class FredCollector:
                 return False
         if not isinstance(fetched_at, datetime) or fetched_at.tzinfo is None:
             return False
-        return timedelta(0) <= now - fetched_at.astimezone(timezone.utc) < ttl
+        return timedelta(0) <= now - fetched_at.astimezone(UTC) < ttl
 
     def _persist_series_metadata(
         self,
@@ -452,7 +468,7 @@ class FredCollector:
         except (TypeError, ValueError):
             ttl_days = 30
         ttl = timedelta(days=max(ttl_days, 0))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         cached = self._metadata_cache.get(series_id)
         if cached is not None and self._fresh_metadata(cached, ttl, now):
@@ -476,6 +492,7 @@ class FredCollector:
                 "stage": "metadata_cache",
                 "code": "cache_degraded",
                 "exception_type": type(exc).__name__,
+                "error_class": _failure_class("cache_degraded"),
             }
             logger.warning(
                 "metadata_cache_read_failed",
@@ -511,7 +528,7 @@ class FredCollector:
         except Exception as exc:
             return MetadataOutcome(None, api_calls=1, warning=warning, error=exc)
 
-        fetched_at = datetime.now(timezone.utc)
+        fetched_at = datetime.now(UTC)
         persisted_successfully = False
         try:
             self._persist_series_metadata(series_id, metadata, fetched_at, config)
@@ -523,6 +540,7 @@ class FredCollector:
                     "stage": "metadata_cache",
                     "code": "cache_degraded",
                     "exception_type": type(exc).__name__,
+                    "error_class": _failure_class("cache_degraded"),
                 }
             logger.warning(
                 "metadata_cache_write_failed",
@@ -540,7 +558,9 @@ class FredCollector:
         self, series_id: str, api_key: str, correlation_id: str, config: dict
     ) -> dict[str, Any]:
         """Backward-compatible metadata-only interface used by focused callers."""
-        outcome = self._resolve_series_metadata(series_id, api_key, correlation_id, config)
+        outcome = self._resolve_series_metadata(
+            series_id, api_key, correlation_id, config
+        )
         if outcome.error is not None:
             raise outcome.error
         return outcome.metadata or {}

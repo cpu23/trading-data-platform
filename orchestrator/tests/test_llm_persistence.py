@@ -1,18 +1,17 @@
 import json
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from llm_client import LLMValidationError
 from db import WriteResult
+from llm_client import LLMValidationError
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
 from processors.macro_regime import MacroRegimeProcessor
-
 
 PROMPT_SENTINEL = "PRIVATE-PROMPT-SENTINEL-8"
 RAW_SENTINEL = "RAW-MODEL-SENTINEL-8"
@@ -72,6 +71,11 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         import orchestrator
 
         processor = Mock()
+        opinion_write_effect = (
+            {"side_effect": opinion_write}
+            if isinstance(opinion_write, Exception)
+            else {"return_value": opinion_write}
+        )
         processor.process.return_value = processor_result
         with (
             patch.object(orchestrator, "get_processor", return_value=processor),
@@ -79,7 +83,7 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
                 orchestrator, "build_processor_fingerprint", return_value="f" * 64
             ),
             patch.object(
-                orchestrator, "insert_records", return_value=opinion_write
+                orchestrator, "insert_records", **opinion_write_effect
             ) as insert,
             patch.object(
                 orchestrator,
@@ -129,6 +133,19 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertIsNone(logged["output_id"])
         self.assertEqual((logged["tokens_input"], logged["tokens_output"]), (31, 7))
         self.assertEqual(logged["cost_usd"], 0.125)
+
+    def test_raised_opinion_write_is_retryable_persistence_failure(self):
+        result, write_log, _ = self._run_processor_with_writes(
+            self._successful_processor_result(),
+            opinion_write=RuntimeError("database unavailable"),
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_class"], "persistence")
+        self.assertTrue(result["retryable"])
+        logged = write_log.call_args.kwargs
+        self.assertEqual(logged["status"], "failed")
+        self.assertIn("DB write failed", logged["error_message"])
 
     def test_partial_extra_write_after_durable_opinion_keeps_usage_once(self):
         processor_result = self._successful_processor_result(
@@ -197,7 +214,7 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         session_context = Mock()
         session_context.__enter__ = Mock(return_value=session)
         session_context.__exit__ = Mock(return_value=False)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with patch.object(orchestrator, "get_session", return_value=session_context):
             orchestrator._write_processing_log(
                 processor_id="macro_regime",

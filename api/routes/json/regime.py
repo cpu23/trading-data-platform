@@ -1,9 +1,9 @@
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query
 
 from config import load_config
-from db import query_one, query_many
+from db import query_many, query_one
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
@@ -64,7 +64,9 @@ def get_regime_current():
 
     return {
         "classification_id": str(row["classification_id"]),
-        "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+        "created_at": row["created_at"].isoformat()
+        if hasattr(row["created_at"], "isoformat")
+        else str(row["created_at"]),
         "stale": stale,
         "stale_reason": stale_reason,
         "scope": row["scope"],
@@ -83,7 +85,7 @@ def get_regime_current():
 @router.get("/regime/history")
 def get_regime_history(days: int = Query(default=30, ge=1, le=365)):
     config = load_config()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     sql = """
         SELECT rc.classification_id, rc.created_at, rc.scope, rc.regime,
@@ -99,16 +101,20 @@ def get_regime_history(days: int = Query(default=30, ge=1, le=365)):
 
     results = []
     for row in rows:
-        results.append({
-            "classification_id": str(row["classification_id"]),
-            "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
-            "scope": row["scope"],
-            "regime": row["regime"],
-            "sub_regime": row["sub_regime"],
-            "confidence": row.get("confidence"),
-            "direction": row.get("direction"),
-            "summary": row.get("summary"),
-            "opinion_id": str(row["opinion_id"]) if row.get("opinion_id") else None,
-        })
+        results.append(
+            {
+                "classification_id": str(row["classification_id"]),
+                "created_at": row["created_at"].isoformat()
+                if hasattr(row["created_at"], "isoformat")
+                else str(row["created_at"]),
+                "scope": row["scope"],
+                "regime": row["regime"],
+                "sub_regime": row["sub_regime"],
+                "confidence": row.get("confidence"),
+                "direction": row.get("direction"),
+                "summary": row.get("summary"),
+                "opinion_id": str(row["opinion_id"]) if row.get("opinion_id") else None,
+            }
+        )
 
     return {"regimes": results, "days": days}

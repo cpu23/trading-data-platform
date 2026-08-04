@@ -82,7 +82,12 @@ class VersionedIntelligenceTests(unittest.TestCase):
         insert_records_in_session(
             session,
             "processing_log",
-            [{"processor": "macro_regime", "output_ids": ["26a71a75-52b5-40bb-96a1-e8f08d3249e6"]}],
+            [
+                {
+                    "processor": "macro_regime",
+                    "output_ids": ["26a71a75-52b5-40bb-96a1-e8f08d3249e6"],
+                }
+            ],
         )
         statement = str(session.execute.call_args.args[0])
         self.assertIn("CAST(:output_ids AS UUID[])", statement)

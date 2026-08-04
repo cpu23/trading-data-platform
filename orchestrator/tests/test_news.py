@@ -2,7 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,11 +27,19 @@ class NewsTests(unittest.TestCase):
 
             def publish(item_id):
                 item = {
-                    "id": item_id, "source": "reuters", "source_label": "Reuters",
-                    "title": item_id, "summary": "", "url": f"https://x/{item_id}",
-                    "published": datetime.now(timezone.utc).isoformat(), "symbols": [],
-                    "tags": [], "engagement": {}, "media": [], "meta": {},
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "id": item_id,
+                    "source": "reuters",
+                    "source_label": "Reuters",
+                    "title": item_id,
+                    "summary": "",
+                    "url": f"https://x/{item_id}",
+                    "published": datetime.now(UTC).isoformat(),
+                    "symbols": [],
+                    "tags": [],
+                    "engagement": {},
+                    "media": [],
+                    "meta": {},
+                    "fetched_at": datetime.now(UTC).isoformat(),
                 }
 
                 def collector():
@@ -41,14 +49,28 @@ class NewsTests(unittest.TestCase):
                 barrier.wait()
                 collect_and_publish("reuters", cfg, collector)
 
-            threads = [threading.Thread(target=publish, args=(item_id,)) for item_id in ("one", "two")]
-            for thread in threads: thread.start()
+            threads = [
+                threading.Thread(target=publish, args=(item_id,))
+                for item_id in ("one", "two")
+            ]
+            for thread in threads:
+                thread.start()
             barrier.wait()
-            for thread in threads: thread.join(timeout=5)
+            for thread in threads:
+                thread.join(timeout=5)
 
             self.assertFalse(any(thread.is_alive() for thread in threads))
-            self.assertEqual({item["id"] for item in json.loads(source_path.read_text())}, {"one", "two"})
-            self.assertEqual({item["id"] for item in json.loads((root / "feed.json").read_text())["items"]}, {"one", "two"})
+            self.assertEqual(
+                {item["id"] for item in json.loads(source_path.read_text())},
+                {"one", "two"},
+            )
+            self.assertEqual(
+                {
+                    item["id"]
+                    for item in json.loads((root / "feed.json").read_text())["items"]
+                },
+                {"one", "two"},
+            )
 
     def test_feed_build_failure_preserves_prior_valid_publication(self):
         from sources.news_feed import collect_and_publish
@@ -56,11 +78,20 @@ class NewsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             feed_path = Path(tmp, "feed.json")
-            prior = {"generated_at": "prior", "days": 7, "count": 0, "sources": [], "items": []}
+            prior = {
+                "generated_at": "prior",
+                "days": 7,
+                "count": 0,
+                "sources": [],
+                "items": [],
+            }
             feed_path.write_text(json.dumps(prior))
             cfg = {"news_feed": {"output_path": tmp}, "reuters": {"enabled": True}}
 
-            with patch("sources.news_feed._build_feed_unlocked", side_effect=ValueError("raw secret")):
+            with patch(
+                "sources.news_feed._build_feed_unlocked",
+                side_effect=ValueError("raw secret"),
+            ):
                 result = collect_and_publish(
                     "reuters", cfg, lambda: NewsCollectionResult([], "ok")
                 )
@@ -73,7 +104,15 @@ class NewsTests(unittest.TestCase):
     def test_atomic_write_uses_fsync_replace_and_restrictive_mode(self):
         from sources.news_storage import atomic_write_json
 
-        with tempfile.TemporaryDirectory() as tmp, patch("sources.news_storage.os.fsync", wraps=__import__("os").fsync) as fsync, patch("sources.news_storage.os.replace", wraps=__import__("os").replace) as replace:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "sources.news_storage.os.fsync", wraps=__import__("os").fsync
+            ) as fsync,
+            patch(
+                "sources.news_storage.os.replace", wraps=__import__("os").replace
+            ) as replace,
+        ):
             path = Path(tmp, "feed.json")
             atomic_write_json(path, {"ok": True})
 
@@ -83,6 +122,7 @@ class NewsTests(unittest.TestCase):
 
     def test_atomic_json_recovers_malformed_and_replaces_file(self):
         from sources.news_storage import atomic_write_json, read_json
+
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
             path.write_text("{")
@@ -91,16 +131,27 @@ class NewsTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {"value": 2})
             self.assertFalse(list(path.parent.glob("*.tmp")))
 
-    def test_reuters_publication_failure_does_not_advance_cursor_and_retry_republishes(self):
+    def test_reuters_publication_failure_does_not_advance_cursor_and_retry_republishes(
+        self,
+    ):
         from sources.news_feed import collect_and_publish
         from sources.reuters import run_reuters
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         item = {
-            "id": "reuters:new", "source": "reuters", "source_label": "Reuters",
-            "title": "New", "summary": "", "url": "https://www.reuters.com/markets/new",
-            "published": now, "symbols": [], "tags": [], "engagement": {}, "media": [],
-            "meta": {}, "fetched_at": now,
+            "id": "reuters:new",
+            "source": "reuters",
+            "source_label": "Reuters",
+            "title": "New",
+            "summary": "",
+            "url": "https://www.reuters.com/markets/new",
+            "published": now,
+            "symbols": [],
+            "tags": [],
+            "engagement": {},
+            "media": [],
+            "meta": {},
+            "fetched_at": now,
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -108,13 +159,29 @@ class NewsTests(unittest.TestCase):
             state_path.parent.mkdir(parents=True)
             prior_state = b'{"last_seen_urls":["https://www.reuters.com/markets/prior"],"last_poll":"prior","status":"ok","error":null}'
             state_path.write_bytes(prior_state)
-            snapshot_path = root / "reuters" / f"reuters_{datetime.now(timezone.utc):%Y-%m-%d}.json"
+            snapshot_path = (
+                root / "reuters" / f"reuters_{datetime.now(UTC):%Y-%m-%d}.json"
+            )
             snapshot_path.write_text("[]")
             feed_path = root / "feed.json"
-            feed_path.write_text(json.dumps({"generated_at": "prior", "days": 7, "count": 0, "sources": [], "items": []}))
+            feed_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "prior",
+                        "days": 7,
+                        "count": 0,
+                        "sources": [],
+                        "items": [],
+                    }
+                )
+            )
             cfg = {
                 "news_feed": {"output_path": tmp, "history_days": 7},
-                "reuters": {"enabled": True, "state_path": str(state_path), "output_path": str(root / "reuters")},
+                "reuters": {
+                    "enabled": True,
+                    "state_path": str(state_path),
+                    "output_path": str(root / "reuters"),
+                },
                 "kobeissi": {"enabled": False},
             }
             seen_cursors = []
@@ -123,10 +190,17 @@ class NewsTests(unittest.TestCase):
                 seen_cursors.append(set(seen_urls))
                 return [item]
 
-            collector = lambda: run_reuters(cfg, max_pages=1)
-            with patch("sources.reuters._fetch_sitemap_index", return_value=["page"]), patch(
-                "sources.reuters._parse_sitemap_page", side_effect=parse_page
-            ), patch("sources.news_feed._build_feed_unlocked", side_effect=ValueError("RAW_SECRET")):
+            def collector():
+                return run_reuters(cfg, max_pages=1)
+
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=["page"]),
+                patch("sources.reuters._parse_sitemap_page", side_effect=parse_page),
+                patch(
+                    "sources.news_feed._build_feed_unlocked",
+                    side_effect=ValueError("RAW_SECRET"),
+                ),
+            ):
                 failed = collect_and_publish("reuters", cfg, collector)
 
             self.assertEqual(failed.status, "error")
@@ -135,52 +209,82 @@ class NewsTests(unittest.TestCase):
             self.assertIsInstance(json.loads(snapshot_path.read_text()), list)
             self.assertEqual(json.loads(feed_path.read_text())["generated_at"], "prior")
 
-            with patch("sources.reuters._fetch_sitemap_index", return_value=["page"]), patch(
-                "sources.reuters._parse_sitemap_page", side_effect=parse_page
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=["page"]),
+                patch("sources.reuters._parse_sitemap_page", side_effect=parse_page),
             ):
                 retried = collect_and_publish("reuters", cfg, collector)
 
             self.assertEqual([entry["id"] for entry in retried.items], ["reuters:new"])
-            self.assertEqual(seen_cursors, [
-                {"https://www.reuters.com/markets/prior"},
-                {"https://www.reuters.com/markets/prior"},
-            ])
-            self.assertIn(item["url"], json.loads(state_path.read_text())["last_seen_urls"])
-            self.assertEqual([entry["id"] for entry in json.loads(snapshot_path.read_text())], ["reuters:new"])
+            self.assertEqual(
+                seen_cursors,
+                [
+                    {"https://www.reuters.com/markets/prior"},
+                    {"https://www.reuters.com/markets/prior"},
+                ],
+            )
+            self.assertIn(
+                item["url"], json.loads(state_path.read_text())["last_seen_urls"]
+            )
+            self.assertEqual(
+                [entry["id"] for entry in json.loads(snapshot_path.read_text())],
+                ["reuters:new"],
+            )
 
     def test_reuters_state_failure_after_publication_retries_idempotently(self):
         from sources.news_feed import collect_and_publish
         from sources.news_storage import atomic_write_json as real_atomic_write_json
         from sources.reuters import run_reuters
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         item = {
-            "id": "reuters:new", "source": "reuters", "source_label": "Reuters",
-            "title": "New", "summary": "", "url": "https://www.reuters.com/markets/new",
-            "published": now, "symbols": [], "tags": [], "engagement": {}, "media": [],
-            "meta": {}, "fetched_at": now,
+            "id": "reuters:new",
+            "source": "reuters",
+            "source_label": "Reuters",
+            "title": "New",
+            "summary": "",
+            "url": "https://www.reuters.com/markets/new",
+            "published": now,
+            "symbols": [],
+            "tags": [],
+            "engagement": {},
+            "media": [],
+            "meta": {},
+            "fetched_at": now,
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state_path = root / "reuters" / "state.json"
             state_path.parent.mkdir(parents=True)
-            prior_state = b'{"last_seen_urls":[],"last_poll":"prior","status":"ok","error":null}'
+            prior_state = (
+                b'{"last_seen_urls":[],"last_poll":"prior","status":"ok","error":null}'
+            )
             state_path.write_bytes(prior_state)
             cfg = {
                 "news_feed": {"output_path": tmp},
-                "reuters": {"enabled": True, "state_path": str(state_path), "output_path": str(root / "reuters")},
+                "reuters": {
+                    "enabled": True,
+                    "state_path": str(state_path),
+                    "output_path": str(root / "reuters"),
+                },
                 "kobeissi": {"enabled": False},
             }
-            collector = lambda: run_reuters(cfg, max_pages=1)
+
+            def collector():
+                return run_reuters(cfg, max_pages=1)
 
             def fail_state_only(path, value):
                 if Path(path) == state_path:
                     raise OSError("RAW_SECRET")
                 return real_atomic_write_json(path, value)
 
-            with patch("sources.reuters._fetch_sitemap_index", return_value=["page"]), patch(
-                "sources.reuters._parse_sitemap_page", return_value=[item]
-            ), patch("sources.news_feed.atomic_write_json", side_effect=fail_state_only):
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=["page"]),
+                patch("sources.reuters._parse_sitemap_page", return_value=[item]),
+                patch(
+                    "sources.news_feed.atomic_write_json", side_effect=fail_state_only
+                ),
+            ):
                 failed = collect_and_publish("reuters", cfg, collector)
 
             snapshot_path = next((root / "reuters").glob("reuters_*.json"))
@@ -188,26 +292,53 @@ class NewsTests(unittest.TestCase):
             self.assertEqual(failed.error, "News state persistence failed: OSError")
             self.assertTrue(failed.feed_published)
             self.assertEqual(state_path.read_bytes(), prior_state)
-            self.assertEqual([entry["id"] for entry in json.loads(snapshot_path.read_text())], ["reuters:new"])
-            self.assertEqual([entry["id"] for entry in json.loads((root / "feed.json").read_text())["items"]], ["reuters:new"])
+            self.assertEqual(
+                [entry["id"] for entry in json.loads(snapshot_path.read_text())],
+                ["reuters:new"],
+            )
+            self.assertEqual(
+                [
+                    entry["id"]
+                    for entry in json.loads((root / "feed.json").read_text())["items"]
+                ],
+                ["reuters:new"],
+            )
             self.assertNotIn("RAW_SECRET", failed.error or "")
 
-            with patch("sources.reuters._fetch_sitemap_index", return_value=["page"]), patch(
-                "sources.reuters._parse_sitemap_page", return_value=[item]
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=["page"]),
+                patch("sources.reuters._parse_sitemap_page", return_value=[item]),
             ):
                 retried = collect_and_publish("reuters", cfg, collector)
 
             self.assertEqual(retried.status, "ok")
-            self.assertEqual([entry["id"] for entry in json.loads(snapshot_path.read_text())], ["reuters:new"])
-            self.assertEqual(json.loads(state_path.read_text())["last_seen_urls"], [item["url"]])
+            self.assertEqual(
+                [entry["id"] for entry in json.loads(snapshot_path.read_text())],
+                ["reuters:new"],
+            )
+            self.assertEqual(
+                json.loads(state_path.read_text())["last_seen_urls"], [item["url"]]
+            )
 
     def test_reuters_daily_snapshot_is_idempotent_and_state_ordered(self):
         from sources.news_feed import collect_and_publish
         from sources.reuters import run_reuters
+
         item = {"id": "reuters:one", "url": "https://www.reuters.com/markets/one"}
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = {"news_feed": {"output_path": tmp}, "reuters": {"enabled": True, "state_path": f"{tmp}/reuters/state.json", "output_path": f"{tmp}/reuters"}, "kobeissi": {"enabled": False}}
-            with patch("sources.reuters._fetch_sitemap_index", return_value=["page"]), patch("sources.reuters._parse_sitemap_page", return_value=[item]):
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {
+                    "enabled": True,
+                    "state_path": f"{tmp}/reuters/state.json",
+                    "output_path": f"{tmp}/reuters",
+                },
+                "kobeissi": {"enabled": False},
+            }
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=["page"]),
+                patch("sources.reuters._parse_sitemap_page", return_value=[item]),
+            ):
                 collect_and_publish("reuters", cfg, lambda: run_reuters(cfg))
                 collect_and_publish("reuters", cfg, lambda: run_reuters(cfg))
             daily = next(Path(tmp, "reuters").glob("reuters_*.json"))
@@ -222,28 +353,51 @@ class NewsTests(unittest.TestCase):
 
         cursor_cases = (
             (None, set()),
-            (["https://www.reuters.com/markets/seen/", ["nested"], 7, {"raw": "value"}], {
-                "https://www.reuters.com/markets/seen/",
-            }),
+            (
+                [
+                    "https://www.reuters.com/markets/seen/",
+                    ["nested"],
+                    7,
+                    {"raw": "value"},
+                ],
+                {
+                    "https://www.reuters.com/markets/seen/",
+                },
+            ),
         )
 
         for stored_cursor, expected_seen in cursor_cases:
-            with self.subTest(stored_cursor=stored_cursor), tempfile.TemporaryDirectory() as tmp:
+            with (
+                self.subTest(stored_cursor=stored_cursor),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 state_path = Path(tmp, "reuters/state.json")
                 state_path.parent.mkdir(parents=True)
                 state_path.write_text(json.dumps({"last_seen_urls": stored_cursor}))
-                cfg = {"news_feed": {"output_path": tmp}, "kobeissi": {"enabled": False}, "reuters": {
-                    "enabled": True,
-                    "state_path": str(state_path),
-                    "output_path": f"{tmp}/reuters",
-                }}
+                cfg = {
+                    "news_feed": {"output_path": tmp},
+                    "kobeissi": {"enabled": False},
+                    "reuters": {
+                        "enabled": True,
+                        "state_path": str(state_path),
+                        "output_path": f"{tmp}/reuters",
+                    },
+                }
                 captured_seen = []
 
                 def parse_page(_url, seen_urls, _config):
                     captured_seen.append(set(seen_urls))
                     return []
 
-                with patch("sources.reuters._fetch_sitemap_index", return_value=["https://example.test/page.xml"]), patch("sources.reuters._parse_sitemap_page", side_effect=parse_page):
+                with (
+                    patch(
+                        "sources.reuters._fetch_sitemap_index",
+                        return_value=["https://example.test/page.xml"],
+                    ),
+                    patch(
+                        "sources.reuters._parse_sitemap_page", side_effect=parse_page
+                    ),
+                ):
                     result = collect_and_publish(
                         "reuters", cfg, lambda: run_reuters(cfg, max_pages=1)
                     )
@@ -252,7 +406,9 @@ class NewsTests(unittest.TestCase):
                 self.assertEqual(result.status, "ok")
                 self.assertEqual(captured_seen, [expected_seen])
                 self.assertEqual(state["last_seen_urls"], sorted(expected_seen))
-                self.assertTrue(all(isinstance(url, str) for url in state["last_seen_urls"]))
+                self.assertTrue(
+                    all(isinstance(url, str) for url in state["last_seen_urls"])
+                )
 
     def test_reuters_malformed_page_records_error_and_preserves_valid_page_items(self):
         from sources.reuters import run_reuters
@@ -299,18 +455,24 @@ class NewsTests(unittest.TestCase):
                     "output_path": f"{tmp}/reuters",
                 }
             }
-            with patch(
-                "sources.reuters._fetch_sitemap_index",
-                return_value=[
-                    "https://example.test/malformed.xml",
-                    "https://example.test/valid.xml",
-                ],
-            ), patch("urllib.request.urlopen", side_effect=urlopen):
+            with (
+                patch(
+                    "sources.reuters._fetch_sitemap_index",
+                    return_value=[
+                        "https://example.test/malformed.xml",
+                        "https://example.test/valid.xml",
+                    ],
+                ),
+                patch("urllib.request.urlopen", side_effect=urlopen),
+            ):
                 result = run_reuters(cfg, max_pages=2)
 
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
-        self.assertEqual([item["id"] for item in result.items], ["reuters:global-markets-test-2026-07-13"])
+        self.assertEqual(
+            [item["id"] for item in result.items],
+            ["reuters:global-markets-test-2026-07-13"],
+        )
         self.assertEqual(result.items[0]["title"], "Global markets test")
         self.assertEqual(result.status, "error")
         self.assertEqual(state["status"], "error")
@@ -346,17 +508,22 @@ class NewsTests(unittest.TestCase):
             return Response()
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = {"reuters": {
-                "state_path": f"{tmp}/reuters/state.json",
-                "output_path": f"{tmp}/reuters",
-            }}
-            with patch(
-                "sources.reuters._fetch_sitemap_index",
-                return_value=[
-                    "https://example.test/valid.xml",
-                    "https://example.test/failed.xml",
-                ],
-            ), patch("urllib.request.urlopen", side_effect=urlopen):
+            cfg = {
+                "reuters": {
+                    "state_path": f"{tmp}/reuters/state.json",
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with (
+                patch(
+                    "sources.reuters._fetch_sitemap_index",
+                    return_value=[
+                        "https://example.test/valid.xml",
+                        "https://example.test/failed.xml",
+                    ],
+                ),
+                patch("urllib.request.urlopen", side_effect=urlopen),
+            ):
                 result = run_reuters(cfg, max_pages=2)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
 
@@ -371,16 +538,21 @@ class NewsTests(unittest.TestCase):
         from sources.reuters import run_reuters
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = {"reuters": {
-                "state_path": f"{tmp}/reuters/state.json",
-                "output_path": f"{tmp}/reuters",
-            }}
-            with patch(
-                "sources.reuters._fetch_sitemap_index",
-                return_value=["https://example.test/failed.xml?token=private"],
-            ), patch(
-                "urllib.request.urlopen",
-                side_effect=ConnectionError("credential=private"),
+            cfg = {
+                "reuters": {
+                    "state_path": f"{tmp}/reuters/state.json",
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with (
+                patch(
+                    "sources.reuters._fetch_sitemap_index",
+                    return_value=["https://example.test/failed.xml?token=private"],
+                ),
+                patch(
+                    "urllib.request.urlopen",
+                    side_effect=ConnectionError("credential=private"),
+                ),
             ):
                 result = run_reuters(cfg, max_pages=1)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
@@ -396,23 +568,35 @@ class NewsTests(unittest.TestCase):
         from sources.reuters import run_reuters
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return b"<html><body>RAW_CONTENT_SENTINEL</body></html>"
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return b"<html><body>RAW_CONTENT_SENTINEL</body></html>"
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "reuters/state.json")
-            cfg = {"reuters": {
-                "state_path": str(state_path),
-                "output_path": f"{tmp}/reuters",
-            }}
-            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.reuters.logger") as mocked_logger:
+            cfg = {
+                "reuters": {
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with (
+                patch("urllib.request.urlopen", return_value=Response()),
+                patch("sources.reuters.logger") as mocked_logger,
+            ):
                 result = run_reuters(cfg)
             state_text = state_path.read_text()
 
         self.assertEqual(result.items, [])
         self.assertEqual(result.status, "error")
-        self.assertEqual(result.error, "Reuters sitemap index failed: SitemapSchemaError")
+        self.assertEqual(
+            result.error, "Reuters sitemap index failed: SitemapSchemaError"
+        )
         exposed = f"{result.error} {state_text} {mocked_logger.method_calls}"
         self.assertNotIn("RAW_CONTENT_SENTINEL", exposed)
 
@@ -428,17 +612,31 @@ class NewsTests(unittest.TestCase):
 
         for payload in wrong_roots:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+
                 class Response:
-                    def __enter__(self): return self
-                    def __exit__(self, *args): return None
-                    def read(self): return payload
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def read(self):
+                        return payload
 
                 state_path = Path(tmp, "reuters/state.json")
-                cfg = {"reuters": {
-                    "state_path": str(state_path),
-                    "output_path": f"{tmp}/reuters",
-                }}
-                with patch("sources.reuters._fetch_sitemap_index", return_value=[page_url]), patch("urllib.request.urlopen", return_value=Response()), patch("sources.reuters.logger") as mocked_logger:
+                cfg = {
+                    "reuters": {
+                        "state_path": str(state_path),
+                        "output_path": f"{tmp}/reuters",
+                    }
+                }
+                with (
+                    patch(
+                        "sources.reuters._fetch_sitemap_index", return_value=[page_url]
+                    ),
+                    patch("urllib.request.urlopen", return_value=Response()),
+                    patch("sources.reuters.logger") as mocked_logger,
+                ):
                     result = run_reuters(cfg)
                 state_text = state_path.read_text()
 
@@ -468,15 +666,22 @@ class NewsTests(unittest.TestCase):
                 return empty_xml
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = {"news_feed": {"output_path": tmp}, "kobeissi": {"enabled": False}, "reuters": {
-                "enabled": True,
-                "state_path": f"{tmp}/reuters/state.json",
-                "output_path": f"{tmp}/reuters",
-            }}
-            with patch(
-                "sources.reuters._fetch_sitemap_index",
-                return_value=["https://example.test/empty.xml"],
-            ), patch("urllib.request.urlopen", return_value=Response()):
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "kobeissi": {"enabled": False},
+                "reuters": {
+                    "enabled": True,
+                    "state_path": f"{tmp}/reuters/state.json",
+                    "output_path": f"{tmp}/reuters",
+                },
+            }
+            with (
+                patch(
+                    "sources.reuters._fetch_sitemap_index",
+                    return_value=["https://example.test/empty.xml"],
+                ),
+                patch("urllib.request.urlopen", return_value=Response()),
+            ):
                 result = collect_and_publish(
                     "reuters", cfg, lambda: run_reuters(cfg, max_pages=1)
                 )
@@ -493,40 +698,77 @@ class NewsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "TWITTERAPI_KEY"):
             run_kobeissi({"kobeissi": {"enabled": True, "api_key": ""}})
 
-    def test_kobeissi_publication_failure_does_not_advance_cursor_and_retry_republishes(self):
+    def test_kobeissi_publication_failure_does_not_advance_cursor_and_retry_republishes(
+        self,
+    ):
         from sources.kobeissi import run_kobeissi
         from sources.news_feed import collect_and_publish
 
-        now = datetime.now(timezone.utc).isoformat()
-        payload = {"status": "success", "data": {"tweets": [
-            {"id": "10", "text": "new", "createdAt": now},
-            {"id": "9", "text": "prior", "createdAt": now},
-        ]}}
+        now = datetime.now(UTC).isoformat()
+        payload = {
+            "status": "success",
+            "data": {
+                "tweets": [
+                    {"id": "10", "text": "new", "createdAt": now},
+                    {"id": "9", "text": "prior", "createdAt": now},
+                ]
+            },
+        }
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state_path = root / "kobeissi" / "state.json"
             state_path.parent.mkdir(parents=True)
-            prior_state = b'{"last_seen_id":"9","last_poll":"prior","status":"ok","error":null}'
+            prior_state = (
+                b'{"last_seen_id":"9","last_poll":"prior","status":"ok","error":null}'
+            )
             state_path.write_bytes(prior_state)
-            snapshot_path = root / "kobeissi" / f"kobeissi_{datetime.now(timezone.utc):%Y-%m-%d}.json"
+            snapshot_path = (
+                root / "kobeissi" / f"kobeissi_{datetime.now(UTC):%Y-%m-%d}.json"
+            )
             snapshot_path.write_text("[]")
             feed_path = root / "feed.json"
-            feed_path.write_text(json.dumps({"generated_at": "prior", "days": 7, "count": 0, "sources": [], "items": []}))
+            feed_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "prior",
+                        "days": 7,
+                        "count": 0,
+                        "sources": [],
+                        "items": [],
+                    }
+                )
+            )
             cfg = {
                 "news_feed": {"output_path": tmp, "history_days": 7},
                 "reuters": {"enabled": False},
-                "kobeissi": {"enabled": True, "api_key": "TOKEN_SENTINEL", "state_path": str(state_path), "output_path": str(root / "kobeissi")},
+                "kobeissi": {
+                    "enabled": True,
+                    "api_key": "TOKEN_SENTINEL",
+                    "state_path": str(state_path),
+                    "output_path": str(root / "kobeissi"),
+                },
             }
-            collector = lambda: run_kobeissi(cfg, count=20)
 
-            with patch("urllib.request.urlopen", return_value=Response()), patch(
-                "sources.news_feed._build_feed_unlocked", side_effect=ValueError("RAW_SECRET")
+            def collector():
+                return run_kobeissi(cfg, count=20)
+
+            with (
+                patch("urllib.request.urlopen", return_value=Response()),
+                patch(
+                    "sources.news_feed._build_feed_unlocked",
+                    side_effect=ValueError("RAW_SECRET"),
+                ),
             ):
                 failed = collect_and_publish("kobeissi", cfg, collector)
 
@@ -541,25 +783,52 @@ class NewsTests(unittest.TestCase):
 
             self.assertEqual([entry["id"] for entry in retried.items], ["kobeissi:10"])
             self.assertEqual(json.loads(state_path.read_text())["last_seen_id"], "10")
-            self.assertEqual([entry["id"] for entry in json.loads(snapshot_path.read_text())], ["kobeissi:10"])
+            self.assertEqual(
+                [entry["id"] for entry in json.loads(snapshot_path.read_text())],
+                ["kobeissi:10"],
+            )
             exposed = f"{failed.error} {state_path.read_text()}"
             self.assertNotIn("TOKEN_SENTINEL", exposed)
             self.assertNotIn("RAW_SECRET", exposed)
 
     def test_kobeissi_compares_tweet_ids_numerically_and_deduplicates_snapshot(self):
-        from sources.news_feed import collect_and_publish
         from sources.kobeissi import run_kobeissi
-        payload = {"status": "success", "data": {"tweets": [
-            {"id": "10", "text": "new", "createdAt": ""},
-            {"id": "9", "text": "old", "createdAt": ""},
-        ]}}
+        from sources.news_feed import collect_and_publish
+
+        payload = {
+            "status": "success",
+            "data": {
+                "tweets": [
+                    {"id": "10", "text": "new", "createdAt": ""},
+                    {"id": "9", "text": "old", "createdAt": ""},
+                ]
+            },
+        }
+
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
+
         with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp, "kobeissi/state.json"); state.parent.mkdir(parents=True); state.write_text(json.dumps({"last_seen_id": "9"}))
-            cfg = {"news_feed": {"output_path": tmp}, "reuters": {"enabled": False}, "kobeissi": {"enabled": True, "api_key": "key", "state_path": str(state), "output_path": f"{tmp}/kobeissi"}}
+            state = Path(tmp, "kobeissi/state.json")
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({"last_seen_id": "9"}))
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {"enabled": False},
+                "kobeissi": {
+                    "enabled": True,
+                    "api_key": "key",
+                    "state_path": str(state),
+                    "output_path": f"{tmp}/kobeissi",
+                },
+            }
             with patch("urllib.request.urlopen", return_value=Response()):
                 first = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
                 second = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
@@ -572,29 +841,73 @@ class NewsTests(unittest.TestCase):
 
     def test_feed_validates_deduplicates_filters_utc_and_enabled_sources(self):
         from sources.news_feed import build_feed
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             for source in ("reuters", "kobeissi", "disabled"):
-                (root/source).mkdir()
-            current = {"id":"same", "source":"reuters", "source_label":"Reuters", "title":"A", "summary":"", "url":"https://x", "published":now.isoformat(), "symbols":[], "tags":[], "engagement":{}, "media":[], "meta":{}, "fetched_at":now.isoformat()}
-            (root/"reuters/a.json").write_text(json.dumps([current, current, {**current, "id":"old", "published":(now-timedelta(days=8)).isoformat()}]))
-            (root/"kobeissi/b.json").write_text("{")
-            (root/"disabled/c.json").write_text(json.dumps([{**current, "id":"disabled", "source":"disabled"}]))
-            cfg = {"news_feed":{"output_path":tmp}, "reuters":{"enabled":True}, "kobeissi":{"enabled":True}, "disabled":{"enabled":False}}
+                (root / source).mkdir()
+            current = {
+                "id": "same",
+                "source": "reuters",
+                "source_label": "Reuters",
+                "title": "A",
+                "summary": "",
+                "url": "https://x",
+                "published": now.isoformat(),
+                "symbols": [],
+                "tags": [],
+                "engagement": {},
+                "media": [],
+                "meta": {},
+                "fetched_at": now.isoformat(),
+            }
+            (root / "reuters/a.json").write_text(
+                json.dumps(
+                    [
+                        current,
+                        current,
+                        {
+                            **current,
+                            "id": "old",
+                            "published": (now - timedelta(days=8)).isoformat(),
+                        },
+                    ]
+                )
+            )
+            (root / "kobeissi/b.json").write_text("{")
+            (root / "disabled/c.json").write_text(
+                json.dumps([{**current, "id": "disabled", "source": "disabled"}])
+            )
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {"enabled": True},
+                "kobeissi": {"enabled": True},
+                "disabled": {"enabled": False},
+            }
             feed = build_feed(cfg)
             self.assertEqual(feed["count"], 1)
             self.assertEqual(feed["sources"], ["reuters"])
 
     def test_news_all_skips_disabled_sources(self):
         from cli import cli
-        cfg = {"reuters":{"enabled":False}, "kobeissi":{"enabled":False}, "news_feed":{"output_path":"unused"}}
-        with patch("cli.load_config", return_value=cfg), patch("sources.news_feed.build_feed", return_value={"count":0,"sources":[],"items":[]}):
+
+        cfg = {
+            "reuters": {"enabled": False},
+            "kobeissi": {"enabled": False},
+            "news_feed": {"output_path": "unused"},
+        }
+        with (
+            patch("cli.load_config", return_value=cfg),
+            patch(
+                "sources.news_feed.build_feed",
+                return_value={"count": 0, "sources": [], "items": []},
+            ),
+        ):
             result = CliRunner().invoke(cli, ["news", "all"])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Reuters: disabled", result.output)
         self.assertIn("Kobeissi: disabled", result.output)
-
 
     def test_kobeissi_failure_replaces_stale_ok_state_with_typed_error(self):
         from sources.kobeissi import run_kobeissi
@@ -602,12 +915,30 @@ class NewsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             state_path.parent.mkdir(parents=True)
-            state_path.write_text(json.dumps({
-                "last_seen_id": "42", "last_poll": "2026-01-01T00:00:00+00:00",
-                "status": "ok", "error": None,
-            }))
-            cfg = {"kobeissi": {"api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
-            with patch("urllib.request.urlopen", side_effect=ConnectionError("token=private")), patch("sources.kobeissi.logger") as mocked_logger:
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "last_seen_id": "42",
+                        "last_poll": "2026-01-01T00:00:00+00:00",
+                        "status": "ok",
+                        "error": None,
+                    }
+                )
+            )
+            cfg = {
+                "kobeissi": {
+                    "api_key": "key",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                }
+            }
+            with (
+                patch(
+                    "urllib.request.urlopen",
+                    side_effect=ConnectionError("token=private"),
+                ),
+                patch("sources.kobeissi.logger") as mocked_logger,
+            ):
                 result = run_kobeissi(cfg)
             state = json.loads(state_path.read_text())
 
@@ -619,7 +950,9 @@ class NewsTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(state))
         self.assertNotIn("private", str(mocked_logger.method_calls))
 
-    def test_kobeissi_malformed_tweet_entry_replaces_stale_ok_with_sanitized_typed_error(self):
+    def test_kobeissi_malformed_tweet_entry_replaces_stale_ok_with_sanitized_typed_error(
+        self,
+    ):
         from sources.kobeissi import run_kobeissi
         from sources.news_result import NewsCollectionResult
 
@@ -629,25 +962,39 @@ class NewsTests(unittest.TestCase):
         }
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             state_path.parent.mkdir(parents=True)
-            state_path.write_text(json.dumps({
-                "last_seen_id": "42",
-                "last_poll": "2026-01-01T00:00:00+00:00",
-                "status": "ok",
-                "error": None,
-            }))
-            cfg = {"kobeissi": {
-                "api_key": "TOKEN_SENTINEL",
-                "state_path": str(state_path),
-                "output_path": f"{tmp}/kobeissi",
-            }}
-            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "last_seen_id": "42",
+                        "last_poll": "2026-01-01T00:00:00+00:00",
+                        "status": "ok",
+                        "error": None,
+                    }
+                )
+            )
+            cfg = {
+                "kobeissi": {
+                    "api_key": "TOKEN_SENTINEL",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                }
+            }
+            with (
+                patch("urllib.request.urlopen", return_value=Response()),
+                patch("sources.kobeissi.logger") as mocked_logger,
+            ):
                 result = run_kobeissi(cfg)
             state = json.loads(state_path.read_text())
 
@@ -657,8 +1004,15 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(state["status"], "error")
         self.assertEqual(state["error"], result.error)
         self.assertIn("invalid response", state["error"])
+        self.assertEqual(result.error_class, "invalid_source_data")
         self.assertNotEqual(state["last_poll"], "2026-01-01T00:00:00+00:00")
-        exposed = json.dumps({"result_error": result.error, "state": state, "logs": str(mocked_logger.method_calls)})
+        exposed = json.dumps(
+            {
+                "result_error": result.error,
+                "state": state,
+                "logs": str(mocked_logger.method_calls),
+            }
+        )
         self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
         self.assertNotIn("TOKEN_SENTINEL", exposed)
 
@@ -672,18 +1026,28 @@ class NewsTests(unittest.TestCase):
         }
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
-            cfg = {"kobeissi": {
-                "api_key": "TOKEN_SENTINEL",
-                "state_path": str(state_path),
-                "output_path": f"{tmp}/kobeissi",
-            }}
-            with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+            cfg = {
+                "kobeissi": {
+                    "api_key": "TOKEN_SENTINEL",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                }
+            }
+            with (
+                patch("urllib.request.urlopen", return_value=Response()),
+                patch("sources.kobeissi.logger") as mocked_logger,
+            ):
                 result = run_kobeissi(cfg)
             state = json.loads(state_path.read_text())
 
@@ -693,7 +1057,14 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(state["status"], "error")
         self.assertEqual(state["error"], result.error)
         self.assertIn("invalid response", state["error"])
-        exposed = json.dumps({"result_error": result.error, "state": state, "logs": str(mocked_logger.method_calls)})
+        self.assertEqual(result.error_class, "invalid_source_data")
+        exposed = json.dumps(
+            {
+                "result_error": result.error,
+                "state": state,
+                "logs": str(mocked_logger.method_calls),
+            }
+        )
         self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
         self.assertNotIn("TOKEN_SENTINEL", exposed)
 
@@ -708,55 +1079,89 @@ class NewsTests(unittest.TestCase):
 
         for payload in malformed_payloads:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+
                 class Response:
-                    def __enter__(self): return self
-                    def __exit__(self, *args): return None
-                    def read(self): return json.dumps(payload).encode()
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return None
+
+                    def read(self):
+                        return json.dumps(payload).encode()
 
                 state_path = Path(tmp, "kobeissi/state.json")
                 state_path.parent.mkdir(parents=True)
-                state_path.write_text(json.dumps({
-                    "last_seen_id": "42",
-                    "last_poll": "2026-01-01T00:00:00+00:00",
-                    "status": "ok",
-                    "error": None,
-                }))
-                cfg = {"kobeissi": {
-                    "api_key": "TOKEN_SENTINEL",
-                    "state_path": str(state_path),
-                    "output_path": f"{tmp}/kobeissi",
-                }}
-                with patch("urllib.request.urlopen", return_value=Response()), patch("sources.kobeissi.logger") as mocked_logger:
+                state_path.write_text(
+                    json.dumps(
+                        {
+                            "last_seen_id": "42",
+                            "last_poll": "2026-01-01T00:00:00+00:00",
+                            "status": "ok",
+                            "error": None,
+                        }
+                    )
+                )
+                cfg = {
+                    "kobeissi": {
+                        "api_key": "TOKEN_SENTINEL",
+                        "state_path": str(state_path),
+                        "output_path": f"{tmp}/kobeissi",
+                    }
+                }
+                with (
+                    patch("urllib.request.urlopen", return_value=Response()),
+                    patch("sources.kobeissi.logger") as mocked_logger,
+                ):
                     result = run_kobeissi(cfg)
                 state = json.loads(state_path.read_text())
 
                 self.assertEqual(result.items, [])
                 self.assertEqual(result.status, "error")
-                self.assertEqual(result.error, "Kobeissi upstream API returned an invalid response")
+                self.assertEqual(
+                    result.error, "Kobeissi upstream API returned an invalid response"
+                )
                 self.assertEqual(state["status"], "error")
                 self.assertEqual(state["error"], result.error)
                 self.assertNotEqual(state["last_poll"], "2026-01-01T00:00:00+00:00")
-                exposed = json.dumps({
-                    "result_error": result.error,
-                    "state": state,
-                    "logs": str(mocked_logger.method_calls),
-                })
+                exposed = json.dumps(
+                    {
+                        "result_error": result.error,
+                        "state": state,
+                        "logs": str(mocked_logger.method_calls),
+                    }
+                )
                 self.assertNotIn("RAW_PAYLOAD_SENTINEL", exposed)
                 self.assertNotIn("TOKEN_SENTINEL", exposed)
 
     def test_kobeissi_successful_empty_is_typed_ok_and_updates_state(self):
-        from sources.news_feed import collect_and_publish
         from sources.kobeissi import run_kobeissi
+        from sources.news_feed import collect_and_publish
+
         payload = {"status": "success", "data": {"tweets": []}}
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
-            cfg = {"news_feed": {"output_path": tmp}, "reuters": {"enabled": False}, "kobeissi": {"enabled": True, "api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
+            cfg = {
+                "news_feed": {"output_path": tmp},
+                "reuters": {"enabled": False},
+                "kobeissi": {
+                    "enabled": True,
+                    "api_key": "key",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                },
+            }
             with patch("urllib.request.urlopen", return_value=Response()):
                 result = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
             state = json.loads(state_path.read_text())
@@ -769,16 +1174,28 @@ class NewsTests(unittest.TestCase):
 
     def test_kobeissi_upstream_api_error_is_typed_failure(self):
         from sources.kobeissi import run_kobeissi
+
         payload = {"status": "error", "msg": "api_key=secret"}
 
         class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return None
-            def read(self): return json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
-            cfg = {"kobeissi": {"api_key": "key", "state_path": str(state_path), "output_path": f"{tmp}/kobeissi"}}
+            cfg = {
+                "kobeissi": {
+                    "api_key": "key",
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/kobeissi",
+                }
+            }
             with patch("urllib.request.urlopen", return_value=Response()):
                 result = run_kobeissi(cfg)
             state_text = state_path.read_text()
@@ -792,8 +1209,21 @@ class NewsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "reuters/state.json")
-            cfg = {"reuters": {"state_path": str(state_path), "output_path": f"{tmp}/reuters"}}
-            with patch("sources.reuters._fetch_sitemap_index", side_effect=RuntimeError("https://index.test/list.xml?token=private#secret")), patch("sources.reuters.logger") as mocked_logger:
+            cfg = {
+                "reuters": {
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with (
+                patch(
+                    "sources.reuters._fetch_sitemap_index",
+                    side_effect=RuntimeError(
+                        "https://index.test/list.xml?token=private#secret"
+                    ),
+                ),
+                patch("sources.reuters.logger") as mocked_logger,
+            ):
                 result = run_reuters(cfg)
             state_text = state_path.read_text()
 
@@ -806,13 +1236,26 @@ class NewsTests(unittest.TestCase):
 
     def test_reuters_malformed_xml_strips_query_and_parser_details(self):
         import xml.etree.ElementTree as ET
+
         from sources.reuters import run_reuters
 
         page_url = "https://example.test/malformed.xml?api_key=secret#token=private"
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "reuters/state.json")
-            cfg = {"reuters": {"state_path": str(state_path), "output_path": f"{tmp}/reuters"}}
-            with patch("sources.reuters._fetch_sitemap_index", return_value=[page_url]), patch("sources.reuters._parse_sitemap_page", side_effect=ET.ParseError("token=private at line 1")), patch("sources.reuters.logger") as mocked_logger:
+            cfg = {
+                "reuters": {
+                    "state_path": str(state_path),
+                    "output_path": f"{tmp}/reuters",
+                }
+            }
+            with (
+                patch("sources.reuters._fetch_sitemap_index", return_value=[page_url]),
+                patch(
+                    "sources.reuters._parse_sitemap_page",
+                    side_effect=ET.ParseError("token=private at line 1"),
+                ),
+                patch("sources.reuters.logger") as mocked_logger,
+            ):
                 result = run_reuters(cfg)
             state_text = state_path.read_text()
 
@@ -829,8 +1272,17 @@ class NewsTests(unittest.TestCase):
         from sources.news_result import NewsCollectionResult
 
         cfg = {"reuters": {"enabled": True}, "news_feed": {"output_path": "unused"}}
-        failure = NewsCollectionResult([], "error", "Reuters sitemap index failed: TimeoutError")
-        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure), patch("sources.news_feed.collect_and_publish", side_effect=lambda _source, _config, collector, **_kwargs: collector()):
+        failure = NewsCollectionResult(
+            [], "error", "Reuters sitemap index failed: TimeoutError"
+        )
+        with (
+            patch("cli.load_config", return_value=cfg),
+            patch("sources.reuters.run_reuters", return_value=failure),
+            patch(
+                "sources.news_feed.collect_and_publish",
+                side_effect=lambda _source, _config, collector, **_kwargs: collector(),
+            ),
+        ):
             result = CliRunner().invoke(cli, ["news", "reuters"])
 
         self.assertNotEqual(result.exit_code, 0)
@@ -841,9 +1293,22 @@ class NewsTests(unittest.TestCase):
         from cli import cli
         from sources.news_result import NewsCollectionResult
 
-        cfg = {"reuters": {"enabled": True}, "kobeissi": {"enabled": False}, "news_feed": {"output_path": "unused"}}
-        failure = NewsCollectionResult([], "error", "Reuters sitemap index failed: TimeoutError")
-        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=failure), patch("sources.news_feed.build_feed", return_value={"count": 0, "sources": [], "items": []}):
+        cfg = {
+            "reuters": {"enabled": True},
+            "kobeissi": {"enabled": False},
+            "news_feed": {"output_path": "unused"},
+        }
+        failure = NewsCollectionResult(
+            [], "error", "Reuters sitemap index failed: TimeoutError"
+        )
+        with (
+            patch("cli.load_config", return_value=cfg),
+            patch("sources.reuters.run_reuters", return_value=failure),
+            patch(
+                "sources.news_feed.build_feed",
+                return_value={"count": 0, "sources": [], "items": []},
+            ),
+        ):
             result = CliRunner().invoke(cli, ["news", "all"])
 
         self.assertNotEqual(result.exit_code, 0)
@@ -854,16 +1319,30 @@ class NewsTests(unittest.TestCase):
         from cli import cli
         from sources.news_result import NewsCollectionResult
 
-        cfg = {"reuters": {"enabled": True, "max_pages": 8}, "kobeissi": {"enabled": True, "count": 35}, "news_feed": {"output_path": "unused", "history_days": 12}}
+        cfg = {
+            "reuters": {"enabled": True, "max_pages": 8},
+            "kobeissi": {"enabled": True, "count": 35},
+            "news_feed": {"output_path": "unused", "history_days": 12},
+        }
         success = NewsCollectionResult([], "ok", None)
-        with patch("cli.load_config", return_value=cfg), patch("sources.reuters.run_reuters", return_value=success) as reuters, patch("sources.kobeissi.run_kobeissi", return_value=success) as kobeissi, patch("sources.news_feed.collect_and_publish", side_effect=lambda _source, _config, collector, **_kwargs: collector()) as publish:
+        with (
+            patch("cli.load_config", return_value=cfg),
+            patch("sources.reuters.run_reuters", return_value=success) as reuters,
+            patch("sources.kobeissi.run_kobeissi", return_value=success) as kobeissi,
+            patch(
+                "sources.news_feed.collect_and_publish",
+                side_effect=lambda _source, _config, collector, **_kwargs: collector(),
+            ) as publish,
+        ):
             result = CliRunner().invoke(cli, ["news", "all"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         reuters.assert_called_once_with(cfg, max_pages=8)
         kobeissi.assert_called_once_with(cfg, count=35)
         self.assertEqual(publish.call_count, 2)
-        self.assertTrue(all(call.kwargs["days"] == 12 for call in publish.call_args_list))
+        self.assertTrue(
+            all(call.kwargs["days"] == 12 for call in publish.call_args_list)
+        )
 
 
 if __name__ == "__main__":

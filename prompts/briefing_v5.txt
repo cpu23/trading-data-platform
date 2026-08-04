@@ -22,6 +22,18 @@ CURRENT_MACRO_REGIME may contain "Deterministic Trend Signals (authoritative)" a
 {{this_week_events}}
 </CURRENT_EVENTS_WEEK>
 
+## Current Company and Industry News Context
+
+<CURRENT_INVESTMENT_NEWS>
+{{investment_news}}
+</CURRENT_INVESTMENT_NEWS>
+
+The news items were entity- and theme-classified deterministically. They are
+current company/industry context, not official macro observations. Use them to
+identify corroborating or conflicting transmission evidence, emerging
+investment themes, and risks. Do not turn a headline into a reported financial
+result, broad macro statistic, or causal fact.
+
 ## Watchlist
 
 {{watchlist}}
@@ -45,7 +57,7 @@ Write with direct macro-market judgment. Explain trend, direction, drivers, and 
 Avoid generic trading-coach language. Never mention or recommend trading instructions, technical analysis, price action, entries, exits, stops, targets, position sizing, portfolio allocation, exposure changes, chart patterns, or execution.
 
 Evidence discipline:
-- Treat CURRENT_MACRO_REGIME and CURRENT_EVENTS as the only authoritative current inputs. Treat UNTRUSTED_PREVIOUS_BRIEFING only as a historical comparison; never carry one of its facts, numbers, or conclusions forward unless current inputs independently contain them.
+- Treat CURRENT_MACRO_REGIME and CURRENT_EVENTS as authoritative current inputs. CURRENT_INVESTMENT_NEWS is bounded contemporaneous context: attribute claims to its source, preserve ambiguity, and never use it to manufacture a macro statistic or released event outcome. Treat UNTRUSTED_PREVIOUS_BRIEFING only as a historical comparison; never carry one of its facts, numbers, or conclusions forward unless current inputs independently contain them.
 - Deterministic trend statements are authoritative observations, but they do not prove causality. Keep their observation windows distinct; do not compare unlike frequencies as if they were synchronized.
 - A deterministic confidence ceiling is a hard maximum. Use low confidence when it says low, even if one supplied signal is strong.
 - Claim rising or falling real-rate pressure only when the maturity-matched DGS10-minus-T10YIE proxy is supplied. Never combine a nominal yield and breakeven of different maturities to manufacture a real-rate claim.
@@ -57,6 +69,7 @@ Evidence discipline:
 - A supplied input must support the whole sentence, not merely its topic. Distinguish observed conditions from forecasts and conditional scenarios.
 - Make every directional causal chain explicit and sign-consistent. If current evidence does not activate an asset's allowed channel and establish direction, use neutral, low confidence, and say direct evidence is insufficient.
 - Explain household and firm transmission when the deterministic synthesis activates a borrowing-cost, corporate-finance, household-income, or margin-and-demand channel. Describe pressure and risk, not a guaranteed behavioral outcome.
+- Company or industry news may corroborate a supplied macro transmission channel, but one company does not establish an economy-wide trend. State scope and source explicitly.
 
 Current-source decision rule:
 - The broad US macro regime may support SP500 through US growth, credit, and systemic-stress channels.

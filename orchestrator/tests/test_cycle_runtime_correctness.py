@@ -17,11 +17,15 @@ try:
         run_processor,
     )
 except ImportError:
-    raise unittest.SkipTest("codex/market-intelligence-expansion contract not implemented in master")
+    raise unittest.SkipTest(
+        "codex/market-intelligence-expansion contract not implemented in master"
+    )
 from processors._validators import OutputPolicyError
 
 
-@unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+@unittest.skip(
+    "skip: codex/market-intelligence-expansion contract not implemented in master"
+)
 class CycleRuntimeCorrectnessTests(unittest.TestCase):
     @patch("orchestrator.get_session")
     def test_child_ensure_preserves_parent_run_identity(self, get_session):
@@ -110,16 +114,13 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
         }
         config = {
             "processors": {
-                name: {"enabled": True}
-                for name in get_all_processors.return_value
+                name: {"enabled": True} for name in get_all_processors.return_value
             }
         }
 
         result = get_transitive_dependents("fred", config)
 
-        self.assertEqual(
-            result, {"macro_regime", "market_intelligence"}
-        )
+        self.assertEqual(result, {"macro_regime", "market_intelligence"})
 
     @patch("orchestrator.get_all_processors")
     def test_unmet_dependencies_are_explicitly_recorded_as_skipped(
@@ -194,9 +195,7 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "validation_failed")
         finish_run_mock.assert_called_once()
-        self.assertEqual(
-            finish_run_mock.call_args.args[1], "validation_failed"
-        )
+        self.assertEqual(finish_run_mock.call_args.args[1], "validation_failed")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi import HTTPException  # noqa: E402
+
 from budgets import get_budget_status  # noqa: E402
 from routes.json.triggers import trigger_cycle, trigger_process  # noqa: E402
 
@@ -75,8 +76,8 @@ class BudgetEnforcementTests(unittest.TestCase):
                 "briefing",
                 request,
                 {
-                "budget_override": True,
-                "override_reason": "manual review",
+                    "budget_override": True,
+                    "override_reason": "manual review",
                 },
             )
         )

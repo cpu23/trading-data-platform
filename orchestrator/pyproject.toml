@@ -17,12 +17,50 @@ dependencies = [
     "pypdf>=5.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
+    "trading-data-contracts",
 ]
 
 [dependency-groups]
 dev = [
     "ruff==0.12.11",
+    "mypy==1.17.1",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
+[tool.ruff]
+target-version = "py312"
+
 [tool.ruff.lint]
-select = ["E9", "F401", "F63", "F7", "F82"]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM103",
+    "SIM108",
+    "SIM118",
+]
+ignore = ["E501", "UP038", "UP040"]
+
+[tool.ruff.lint.per-file-ignores]
+"main.py" = ["B008"] # FastAPI uses calls for declarative parameter defaults.
+"tests/**/*.py" = ["B017", "B023", "B904", "E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["contracts"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["config_loader.py", "db.py"]
+ignore_missing_imports = true
+follow_imports = "silent"
+check_untyped_defs = false
+disallow_untyped_defs = false
+no_implicit_optional = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.uv.sources]
+trading-data-contracts = { path = "../contracts" }

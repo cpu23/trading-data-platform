@@ -16,7 +16,12 @@ from auth import mint_csrf_token
 
 MOCK_CONFIG = {
     "logging": {"level": "INFO"},
-    "database": {"host": "localhost", "name": "test", "user": "test", "password": "test"},
+    "database": {
+        "host": "localhost",
+        "name": "test",
+        "user": "test",
+        "password": "test",
+    },
     "dashboard": {
         "indicators": [
             {
@@ -46,6 +51,7 @@ AUTH = {
 with patch("config.load_config", return_value=MOCK_CONFIG):
     from main import create_app
 from fastapi.testclient import TestClient
+
 from routes.json.watchlist import _quote_events
 
 
@@ -64,15 +70,24 @@ class FakeOrchestratorClient:
         if url.endswith("/quotes"):
             return upstream_response("GET", url, json_data={"EURUSD": 1.1})
         if url.endswith("/quality"):
-            return upstream_response("GET", url, json_data={
-                "overall": "healthy",
-                "checks": {"fred_freshness": {"healthy": True, "detail": "fresh"}},
-            })
+            return upstream_response(
+                "GET",
+                url,
+                json_data={
+                    "overall": "healthy",
+                    "checks": {"fred_freshness": {"healthy": True, "detail": "fresh"}},
+                },
+            )
         raise AssertionError(f"unexpected GET {url}")
 
     async def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
-        return upstream_response("POST", url, status_code=202, json_data={"job_id": "job-1"})
+        return upstream_response(
+            "POST",
+            url,
+            status_code=202,
+            json_data={"job_id": "job-1", "accepted_at": "2026-08-04T00:00:00Z"},
+        )
 
     async def aclose(self):
         self.close_count += 1
@@ -82,7 +97,9 @@ class ApiClientLifecycleTests(unittest.TestCase):
     @patch("main.load_config", return_value=MOCK_CONFIG)
     @patch("main.setup_logging")
     def test_lifespan_reuses_one_client_across_routes_and_closes_once(
-        self, _setup_logging, _load_config,
+        self,
+        _setup_logging,
+        _load_config,
     ):
         upstream = FakeOrchestratorClient()
         factory = Mock(return_value=upstream)
@@ -92,19 +109,27 @@ class ApiClientLifecycleTests(unittest.TestCase):
             self.assertIs(app.state.orchestrator_client, upstream)
             self.assertEqual(client.get("/api/quotes", headers=AUTH).status_code, 200)
             self.assertEqual(client.get("/api/quotes", headers=AUTH).status_code, 200)
-            self.assertEqual(client.post("/api/collect/fred", headers=AUTH).status_code, 202)
+            self.assertEqual(
+                client.post("/api/collect/fred", headers=AUTH).status_code, 202
+            )
             self.assertEqual(client.get("/quality", headers=AUTH).status_code, 200)
             factory.assert_called_once()
             self.assertEqual(upstream.close_count, 0)
 
         self.assertEqual(upstream.close_count, 1)
-        self.assertEqual([call[0] for call in upstream.calls], ["GET", "GET", "POST", "GET"])
+        self.assertEqual(
+            [call[0] for call in upstream.calls], ["GET", "GET", "POST", "GET"]
+        )
 
     def test_sse_multiple_polls_reuse_client_and_stop_on_disconnect(self):
         upstream = FakeOrchestratorClient()
 
         class Request:
-            app = type("App", (), {"state": type("State", (), {"orchestrator_client": upstream})()})()
+            app = type(
+                "App",
+                (),
+                {"state": type("State", (), {"orchestrator_client": upstream})()},
+            )()
 
             def __init__(self):
                 self.checks = 0
@@ -127,7 +152,9 @@ class ApiClientLifecycleTests(unittest.TestCase):
         self.assertEqual(len(upstream.calls), 2)
         self.assertEqual(sleeps, [2])
 
-    def test_sse_cancellation_is_reraised_without_recreating_or_closing_shared_client(self):
+    def test_sse_cancellation_is_reraised_without_recreating_or_closing_shared_client(
+        self,
+    ):
         upstream = FakeOrchestratorClient()
 
         async def cancelled_get(_url, **_kwargs):
@@ -136,7 +163,11 @@ class ApiClientLifecycleTests(unittest.TestCase):
         upstream.get = cancelled_get
 
         class Request:
-            app = type("App", (), {"state": type("State", (), {"orchestrator_client": upstream})()})()
+            app = type(
+                "App",
+                (),
+                {"state": type("State", (), {"orchestrator_client": upstream})()},
+            )()
 
             async def is_disconnected(self):
                 return False

@@ -1,4 +1,5 @@
 """Crash-safe JSON storage helpers for news source state and snapshots."""
+
 from __future__ import annotations
 
 import fcntl
@@ -49,7 +50,9 @@ def read_json(path: Path, default: Any) -> Any:
 
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as handle:

@@ -23,3 +23,5 @@ pgdata/
 *.db
 data/
 var/
+
+benchmark-api.json

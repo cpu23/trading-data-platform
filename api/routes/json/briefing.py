@@ -24,14 +24,22 @@ def get_briefing_latest():
     """
     row = query_one(sql, config=config)
     if row is None:
-        raise HTTPException(status_code=404, detail="No briefing found", headers={"X-Error-Code": "NOT_FOUND"})
+        raise HTTPException(
+            status_code=404,
+            detail="No briefing found",
+            headers={"X-Error-Code": "NOT_FOUND"},
+        )
 
     stale, stale_reason = is_stale(row["created_at"], thresholds["briefing_hours"])
 
     return {
         "briefing_id": str(row["briefing_id"]),
-        "briefing_date": row["briefing_date"].isoformat() if isinstance(row["briefing_date"], date) else str(row["briefing_date"]),
-        "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+        "briefing_date": row["briefing_date"].isoformat()
+        if isinstance(row["briefing_date"], date)
+        else str(row["briefing_date"]),
+        "created_at": row["created_at"].isoformat()
+        if hasattr(row["created_at"], "isoformat")
+        else str(row["created_at"]),
         "stale": stale,
         "stale_reason": stale_reason,
         "sections": row["sections"] if row["sections"] is not None else {},
@@ -57,14 +65,22 @@ def get_briefing_by_date(briefing_date: str):
     """
     row = query_one(sql, params={"date": briefing_date}, config=config)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"No briefing found for {briefing_date}", headers={"X-Error-Code": "NOT_FOUND"})
+        raise HTTPException(
+            status_code=404,
+            detail=f"No briefing found for {briefing_date}",
+            headers={"X-Error-Code": "NOT_FOUND"},
+        )
 
     stale, stale_reason = is_stale(row["created_at"], thresholds["briefing_hours"])
 
     return {
         "briefing_id": str(row["briefing_id"]),
-        "briefing_date": row["briefing_date"].isoformat() if isinstance(row["briefing_date"], date) else str(row["briefing_date"]),
-        "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+        "briefing_date": row["briefing_date"].isoformat()
+        if isinstance(row["briefing_date"], date)
+        else str(row["briefing_date"]),
+        "created_at": row["created_at"].isoformat()
+        if hasattr(row["created_at"], "isoformat")
+        else str(row["created_at"]),
         "stale": stale,
         "stale_reason": stale_reason,
         "sections": row["sections"] if row["sections"] is not None else {},

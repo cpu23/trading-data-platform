@@ -1,8 +1,13 @@
-from collectors.fred import FredCollector
-from collectors.forex_factory import ForexFactoryCollector
-from collectors.cftc import CftcCollector
 from collectors.central_banks import CentralBanksCollector
-from collectors.official_macro import OecdCollector, EcbCollector, BoeCollector, EiaCollector
+from collectors.cftc import CftcCollector
+from collectors.forex_factory import ForexFactoryCollector
+from collectors.fred import FredCollector
+from collectors.official_macro import (
+    BoeCollector,
+    EcbCollector,
+    EiaCollector,
+    OecdCollector,
+)
 
 COLLECTORS: dict[str, type] = {
     "fred": FredCollector,

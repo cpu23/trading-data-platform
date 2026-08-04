@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from collectors.cftc import CftcCollector
 from collectors.base import CollectorNoData, CollectorSetupRequired
+from collectors.cftc import CftcCollector
 from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
 
 

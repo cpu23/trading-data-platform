@@ -34,28 +34,43 @@ class NewsViewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.json"
             path.write_bytes(b"\xff\xfe")
-            self.assertEqual(load_news_context({"news_feed": {"output_path": directory}})["status"], "invalid")
+            self.assertEqual(
+                load_news_context({"news_feed": {"output_path": directory}})["status"],
+                "invalid",
+            )
             path.write_bytes(b" " * (MAX_NEWS_FEED_BYTES + 1))
-            self.assertEqual(load_news_context({"news_feed": {"output_path": directory}})["status"], "invalid")
+            self.assertEqual(
+                load_news_context({"news_feed": {"output_path": directory}})["status"],
+                "invalid",
+            )
 
     def test_loader_bounds_rendered_fields_and_items(self):
         from routes.views.news import load_news_context
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.json"
-            path.write_text(json.dumps({
-                "generated_at": "g" * 500,
-                "items": [{
-                    "title": "t" * 500,
-                    "source_label": "s" * 500,
-                    "published": "p" * 500,
-                    "summary": "x" * 500,
-                    "symbols": ["AUDJPY"] * 20,
-                    "tags": ["macro"] * 20,
-                    "url": "javascript:alert(1)",
-                } for _ in range(10)],
-            }))
-            context = load_news_context({"news_feed": {"output_path": directory}}, limit=5)
+            path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "g" * 500,
+                        "items": [
+                            {
+                                "title": "t" * 500,
+                                "source_label": "s" * 500,
+                                "published": "p" * 500,
+                                "summary": "x" * 500,
+                                "symbols": ["AUDJPY"] * 20,
+                                "tags": ["macro"] * 20,
+                                "url": "javascript:alert(1)",
+                            }
+                            for _ in range(10)
+                        ],
+                    }
+                )
+            )
+            context = load_news_context(
+                {"news_feed": {"output_path": directory}}, limit=5
+            )
         self.assertEqual(len(context["items"]), 5)
         self.assertLessEqual(len(context["items"][0]["title"]), 240)
         self.assertLessEqual(len(context["items"][0]["source"]), 64)
@@ -65,6 +80,7 @@ class NewsViewTests(unittest.TestCase):
     @patch("config.load_config")
     def test_json_feed_uses_bounded_sanitized_contract(self, config):
         from fastapi.testclient import TestClient
+
         from main import app
 
         with tempfile.TemporaryDirectory() as directory:
@@ -90,19 +106,43 @@ class NewsViewTests(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.templating import Jinja2Templates
         from fastapi.testclient import TestClient
+
         from routes.views.news import router
 
         app = FastAPI()
         app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
         app.include_router(router)
         payload = {
-            "status": "published", "generated_at": "now",
+            "status": "published",
+            "generated_at": "now",
             "items": [
-                {"title": "A", "source": "Reuters", "source_id": "reuters", "published": "now", "summary": "", "symbols": ["AUDJPY"], "tags": ["macro"], "url": None},
-                {"title": "B", "source": "Kobeissi", "source_id": "kobeissi", "published": "now", "summary": "", "symbols": ["XAUUSD"], "tags": ["metals"], "url": None},
+                {
+                    "title": "A",
+                    "source": "Reuters",
+                    "source_id": "reuters",
+                    "published": "now",
+                    "summary": "",
+                    "symbols": ["AUDJPY"],
+                    "tags": ["macro"],
+                    "url": None,
+                },
+                {
+                    "title": "B",
+                    "source": "Kobeissi",
+                    "source_id": "kobeissi",
+                    "published": "now",
+                    "summary": "",
+                    "symbols": ["XAUUSD"],
+                    "tags": ["metals"],
+                    "url": None,
+                },
             ],
         }
-        with patch("routes.views.news.load_config", return_value={}), patch("routes.views.news.load_news_context", return_value=payload), patch("routes.views.news.load_source_states", return_value=[]):
+        with (
+            patch("routes.views.news.load_config", return_value={}),
+            patch("routes.views.news.load_news_context", return_value=payload),
+            patch("routes.views.news.load_source_states", return_value=[]),
+        ):
             response = TestClient(app).get("/news?source=reuters&symbol=AUDJPY")
         self.assertEqual(response.status_code, 200)
         self.assertIn("A", response.text)

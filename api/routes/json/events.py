@@ -1,13 +1,14 @@
 import json
-from datetime import datetime, time as dt_time, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from config import load_config
-from db import query_one, query_many
-from staleness import get_staleness_config, is_stale
+from db import query_many, query_one
 from routes.json.settings import timezone_context
+from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
 
@@ -25,7 +26,9 @@ COUNTRY_TO_CURRENCY = {
 
 def _bounded_positive_integer(raw: str, *, maximum: int, name: str) -> int:
     if not raw.isascii() or not raw.isdecimal():
-        raise HTTPException(status_code=422, detail=f"{name} must be a positive integer")
+        raise HTTPException(
+            status_code=422, detail=f"{name} must be a positive integer"
+        )
     value = int(raw)
     if value < 1:
         raise HTTPException(status_code=422, detail=f"{name} must be at least 1")
@@ -41,7 +44,7 @@ def get_calendar_events(
     normalized_hours = _bounded_positive_integer(hours, maximum=168, name="hours")
     normalized_limit = _bounded_positive_integer(limit, maximum=500, name="limit")
     config = load_config()
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     end = start + timedelta(hours=normalized_hours)
     rows = query_many(
         """SELECT event_id, event_name, country, scheduled_at, impact_level,
@@ -134,7 +137,9 @@ def _serialize_event(
         "event_name": row["event_name"],
         "country": row["country"],
         "currency": currency,
-        "scheduled_at": scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at),
+        "scheduled_at": scheduled_at.isoformat()
+        if hasattr(scheduled_at, "isoformat")
+        else str(scheduled_at),
         "day_key": display_dt.date().isoformat(),
         "day_label_short": display_dt.strftime("%a"),
         "london_time": london_dt.strftime("%H:%M"),
@@ -179,8 +184,8 @@ def get_events_upcoming_data(*, request: Request, days: int = 14) -> dict:
     rows = query_many(
         sql,
         params={
-            "start": window["period_start"].astimezone(timezone.utc),
-            "end": _window_end_for_days(window, days).astimezone(timezone.utc),
+            "start": window["period_start"].astimezone(UTC),
+            "end": _window_end_for_days(window, days).astimezone(UTC),
         },
         config=config,
     )
@@ -228,7 +233,7 @@ def get_events_upcoming_data(*, request: Request, days: int = 14) -> dict:
 def get_events_recent(days: int = Query(default=7, ge=1, le=90)):
     config = load_config()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = now - timedelta(days=days)
 
     sql = """
@@ -243,17 +248,21 @@ def get_events_recent(days: int = Query(default=7, ge=1, le=90)):
     events = []
     for row in rows:
         scheduled_at = row["scheduled_at"]
-        events.append({
-            "event_id": row["event_id"],
-            "event_name": row["event_name"],
-            "country": row["country"],
-            "scheduled_at": scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at),
-            "impact_level": row.get("impact_level"),
-            "consensus": row.get("consensus"),
-            "previous": row.get("previous"),
-            "actual": row.get("actual"),
-            "source": row.get("source"),
-        })
+        events.append(
+            {
+                "event_id": row["event_id"],
+                "event_name": row["event_name"],
+                "country": row["country"],
+                "scheduled_at": scheduled_at.isoformat()
+                if hasattr(scheduled_at, "isoformat")
+                else str(scheduled_at),
+                "impact_level": row.get("impact_level"),
+                "consensus": row.get("consensus"),
+                "previous": row.get("previous"),
+                "actual": row.get("actual"),
+                "source": row.get("source"),
+            }
+        )
 
     return {
         "events": events,

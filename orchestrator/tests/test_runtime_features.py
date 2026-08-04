@@ -4,14 +4,17 @@ import sys
 import tempfile
 import unittest
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DASHBOARD_USER", "internal-user")
 os.environ.setdefault("DASHBOARD_PASSWORD", "internal-pass")
-INTERNAL_AUTH = {"Authorization": "Basic " + base64.b64encode(b"internal-user:internal-pass").decode()}
+INTERNAL_AUTH = {
+    "Authorization": "Basic "
+    + base64.b64encode(b"internal-user:internal-pass").decode()
+}
 
 from collectors.oanda import OandaCollector
 from llm_client import resolve_model
@@ -23,8 +26,10 @@ class ComponentIdValidationTests(unittest.TestCase):
     """Task 10: Validate component IDs before accepting background work."""
 
     def setUp(self):
-        from main import app
         from fastapi.testclient import TestClient
+
+        from main import app
+
         self.client = TestClient(app, headers=INTERNAL_AUTH)
 
     def test_run_collector_invalid_id_returns_404(self):
@@ -49,22 +54,28 @@ class ComponentIdValidationTests(unittest.TestCase):
         events = []
         background = Mock()
         background.add_task.side_effect = lambda *args: events.append("enqueue")
-        with patch("main._get_config", return_value={}), patch(
-            "main.accept_run",
-            side_effect=lambda *args, **kwargs: events.append("accept") or datetime.now(timezone.utc),
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "main.accept_run",
+                side_effect=lambda *args, **kwargs: events.append("accept")
+                or datetime.now(UTC),
+            ),
         ):
             response = main.trigger_news("reuters", background, body={})
         self.assertEqual(events, ["accept", "enqueue"])
         self.assertIn("job_id", response)
 
     def test_run_news_duplicate_acceptance_returns_409_without_enqueue(self):
-        import main
         from fastapi import HTTPException
+
+        import main
         from orchestrator import RunAcceptanceConflict
 
         background = Mock()
-        with patch("main._get_config", return_value={}), patch(
-            "main.accept_run", side_effect=RunAcceptanceConflict("duplicate")
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", side_effect=RunAcceptanceConflict("duplicate")),
         ):
             with self.assertRaises(HTTPException) as raised:
                 main.trigger_news("reuters", background, body={})
@@ -81,11 +92,15 @@ class ComponentIdValidationTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         # ensure_run should never have been called, so no INSERT into cycle_runs
         insert_calls = [
-            call for call in session.execute.call_args_list
+            call
+            for call in session.execute.call_args_list
             if "INSERT INTO cycle_runs" in str(call)
         ]
-        self.assertEqual(len(insert_calls), 0,
-                         "No cycle_runs INSERT should occur for invalid collector ID")
+        self.assertEqual(
+            len(insert_calls),
+            0,
+            "No cycle_runs INSERT should occur for invalid collector ID",
+        )
 
     @patch("main.get_session")
     def test_no_cycle_runs_row_created_for_invalid_processor(self, get_session):
@@ -96,11 +111,15 @@ class ComponentIdValidationTests(unittest.TestCase):
         resp = self.client.post("/run_processor/invalid-processor-id")
         self.assertEqual(resp.status_code, 404)
         insert_calls = [
-            call for call in session.execute.call_args_list
+            call
+            for call in session.execute.call_args_list
             if "INSERT INTO cycle_runs" in str(call)
         ]
-        self.assertEqual(len(insert_calls), 0,
-                         "No cycle_runs INSERT should occur for invalid processor ID")
+        self.assertEqual(
+            len(insert_calls),
+            0,
+            "No cycle_runs INSERT should occur for invalid processor ID",
+        )
 
 
 class DurableRunLifecycleTests(unittest.TestCase):
@@ -173,7 +192,9 @@ class DurableRunLifecycleTests(unittest.TestCase):
     @patch("orchestrator.get_collector")
     @patch("orchestrator.start_run", return_value=False)
     @patch("orchestrator.accept_run")
-    def test_lost_start_race_prevents_collector_work(self, accept, start, get_collector):
+    def test_lost_start_race_prevents_collector_work(
+        self, accept, start, get_collector
+    ):
         from orchestrator import run_collector
 
         result = run_collector("fred", config={})
@@ -187,11 +208,12 @@ class DurableRunLifecycleTests(unittest.TestCase):
         import orchestrator
 
         original = RuntimeError("secret db failure")
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", side_effect=original
-        ), patch.object(orchestrator, "_run_collector_impl") as work, patch.object(
-            orchestrator, "finalize_run_safely"
-        ) as finalize:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", side_effect=original),
+            patch.object(orchestrator, "_run_collector_impl") as work,
+            patch.object(orchestrator, "finalize_run_safely") as finalize,
+        ):
             with self.assertRaises(RuntimeError) as raised:
                 orchestrator.run_collector("fred", config={}, correlation_id="run-id")
 
@@ -200,7 +222,12 @@ class DurableRunLifecycleTests(unittest.TestCase):
         finalize.assert_called_once_with(
             "run-id",
             "failed",
-            {"status": "failed", "reason": "run start unavailable"},
+            {
+                "status": "failed",
+                "reason": "run start unavailable",
+                "error_class": "unknown",
+                "retryable": False,
+            },
             {},
             "run start unavailable",
             worker_id=None,
@@ -212,11 +239,12 @@ class DurableRunLifecycleTests(unittest.TestCase):
         import orchestrator
 
         original = RuntimeError("secret db failure")
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", side_effect=original
-        ), patch.object(orchestrator, "_run_full_cycle_impl") as work, patch.object(
-            orchestrator, "finalize_run_safely"
-        ) as finalize:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", side_effect=original),
+            patch.object(orchestrator, "_run_full_cycle_impl") as work,
+            patch.object(orchestrator, "finalize_run_safely") as finalize,
+        ):
             with self.assertRaises(RuntimeError) as raised:
                 orchestrator.run_full_cycle(config={}, correlation_id="run-id")
 
@@ -225,7 +253,12 @@ class DurableRunLifecycleTests(unittest.TestCase):
         finalize.assert_called_once_with(
             "run-id",
             "failed",
-            {"status": "failed", "reason": "run start unavailable"},
+            {
+                "status": "failed",
+                "reason": "run start unavailable",
+                "error_class": "unknown",
+                "retryable": False,
+            },
             {},
             "run start unavailable",
             worker_id=None,
@@ -236,20 +269,28 @@ class DurableRunLifecycleTests(unittest.TestCase):
         import orchestrator
 
         original = RuntimeError("secret db failure")
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", side_effect=original
-        ), patch.object(orchestrator, "_run_processor_impl") as work, patch.object(
-            orchestrator, "finalize_run_safely"
-        ) as finalize:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", side_effect=original),
+            patch.object(orchestrator, "_run_processor_impl") as work,
+            patch.object(orchestrator, "finalize_run_safely") as finalize,
+        ):
             with self.assertRaises(RuntimeError) as raised:
-                orchestrator.run_processor("briefing", config={}, correlation_id="run-id")
+                orchestrator.run_processor(
+                    "briefing", config={}, correlation_id="run-id"
+                )
 
         self.assertIs(raised.exception, original)
         work.assert_not_called()
         finalize.assert_called_once_with(
             "run-id",
             "failed",
-            {"status": "failed", "reason": "run start unavailable"},
+            {
+                "status": "failed",
+                "reason": "run start unavailable",
+                "error_class": "unknown",
+                "retryable": False,
+            },
             {},
             "run start unavailable",
             worker_id=None,
@@ -266,12 +307,14 @@ class DurableRunLifecycleTests(unittest.TestCase):
         from orchestrator import run_full_cycle
 
         run_collector.return_value = {"status": "success"}
-        with patch("orchestrator.accept_run"), patch(
-            "orchestrator.start_run", return_value=True
-        ), patch("orchestrator.finish_run"), patch(
-            "orchestrator.update_run_progress"
-        ), patch(
-            "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
+        with (
+            patch("orchestrator.accept_run"),
+            patch("orchestrator.start_run", return_value=True),
+            patch("orchestrator.finish_run"),
+            patch("orchestrator.update_run_progress"),
+            patch(
+                "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
+            ),
         ):
             run_full_cycle(config={"collectors": {"fred": {"enabled": True}}})
 
@@ -290,9 +333,21 @@ class DurableRunLifecycleTests(unittest.TestCase):
                 events = []
                 background = Mock()
                 background.add_task.side_effect = lambda *args: events.append("enqueue")
-                with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=lambda *args, **kwargs: events.append("accept") or datetime.now(timezone.utc)), patch(
-                    "collectors.get_all_collectors", return_value={"fred": Mock()}
-                ), patch("processors.get_all_processors", return_value={"briefing": Mock()}):
+                with (
+                    patch("main._get_config", return_value={}),
+                    patch(
+                        "main.accept_run",
+                        side_effect=lambda *args, **kwargs: events.append("accept")
+                        or datetime.now(UTC),
+                    ),
+                    patch(
+                        "collectors.get_all_collectors", return_value={"fred": Mock()}
+                    ),
+                    patch(
+                        "processors.get_all_processors",
+                        return_value={"briefing": Mock()},
+                    ),
+                ):
                     endpoint(*positional, background, body={})
                 self.assertEqual(events, ["accept", "enqueue"])
 
@@ -301,10 +356,11 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         self.assertFalse(hasattr(main, "_cycle_lock"))
         background = Mock()
-        accepted_at = datetime.now(timezone.utc)
-        with patch("main._get_config", return_value={}), patch(
-            "main.accept_run", return_value=accepted_at
-        ) as accept:
+        accepted_at = datetime.now(UTC)
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", return_value=accepted_at) as accept,
+        ):
             first = main.trigger_cycle(background, body={})
             second = main.trigger_cycle(background, body={})
 
@@ -313,13 +369,16 @@ class DurableRunLifecycleTests(unittest.TestCase):
         self.assertNotEqual(first["job_id"], second["job_id"])
 
     def test_duplicate_acceptance_returns_409_without_enqueue(self):
-        import main
         from fastapi import HTTPException
+
+        import main
         from orchestrator import RunAcceptanceConflict
 
         background = Mock()
-        with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=RunAcceptanceConflict("duplicate")), patch(
-            "collectors.get_all_collectors", return_value={"fred": Mock()}
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", side_effect=RunAcceptanceConflict("duplicate")),
+            patch("collectors.get_all_collectors", return_value={"fred": Mock()}),
         ):
             with self.assertRaises(HTTPException) as raised:
                 main.trigger_collector("fred", background, body={})
@@ -327,12 +386,15 @@ class DurableRunLifecycleTests(unittest.TestCase):
         background.add_task.assert_not_called()
 
     def test_acceptance_failure_returns_controlled_error_without_enqueue(self):
-        import main
         from fastapi import HTTPException
 
+        import main
+
         background = Mock()
-        with patch("main._get_config", return_value={}), patch("main.accept_run", side_effect=RuntimeError("db unavailable")), patch(
-            "processors.get_all_processors", return_value={"briefing": Mock()}
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", side_effect=RuntimeError("db unavailable")),
+            patch("processors.get_all_processors", return_value={"briefing": Mock()}),
         ):
             with self.assertRaises(HTTPException) as raised:
                 main.trigger_processor("briefing", background, body={})
@@ -342,11 +404,12 @@ class DurableRunLifecycleTests(unittest.TestCase):
     def test_background_wrapper_finalizes_escaped_exception(self):
         import main
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", return_value=True
-        ), patch("main.run_collector", side_effect=RuntimeError("boom")), patch(
-            "main.finalize_run_safely"
-        ) as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", return_value=True),
+            patch("main.run_collector", side_effect=RuntimeError("boom")),
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_collector_task("fred", "run-id")
 
         self.assertEqual(finish.call_args.args[1], "failed")
@@ -354,54 +417,78 @@ class DurableRunLifecycleTests(unittest.TestCase):
     def test_cycle_start_failure_finalizes_accepted_run_without_work(self):
         import main
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_full_cycle") as work, patch("main.finalize_run_safely") as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", side_effect=RuntimeError("secret db failure")),
+            patch("main.run_full_cycle") as work,
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_cycle_task("run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
-            "run-id", "failed",
+            "run-id",
+            "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable", run_kind="cycle", component=None,
+            {},
+            "run start unavailable",
+            run_kind="cycle",
+            component=None,
         )
 
     def test_collector_start_failure_finalizes_accepted_run_without_work(self):
         import main
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_collector") as work, patch("main.finalize_run_safely") as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", side_effect=RuntimeError("secret db failure")),
+            patch("main.run_collector") as work,
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_collector_task("fred", "run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
-            "run-id", "failed",
+            "run-id",
+            "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable", run_kind="collector", component="fred",
+            {},
+            "run start unavailable",
+            run_kind="collector",
+            component="fred",
         )
 
     def test_processor_start_failure_finalizes_accepted_run_without_work(self):
         import main
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("main.run_processor") as work, patch("main.finalize_run_safely") as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", side_effect=RuntimeError("secret db failure")),
+            patch("main.run_processor") as work,
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_processor_task("briefing", "run-id")
 
         work.assert_not_called()
         finish.assert_called_once_with(
-            "run-id", "failed",
+            "run-id",
+            "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable", run_kind="processor", component="briefing",
+            {},
+            "run start unavailable",
+            run_kind="processor",
+            component="briefing",
         )
 
     def test_lost_start_race_does_not_finish_accepted_run(self):
         import main
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", return_value=False
-        ), patch("main.run_collector") as work, patch("main.finalize_run_safely") as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", return_value=False),
+            patch("main.run_collector") as work,
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_collector_task("fred", "run-id")
 
         work.assert_not_called()
@@ -410,50 +497,59 @@ class DurableRunLifecycleTests(unittest.TestCase):
     def test_scheduler_collector_start_failure_finalizes_without_work(self):
         import scheduler
 
-        with patch("scheduler.uuid4", return_value="run-id"), patch(
-            "scheduler.accept_run"
-        ), patch(
-            "scheduler.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("scheduler._run_scheduled_collector_stages") as work, patch(
-            "scheduler.finalize_run_safely"
-        ) as finish:
+        with (
+            patch("scheduler.uuid4", return_value="run-id"),
+            patch("scheduler.accept_run"),
+            patch("scheduler.start_run", side_effect=RuntimeError("secret db failure")),
+            patch("scheduler._run_scheduled_collector_stages") as work,
+            patch("scheduler.finalize_run_safely") as finish,
+        ):
             scheduler._scheduled_collector("fred", {})
 
         work.assert_not_called()
         finish.assert_called_once_with(
-            "run-id", "failed",
+            "run-id",
+            "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable", run_kind="collector", component="fred",
+            {},
+            "run start unavailable",
+            run_kind="collector",
+            component="fred",
         )
 
     def test_scheduler_processor_start_failure_finalizes_without_work(self):
         import scheduler
 
-        with patch("scheduler.uuid4", return_value="run-id"), patch(
-            "scheduler.accept_run"
-        ), patch(
-            "scheduler.start_run", side_effect=RuntimeError("secret db failure")
-        ), patch("scheduler.run_processor") as work, patch(
-            "scheduler.finalize_run_safely"
-        ) as finish:
+        with (
+            patch("scheduler.uuid4", return_value="run-id"),
+            patch("scheduler.accept_run"),
+            patch("scheduler.start_run", side_effect=RuntimeError("secret db failure")),
+            patch("scheduler.run_processor") as work,
+            patch("scheduler.finalize_run_safely") as finish,
+        ):
             scheduler._scheduled_processor("briefing", {})
 
         work.assert_not_called()
         finish.assert_called_once_with(
-            "run-id", "failed",
+            "run-id",
+            "failed",
             {"status": "failed", "reason": "run start unavailable"},
-            {}, "run start unavailable", run_kind="processor", component="briefing",
+            {},
+            "run start unavailable",
+            run_kind="processor",
+            component="briefing",
         )
 
     def test_background_lock_conflict_finalizes_stable_failed_result(self):
         import main
         from locks import RunConflict
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", return_value=True
-        ), patch(
-            "main.run_collector", side_effect=RunConflict("collector:fred")
-        ), patch("main.finalize_run_safely") as finish:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", return_value=True),
+            patch("main.run_collector", side_effect=RunConflict("collector:fred")),
+            patch("main.finalize_run_safely") as finish,
+        ):
             main._run_collector_task("fred", "run-id")
 
         self.assertEqual(
@@ -518,7 +614,9 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "original failure"):
             with orchestrator.maintain_run_heartbeat(
-                {}, "run-id", "worker-1",
+                {},
+                "run-id",
+                "worker-1",
                 event_factory=Mock(return_value=event),
                 thread_factory=Mock(return_value=thread),
             ):
@@ -531,39 +629,52 @@ class DurableRunLifecycleTests(unittest.TestCase):
         import orchestrator
 
         guard = Mock(return_value=nullcontext())
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=False
-        ), patch.object(orchestrator, "maintain_run_heartbeat", guard), patch.object(
-            orchestrator, "_run_collector_impl"
-        ) as work:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=False),
+            patch.object(orchestrator, "maintain_run_heartbeat", guard),
+            patch.object(orchestrator, "_run_collector_impl") as work,
+        ):
             self.assertIsNone(orchestrator.run_collector("fred", config={}))
         guard.assert_not_called()
         work.assert_not_called()
 
         guard.reset_mock()
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=True
-        ) as start, patch.object(
-            orchestrator, "maintain_run_heartbeat", guard
-        ), patch.object(
-            orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
-        ), patch.object(
-            orchestrator, "_run_collector_impl", return_value={"status": "success", "error": None}
-        ), patch.object(orchestrator, "finalize_run_safely", return_value=True):
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=True) as start,
+            patch.object(orchestrator, "maintain_run_heartbeat", guard),
+            patch.object(
+                orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
+            ),
+            patch.object(
+                orchestrator,
+                "_run_collector_impl",
+                return_value={"status": "success", "error": None},
+            ),
+            patch.object(orchestrator, "finalize_run_safely", return_value=True),
+        ):
             orchestrator.run_collector("fred", config={}, correlation_id="run-id")
 
         worker_id = start.call_args.args[2]
         guard.assert_called_once_with({}, "run-id", worker_id)
 
-    def test_full_cycle_progress_uses_parent_worker_and_children_do_not_own_heartbeat(self):
+    def test_full_cycle_progress_uses_parent_worker_and_children_do_not_own_heartbeat(
+        self,
+    ):
         import orchestrator
 
         collector_result = {"status": "success"}
-        with patch.object(orchestrator, "get_all_collectors", return_value={"fred": Mock()}), patch.object(
-            orchestrator, "get_all_processors", return_value={}
-        ), patch.object(orchestrator, "run_collector", return_value=collector_result) as child, patch.object(
-            orchestrator, "update_run_progress"
-        ) as progress:
+        with (
+            patch.object(
+                orchestrator, "get_all_collectors", return_value={"fred": Mock()}
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(
+                orchestrator, "run_collector", return_value=collector_result
+            ) as child,
+            patch.object(orchestrator, "update_run_progress") as progress,
+        ):
             orchestrator._run_full_cycle_impl(
                 {"collectors": {"fred": {"enabled": True}}},
                 "run-id",
@@ -573,26 +684,48 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         self.assertFalse(child.call_args.kwargs["manage_lifecycle"])
         self.assertTrue(progress.call_args_list)
-        self.assertTrue(all(call.args[3] == "parent-worker" for call in progress.call_args_list))
+        self.assertTrue(
+            all(call.args[3] == "parent-worker" for call in progress.call_args_list)
+        )
 
     def test_safe_finalization_distinguishes_lost_owner_and_exception(self):
         import orchestrator
 
-        with patch.object(orchestrator, "finish_run", return_value=False), patch.object(
-            orchestrator, "logger"
-        ) as logger:
-            self.assertFalse(orchestrator.finalize_run_safely(
-                "run-id", "success", {}, {}, worker_id="worker-1", run_kind="collector"
-            ))
+        with (
+            patch.object(orchestrator, "finish_run", return_value=False),
+            patch.object(orchestrator, "logger") as logger,
+        ):
+            self.assertFalse(
+                orchestrator.finalize_run_safely(
+                    "run-id",
+                    "success",
+                    {},
+                    {},
+                    worker_id="worker-1",
+                    run_kind="collector",
+                )
+            )
         logger.warning.assert_called_once()
-        self.assertEqual(logger.warning.call_args.args[0], "run_finalization_lost_ownership")
+        self.assertEqual(
+            logger.warning.call_args.args[0], "run_finalization_lost_ownership"
+        )
 
-        with patch.object(orchestrator, "finish_run", side_effect=RuntimeError("secret payload")), patch.object(
-            orchestrator, "logger"
-        ) as logger:
-            self.assertFalse(orchestrator.finalize_run_safely(
-                "run-id", "success", {}, {}, worker_id="worker-1", run_kind="collector"
-            ))
+        with (
+            patch.object(
+                orchestrator, "finish_run", side_effect=RuntimeError("secret payload")
+            ),
+            patch.object(orchestrator, "logger") as logger,
+        ):
+            self.assertFalse(
+                orchestrator.finalize_run_safely(
+                    "run-id",
+                    "success",
+                    {},
+                    {},
+                    worker_id="worker-1",
+                    run_kind="collector",
+                )
+            )
         logger.error.assert_called_once()
         self.assertNotIn("secret payload", str(logger.error.call_args))
 
@@ -601,26 +734,41 @@ class DurableRunLifecycleTests(unittest.TestCase):
         from locks import RunConflict
 
         result = {"status": "success", "error": None}
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=True
-        ), patch.object(
-            orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
-        ), patch.object(
-            orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
-        ), patch.object(orchestrator, "_run_collector_impl", return_value=result), patch.object(
-            orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
-        ), patch.object(orchestrator, "logger") as logger:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=True),
+            patch.object(
+                orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+            ),
+            patch.object(
+                orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
+            ),
+            patch.object(orchestrator, "_run_collector_impl", return_value=result),
+            patch.object(
+                orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
+            ),
+            patch.object(orchestrator, "logger") as logger,
+        ):
             self.assertIs(orchestrator.run_collector("fred", config={}), result)
-        self.assertFalse(any(call.args[0] == "collector_completed" for call in logger.info.call_args_list))
+        self.assertFalse(
+            any(
+                call.args[0] == "collector_completed"
+                for call in logger.info.call_args_list
+            )
+        )
 
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=True
-        ), patch.object(
-            orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
-        ), patch.object(
-            orchestrator, "advisory_lock", side_effect=RunConflict("collector:fred")
-        ), patch.object(
-            orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=True),
+            patch.object(
+                orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+            ),
+            patch.object(
+                orchestrator, "advisory_lock", side_effect=RunConflict("collector:fred")
+            ),
+            patch.object(
+                orchestrator, "finish_run", side_effect=RuntimeError("finalize failed")
+            ),
         ):
             with self.assertRaisesRegex(RunConflict, "collector:fred"):
                 orchestrator.run_collector("fred", config={})
@@ -629,24 +777,39 @@ class DurableRunLifecycleTests(unittest.TestCase):
         import main
         import scheduler
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", return_value=True
-        ) as start, patch("main.maintain_run_heartbeat", return_value=nullcontext()) as guard, patch(
-            "main.run_collector", return_value={"status": "success", "error": None}
-        ), patch("main.finalize_run_safely", return_value=False), patch("main.logger") as logger:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", return_value=True) as start,
+            patch("main.maintain_run_heartbeat", return_value=nullcontext()) as guard,
+            patch(
+                "main.run_collector", return_value={"status": "success", "error": None}
+            ),
+            patch("main.finalize_run_safely", return_value=False),
+            patch("main.logger") as logger,
+        ):
             main._run_collector_task("fred", "run-id")
         worker_id = start.call_args.args[2]
         guard.assert_called_once_with({}, "run-id", worker_id)
-        self.assertFalse(any(call.args[0] == "collector_trigger_completed" for call in logger.info.call_args_list))
+        self.assertFalse(
+            any(
+                call.args[0] == "collector_trigger_completed"
+                for call in logger.info.call_args_list
+            )
+        )
 
-        with patch("scheduler.uuid4", side_effect=["run-id", "worker-id"]), patch(
-            "scheduler.accept_run"
-        ), patch("scheduler.start_run", return_value=True), patch(
-            "scheduler.maintain_run_heartbeat", return_value=nullcontext()
-        ) as guard, patch(
-            "scheduler.run_processor", side_effect=RuntimeError("original failure")
-        ), patch(
-            "orchestrator.finish_run", side_effect=RuntimeError("finalize failed")
+        with (
+            patch("scheduler.uuid4", side_effect=["run-id", "worker-id"]),
+            patch("scheduler.accept_run"),
+            patch("scheduler.start_run", return_value=True),
+            patch(
+                "scheduler.maintain_run_heartbeat", return_value=nullcontext()
+            ) as guard,
+            patch(
+                "scheduler.run_processor", side_effect=RuntimeError("original failure")
+            ),
+            patch(
+                "orchestrator.finish_run", side_effect=RuntimeError("finalize failed")
+            ),
         ):
             scheduler._scheduled_processor("briefing", {})
         guard.assert_called_once_with({}, "run-id", "scheduler:worker-id")
@@ -656,20 +819,29 @@ class DurableRunLifecycleTests(unittest.TestCase):
 
         cases = [
             ({"fred": {"status": "partial"}}, "partial"),
-            ({"fred": {"status": "success"}, "briefing": {"status": "failed"}}, "partial"),
-            ({"fred": {"status": "failed"}, "briefing": {"status": "failed"}}, "failed"),
-            ({"fred": {"status": "success"}, "briefing": {"status": "success"}}, "success"),
+            (
+                {"fred": {"status": "success"}, "briefing": {"status": "failed"}},
+                "partial",
+            ),
+            (
+                {"fred": {"status": "failed"}, "briefing": {"status": "failed"}},
+                "failed",
+            ),
+            (
+                {"fred": {"status": "success"}, "briefing": {"status": "success"}},
+                "success",
+            ),
         ]
         for stages, expected in cases:
-            with self.subTest(stages=stages), patch(
-                "scheduler.uuid4", return_value="run-id"
-            ), patch("scheduler.accept_run"), patch(
-                "scheduler.start_run", return_value=True
-            ), patch(
-                "scheduler.maintain_run_heartbeat", return_value=nullcontext()
-            ), patch(
-                "scheduler._run_scheduled_collector_stages", return_value=stages
-            ), patch("scheduler.finalize_run_safely", return_value=True) as finalize:
+            with (
+                self.subTest(stages=stages),
+                patch("scheduler.uuid4", return_value="run-id"),
+                patch("scheduler.accept_run"),
+                patch("scheduler.start_run", return_value=True),
+                patch("scheduler.maintain_run_heartbeat", return_value=nullcontext()),
+                patch("scheduler._run_scheduled_collector_stages", return_value=stages),
+                patch("scheduler.finalize_run_safely", return_value=True) as finalize,
+            ):
                 scheduler._scheduled_collector("fred", {})
 
             self.assertEqual(finalize.call_args.args[1], expected)
@@ -694,26 +866,35 @@ class DurableRunLifecycleTests(unittest.TestCase):
                 "processors": {},
             }
             results = [{"status": status} for status in statuses]
-            with self.subTest(statuses=statuses), patch.object(
-                orchestrator,
-                "get_all_collectors",
-                return_value={collector_id: Mock() for collector_id in collector_ids},
-            ), patch.object(
-                orchestrator, "get_all_processors", return_value={}
-            ), patch.object(
-                orchestrator, "run_collector", side_effect=results
-            ), patch.object(orchestrator, "accept_run"), patch.object(
-                orchestrator, "start_run", return_value=True
-            ), patch.object(
-                orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
-            ), patch.object(
-                orchestrator, "advisory_lock", side_effect=lambda *_args: nullcontext()
-            ), patch.object(
-                orchestrator, "update_run_progress"
-            ), patch.object(
-                orchestrator, "finalize_run_safely", return_value=True
-            ) as finalize:
-                result = orchestrator.run_full_cycle(config=config, correlation_id="run-id")
+            with (
+                self.subTest(statuses=statuses),
+                patch.object(
+                    orchestrator,
+                    "get_all_collectors",
+                    return_value={
+                        collector_id: Mock() for collector_id in collector_ids
+                    },
+                ),
+                patch.object(orchestrator, "get_all_processors", return_value={}),
+                patch.object(orchestrator, "run_collector", side_effect=results),
+                patch.object(orchestrator, "accept_run"),
+                patch.object(orchestrator, "start_run", return_value=True),
+                patch.object(
+                    orchestrator, "maintain_run_heartbeat", return_value=nullcontext()
+                ),
+                patch.object(
+                    orchestrator,
+                    "advisory_lock",
+                    side_effect=lambda *_args: nullcontext(),
+                ),
+                patch.object(orchestrator, "update_run_progress"),
+                patch.object(
+                    orchestrator, "finalize_run_safely", return_value=True
+                ) as finalize,
+            ):
+                result = orchestrator.run_full_cycle(
+                    config=config, correlation_id="run-id"
+                )
 
             self.assertEqual(result["status"], expected)
             self.assertEqual(finalize.call_args.args[1], expected)
@@ -721,9 +902,11 @@ class DurableRunLifecycleTests(unittest.TestCase):
     def test_empty_full_cycle_is_a_successful_no_op(self):
         import orchestrator
 
-        with patch.object(orchestrator, "get_all_collectors", return_value={}), patch.object(
-            orchestrator, "get_all_processors", return_value={}
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(orchestrator, "get_all_collectors", return_value={}),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             result = orchestrator._run_full_cycle_impl(
                 config={"collectors": {}, "processors": {}},
                 correlation_id="run-id",
@@ -736,11 +919,14 @@ class DurableRunLifecycleTests(unittest.TestCase):
 class AbandonedRunRecoveryTests(unittest.TestCase):
     """Phase 5 Task 17: restart reconciliation and explicit-only replay."""
 
-    def test_reconciliation_uses_deterministic_stale_cutoffs_and_preserves_fresh_runs(self):
+    def test_reconciliation_uses_deterministic_stale_cutoffs_and_preserves_fresh_runs(
+        self,
+    ):
         from datetime import timedelta
+
         from orchestrator import reconcile_abandoned_runs
 
-        now = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
         session = Mock()
         accepted_result = Mock()
         accepted_result.scalars.return_value.all.return_value = ["stale-accepted"]
@@ -777,7 +963,7 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         session.execute.side_effect = [result, result]
         with patch("orchestrator.get_session") as get_session:
             get_session.return_value.__enter__.return_value = session
-            reconcile_abandoned_runs({}, now=datetime(2026, 7, 13, tzinfo=timezone.utc))
+            reconcile_abandoned_runs({}, now=datetime(2026, 7, 13, tzinfo=UTC))
 
         for execute_call in session.execute.call_args_list:
             sql, params = execute_call.args
@@ -789,12 +975,19 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         import main
 
         events = []
-        with patch("main._get_config", return_value={}), patch(
-            "main.setup_logging"
-        ), patch("main.check_connection", return_value=True), patch(
-            "main.reconcile_abandoned_runs", side_effect=lambda *a, **k: events.append("reconcile") or {}
-        ), patch("main.start_scheduler", side_effect=lambda config: events.append("scheduler")), patch.object(
-            main.quote_stream, "start"
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.setup_logging"),
+            patch("main.check_connection", return_value=True),
+            patch(
+                "main.reconcile_abandoned_runs",
+                side_effect=lambda *a, **k: events.append("reconcile") or {},
+            ),
+            patch(
+                "main.start_scheduler",
+                side_effect=lambda config: events.append("scheduler"),
+            ),
+            patch.object(main.quote_stream, "start"),
         ):
             main.on_startup()
 
@@ -805,29 +998,37 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
 
         events = []
         background = Mock()
-        background.add_task.side_effect = lambda *args: events.append(("enqueue", args[0]))
+        background.add_task.side_effect = lambda *args: events.append(
+            ("enqueue", args[0])
+        )
         old = {
             "correlation_id": "11111111-1111-4111-8111-111111111111",
             "status": "abandoned",
             "run_kind": "collector",
             "requested_component": "fred",
         }
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", return_value=old
-        ), patch(
-            "collectors.get_all_collectors", return_value={"fred": Mock()}
-        ), patch(
-            "main.accept_run", side_effect=lambda *args, **kwargs: events.append(("accept", args[1])) or datetime.now(timezone.utc)
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry", return_value=old),
+            patch("collectors.get_all_collectors", return_value={"fred": Mock()}),
+            patch(
+                "main.accept_run",
+                side_effect=lambda *args, **kwargs: events.append(("accept", args[1]))
+                or datetime.now(UTC),
+            ),
         ):
-            response = main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
+            response = main.retry_abandoned_run(
+                "11111111-1111-4111-8111-111111111111", background
+            )
 
         self.assertNotEqual(response["job_id"], "11111111-1111-4111-8111-111111111111")
         self.assertEqual(events[0], ("accept", response["job_id"]))
         self.assertEqual(events[1], ("enqueue", main._run_collector_task))
 
     def test_retry_removed_component_is_rejected_before_acceptance_or_enqueue(self):
-        import main
         from fastapi import HTTPException
+
+        import main
 
         cases = [("collector", "collectors"), ("processor", "processors")]
         for run_kind, registry_module in cases:
@@ -837,11 +1038,13 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
                 "requested_component": "removed-component",
             }
             background = Mock()
-            with self.subTest(run_kind=run_kind), patch(
-                "main._get_config", return_value={}
-            ), patch("main.get_run_for_retry", return_value=old), patch(
-                f"{registry_module}.get_all_{registry_module}", return_value={}
-            ), patch("main.accept_run") as accept:
+            with (
+                self.subTest(run_kind=run_kind),
+                patch("main._get_config", return_value={}),
+                patch("main.get_run_for_retry", return_value=old),
+                patch(f"{registry_module}.get_all_{registry_module}", return_value={}),
+                patch("main.accept_run") as accept,
+            ):
                 with self.assertRaises(HTTPException) as raised:
                     main.retry_abandoned_run(
                         "11111111-1111-4111-8111-111111111111", background
@@ -861,16 +1064,15 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
             "run_kind": "processor",
             "requested_component": "briefing",
         }
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", return_value=old
-        ), patch(
-            "processors.get_all_processors", return_value={"briefing": Mock()}
-        ) as registry, patch(
-            "main.accept_run", return_value=datetime.now(timezone.utc)
-        ) as accept:
-            main.retry_abandoned_run(
-                "11111111-1111-4111-8111-111111111111", background
-            )
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry", return_value=old),
+            patch(
+                "processors.get_all_processors", return_value={"briefing": Mock()}
+            ) as registry,
+            patch("main.accept_run", return_value=datetime.now(UTC)) as accept,
+        ):
+            main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
 
         registry.assert_called_once_with()
         accept.assert_called_once()
@@ -886,11 +1088,11 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
             "run_kind": "news",
             "requested_component": "reuters",
         }
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", return_value=old
-        ), patch(
-            "main.accept_run", return_value=datetime.now(timezone.utc)
-        ) as accept:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry", return_value=old),
+            patch("main.accept_run", return_value=datetime.now(UTC)) as accept,
+        ):
             response = main.retry_abandoned_run(
                 "11111111-1111-4111-8111-111111111111", background
             )
@@ -901,33 +1103,58 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         self.assertEqual(background.add_task.call_args.args[1], "reuters")
 
     def test_retry_invalid_states_do_not_accept_or_enqueue(self):
-        import main
         from fastapi import HTTPException
+
+        import main
 
         cases = [
             (None, 404),
-            ({"status": "completed", "run_kind": "cycle", "requested_component": None}, 409),
-            ({"status": "abandoned", "run_kind": "mystery", "requested_component": None}, 409),
+            (
+                {
+                    "status": "completed",
+                    "run_kind": "cycle",
+                    "requested_component": None,
+                },
+                409,
+            ),
+            (
+                {
+                    "status": "abandoned",
+                    "run_kind": "mystery",
+                    "requested_component": None,
+                },
+                409,
+            ),
         ]
         for old, expected in cases:
             background = Mock()
-            with self.subTest(old=old), patch("main._get_config", return_value={}), patch(
-                "main.get_run_for_retry", return_value=old
-            ), patch("main.accept_run") as accept:
+            with (
+                self.subTest(old=old),
+                patch("main._get_config", return_value={}),
+                patch("main.get_run_for_retry", return_value=old),
+                patch("main.accept_run") as accept,
+            ):
                 with self.assertRaises(HTTPException) as raised:
-                    main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
+                    main.retry_abandoned_run(
+                        "11111111-1111-4111-8111-111111111111", background
+                    )
                 self.assertEqual(raised.exception.status_code, expected)
                 accept.assert_not_called()
                 background.add_task.assert_not_called()
 
     def test_retry_lookup_failure_returns_503_without_accept_or_enqueue(self):
-        import main
         from fastapi import HTTPException
 
+        import main
+
         background = Mock()
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", side_effect=RuntimeError("secret db failure")
-        ) as lookup, patch("main.accept_run") as accept:
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "main.get_run_for_retry", side_effect=RuntimeError("secret db failure")
+            ) as lookup,
+            patch("main.accept_run") as accept,
+        ):
             with self.assertRaises(HTTPException) as raised:
                 main.retry_abandoned_run(
                     "11111111-1111-4111-8111-111111111111", background
@@ -940,13 +1167,18 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         background.add_task.assert_not_called()
 
     def test_retry_malformed_uuid_returns_422_without_lookup_or_accept(self):
-        import main
         from fastapi.testclient import TestClient
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry"
-        ) as lookup, patch("main.accept_run") as accept:
-            response = TestClient(main.app, headers=INTERNAL_AUTH).post("/runs/not-a-uuid/retry")
+        import main
+
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry") as lookup,
+            patch("main.accept_run") as accept,
+        ):
+            response = TestClient(main.app, headers=INTERNAL_AUTH).post(
+                "/runs/not-a-uuid/retry"
+            )
 
         self.assertEqual(response.status_code, 422)
         lookup.assert_not_called()
@@ -957,8 +1189,10 @@ class CollectionFailureStatusTests(unittest.TestCase):
     """Task 9: Propagate collection and persistence failures into run status."""
 
     def setUp(self):
-        from main import app
         from fastapi.testclient import TestClient
+
+        from main import app
+
         self.client = TestClient(app, headers=INTERNAL_AUTH)
         self.lock_patcher = patch(
             "orchestrator.advisory_lock", side_effect=lambda *_args: nullcontext()
@@ -966,13 +1200,24 @@ class CollectionFailureStatusTests(unittest.TestCase):
         self.lock_patcher.start()
         self.addCleanup(self.lock_patcher.stop)
         self.config = {
-            "database": {"host": "localhost", "port": 5432, "name": "test",
-                         "user": "test", "password": "test"},
-            "collectors": {"fred": {"enabled": True, "schedule": "0 6 * * *",
-                                     "api_key": "test", "series": [
-                                         {"id": "GDP", "frequency": "quarterly"},
-                                         {"id": "CPI", "frequency": "monthly"},
-                                     ]}},
+            "database": {
+                "host": "localhost",
+                "port": 5432,
+                "name": "test",
+                "user": "test",
+                "password": "test",
+            },
+            "collectors": {
+                "fred": {
+                    "enabled": True,
+                    "schedule": "0 6 * * *",
+                    "api_key": "test",
+                    "series": [
+                        {"id": "GDP", "frequency": "quarterly"},
+                        {"id": "CPI", "frequency": "monthly"},
+                    ],
+                }
+            },
             "processors": {},
         }
 
@@ -993,8 +1238,18 @@ class CollectionFailureStatusTests(unittest.TestCase):
         mock_collector.collect.return_value = CollectionResult(
             records=[],
             errors=[
-                {"series_id": "GDP", "error": "Connection refused", "frequency": "quarterly"},
-                {"series_id": "CPI", "error": "Connection refused", "frequency": "monthly"},
+                {
+                    "series_id": "GDP",
+                    "error": "Connection refused",
+                    "error_class": "transient_source",
+                    "frequency": "quarterly",
+                },
+                {
+                    "series_id": "CPI",
+                    "error": "Connection refused",
+                    "error_class": "transient_source",
+                    "frequency": "monthly",
+                },
             ],
             total_series=2,
             successful_series=0,
@@ -1002,19 +1257,26 @@ class CollectionFailureStatusTests(unittest.TestCase):
         get_collector.return_value = mock_collector
 
         from orchestrator import run_collector
+
         result = run_collector(
-            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+            "fred",
+            config=self.config,
+            correlation_id="test-cid",
+            manage_lifecycle=False,
         )
 
-        self.assertEqual(result["status"], "failed",
-                         "All series failed → status should be 'failed'")
+        self.assertEqual(
+            result["status"], "failed", "All series failed → status should be 'failed'"
+        )
+        self.assertEqual(result["error_class"], "transient_source")
+        self.assertTrue(result["retryable"])
 
     @patch("orchestrator.get_collector")
     @patch("orchestrator.upsert_records")
     @patch("orchestrator.get_session")
-    def test_some_series_fail_yields_partial_status(self, get_session,
-                                                     upsert_records,
-                                                     get_collector):
+    def test_some_series_fail_yields_partial_status(
+        self, get_session, upsert_records, get_collector
+    ):
         """Some FRED series fail → collector status 'partial'."""
         from collectors.base import CollectionResult
         from db import WriteResult
@@ -1028,7 +1290,14 @@ class CollectionFailureStatusTests(unittest.TestCase):
         # Return CollectionResult with partial failure (GDP succeeded, CPI failed)
         mock_collector.collect.return_value = CollectionResult(
             records=[{"series_id": "GDP", "value": 1.0}],
-            errors=[{"series_id": "CPI", "error": "Connection refused", "frequency": "monthly"}],
+            errors=[
+                {
+                    "series_id": "CPI",
+                    "error": "Connection refused",
+                    "error_class": "transient_source",
+                    "frequency": "monthly",
+                }
+            ],
             total_series=2,
             successful_series=1,
         )
@@ -1040,18 +1309,27 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
+
         result = run_collector(
-            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+            "fred",
+            config=self.config,
+            correlation_id="test-cid",
+            manage_lifecycle=False,
         )
-        self.assertEqual(result["status"], "partial",
-                         "Partial collection failure → status should be 'partial'")
+        self.assertEqual(
+            result["status"],
+            "partial",
+            "Partial collection failure → status should be 'partial'",
+        )
+        self.assertEqual(result["error_class"], "transient_source")
+        self.assertTrue(result["retryable"])
 
     @patch("orchestrator.get_collector")
     @patch("orchestrator.upsert_records")
     @patch("orchestrator.get_session")
-    def test_records_fetched_but_all_writes_fail_yields_failed(self, get_session,
-                                                                upsert_records,
-                                                                get_collector):
+    def test_records_fetched_but_all_writes_fail_yields_failed(
+        self, get_session, upsert_records, get_collector
+    ):
         """Records fetched but every DB write fails → status 'failed'."""
         from db import WriteResult
 
@@ -1071,18 +1349,27 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
+
         result = run_collector(
-            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+            "fred",
+            config=self.config,
+            correlation_id="test-cid",
+            manage_lifecycle=False,
         )
-        self.assertEqual(result["status"], "failed",
-                         "Status should be 'failed' when records fetched but none written")
+        self.assertEqual(
+            result["status"],
+            "failed",
+            "Status should be 'failed' when records fetched but none written",
+        )
+        self.assertEqual(result["error_class"], "persistence")
+        self.assertTrue(result["retryable"])
 
     @patch("orchestrator.get_collector")
     @patch("orchestrator.upsert_records")
     @patch("orchestrator.get_session")
-    def test_some_writes_fail_yields_partial_status(self, get_session,
-                                                     upsert_records,
-                                                     get_collector):
+    def test_some_writes_fail_yields_partial_status(
+        self, get_session, upsert_records, get_collector
+    ):
         """Some DB writes fail → status 'partial'."""
         from db import WriteResult
 
@@ -1103,11 +1390,18 @@ class CollectionFailureStatusTests(unittest.TestCase):
         )
 
         from orchestrator import run_collector
+
         result = run_collector(
-            "fred", config=self.config, correlation_id="test-cid", manage_lifecycle=False
+            "fred",
+            config=self.config,
+            correlation_id="test-cid",
+            manage_lifecycle=False,
         )
-        self.assertEqual(result["status"], "partial",
-                         "Status should be 'partial' when some but not all records written")
+        self.assertEqual(
+            result["status"],
+            "partial",
+            "Status should be 'partial' when some but not all records written",
+        )
 
 
 class RuntimeFeatureTests(unittest.TestCase):
@@ -1251,18 +1545,18 @@ class RuntimeFeatureTests(unittest.TestCase):
         from scheduler import _build_cron_trigger
 
         trigger = _build_cron_trigger("0 20 * * sun")
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
 
         self.assertEqual(
             trigger.get_next_fire_time(None, monday),
-            datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 19, 20, 0, tzinfo=UTC),
         )
 
     def test_legacy_numeric_sunday_schedules_fire_on_sunday_utc(self):
         from scheduler import _build_cron_trigger
 
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
-        expected = datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
+        expected = datetime(2026, 7, 19, 20, 0, tzinfo=UTC)
         for weekday in ("0", "7"):
             with self.subTest(weekday=weekday):
                 trigger = _build_cron_trigger(f"0 20 * * {weekday}")
@@ -1271,51 +1565,51 @@ class RuntimeFeatureTests(unittest.TestCase):
     def test_simple_posix_numeric_weekday_is_mapped_explicitly(self):
         from scheduler import _build_cron_trigger
 
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
         trigger = _build_cron_trigger("0 20 * * 1")
 
         self.assertEqual(
             trigger.get_next_fire_time(None, monday),
-            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 13, 20, 0, tzinfo=UTC),
         )
 
     def test_legacy_posix_numeric_weekday_range_maps_to_monday_through_friday(self):
         from scheduler import _build_cron_trigger
 
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
         trigger = _build_cron_trigger("0 6,12,18 * * 1-5")
 
         self.assertEqual(
             trigger.get_next_fire_time(None, monday),
-            datetime(2026, 7, 13, 6, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 13, 6, 0, tzinfo=UTC),
         )
 
     def test_wildcard_and_named_weekdays_are_preserved(self):
         from scheduler import _build_cron_trigger
 
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
         self.assertEqual(
             _build_cron_trigger("0 20 * * *").get_next_fire_time(None, monday),
-            datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 13, 20, 0, tzinfo=UTC),
         )
         for weekday in ("mon", "mon-fri"):
             with self.subTest(weekday=weekday):
                 self.assertEqual(
-                    _build_cron_trigger(
-                        f"0 20 * * {weekday}"
-                    ).get_next_fire_time(None, monday),
-                    datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+                    _build_cron_trigger(f"0 20 * * {weekday}").get_next_fire_time(
+                        None, monday
+                    ),
+                    datetime(2026, 7, 13, 20, 0, tzinfo=UTC),
                 )
 
     def test_comma_separated_posix_numeric_weekdays_are_mapped_explicitly(self):
         from scheduler import _build_cron_trigger
 
-        monday = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 7, 13, 0, 0, tzinfo=UTC)
         trigger = _build_cron_trigger("0 20 * * 2,4,6")
 
         self.assertEqual(
             trigger.get_next_fire_time(None, monday),
-            datetime(2026, 7, 14, 20, 0, tzinfo=timezone.utc),
+            datetime(2026, 7, 14, 20, 0, tzinfo=UTC),
         )
 
     def test_unsafe_numeric_weekday_expressions_are_rejected_actionably(self):
@@ -1368,27 +1662,38 @@ class RuntimeFeatureTests(unittest.TestCase):
         scheduler.running = False
         scheduler.get_jobs.return_value = []
         scheduler_factory.return_value = scheduler
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
 
-        start_scheduler({
-            "collectors": {},
-            "processors": {},
-            "investment_filings": {
-                "enabled": True,
-                "schedule": "0 8 * * 1-5",
-                "run_on_startup": True,
-            },
-        })
+        start_scheduler(
+            {
+                "collectors": {},
+                "processors": {},
+                "investment_filings": {
+                    "enabled": True,
+                    "schedule": "0 8 * * 1-5",
+                    "run_on_startup": True,
+                },
+            }
+        )
 
         next_run_time = scheduler.add_job.call_args.kwargs["next_run_time"]
         self.assertGreaterEqual(next_run_time, before)
-        self.assertLessEqual(next_run_time, datetime.now(timezone.utc))
+        self.assertLessEqual(next_run_time, datetime.now(UTC))
 
     def test_scheduler_registers_enabled_news_but_not_disabled_paid_source(self):
         config = {
-            "collectors": {}, "processors": {},
-            "reuters": {"enabled": True, "schedule_enabled": True, "schedule": "15 */6 * * *"},
-            "kobeissi": {"enabled": True, "schedule_enabled": False, "schedule": "20 */6 * * *"},
+            "collectors": {},
+            "processors": {},
+            "reuters": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 */6 * * *",
+            },
+            "kobeissi": {
+                "enabled": True,
+                "schedule_enabled": False,
+                "schedule": "20 */6 * * *",
+            },
         }
         start_scheduler(config)
         ids = {job["id"] for job in scheduler_status()["jobs"]}
@@ -1396,22 +1701,35 @@ class RuntimeFeatureTests(unittest.TestCase):
 
     def test_demo_mode_registers_no_news_jobs(self):
         config = {
-            "demo": {"enabled": True}, "collectors": {}, "processors": {},
-            "reuters": {"enabled": True, "schedule_enabled": True, "schedule": "15 */2 * * *"},
-            "kobeissi": {"enabled": True, "schedule_enabled": True, "schedule": "20 */6 * * *"},
+            "demo": {"enabled": True},
+            "collectors": {},
+            "processors": {},
+            "reuters": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 */2 * * *",
+            },
+            "kobeissi": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "20 */6 * * *",
+            },
         }
         start_scheduler(config)
         ids = {job["id"] for job in scheduler_status()["jobs"]}
         self.assertEqual(ids, set())
 
     def test_run_news_source_returns_truthful_safe_summary(self):
-        from sources.news_result import NewsCollectionResult
         from orchestrator import run_news_source
+        from sources.news_result import NewsCollectionResult
 
         config = {"news_feed": {"output_path": "unused"}, "reuters": {"enabled": True}}
-        with patch("orchestrator.advisory_lock", return_value=nullcontext()) as lock, patch(
-            "sources.news_feed.collect_and_publish",
-            return_value=NewsCollectionResult([{"id": "one"}], "ok"),
+        with (
+            patch("orchestrator.advisory_lock", return_value=nullcontext()) as lock,
+            patch(
+                "sources.news_feed.collect_and_publish",
+                return_value=NewsCollectionResult([{"id": "one"}], "ok"),
+            ),
         ):
             result = run_news_source("reuters", "cid-1", config, manage_lifecycle=False)
         self.assertEqual(result["status"], "success")
@@ -1422,23 +1740,33 @@ class RuntimeFeatureTests(unittest.TestCase):
         lock.assert_called_once_with("news:reuters", config)
 
     def test_state_failure_after_feed_publication_is_truthfully_reported(self):
-        from sources.news_result import NewsCollectionResult, NewsPublication
         from orchestrator import run_news_source
+        from sources.news_result import NewsCollectionResult, NewsPublication
 
-        publication = NewsPublication(Path("snapshot"), Path("state"), {"cursor": "advanced"})
+        publication = NewsPublication(
+            Path("snapshot"), Path("state"), {"cursor": "advanced"}
+        )
         outcome = NewsCollectionResult(
-            [{"id": "one"}], "error", "News state persistence failed: OSError",
-            publication, True,
+            [{"id": "one"}],
+            "error",
+            "News state persistence failed: OSError",
+            publication,
+            True,
         )
         config = {"news_feed": {"output_path": "unused"}, "reuters": {"enabled": True}}
-        with patch("orchestrator.advisory_lock", return_value=nullcontext()), patch(
-            "sources.news_feed.collect_and_publish", return_value=outcome
+        with (
+            patch("orchestrator.advisory_lock", return_value=nullcontext()),
+            patch("sources.news_feed.collect_and_publish", return_value=outcome),
         ):
-            result = run_news_source("reuters", "cid-state", config, manage_lifecycle=False)
+            result = run_news_source(
+                "reuters", "cid-state", config, manage_lifecycle=False
+            )
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["state"], "publication_failed")
         self.assertEqual(result["code"], "news_publication_failed")
+        self.assertEqual(result["error_class"], "persistence")
+        self.assertTrue(result["retryable"])
         self.assertTrue(result["feed_published"])
         self.assertEqual(result["new_item_count"], 1)
 
@@ -1446,11 +1774,13 @@ class RuntimeFeatureTests(unittest.TestCase):
         import main
         from locks import RunConflict
 
-        with patch("main._get_config", return_value={}), patch(
-            "main.start_run", return_value=True
-        ), patch("main.maintain_run_heartbeat", return_value=nullcontext()), patch(
-            "main.run_news_source", side_effect=RunConflict("news:reuters")
-        ), patch("main.finalize_run_safely") as finalize:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.start_run", return_value=True),
+            patch("main.maintain_run_heartbeat", return_value=nullcontext()),
+            patch("main.run_news_source", side_effect=RunConflict("news:reuters")),
+            patch("main.finalize_run_safely") as finalize,
+        ):
             main._run_news_task("reuters", "run-id")
 
         self.assertEqual(finalize.call_args.args[1], "failed")
@@ -1459,10 +1789,7 @@ class RuntimeFeatureTests(unittest.TestCase):
 
     def test_demo_fixture_is_public_safe_and_deterministic(self):
         seed_path = (
-            Path(__file__).resolve().parents[2]
-            / "db"
-            / "demo"
-            / "900_demo_seed.sql"
+            Path(__file__).resolve().parents[2] / "db" / "demo" / "900_demo_seed.sql"
         )
         if not seed_path.exists():
             self.skipTest("Demo fixtures are intentionally public-repository only")
@@ -1492,12 +1819,15 @@ class RuntimeFeatureTests(unittest.TestCase):
 # Task 12: Orchestrator health contract tests
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 class HealthContractTests(unittest.TestCase):
     """Task 12: Orchestrator /health and /quality endpoints."""
 
     def setUp(self):
-        from main import app
         from fastapi.testclient import TestClient
+
+        from main import app
+
         self.client = TestClient(app, headers=INTERNAL_AUTH)
 
     @patch("main.run_quality_checks", return_value={})
@@ -1553,9 +1883,16 @@ class HealthContractTests(unittest.TestCase):
         self.assertEqual(db_component["status"], "unavailable")
         self.assertTrue(db_component["critical"])
 
-    @patch("main.run_quality_checks", return_value={
-        "fred_DGS10_freshness": {"healthy": False, "detail": "stale", "source_id": "fred"}
-    })
+    @patch(
+        "main.run_quality_checks",
+        return_value={
+            "fred_DGS10_freshness": {
+                "healthy": False,
+                "detail": "stale",
+                "source_id": "fred",
+            }
+        },
+    )
     @patch("main.check_connection", return_value=True)
     @patch("main.get_last_collection_runs", return_value=[])
     @patch("main._get_config", return_value={})
@@ -1573,7 +1910,9 @@ class HealthContractTests(unittest.TestCase):
 
     @patch("main._get_config")
     @patch("main.run_quality_checks", return_value={})
-    def test_quality_returns_overall_and_checks_with_empty_registry(self, _runner, mock_get_config):
+    def test_quality_returns_overall_and_checks_with_empty_registry(
+        self, _runner, mock_get_config
+    ):
         """GET /quality returns {overall, checks} even with no checks registered."""
         mock_get_config.return_value = {"logging": {"level": "INFO"}}
         resp = self.client.get("/quality")
@@ -1587,7 +1926,9 @@ class HealthContractTests(unittest.TestCase):
     @patch("main._get_config")
     @patch("main.run_quality_checks")
     def test_quality_endpoint_uses_production_runner(self, runner, mock_get_config):
-        config = {"collectors": {"fred": {"series": [{"id": "DGS10", "frequency": "daily"}]}}}
+        config = {
+            "collectors": {"fred": {"series": [{"id": "DGS10", "frequency": "daily"}]}}
+        }
         mock_get_config.return_value = config
         runner.return_value = {
             "fred_DGS10_freshness": {"healthy": True, "source_id": "fred"}
@@ -1606,8 +1947,11 @@ class HealthContractTests(unittest.TestCase):
         mock_get_config.return_value = {"logging": {"level": "INFO"}}
         resp = self.client.get("/quality")
         data = resp.json()
-        self.assertIsInstance(data["checks"], dict,
-                              "Quality checks must be a dict for consumers to iterate with .items()")
+        self.assertIsInstance(
+            data["checks"],
+            dict,
+            "Quality checks must be a dict for consumers to iterate with .items()",
+        )
 
 
 if __name__ == "__main__":

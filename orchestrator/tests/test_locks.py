@@ -82,7 +82,9 @@ class AdvisoryLockTests(unittest.TestCase):
                     raise original
 
         self.assertIs(raised.exception, original)
-        self.assertIn("pg_advisory_unlock", str(session.execute.call_args_list[1].args[0]))
+        self.assertIn(
+            "pg_advisory_unlock", str(session.execute.call_args_list[1].args[0])
+        )
 
     def test_false_unlock_logs_loudly_without_failing_successful_work(self):
         from locks import advisory_lock
@@ -123,13 +125,21 @@ class CommonExecutionLockTests(unittest.TestCase):
         import orchestrator
 
         calls = []
-        lock = lambda name, config: self._record_lock(name, config, calls)
-        with patch.object(orchestrator, "advisory_lock", side_effect=lock), patch.object(
-            orchestrator, "_run_collector_impl", return_value={"status": "success"}
-        ), patch.object(
-            orchestrator, "_run_processor_impl", return_value={"status": "success"}
-        ), patch.object(
-            orchestrator, "_run_full_cycle_impl", return_value={"status": "success"}
+
+        def lock(name, config):
+            return self._record_lock(name, config, calls)
+
+        with (
+            patch.object(orchestrator, "advisory_lock", side_effect=lock),
+            patch.object(
+                orchestrator, "_run_collector_impl", return_value={"status": "success"}
+            ),
+            patch.object(
+                orchestrator, "_run_processor_impl", return_value={"status": "success"}
+            ),
+            patch.object(
+                orchestrator, "_run_full_cycle_impl", return_value={"status": "success"}
+            ),
         ):
             orchestrator.run_collector("fred", config={}, manage_lifecycle=False)
             orchestrator.run_processor("briefing", config={}, manage_lifecycle=False)
@@ -137,7 +147,9 @@ class CommonExecutionLockTests(unittest.TestCase):
 
         self.assertEqual(calls, ["collector:fred", "processor:briefing", "cycle"])
 
-    def test_full_cycle_holds_cycle_then_child_component_lock_with_lifecycle_disabled(self):
+    def test_full_cycle_holds_cycle_then_child_component_lock_with_lifecycle_disabled(
+        self,
+    ):
         import orchestrator
 
         held = []
@@ -155,12 +167,15 @@ class CommonExecutionLockTests(unittest.TestCase):
 
         collector = Mock()
         collector.collect.return_value = []
-        with patch.object(orchestrator, "advisory_lock", side_effect=lock), patch.object(
-            orchestrator, "get_all_collectors", return_value={"fred": collector}
-        ), patch.object(orchestrator, "get_collector", return_value=collector), patch.object(
-            orchestrator, "get_all_processors", return_value={}
-        ), patch.object(orchestrator, "update_run_progress"), patch.object(
-            orchestrator, "_write_collection_log"
+        with (
+            patch.object(orchestrator, "advisory_lock", side_effect=lock),
+            patch.object(
+                orchestrator, "get_all_collectors", return_value={"fred": collector}
+            ),
+            patch.object(orchestrator, "get_collector", return_value=collector),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "update_run_progress"),
+            patch.object(orchestrator, "_write_collection_log"),
         ):
             orchestrator.run_full_cycle(
                 config={"collectors": {"fred": {"enabled": True}}},
@@ -173,11 +188,14 @@ class CommonExecutionLockTests(unittest.TestCase):
         import orchestrator
         from locks import RunConflict
 
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=True
-        ), patch.object(
-            orchestrator, "advisory_lock", side_effect=RunConflict("collector:fred")
-        ), patch.object(orchestrator, "finish_run") as finish:
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=True),
+            patch.object(
+                orchestrator, "advisory_lock", side_effect=RunConflict("collector:fred")
+            ),
+            patch.object(orchestrator, "finish_run") as finish,
+        ):
             with self.assertRaises(RunConflict):
                 orchestrator.run_collector("fred", config={}, correlation_id="run-id")
 

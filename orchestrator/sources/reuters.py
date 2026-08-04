@@ -1,9 +1,10 @@
 """Reuters news sitemap poller — discovers and normalises market-relevant articles."""
+
 from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -52,10 +53,20 @@ def _is_markets_relevant(
     url: str, title: str, keywords_xml: str, config: dict
 ) -> tuple[bool, list[str]]:
     section = _extract_section(url)
-    markets_sections = set(config.get("markets_sections", {
-        "markets", "business", "finance", "economy", "companies",
-        "breakingviews", "wealth",
-    }))
+    markets_sections = set(
+        config.get(
+            "markets_sections",
+            {
+                "markets",
+                "business",
+                "finance",
+                "economy",
+                "companies",
+                "breakingviews",
+                "wealth",
+            },
+        )
+    )
     if section in markets_sections:
         return True, [f"section:{section}"]
 
@@ -67,6 +78,7 @@ def _is_markets_relevant(
 
 def _fetch_sitemap_index() -> list[str]:
     import urllib.request
+
     req = urllib.request.Request(
         REUTERS_SITEMAP_INDEX,
         headers={"User-Agent": "TradingResearchSystem/1.0"},
@@ -100,7 +112,7 @@ def _parse_sitemap_page(
     root = ET.fromstring(xml_data)
     _require_sitemap_root(root, "urlset")
     items = []
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     for url_el in root.findall("sm:url", _NS):
         loc = url_el.findtext("sm:loc", "", _NS)
@@ -125,23 +137,27 @@ def _parse_sitemap_page(
         image_url = img_el.findtext("image:loc", "", _NS) if img_el is not None else ""
 
         # Normalised feed item
-        display_tags = [t.replace("section:", "") for t in matched if not t.startswith("section:")]
+        display_tags = [
+            t.replace("section:", "") for t in matched if not t.startswith("section:")
+        ]
         slug = loc.rstrip("/").split("/")[-1]
-        items.append({
-            "id": f"reuters:{slug}",
-            "source": "reuters",
-            "source_label": "Reuters",
-            "title": title,
-            "summary": "",
-            "url": loc,
-            "published": pub_date,
-            "symbols": [],
-            "tags": display_tags,
-            "engagement": {},
-            "media": [{"type": "photo", "url": image_url}] if image_url else [],
-            "meta": {"lastmod": url_el.findtext("sm:lastmod", "", _NS)},
-            "fetched_at": now,
-        })
+        items.append(
+            {
+                "id": f"reuters:{slug}",
+                "source": "reuters",
+                "source_label": "Reuters",
+                "title": title,
+                "summary": "",
+                "url": loc,
+                "published": pub_date,
+                "symbols": [],
+                "tags": display_tags,
+                "engagement": {},
+                "media": [{"type": "photo", "url": image_url}] if image_url else [],
+                "meta": {"lastmod": url_el.findtext("sm:lastmod", "", _NS)},
+                "fetched_at": now,
+            }
+        )
 
     return items
 
@@ -178,27 +194,38 @@ def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
     except Exception as exc:
         error = f"Reuters sitemap index failed: {type(exc).__name__}"
         logger.error("reuters_index_failed", error=error)
-        state.update({"last_poll": datetime.now(timezone.utc).isoformat(), "status": "error", "error": error})
+        state.update(
+            {
+                "last_poll": datetime.now(UTC).isoformat(),
+                "status": "error",
+                "error": error,
+            }
+        )
         atomic_write_json(state_path, state)
-        return NewsCollectionResult([], "error", error)
+        error_class = (
+            "invalid_source_data"
+            if isinstance(exc, (ET.ParseError, SitemapSchemaError))
+            else "transient_source"
+        )
+        return NewsCollectionResult([], "error", error, error_class=error_class)
 
     pages_to_scan = min(max_pages, len(sitemap_urls))
     logger.info("reuters_scanning", pages=pages_to_scan)
 
     all_items: list[dict[str, Any]] = []
-    page_errors: list[str] = []
+    page_errors: list[tuple[str, str]] = []
     for page_url in sitemap_urls[:pages_to_scan]:
         try:
             items = _parse_sitemap_page(page_url, seen_urls, reuters_config)
         except (ET.ParseError, SitemapSchemaError) as exc:
             error = _page_error_context(page_url, type(exc).__name__)
             logger.warning("reuters_sitemap_parse_failed", error=error)
-            page_errors.append(error)
+            page_errors.append((error, "invalid_source_data"))
             continue
         except _SitemapPageFetchError as exc:
             error = _page_error_context(page_url, exc.error_type)
             logger.warning("reuters_sitemap_fetch_failed", error=error)
-            page_errors.append(error)
+            page_errors.append((error, "transient_source"))
             continue
         all_items.extend(items)
         seen_urls.update(i["url"] for i in items)
@@ -208,19 +235,32 @@ def run_reuters(config: dict, max_pages: int = 3) -> NewsCollectionResult:
         failure_state["last_seen_urls"] = sorted(
             url for url in stored_urls if isinstance(url, str)
         )
-        failure_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+        failure_state["last_poll"] = datetime.now(UTC).isoformat()
         failure_state["status"] = "error"
-        failure_state["error"] = "; ".join(page_errors)
+        failure_state["error"] = "; ".join(error for error, _class in page_errors)
         atomic_write_json(state_path, failure_state)
         logger.info("reuters_poll_complete", new_items=len(all_items))
-        return NewsCollectionResult(all_items, "error", failure_state["error"])
+        error_class = (
+            "invalid_source_data"
+            if any(
+                error_class == "invalid_source_data"
+                for _error, error_class in page_errors
+            )
+            else "transient_source"
+        )
+        return NewsCollectionResult(
+            all_items,
+            "error",
+            failure_state["error"],
+            error_class=error_class,
+        )
 
     candidate_state = dict(state)
     candidate_state["last_seen_urls"] = sorted(seen_urls)[-5000:]
-    candidate_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+    candidate_state["last_poll"] = datetime.now(UTC).isoformat()
     candidate_state["status"] = "ok"
     candidate_state["error"] = None
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     publication = NewsPublication(
         snapshot_path=output_dir / f"reuters_{today}.json",
         state_path=state_path,

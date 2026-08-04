@@ -3,17 +3,22 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
-from auth import setup_complete, STATE_DIR
+
+from auth import STATE_DIR, setup_complete
 from config import load_config
 
 router = APIRouter()
+
 
 @router.get("/setup")
 def setup_page(request: Request):
     if setup_complete():
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse("/")
-    return request.app.state.templates.TemplateResponse(request, "setup.html", {"request": request})
+    return request.app.state.templates.TemplateResponse(
+        request, "setup.html", {"request": request}
+    )
 
 
 @router.get("/login")
@@ -23,12 +28,17 @@ def login_page(request: Request, next: str = "/"):
     if request.session.get("authenticated"):
         return RedirectResponse("/", status_code=303)
     parsed = urlparse(next)
-    safe_next = next if not parsed.scheme and not parsed.netloc and next.startswith("/") else "/"
+    safe_next = (
+        next
+        if not parsed.scheme and not parsed.netloc and next.startswith("/")
+        else "/"
+    )
     return request.app.state.templates.TemplateResponse(
         request,
         "login.html",
         {"request": request, "next_path": safe_next},
     )
+
 
 @router.get("/settings")
 def settings_page(request: Request):
@@ -52,18 +62,24 @@ def settings_page(request: Request):
             "has_oanda_key": "OANDA_API_KEY" in saved_secrets,
             "has_eia_key": "EIA_API_KEY" in saved_secrets,
             "fred_key_source": (
-                "setup" if "FRED_API_KEY" in saved_secrets
-                else "environment" if os.environ.get("FRED_API_KEY")
+                "setup"
+                if "FRED_API_KEY" in saved_secrets
+                else "environment"
+                if os.environ.get("FRED_API_KEY")
                 else None
             ),
             "oanda_key_source": (
-                "setup" if "OANDA_API_KEY" in saved_secrets
-                else "environment" if os.environ.get("OANDA_API_KEY")
+                "setup"
+                if "OANDA_API_KEY" in saved_secrets
+                else "environment"
+                if os.environ.get("OANDA_API_KEY")
                 else None
             ),
             "eia_key_source": (
-                "setup" if "EIA_API_KEY" in saved_secrets
-                else "environment" if os.environ.get("EIA_API_KEY")
+                "setup"
+                if "EIA_API_KEY" in saved_secrets
+                else "environment"
+                if os.environ.get("EIA_API_KEY")
                 else None
             ),
         },

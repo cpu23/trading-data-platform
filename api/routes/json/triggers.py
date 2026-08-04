@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -10,6 +10,7 @@ from budgets import (
     mark_override_dispatch_failed,
     register_manual_override,
 )
+from contracts import RunAcceptanceRequest, RunAcceptedResponse
 from logging_config import get_logger
 
 router = APIRouter()
@@ -23,8 +24,6 @@ _VALID_COLLECTORS = frozenset({"fred", "forex_factory", "oanda"})
 _VALID_PROCESSORS = frozenset({"macro_regime", "event_impact", "briefing"})
 _VALID_NEWS_SOURCES = frozenset({"reuters", "kobeissi"})
 
-_VALID_MODES = frozenset({"refresh", "analyze", "force_full"})
-
 
 def _internal_basic_auth() -> httpx.BasicAuth:
     username = os.environ.get("DASHBOARD_USER", "")
@@ -34,16 +33,24 @@ def _internal_basic_auth() -> httpx.BasicAuth:
     return httpx.BasicAuth(username, password)
 
 
-def _orchestrator_job_payload(response: httpx.Response, fallback_id: str, now: str) -> dict:
-    payload = response.json()
-    job_id = payload.get("job_id", fallback_id)
-    return {
-        "job_id": job_id,
-        "accepted_at": payload.get("accepted_at", now),
-    }
+def _orchestrator_job_payload(
+    response: httpx.Response, fallback_id: str, now: str
+) -> dict:
+    try:
+        accepted = RunAcceptedResponse.model_validate(response.json())
+    except Exception as exc:
+        logger.error("orchestrator_contract_invalid", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned invalid response"
+        ) from exc
+    return accepted.model_dump(mode="json", exclude_none=True)
 
 
-def _manual_override(body: dict | None, request: Request) -> dict | None:
+def _manual_override(
+    body: dict | RunAcceptanceRequest | None, request: Request
+) -> dict | None:
+    if hasattr(body, "model_dump"):
+        body = body.model_dump()
     if not isinstance(body, dict) or body.get("budget_override") is not True:
         return None
 
@@ -98,19 +105,23 @@ async def _post_to_orchestrator(request: Request, url: str, **kwargs) -> httpx.R
             return await client.post(url, **kwargs)
 
 
-@router.post("/collect/{source_id}", status_code=202)
+@router.post(
+    "/collect/{source_id}", status_code=202, response_model=RunAcceptedResponse
+)
 async def trigger_collect(source_id: str, request: Request):
     if source_id not in _VALID_COLLECTORS:
         raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
 
     correlation_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     try:
         response = await _post_to_orchestrator(
             request,
             f"{ORCHESTRATOR_URL}/run_collector/{source_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
+            json={"correlation_id": correlation_id},
+            timeout=10.0,
+            auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=str(exc))
@@ -118,24 +129,30 @@ async def trigger_collect(source_id: str, request: Request):
 
     if response.status_code != 202:
         logger.error("orchestrator_unexpected_response", status=response.status_code)
-        raise HTTPException(status_code=502, detail="Orchestrator returned unexpected response")
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned unexpected response"
+        )
 
     payload = _orchestrator_job_payload(response, correlation_id, now)
     payload["status_url"] = f"/api/system/logs?component={source_id}"
     return payload
 
 
-@router.post("/process/{processor_id}", status_code=202)
+@router.post(
+    "/process/{processor_id}", status_code=202, response_model=RunAcceptedResponse
+)
 async def trigger_process(
     processor_id: str,
     request: Request,
     body: dict | None = Body(default=None),
 ):
     if processor_id not in _VALID_PROCESSORS:
-        raise HTTPException(status_code=404, detail=f"Unknown processor: {processor_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown processor: {processor_id}"
+        )
 
     correlation_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     override_request = _manual_override(body, request)
     budget = _enforce_api_budget(override_request)
     override = None
@@ -152,7 +169,9 @@ async def trigger_process(
         response = await _post_to_orchestrator(
             request,
             f"{ORCHESTRATOR_URL}/run_processor/{processor_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
+            json={"correlation_id": correlation_id},
+            timeout=10.0,
+            auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         if override:
@@ -167,7 +186,9 @@ async def trigger_process(
                 f"orchestrator returned HTTP {response.status_code}",
             )
         logger.error("orchestrator_unexpected_response", status=response.status_code)
-        raise HTTPException(status_code=502, detail="Orchestrator returned unexpected response")
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned unexpected response"
+        )
 
     payload = _orchestrator_job_payload(response, correlation_id, now)
     payload["status_url"] = f"/api/system/logs?component={processor_id}"
@@ -176,18 +197,24 @@ async def trigger_process(
     return payload
 
 
-@router.post("/triggers/news/{source_id}", status_code=202)
+@router.post(
+    "/triggers/news/{source_id}",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+)
 async def trigger_news(source_id: str, request: Request):
     if source_id not in _VALID_NEWS_SOURCES:
         raise HTTPException(status_code=404, detail=f"Unknown news source: {source_id}")
 
     correlation_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     try:
         response = await _post_to_orchestrator(
             request,
             f"{ORCHESTRATOR_URL}/run_news/{source_id}",
-            json={"correlation_id": correlation_id}, timeout=10.0, auth=_internal_basic_auth(),
+            json={"correlation_id": correlation_id},
+            timeout=10.0,
+            auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
         logger.error("orchestrator_connect_failed", error=type(exc).__name__)
@@ -209,23 +236,29 @@ async def trigger_news(source_id: str, request: Request):
 
 
 @router.post("/cycle", status_code=202, include_in_schema=False)
-@router.post("/triggers/cycle", status_code=202)
-async def trigger_cycle(request: Request, body: dict | None = Body(default=None)):
+@router.post(
+    "/triggers/cycle",
+    status_code=202,
+    response_model=RunAcceptedResponse,
+)
+async def trigger_cycle(
+    request: Request,
+    body: RunAcceptanceRequest | None = Body(default=None),
+):
     correlation_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
-    # Validate and extract mode / budget_confirmed from the raw body dict.
-    mode = "refresh"
-    budget_confirmed = False
-    if body is not None:
-        if "mode" in body:
-            mode = body["mode"]
-            if not isinstance(mode, str) or mode not in _VALID_MODES:
-                raise HTTPException(status_code=422, detail=f"Invalid mode: {mode!r}")
-        if "budget_confirmed" in body:
-            budget_confirmed = body["budget_confirmed"]
-            if not isinstance(budget_confirmed, bool):
-                raise HTTPException(status_code=422, detail="budget_confirmed must be a boolean")
+    request_body = (
+        body
+        if isinstance(body, RunAcceptanceRequest)
+        else RunAcceptanceRequest.model_validate(body or {})
+    )
+    mode = (
+        request_body.mode.value
+        if hasattr(request_body.mode, "value")
+        else request_body.mode
+    )
+    budget_confirmed = request_body.budget_confirmed
 
     if mode == "force_full" and budget_confirmed is not True:
         raise HTTPException(
@@ -233,7 +266,7 @@ async def trigger_cycle(request: Request, body: dict | None = Body(default=None)
             detail="force_full requires explicit budget_confirmed=true",
         )
 
-    override_request = _manual_override(body, request)
+    override_request = _manual_override(request_body, request)
     budget = get_budget_status()
     override = None
 
@@ -248,7 +281,9 @@ async def trigger_cycle(request: Request, body: dict | None = Body(default=None)
     try:
         auth = _internal_basic_auth()
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="Internal authentication unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="Internal authentication unavailable"
+        ) from exc
 
     try:
         response = await _post_to_orchestrator(
@@ -270,8 +305,14 @@ async def trigger_cycle(request: Request, body: dict | None = Body(default=None)
 
     if response.status_code in {409, 422, 503}:
         if override:
-            mark_override_dispatch_failed(correlation_id, f"orchestrator returned HTTP {response.status_code}")
-        fallback = "Cycle already running" if response.status_code == 409 else "Cycle request rejected"
+            mark_override_dispatch_failed(
+                correlation_id, f"orchestrator returned HTTP {response.status_code}"
+            )
+        fallback = (
+            "Cycle already running"
+            if response.status_code == 409
+            else "Cycle request rejected"
+        )
         raise HTTPException(
             status_code=response.status_code,
             detail=response.json().get("detail", fallback),
@@ -279,9 +320,13 @@ async def trigger_cycle(request: Request, body: dict | None = Body(default=None)
 
     if response.status_code != 202:
         if override:
-            mark_override_dispatch_failed(correlation_id, f"orchestrator returned HTTP {response.status_code}")
+            mark_override_dispatch_failed(
+                correlation_id, f"orchestrator returned HTTP {response.status_code}"
+            )
         logger.error("orchestrator_unexpected_response", status=response.status_code)
-        raise HTTPException(status_code=502, detail="Orchestrator returned unexpected response")
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned unexpected response"
+        )
 
     payload = _orchestrator_job_payload(response, correlation_id, now)
     payload["status_url"] = f"/api/system/logs?correlation_id={payload['job_id']}"

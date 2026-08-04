@@ -1,7 +1,6 @@
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
 
 ALLOWED_BIAS = {"bullish", "bearish", "neutral", "mixed"}
 ALLOWED_CONFIDENCE = {"high", "moderate", "low"}
@@ -247,8 +246,8 @@ def _parse_timestamp(value: Any) -> datetime | None:
     else:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def validate_briefing_sections(
@@ -321,7 +320,9 @@ def validate_macro_regime_output(parsed: dict) -> tuple[bool, list[str]]:
 
     for key in {"summary", "reasoning", "market_implications"}:
         _validate_nonempty_string(parsed.get(key), f"$.{key}", issues)
-    _validate_string_list(parsed.get("key_factors"), "$.key_factors", issues, min_items=1)
+    _validate_string_list(
+        parsed.get("key_factors"), "$.key_factors", issues, min_items=1
+    )
     _validate_string_list(parsed.get("caution_flags"), "$.caution_flags", issues)
 
     if parsed.get("regime") not in ALLOWED_REGIME:
@@ -515,7 +516,9 @@ def coerce_briefing_fields(
             if not isinstance(value, str):
                 continue
             normalized = value.lower().strip()
-            replacement = normalized if normalized in allowed else coercions.get(normalized)
+            replacement = (
+                normalized if normalized in allowed else coercions.get(normalized)
+            )
             if replacement and replacement != value:
                 note[field] = replacement
                 warnings.append(

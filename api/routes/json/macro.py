@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -25,12 +25,42 @@ def get_macro_dashboard():
     indicator_configs = config.get("dashboard", {}).get("indicators", [])
     if not indicator_configs:
         indicator_configs = [
-            {"series_id": "T10Y2Y", "label": "10Y-2Y spread", "precision": 2, "category": "yield_curve"},
-            {"series_id": "VIXCLS", "label": "VIX", "precision": 1, "category": "volatility"},
-            {"series_id": "DTWEXBGS", "label": "USD index (broad)", "precision": 2, "category": "usd"},
-            {"series_id": "BAMLH0A0HYM2", "label": "HY spread", "precision": 2, "category": "credit"},
-            {"series_id": "DGS10", "label": "10Y yield", "precision": 2, "category": "rates"},
-            {"series_id": "T5YIE", "label": "5Y breakeven", "precision": 2, "category": "inflation"},
+            {
+                "series_id": "T10Y2Y",
+                "label": "10Y-2Y spread",
+                "precision": 2,
+                "category": "yield_curve",
+            },
+            {
+                "series_id": "VIXCLS",
+                "label": "VIX",
+                "precision": 1,
+                "category": "volatility",
+            },
+            {
+                "series_id": "DTWEXBGS",
+                "label": "USD index (broad)",
+                "precision": 2,
+                "category": "usd",
+            },
+            {
+                "series_id": "BAMLH0A0HYM2",
+                "label": "HY spread",
+                "precision": 2,
+                "category": "credit",
+            },
+            {
+                "series_id": "DGS10",
+                "label": "10Y yield",
+                "precision": 2,
+                "category": "rates",
+            },
+            {
+                "series_id": "T5YIE",
+                "label": "5Y breakeven",
+                "precision": 2,
+                "category": "inflation",
+            },
         ]
 
     series_ids = [item["series_id"] for item in indicator_configs]
@@ -79,7 +109,7 @@ def get_macro_dashboard():
         """,
         params={
             "series_ids": series_ids,
-            "cutoff": datetime.now(timezone.utc) - timedelta(days=5),
+            "cutoff": datetime.now(UTC) - timedelta(days=5),
         },
         config=config,
     )
@@ -119,22 +149,26 @@ def get_macro_dashboard():
                     trend_5d = "flat"
 
         stale, _ = is_stale(latest_at, thresholds["macro_hours"])
-        indicators.append({
-            "series_id": series_id,
-            "label": item.get("label", series_id),
-            "category": item.get("category"),
-            "latest_value": latest_value,
-            "latest_observed_at": (
-                latest_at.strftime("%Y-%m-%d")
-                if hasattr(latest_at, "strftime")
-                else str(latest_at)[:10] if latest_at is not None else None
-            ),
-            "previous_value": previous_value,
-            "change_abs": change_abs,
-            "change_pct": change_pct,
-            "trend_5d": trend_5d,
-            "stale": stale,
-        })
+        indicators.append(
+            {
+                "series_id": series_id,
+                "label": item.get("label", series_id),
+                "category": item.get("category"),
+                "latest_value": latest_value,
+                "latest_observed_at": (
+                    latest_at.strftime("%Y-%m-%d")
+                    if hasattr(latest_at, "strftime")
+                    else str(latest_at)[:10]
+                    if latest_at is not None
+                    else None
+                ),
+                "previous_value": previous_value,
+                "change_abs": change_abs,
+                "change_pct": change_pct,
+                "trend_5d": trend_5d,
+                "stale": stale,
+            }
+        )
 
     last_collector_run = rows[0].get("last_collector_run") if rows else None
     return {
@@ -178,7 +212,11 @@ def get_macro_series(
     rows = query_many(sql, params=params, config=config)
 
     if not rows:
-        raise HTTPException(status_code=404, detail=f"No data found for series {series_id}", headers={"X-Error-Code": "NOT_FOUND"})
+        raise HTTPException(
+            status_code=404,
+            detail=f"No data found for series {series_id}",
+            headers={"X-Error-Code": "NOT_FOUND"},
+        )
 
     return {
         "series_id": series_id,

@@ -61,7 +61,9 @@ class ConfigLoadingTests(unittest.TestCase):
 
         self.assertEqual(config["kobeissi"]["api_key"], "")
 
-    def test_production_logging_defaults_to_info_stdout_and_allows_log_level_override(self):
+    def test_production_logging_defaults_to_info_stdout_and_allows_log_level_override(
+        self,
+    ):
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         env = {
             "DB_USER": "trading",

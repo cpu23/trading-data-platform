@@ -26,7 +26,11 @@ def _read_json_bounded(path: Path, max_bytes: int):
 def _bounded_list(value, *, count: int = 12, width: int = 32) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [item.strip()[:width] for item in value[:count] if isinstance(item, str) and item.strip()]
+    return [
+        item.strip()[:width]
+        for item in value[:count]
+        if isinstance(item, str) and item.strip()
+    ]
 
 
 def _safe_url(value) -> str | None:
@@ -37,7 +41,9 @@ def _safe_url(value) -> str | None:
 
 
 def load_news_context(config: dict, limit: int = MAX_NEWS_ITEMS) -> dict:
-    output = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    output = Path(
+        config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news")
+    )
     feed_path = output / "feed.json"
     if not feed_path.is_file():
         return {"status": "not_published", "items": [], "generated_at": None}
@@ -47,19 +53,31 @@ def load_news_context(config: dict, limit: int = MAX_NEWS_ITEMS) -> dict:
     items = []
     safe_limit = max(0, min(int(limit), MAX_NEWS_ITEMS))
     for item in payload["items"][:MAX_NEWS_ITEMS]:
-        if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip():
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("title"), str)
+            or not item["title"].strip()
+        ):
             continue
         source_id = str(item.get("source") or "news").strip().lower()[:32]
-        items.append({
-            "title": item["title"].strip()[:240],
-            "source": str(item.get("source_label") or item.get("source") or "News").strip()[:64],
-            "source_id": source_id,
-            "published": item.get("published", "")[:64] if isinstance(item.get("published"), str) else None,
-            "summary": item.get("summary", "")[:500] if isinstance(item.get("summary"), str) else "",
-            "symbols": _bounded_list(item.get("symbols")),
-            "tags": _bounded_list(item.get("tags")),
-            "url": _safe_url(item.get("url")),
-        })
+        items.append(
+            {
+                "title": item["title"].strip()[:240],
+                "source": str(
+                    item.get("source_label") or item.get("source") or "News"
+                ).strip()[:64],
+                "source_id": source_id,
+                "published": item.get("published", "")[:64]
+                if isinstance(item.get("published"), str)
+                else None,
+                "summary": item.get("summary", "")[:500]
+                if isinstance(item.get("summary"), str)
+                else "",
+                "symbols": _bounded_list(item.get("symbols")),
+                "tags": _bounded_list(item.get("tags")),
+                "url": _safe_url(item.get("url")),
+            }
+        )
         if len(items) == safe_limit:
             break
     generated = payload.get("generated_at")
@@ -71,7 +89,9 @@ def load_news_context(config: dict, limit: int = MAX_NEWS_ITEMS) -> dict:
 
 
 def load_source_states(config: dict) -> list[dict]:
-    output = Path(config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news"))
+    output = Path(
+        config.get("news_feed", {}).get("output_path", "/var/lib/trading-data/news")
+    )
     states = []
     for name in ("reuters", "kobeissi"):
         state_path = output / name / "state.json"
@@ -81,13 +101,15 @@ def load_source_states(config: dict) -> list[dict]:
         elif not isinstance(state, dict):
             state = {}
         error = state.get("error")
-        states.append({
-            "name": name,
-            "enabled": bool(config.get(name, {}).get("enabled", False)),
-            "status": str(state.get("status") or "never_polled")[:32],
-            "last_poll": str(state.get("last_poll") or "")[:64] or None,
-            "error": str(error)[:240] if error else None,
-        })
+        states.append(
+            {
+                "name": name,
+                "enabled": bool(config.get(name, {}).get("enabled", False)),
+                "status": str(state.get("status") or "never_polled")[:32],
+                "last_poll": str(state.get("last_poll") or "")[:64] or None,
+                "error": str(error)[:240] if error else None,
+            }
+        )
     return states
 
 
@@ -101,20 +123,31 @@ def news_page(
     context = load_news_context(config)
     all_items = context["items"]
     sources = sorted({item["source_id"] for item in all_items})
-    symbols = sorted({value for item in all_items for value in item["symbols"] + item["tags"]})
+    symbols = sorted(
+        {value for item in all_items for value in item["symbols"] + item["tags"]}
+    )
     selected_source = source.strip().lower() if source else None
     selected_symbol = symbol.strip().lower() if symbol else None
     filtered = [
-        item for item in all_items
+        item
+        for item in all_items
         if (not selected_source or item["source_id"] == selected_source)
-        and (not selected_symbol or selected_symbol in {value.lower() for value in item["symbols"] + item["tags"]})
+        and (
+            not selected_symbol
+            or selected_symbol
+            in {value.lower() for value in item["symbols"] + item["tags"]}
+        )
     ]
-    return request.app.state.templates.TemplateResponse(request, "news.html", {
-        "request": request,
-        "news": {**context, "items": filtered},
-        "source_states": load_source_states(config),
-        "sources": sources,
-        "symbols": symbols,
-        "selected_source": selected_source,
-        "selected_symbol": symbol or "",
-    })
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "news.html",
+        {
+            "request": request,
+            "news": {**context, "items": filtered},
+            "source_states": load_source_states(config),
+            "sources": sources,
+            "symbols": symbols,
+            "selected_source": selected_source,
+            "selected_symbol": symbol or "",
+        },
+    )

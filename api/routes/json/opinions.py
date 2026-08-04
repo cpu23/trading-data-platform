@@ -24,7 +24,9 @@ def get_opinions_latest(limit: int = Query(default=20, ge=1, le=200)):
         "opinions": [
             {
                 "opinion_id": str(row["opinion_id"]),
-                "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                "created_at": row["created_at"].isoformat()
+                if hasattr(row["created_at"], "isoformat")
+                else str(row["created_at"]),
                 "opinion_type": row["opinion_type"],
                 "scope": row["scope"],
                 "direction": row.get("direction"),
@@ -41,7 +43,9 @@ def get_opinions_latest(limit: int = Query(default=20, ge=1, le=200)):
 
 
 @router.get("/opinions/{opinion_type}")
-def get_opinions_by_type(opinion_type: str, limit: int = Query(default=20, ge=1, le=200)):
+def get_opinions_by_type(
+    opinion_type: str, limit: int = Query(default=20, ge=1, le=200)
+):
     config = load_config()
 
     sql = """
@@ -53,13 +57,17 @@ def get_opinions_by_type(opinion_type: str, limit: int = Query(default=20, ge=1,
         ORDER BY created_at DESC
         LIMIT :limit
     """
-    rows = query_many(sql, params={"opinion_type": opinion_type, "limit": limit}, config=config)
+    rows = query_many(
+        sql, params={"opinion_type": opinion_type, "limit": limit}, config=config
+    )
 
     return {
         "opinions": [
             {
                 "opinion_id": str(row["opinion_id"]),
-                "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                "created_at": row["created_at"].isoformat()
+                if hasattr(row["created_at"], "isoformat")
+                else str(row["created_at"]),
                 "opinion_type": row["opinion_type"],
                 "scope": row["scope"],
                 "direction": row.get("direction"),

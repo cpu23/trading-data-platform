@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query, Request
 
@@ -26,12 +26,18 @@ def _fmt_ts(value) -> str:
     return str(value)
 
 
-def _fetch_logs(component: str = "", status: str = "", range_val: str = "", correlation_id: str = "", limit: int = 50):
+def _fetch_logs(
+    component: str = "",
+    status: str = "",
+    range_val: str = "",
+    correlation_id: str = "",
+    limit: int = 50,
+):
     from_date = None
     if range_val == "24h":
-        from_date = datetime.now(timezone.utc) - timedelta(hours=24)
+        from_date = datetime.now(UTC) - timedelta(hours=24)
     elif range_val == "7d":
-        from_date = datetime.now(timezone.utc) - timedelta(days=7)
+        from_date = datetime.now(UTC) - timedelta(days=7)
 
     data = get_system_logs(
         component=component,
@@ -59,12 +65,10 @@ def _fetch_logs(component: str = "", status: str = "", range_val: str = "", corr
 
 def _distinct_components(config: dict) -> list[str]:
     collectors = [
-        k for k, v in config.get("collectors", {}).items()
-        if v.get("enabled", True)
+        k for k, v in config.get("collectors", {}).items() if v.get("enabled", True)
     ]
     processors = [
-        k for k, v in config.get("processors", {}).items()
-        if v.get("enabled", False)
+        k for k, v in config.get("processors", {}).items() if v.get("enabled", False)
     ]
     return sorted(set(collectors + processors))
 
@@ -79,19 +83,28 @@ def logs_page(
 ):
     config = load_config()
     templates = _get_templates(request)
-    logs = _fetch_logs(component=component, status=status, range_val=range, correlation_id=correlation_id)
+    logs = _fetch_logs(
+        component=component,
+        status=status,
+        range_val=range,
+        correlation_id=correlation_id,
+    )
     components = _distinct_components(config)
 
-    return templates.TemplateResponse(request, "logs.html", {
-        "request": request,
-        "logs": logs,
-        "components": components,
-        "selected_component": component,
-        "selected_status": status,
-        "selected_range": range,
-        "selected_correlation_id": correlation_id,
-        "runs": get_system_runs(limit=12, include_internal=False).get("runs", []),
-    })
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "request": request,
+            "logs": logs,
+            "components": components,
+            "selected_component": component,
+            "selected_status": status,
+            "selected_range": range,
+            "selected_correlation_id": correlation_id,
+            "runs": get_system_runs(limit=12, include_internal=False).get("runs", []),
+        },
+    )
 
 
 @router.get("/partials/logs")
@@ -103,8 +116,17 @@ def partial_logs(
     correlation_id: str = Query(default=""),
 ):
     templates = _get_templates(request)
-    logs = _fetch_logs(component=component, status=status, range_val=range, correlation_id=correlation_id)
-    return templates.TemplateResponse(request, "partials/log_rows.html", {
-        "request": request,
-        "logs": logs,
-    })
+    logs = _fetch_logs(
+        component=component,
+        status=status,
+        range_val=range,
+        correlation_id=correlation_id,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/log_rows.html",
+        {
+            "request": request,
+            "logs": logs,
+        },
+    )

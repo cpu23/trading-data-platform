@@ -2,16 +2,17 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
+from sqlalchemy import text
 
 from db import get_session
 from http_client import make_request
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("collector.forex_factory")
 
@@ -102,7 +103,7 @@ class ForexFactoryCollector:
                     user_agent=user_agent,
                     correlation_id=correlation_id,
                 )
-                fetched_at = datetime.now(timezone.utc)
+                fetched_at = datetime.now(UTC)
                 self._store_cached_payload(
                     config, target_week, payload, correlation_id, fetched_at=fetched_at
                 )
@@ -151,20 +152,20 @@ class ForexFactoryCollector:
         payload_records: int,
         events_found: int,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if fetched_at and fetched_at.tzinfo is None:
-            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            fetched_at = fetched_at.replace(tzinfo=UTC)
         cache_age_hours = (
-            max(0.0, (now - fetched_at).total_seconds() / 3600)
-            if fetched_at
-            else None
+            max(0.0, (now - fetched_at).total_seconds() / 3600) if fetched_at else None
         )
         self.last_result_metadata = {
             "state": "degraded_cache" if payload_source == "stale_cache" else "success",
             "payload_source": payload_source,
             "target_week": target_week["week_key"],
             "fetched_at": fetched_at.isoformat() if fetched_at else None,
-            "cache_age_hours": round(cache_age_hours, 2) if cache_age_hours is not None else None,
+            "cache_age_hours": round(cache_age_hours, 2)
+            if cache_age_hours is not None
+            else None,
             "payload_records": payload_records,
             "events_found": events_found,
         }
@@ -177,9 +178,7 @@ class ForexFactoryCollector:
             **self.last_result_metadata,
         )
 
-    def _determine_target_week(
-        self, config: dict, now: datetime | None = None
-    ) -> dict:
+    def _determine_target_week(self, config: dict, now: datetime | None = None) -> dict:
         tz_config = config.get("timezone", {}).get("primary", {})
         london = ZoneInfo(tz_config.get("name", "Europe/London"))
         now_london = now.astimezone(london) if now else datetime.now(london)
@@ -333,7 +332,9 @@ class ForexFactoryCollector:
             if isinstance(payload, list):
                 fetched_at = mapped.get("fetched_at")
                 if isinstance(fetched_at, str):
-                    fetched_at = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+                    fetched_at = datetime.fromisoformat(
+                        fetched_at.replace("Z", "+00:00")
+                    )
                 logger.info(
                     "weekly_export_cache_hit",
                     action="load_cache",
@@ -390,7 +391,7 @@ class ForexFactoryCollector:
             "target_week": target_week["week_key"],
             "raw_payload": raw_json,
             "payload_hash": payload_hash,
-            "fetched_at": fetched_at or datetime.now(timezone.utc),
+            "fetched_at": fetched_at or datetime.now(UTC),
             "period_start": target_week["period_start"],
             "period_end": target_week["period_end"],
             "metadata": json.dumps(metadata, sort_keys=True),
@@ -433,9 +434,7 @@ class ForexFactoryCollector:
                 )
                 if event is None:
                     continue
-                scheduled_london = event["scheduled_at"].astimezone(
-                    period_start.tzinfo
-                )
+                scheduled_london = event["scheduled_at"].astimezone(period_start.tzinfo)
                 if scheduled_london < period_start or scheduled_london > period_end:
                     continue
                 if not self._is_relevant_event(event, min_impact, currencies):
@@ -474,7 +473,7 @@ class ForexFactoryCollector:
         if not title or not currency or not date_value:
             return None
 
-        scheduled_at = datetime.fromisoformat(str(date_value)).astimezone(timezone.utc)
+        scheduled_at = datetime.fromisoformat(str(date_value)).astimezone(UTC)
         event = {
             "event_name": title,
             "country": CURRENCY_TO_COUNTRY.get(currency, currency),
@@ -484,7 +483,7 @@ class ForexFactoryCollector:
             "previous": self._clean_value(item.get("previous")),
             "actual": self._clean_value(item.get("actual")),
             "source": self.source_id,
-            "acquired_at": fetched_at or datetime.now(timezone.utc),
+            "acquired_at": fetched_at or datetime.now(UTC),
             "metadata": {
                 "currency": currency,
                 "target_week": target_week["week_key"],
@@ -494,8 +493,7 @@ class ForexFactoryCollector:
                     round(
                         max(
                             0.0,
-                            (datetime.now(timezone.utc) - fetched_at).total_seconds()
-                            / 3600,
+                            (datetime.now(UTC) - fetched_at).total_seconds() / 3600,
                         ),
                         2,
                     )
@@ -521,9 +519,7 @@ class ForexFactoryCollector:
         name = event.get("event_name", "").lower()
         if any(pattern in name for pattern in EXCLUDED_EVENT_PATTERNS):
             return False
-        if IMPACT_RANK.get(impact, 0) < IMPACT_RANK.get(min_impact, 2):
-            return False
-        return True
+        return IMPACT_RANK.get(impact, 0) >= IMPACT_RANK.get(min_impact, 2)
 
     @staticmethod
     def _normalize_impact(value: str | None) -> str:
@@ -795,13 +791,13 @@ class ForexFactoryCollector:
             metadata["tentative"] = True if time_text else True
             utc_dt = base_date.replace(
                 hour=0, minute=0, second=0, microsecond=0
-            ).astimezone(timezone.utc)
+            ).astimezone(UTC)
             return utc_dt
 
         if time_text.lower() == "all day":
             utc_dt = base_date.replace(
                 hour=0, minute=0, second=0, microsecond=0
-            ).astimezone(timezone.utc)
+            ).astimezone(UTC)
             return utc_dt
 
         time_text = time_text.replace(" ", "")
@@ -814,7 +810,7 @@ class ForexFactoryCollector:
                     second=0,
                     microsecond=0,
                 )
-                return scheduled.astimezone(timezone.utc)
+                return scheduled.astimezone(UTC)
             except ValueError:
                 continue
 
@@ -825,7 +821,7 @@ class ForexFactoryCollector:
         )
         metadata["time_resolution"] = "tentative"
         return base_date.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
-            timezone.utc
+            UTC
         )
 
     def _parse_impact(self, impact_cell) -> str:
@@ -869,9 +865,7 @@ class ForexFactoryCollector:
         )
         start_ms = time.monotonic() * 1000
         target_week = self._determine_target_week(config)
-        cache_entry = self._load_cached_payload(
-            config, target_week, "health-check"
-        )
+        cache_entry = self._load_cached_payload(config, target_week, "health-check")
         if cache_entry is not None:
             payload, fetched_at = self._cache_parts(cache_entry)
             self._set_result_metadata(

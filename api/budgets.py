@@ -7,12 +7,13 @@ projected-cost reservation for concurrent requests.
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import text
 
 from config import load_config
 from db import get_session, query_one
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
@@ -32,10 +33,10 @@ def _finite_number(value, name: str) -> float:
 
 
 def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    current = current.astimezone(timezone.utc)
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
     start = current.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=1)
 
@@ -126,20 +127,30 @@ def get_budget_status(config: dict | None = None) -> dict:
     try:
         daily_cap, warn_at = get_budget_config(config)
     except ValueError:
-        logger.warning("budget_config_invalid", blocked_code="daily_llm_budget_unavailable")
+        logger.warning(
+            "budget_config_invalid", blocked_code="daily_llm_budget_unavailable"
+        )
         return _unavailable("invalid_config")
     try:
         today_cost, today_tokens = get_today_spend(config)
         status = budget_status(today_cost, daily_cap, warn_at)
     except Exception:
-        logger.warning("budget_status_unavailable", blocked_code="daily_llm_budget_unavailable")
+        logger.warning(
+            "budget_status_unavailable", blocked_code="daily_llm_budget_unavailable"
+        )
         return _unavailable("unavailable", daily_cap, warn_at)
     result = {
         "today_cost_usd": round(today_cost, 6),
         "today_tokens": today_tokens,
         **status,
         "available": True,
-        "status": "unlimited" if status["unlimited"] else "exceeded" if status["exceeded"] else "warning" if status["warning"] else "ok",
+        "status": "unlimited"
+        if status["unlimited"]
+        else "exceeded"
+        if status["exceeded"]
+        else "warning"
+        if status["warning"]
+        else "ok",
     }
     logger.debug(
         "budget_status",
@@ -150,8 +161,6 @@ def get_budget_status(config: dict | None = None) -> dict:
         unlimited=result["unlimited"],
     )
     return result
-
-
 
 
 def register_manual_override(
@@ -170,7 +179,7 @@ def register_manual_override(
         "requested": True,
         "reason": reason,
         "requested_by": requested_by,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "requested_at": datetime.now(UTC).isoformat(),
         "scope": "one_run",
         "run_kind": run_kind,
         "requested_component": requested_component,
@@ -193,7 +202,7 @@ def register_manual_override(
             ),
             {
                 "cid": correlation_id,
-                "started_at": datetime.now(timezone.utc),
+                "started_at": datetime.now(UTC),
                 "run_kind": run_kind,
                 "component": requested_component,
                 "summary": summary,
@@ -233,8 +242,8 @@ def mark_override_dispatch_failed(
             ),
             {
                 "cid": correlation_id,
-                "completed_at": datetime.now(timezone.utc),
-                "dispatch_failed_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(UTC),
+                "dispatch_failed_at": datetime.now(UTC).isoformat(),
                 "error": error,
             },
         )

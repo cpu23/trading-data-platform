@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,7 +14,7 @@ from processors.macro_trends import (
 
 
 def history(values: list[float]) -> list[dict]:
-    latest = datetime(2026, 7, 28, tzinfo=timezone.utc)
+    latest = datetime(2026, 7, 28, tzinfo=UTC)
     return [
         {"value": value, "observed_at": latest - timedelta(days=index)}
         for index, value in enumerate(values)

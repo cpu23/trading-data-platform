@@ -13,11 +13,15 @@ logger = get_logger("api.investment")
 MAX_DOCUMENT_BYTES = 20_000_000
 
 
-async def _orchestrator_request(request: Request, method: str, path: str, **kwargs) -> httpx.Response:
+async def _orchestrator_request(
+    request: Request, method: str, path: str, **kwargs
+) -> httpx.Response:
     try:
         auth = _internal_basic_auth()
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="Internal authentication unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="Internal authentication unavailable"
+        ) from exc
     try:
         client = request.app.state.orchestrator_client
         return await client.request(
@@ -53,8 +57,14 @@ def _payload_or_error(response: httpx.Response):
     if response.is_success and isinstance(payload, (dict, list)):
         return payload
     detail = payload.get("detail") if isinstance(payload, dict) else None
-    safe_status = response.status_code if response.status_code in {404, 409, 413, 422, 429, 502, 503} else 502
-    raise HTTPException(status_code=safe_status, detail=detail or "Investment service request failed")
+    safe_status = (
+        response.status_code
+        if response.status_code in {404, 409, 413, 422, 429, 502, 503}
+        else 502
+    )
+    raise HTTPException(
+        status_code=safe_status, detail=detail or "Investment service request failed"
+    )
 
 
 @router.get("/dashboard")
@@ -103,7 +113,11 @@ async def ingest_investment_document(request: Request):
         "/investment/documents",
         params=dict(request.query_params),
         content=content,
-        headers={"Content-Type": request.headers.get("content-type", "application/octet-stream")},
+        headers={
+            "Content-Type": request.headers.get(
+                "content-type", "application/octet-stream"
+            )
+        },
         timeout=45.0,
     )
     return JSONResponse(status_code=201, content=_payload_or_error(response))
@@ -132,7 +146,7 @@ async def run_investment_analysis(
         "POST",
         f"/investment/documents/{document_id}/analyze",
         json=body or {},
-        timeout=120.0,
+        timeout=240.0,
     )
     return _payload_or_error(response)
 
@@ -149,7 +163,9 @@ async def investment_filings_status(request: Request):
 
 
 @router.post("/filings/collect", status_code=202)
-async def trigger_filing_collection(request: Request, body: dict | None = Body(default=None)):
+async def trigger_filing_collection(
+    request: Request, body: dict | None = Body(default=None)
+):
     response = await _orchestrator_request(
         request,
         "POST",

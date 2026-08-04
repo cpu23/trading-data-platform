@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.forex_factory import ForexFactoryCollector
 
-
 CONFIG = {
     "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
     "collectors": {
@@ -79,12 +78,16 @@ class ForexFactoryCollectorTests(unittest.TestCase):
     def test_current_week_cache_is_immutable_even_when_filter_yields_zero(self):
         collector = ForexFactoryCollector()
         collector._determine_target_week = Mock(return_value=target_week())
-        collector._load_cached_payload = Mock(return_value=[{
-            "title": "Bank Holiday",
-            "country": "USD",
-            "date": "2026-05-08T08:30:00-04:00",
-            "impact": "Holiday",
-        }])
+        collector._load_cached_payload = Mock(
+            return_value=[
+                {
+                    "title": "Bank Holiday",
+                    "country": "USD",
+                    "date": "2026-05-08T08:30:00-04:00",
+                    "impact": "Holiday",
+                }
+            ]
+        )
         collector._fetch_export_payload = Mock()
 
         records = collector.collect(CONFIG, "corr")
@@ -129,7 +132,9 @@ class ForexFactoryCollectorTests(unittest.TestCase):
 
         self.assertEqual(len(records), 2)
         self.assertEqual(collector._load_cached_payload.call_count, 2)
-        self.assertEqual(collector.last_result_metadata["payload_source"], "stale_cache")
+        self.assertEqual(
+            collector.last_result_metadata["payload_source"], "stale_cache"
+        )
         self.assertEqual(collector.last_result_metadata["state"], "degraded_cache")
 
     def test_weekend_selects_coming_monday_friday_week(self):
@@ -182,12 +187,14 @@ class ForexFactoryCollectorTests(unittest.TestCase):
 
     def test_low_impact_events_are_kept_when_configured(self):
         collector = ForexFactoryCollector()
-        payload = SAMPLE_PAYLOAD + [{
-            "title": "Low Impact Item",
-            "country": "USD",
-            "date": "2026-05-08T10:00:00-04:00",
-            "impact": "Low",
-        }]
+        payload = SAMPLE_PAYLOAD + [
+            {
+                "title": "Low Impact Item",
+                "country": "USD",
+                "date": "2026-05-08T10:00:00-04:00",
+                "impact": "Low",
+            }
+        ]
 
         records = collector._parse_export_payload(
             payload=payload,
@@ -198,7 +205,9 @@ class ForexFactoryCollectorTests(unittest.TestCase):
             correlation_id="corr",
         )
 
-        self.assertEqual([r["impact_level"] for r in records], ["high", "medium", "low"])
+        self.assertEqual(
+            [r["impact_level"] for r in records], ["high", "medium", "low"]
+        )
 
 
 if __name__ == "__main__":

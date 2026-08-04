@@ -1,10 +1,11 @@
 """Kobeissi Letter tweet fetcher — normalises tweets into feed items."""
+
 from __future__ import annotations
 
 import json
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,7 @@ def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
         },
         "media": media,
         "meta": {},
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -75,17 +76,22 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
         logger.error("kobeissi_no_api_key")
         raise ValueError("TWITTERAPI_KEY is required to collect Kobeissi news")
 
-    state: dict[str, Any] = read_json(state_path, {"last_seen_id": None, "last_poll": None})
+    state: dict[str, Any] = read_json(
+        state_path, {"last_seen_id": None, "last_poll": None}
+    )
     if not isinstance(state, dict):
         state = {"last_seen_id": None, "last_poll": None}
     since_id = state.get("last_seen_id")
 
     params = {"userId": user_id, "count": str(count)}
     url = f"{api_base}/twitter/user/tweet_timeline?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={
-        "X-API-Key": api_key,
-        "User-Agent": "TradingResearchSystem/1.0",
-    })
+    req = urllib.request.Request(
+        url,
+        headers={
+            "X-API-Key": api_key,
+            "User-Agent": "TradingResearchSystem/1.0",
+        },
+    )
 
     logger.info("kobeissi_fetch_started", count=count)
     try:
@@ -94,37 +100,47 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
     except Exception as exc:
         error = f"Kobeissi fetch failed: {type(exc).__name__}"
         logger.error("kobeissi_fetch_failed", error=error)
-        state.update({
-            "last_poll": datetime.now(timezone.utc).isoformat(),
-            "status": "error",
-            "error": error,
-        })
+        state.update(
+            {
+                "last_poll": datetime.now(UTC).isoformat(),
+                "status": "error",
+                "error": error,
+            }
+        )
         atomic_write_json(state_path, state)
-        return NewsCollectionResult([], "error", error)
+        return NewsCollectionResult([], "error", error, error_class="transient_source")
 
     if not isinstance(data, dict) or data.get("status") != "success":
         error = "Kobeissi upstream API returned an error"
         logger.error("kobeissi_api_error", error=error)
-        state.update({
-            "last_poll": datetime.now(timezone.utc).isoformat(),
-            "status": "error",
-            "error": error,
-        })
+        state.update(
+            {
+                "last_poll": datetime.now(UTC).isoformat(),
+                "status": "error",
+                "error": error,
+            }
+        )
         atomic_write_json(state_path, state)
-        return NewsCollectionResult([], "error", error)
+        return NewsCollectionResult([], "error", error, error_class="transient_source")
 
     response_data = data.get("data")
-    raw_tweets = response_data.get("tweets") if isinstance(response_data, dict) else None
+    raw_tweets = (
+        response_data.get("tweets") if isinstance(response_data, dict) else None
+    )
     if not isinstance(raw_tweets, list):
         error = "Kobeissi upstream API returned an invalid response"
         logger.error("kobeissi_api_error", error=error)
-        state.update({
-            "last_poll": datetime.now(timezone.utc).isoformat(),
-            "status": "error",
-            "error": error,
-        })
+        state.update(
+            {
+                "last_poll": datetime.now(UTC).isoformat(),
+                "status": "error",
+                "error": error,
+            }
+        )
         atomic_write_json(state_path, state)
-        return NewsCollectionResult([], "error", error)
+        return NewsCollectionResult(
+            [], "error", error, error_class="invalid_source_data"
+        )
 
     new_items: list[dict[str, Any]] = []
     try:
@@ -138,28 +154,36 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
             try:
                 already_seen = since_id is not None and int(raw["id"]) <= int(since_id)
             except (TypeError, ValueError):
-                already_seen = since_id is not None and str(raw.get("id", "")) == str(since_id)
+                already_seen = since_id is not None and str(raw.get("id", "")) == str(
+                    since_id
+                )
             if already_seen:
                 break
             new_items.append(_normalise_tweet(raw))
     except Exception as exc:
-        error = f"Kobeissi upstream API returned an invalid response: {type(exc).__name__}"
+        error = (
+            f"Kobeissi upstream API returned an invalid response: {type(exc).__name__}"
+        )
         logger.error("kobeissi_api_error", error=error)
-        state.update({
-            "last_poll": datetime.now(timezone.utc).isoformat(),
-            "status": "error",
-            "error": error,
-        })
+        state.update(
+            {
+                "last_poll": datetime.now(UTC).isoformat(),
+                "status": "error",
+                "error": error,
+            }
+        )
         atomic_write_json(state_path, state)
-        return NewsCollectionResult([], "error", error)
+        return NewsCollectionResult(
+            [], "error", error, error_class="invalid_source_data"
+        )
 
     candidate_state = dict(state)
     if new_items:
         candidate_state["last_seen_id"] = new_items[0]["id"].split(":")[1]
-    candidate_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+    candidate_state["last_poll"] = datetime.now(UTC).isoformat()
     candidate_state["status"] = "ok"
     candidate_state["error"] = None
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     publication = NewsPublication(
         snapshot_path=output_dir / f"kobeissi_{today}.json",
         state_path=state_path,

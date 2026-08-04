@@ -1,22 +1,26 @@
-import json
 import base64
+import json
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DASHBOARD_USER", "internal-user")
 os.environ.setdefault("DASHBOARD_PASSWORD", "internal-pass")
-INTERNAL_AUTH = {"Authorization": "Basic " + base64.b64encode(b"internal-user:internal-pass").decode()}
+INTERNAL_AUTH = {
+    "Authorization": "Basic "
+    + base64.b64encode(b"internal-user:internal-pass").decode()
+}
 
 
 class CycleModeEndpointTests(unittest.TestCase):
     def setUp(self):
-        import main
         from fastapi.testclient import TestClient
+
+        import main
 
         self.main = main
         self.client = TestClient(main.app, headers=INTERNAL_AUTH)
@@ -39,8 +43,13 @@ class CycleModeEndpointTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.headers.get("www-authenticate"), "Basic")
 
-    def test_invalid_mode_values_and_types_are_rejected_before_config_or_acceptance(self):
-        with patch("main._get_config") as get_config, patch("main.accept_run") as accept:
+    def test_invalid_mode_values_and_types_are_rejected_before_config_or_acceptance(
+        self,
+    ):
+        with (
+            patch("main._get_config") as get_config,
+            patch("main.accept_run") as accept,
+        ):
             for mode in (
                 "invalid",
                 ["refresh"],
@@ -56,8 +65,13 @@ class CycleModeEndpointTests(unittest.TestCase):
         get_config.assert_not_called()
         accept.assert_not_called()
 
-    def test_invalid_body_and_confirmation_types_are_rejected_before_config_or_acceptance(self):
-        with patch("main._get_config") as get_config, patch("main.accept_run") as accept:
+    def test_invalid_body_and_confirmation_types_are_rejected_before_config_or_acceptance(
+        self,
+    ):
+        with (
+            patch("main._get_config") as get_config,
+            patch("main.accept_run") as accept,
+        ):
             for body in (
                 ["refresh"],
                 "refresh",
@@ -76,9 +90,7 @@ class CycleModeEndpointTests(unittest.TestCase):
 
     def test_absent_or_null_body_defaults_to_refresh(self):
         background = Mock()
-        with patch(
-            "main._accept_http_run", return_value=datetime.now(timezone.utc)
-        ) as accept:
+        with patch("main._accept_http_run", return_value=datetime.now(UTC)) as accept:
             result = self.main.trigger_cycle(background, body=None)
 
         self.assertIn("job_id", result)
@@ -112,10 +124,11 @@ class CycleModeEndpointTests(unittest.TestCase):
 
     def test_force_full_valid_auth_mints_trusted_cycle_only_context(self):
         background = Mock()
-        accepted_at = datetime(2026, 7, 15, tzinfo=timezone.utc)
-        with patch("main._get_config", return_value={}), patch(
-            "main.accept_run", return_value=accepted_at
-        ) as accept:
+        accepted_at = datetime(2026, 7, 15, tzinfo=UTC)
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", return_value=accepted_at) as accept,
+        ):
             result = self.main.trigger_cycle(
                 background,
                 body={"mode": "force_full", "budget_confirmed": True},
@@ -125,15 +138,18 @@ class CycleModeEndpointTests(unittest.TestCase):
         summary = accept.call_args.kwargs["request_summary"]
         self.assertEqual(summary, {"mode": "force_full", "budget_confirmed": True})
         task_args = background.add_task.call_args.args
-        self.assertEqual(task_args[:3], (self.main._run_cycle_task, result["job_id"], "force_full"))
+        self.assertEqual(
+            task_args[:3], (self.main._run_cycle_task, result["job_id"], "force_full")
+        )
         self.assertTrue(task_args[3].trusted_manual_force)
         self.assertNotIn("internal-pass", json.dumps(summary))
 
     def test_refresh_acceptance_stores_mode_and_enqueues_automatic_context(self):
         background = Mock()
-        with patch("main._get_config", return_value={}), patch(
-            "main.accept_run", return_value=datetime.now(timezone.utc)
-        ) as accept:
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.accept_run", return_value=datetime.now(UTC)) as accept,
+        ):
             self.main.trigger_cycle(background, body={})
 
         self.assertEqual(
@@ -148,23 +164,28 @@ class CollectorDueTests(unittest.TestCase):
     def test_never_successful_collector_is_due(self):
         import orchestrator
 
-        with patch.object(orchestrator, "_last_successful_collection", return_value=None):
+        with patch.object(
+            orchestrator, "_last_successful_collection", return_value=None
+        ):
             self.assertTrue(
                 orchestrator._collector_is_due(
                     "fred",
                     {"collectors": {"fred": {"schedule": "0 6 * * 1-5"}}},
-                    now=datetime(2026, 7, 15, 5, tzinfo=timezone.utc),
+                    now=datetime(2026, 7, 15, 5, tzinfo=UTC),
                 )
             )
 
     def test_named_and_posix_weekday_schedules_share_next_fire_semantics(self):
         import orchestrator
 
-        last = datetime(2026, 7, 13, 6, 1, tzinfo=timezone.utc)  # Monday
-        now = datetime(2026, 7, 14, 6, 0, tzinfo=timezone.utc)  # Tuesday
+        last = datetime(2026, 7, 13, 6, 1, tzinfo=UTC)  # Monday
+        now = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)  # Tuesday
         for schedule in ("0 6 * * mon-fri", "0 6 * * 1-5"):
-            with self.subTest(schedule=schedule), patch.object(
-                orchestrator, "_last_successful_collection", return_value=last
+            with (
+                self.subTest(schedule=schedule),
+                patch.object(
+                    orchestrator, "_last_successful_collection", return_value=last
+                ),
             ):
                 self.assertTrue(
                     orchestrator._collector_is_due(
@@ -177,13 +198,15 @@ class CollectorDueTests(unittest.TestCase):
     def test_not_due_until_next_scheduled_fire(self):
         import orchestrator
 
-        last = datetime(2026, 7, 14, 6, 1, tzinfo=timezone.utc)
-        with patch.object(orchestrator, "_last_successful_collection", return_value=last):
+        last = datetime(2026, 7, 14, 6, 1, tzinfo=UTC)
+        with patch.object(
+            orchestrator, "_last_successful_collection", return_value=last
+        ):
             self.assertFalse(
                 orchestrator._collector_is_due(
                     "fred",
                     {"collectors": {"fred": {"schedule": "0 6 * * *"}}},
-                    now=datetime(2026, 7, 15, 5, 59, tzinfo=timezone.utc),
+                    now=datetime(2026, 7, 15, 5, 59, tzinfo=UTC),
                 )
             )
 
@@ -194,17 +217,19 @@ class CollectorDueTests(unittest.TestCase):
             with patch.object(
                 orchestrator, "_last_successful_collection", side_effect=failure
             ):
-                self.assertTrue(orchestrator._collector_is_due("fred", {}, now=datetime.now(timezone.utc)))
+                self.assertTrue(
+                    orchestrator._collector_is_due("fred", {}, now=datetime.now(UTC))
+                )
         with patch.object(
             orchestrator,
             "_last_successful_collection",
-            return_value=datetime.now(timezone.utc),
+            return_value=datetime.now(UTC),
         ):
             self.assertTrue(
                 orchestrator._collector_is_due(
                     "fred",
                     {"collectors": {"fred": {"schedule": "not cron"}}},
-                    now=datetime.now(timezone.utc),
+                    now=datetime.now(UTC),
                 )
             )
 
@@ -223,19 +248,35 @@ class CycleExecutionModeTests(unittest.TestCase):
         import orchestrator
 
         availability_seen = {}
-        with patch.object(
-            orchestrator, "get_all_collectors", return_value={"due": Mock(), "stale": Mock()}
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator, "_collector_is_due", side_effect=lambda source, *_a, **_k: source == "due"
-        ), patch.object(
-            orchestrator, "_last_successful_collection", return_value=datetime.now(timezone.utc)
-        ), patch.object(
-            orchestrator, "run_collector", return_value={"collector": "due", "status": "success"}
-        ) as collect, patch.object(
-            orchestrator,
-            "_resolve_and_run_processors",
-            side_effect=lambda **kwargs: availability_seen.update(kwargs) or {},
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={"due": Mock(), "stale": Mock()},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(
+                orchestrator,
+                "_collector_is_due",
+                side_effect=lambda source, *_a, **_k: source == "due",
+            ),
+            patch.object(
+                orchestrator,
+                "_last_successful_collection",
+                return_value=datetime.now(UTC),
+            ),
+            patch.object(
+                orchestrator,
+                "run_collector",
+                return_value={"collector": "due", "status": "success"},
+            ) as collect,
+            patch.object(
+                orchestrator,
+                "_resolve_and_run_processors",
+                side_effect=lambda **kwargs: availability_seen.update(kwargs) or {},
+            ),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             result = orchestrator._run_full_cycle_impl(
                 self._config(), "cycle", manage_lifecycle=False, mode="refresh"
             )
@@ -251,17 +292,29 @@ class CycleExecutionModeTests(unittest.TestCase):
         import orchestrator
 
         seen = {}
-        with patch.object(orchestrator, "get_all_collectors", return_value={"due": Mock()}), patch.object(
-            orchestrator, "get_all_processors", return_value={}
-        ), patch.object(orchestrator, "_collector_is_due", return_value=True), patch.object(
-            orchestrator, "_last_successful_collection", return_value=datetime.now(timezone.utc)
-        ), patch.object(
-            orchestrator, "run_collector", return_value={"collector": "due", "status": "failed"}
-        ), patch.object(
-            orchestrator,
-            "_resolve_and_run_processors",
-            side_effect=lambda **kwargs: seen.update(kwargs) or {},
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(
+                orchestrator, "get_all_collectors", return_value={"due": Mock()}
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "_collector_is_due", return_value=True),
+            patch.object(
+                orchestrator,
+                "_last_successful_collection",
+                return_value=datetime.now(UTC),
+            ),
+            patch.object(
+                orchestrator,
+                "run_collector",
+                return_value={"collector": "due", "status": "failed"},
+            ),
+            patch.object(
+                orchestrator,
+                "_resolve_and_run_processors",
+                side_effect=lambda **kwargs: seen.update(kwargs) or {},
+            ),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             orchestrator._run_full_cycle_impl(
                 {"collectors": {"due": {"enabled": True}}, "processors": {}},
                 "cycle",
@@ -271,22 +324,34 @@ class CycleExecutionModeTests(unittest.TestCase):
 
         self.assertEqual(seen["successful_collectors"], set())
 
-    def test_analyze_runs_no_collectors_or_history_lookups_and_bypasses_collector_gate(self):
+    def test_analyze_runs_no_collectors_or_history_lookups_and_bypasses_collector_gate(
+        self,
+    ):
         import orchestrator
 
         seen = {}
-        with patch.object(
-            orchestrator, "get_all_collectors", return_value={"old": Mock(), "empty": Mock()}
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator, "_last_successful_collection"
-        ) as history, patch.object(orchestrator, "run_collector") as collect, patch.object(
-            orchestrator,
-            "_resolve_and_run_processors",
-            side_effect=lambda **kwargs: seen.update(kwargs) or {},
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={"old": Mock(), "empty": Mock()},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "_last_successful_collection") as history,
+            patch.object(orchestrator, "run_collector") as collect,
+            patch.object(
+                orchestrator,
+                "_resolve_and_run_processors",
+                side_effect=lambda **kwargs: seen.update(kwargs) or {},
+            ),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             result = orchestrator._run_full_cycle_impl(
                 {
-                    "collectors": {"old": {"enabled": True}, "empty": {"enabled": True}},
+                    "collectors": {
+                        "old": {"enabled": True},
+                        "empty": {"enabled": True},
+                    },
                     "processors": {},
                 },
                 "cycle",
@@ -299,7 +364,9 @@ class CycleExecutionModeTests(unittest.TestCase):
         self.assertEqual(seen["successful_collectors"], set())
         self.assertTrue(seen["analyze_existing_data"])
         self.assertEqual(result["collectors"]["empty"]["status"], "skipped")
-        self.assertEqual(result["collectors"]["empty"]["reason"], "analyze_mode_no_collection")
+        self.assertEqual(
+            result["collectors"]["empty"]["reason"], "analyze_mode_no_collection"
+        )
         self.assertEqual(result["collectors"]["empty"]["mode"], "analyze")
         self.assertTrue(result["collectors"]["empty"]["no_change"])
 
@@ -320,23 +387,26 @@ class CycleExecutionModeTests(unittest.TestCase):
             }
         }
 
-        with patch.object(
-            orchestrator,
-            "get_all_processors",
-            return_value={
-                "macro_regime": macro,
-                "event_impact": event,
-                "briefing": briefing,
-            },
-        ), patch.object(
-            orchestrator,
-            "run_processor",
-            side_effect=[
-                {"processor": "macro_regime", "status": "success"},
-                {"processor": "event_impact", "status": "success"},
-                {"processor": "briefing", "status": "success"},
-            ],
-        ) as run:
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_processors",
+                return_value={
+                    "macro_regime": macro,
+                    "event_impact": event,
+                    "briefing": briefing,
+                },
+            ),
+            patch.object(
+                orchestrator,
+                "run_processor",
+                side_effect=[
+                    {"processor": "macro_regime", "status": "success"},
+                    {"processor": "event_impact", "status": "success"},
+                    {"processor": "briefing", "status": "success"},
+                ],
+            ) as run,
+        ):
             results = orchestrator._resolve_and_run_processors(
                 config,
                 "cycle",
@@ -356,17 +426,28 @@ class CycleExecutionModeTests(unittest.TestCase):
         import orchestrator
 
         seen = {}
-        with patch.object(
-            orchestrator, "get_all_collectors", return_value={"a": Mock(), "b": Mock()}
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator,
-            "run_collector",
-            side_effect=lambda source, **_kwargs: {"collector": source, "status": "success"},
-        ) as collect, patch.object(
-            orchestrator,
-            "_resolve_and_run_processors",
-            side_effect=lambda **kwargs: seen.update(kwargs) or {},
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={"a": Mock(), "b": Mock()},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(
+                orchestrator,
+                "run_collector",
+                side_effect=lambda source, **_kwargs: {
+                    "collector": source,
+                    "status": "success",
+                },
+            ) as collect,
+            patch.object(
+                orchestrator,
+                "_resolve_and_run_processors",
+                side_effect=lambda **kwargs: seen.update(kwargs) or {},
+            ),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             result = orchestrator._run_full_cycle_impl(
                 self._config(), "cycle", manage_lifecycle=False, mode="force_full"
             )
@@ -383,13 +464,19 @@ class CycleExecutionModeTests(unittest.TestCase):
         processor.get_depends_on.return_value = []
         config = {"processors": {"macro_regime": {"enabled": True}}}
         for force in (False, True):
-            with self.subTest(force=force), patch.object(
-                orchestrator, "get_all_processors", return_value={"macro_regime": processor}
-            ), patch.object(
-                orchestrator,
-                "run_processor",
-                return_value={"processor": "macro_regime", "status": "success"},
-            ) as run:
+            with (
+                self.subTest(force=force),
+                patch.object(
+                    orchestrator,
+                    "get_all_processors",
+                    return_value={"macro_regime": processor},
+                ),
+                patch.object(
+                    orchestrator,
+                    "run_processor",
+                    return_value={"processor": "macro_regime", "status": "success"},
+                ) as run,
+            ):
                 orchestrator._resolve_and_run_processors(
                     config, "cycle", set(), force=force
                 )
@@ -398,9 +485,12 @@ class CycleExecutionModeTests(unittest.TestCase):
     def test_public_cycle_forwards_requested_mode_to_cycle_impl(self):
         import orchestrator
 
-        with patch.object(orchestrator, "advisory_lock") as lock, patch.object(
-            orchestrator, "_run_full_cycle_impl", return_value={"status": "success"}
-        ) as run:
+        with (
+            patch.object(orchestrator, "advisory_lock") as lock,
+            patch.object(
+                orchestrator, "_run_full_cycle_impl", return_value={"status": "success"}
+            ) as run,
+        ):
             lock.return_value.__enter__.return_value = None
             lock.return_value.__exit__.return_value = None
             orchestrator.run_full_cycle(
@@ -424,12 +514,12 @@ class ForceFullRetryTests(unittest.TestCase):
             "summary": {"mode": "force_full", "budget_confirmed": True},
         }
         background = Mock()
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", return_value=previous
-        ), patch("main.accept_run", return_value=datetime.now(timezone.utc)) as accept:
-            main.retry_abandoned_run(
-                "11111111-1111-4111-8111-111111111111", background
-            )
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry", return_value=previous),
+            patch("main.accept_run", return_value=datetime.now(UTC)) as accept,
+        ):
+            main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
 
         self.assertEqual(background.add_task.call_args.args[2], "force_full")
         self.assertIsNone(background.add_task.call_args.args[3])
@@ -448,12 +538,12 @@ class ForceFullRetryTests(unittest.TestCase):
             "summary": {"mode": ["force_full"], "budget_confirmed": True},
         }
         background = Mock()
-        with patch("main._get_config", return_value={}), patch(
-            "main.get_run_for_retry", return_value=previous
-        ), patch("main.accept_run", return_value=datetime.now(timezone.utc)) as accept:
-            main.retry_abandoned_run(
-                "11111111-1111-4111-8111-111111111111", background
-            )
+        with (
+            patch("main._get_config", return_value={}),
+            patch("main.get_run_for_retry", return_value=previous),
+            patch("main.accept_run", return_value=datetime.now(UTC)) as accept,
+        ):
+            main.retry_abandoned_run("11111111-1111-4111-8111-111111111111", background)
 
         self.assertEqual(background.add_task.call_args.args[2:], ("refresh", None))
         self.assertEqual(

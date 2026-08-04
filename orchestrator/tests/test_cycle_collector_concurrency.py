@@ -45,9 +45,7 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         collector_ids = ["alpha", "beta", "gamma"]
         config = {
             "orchestration": {"collector_workers": 3},
-            "collectors": {
-                source_id: {"enabled": True} for source_id in collector_ids
-            },
+            "collectors": {source_id: {"enabled": True} for source_id in collector_ids},
             "processors": {},
         }
         lock = threading.Lock()
@@ -100,17 +98,24 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             self.assertEqual(kwargs["successful_collectors"], set(collector_ids))
             return {}
 
-        with patch.object(
-            orchestrator,
-            "get_all_collectors",
-            return_value={source_id: Mock() for source_id in collector_ids},
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator, "run_collector", side_effect=collect
-        ) as run_collector, patch.object(
-            orchestrator, "update_run_progress", side_effect=persist_progress
-        ), patch.object(
-            orchestrator, "_resolve_and_run_processors", side_effect=processors
-        ), patch.object(orchestrator, "logger") as logger:
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={source_id: Mock() for source_id in collector_ids},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(
+                orchestrator, "run_collector", side_effect=collect
+            ) as run_collector,
+            patch.object(
+                orchestrator, "update_run_progress", side_effect=persist_progress
+            ),
+            patch.object(
+                orchestrator, "_resolve_and_run_processors", side_effect=processors
+            ),
+            patch.object(orchestrator, "logger") as logger,
+        ):
             result = orchestrator._run_full_cycle_impl(
                 config,
                 "cycle-id",
@@ -128,7 +133,9 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             collector_ids,
         )
         self.assertEqual(run_collector.call_count, 3)
-        self.assertTrue(all(thread_id == coordinator_thread for thread_id, _ in progress_writes))
+        self.assertTrue(
+            all(thread_id == coordinator_thread for thread_id, _ in progress_writes)
+        )
         completed_counts = [
             snapshot["completed_stages"]
             for _, snapshot in progress_writes
@@ -136,9 +143,7 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         ]
         self.assertEqual(completed_counts, [1, 2, 3])
         completed_snapshots = [
-            snapshot
-            for _, snapshot in progress_writes
-            if snapshot["completed_stages"]
+            snapshot for _, snapshot in progress_writes if snapshot["completed_stages"]
         ]
         self.assertEqual(
             {
@@ -162,9 +167,7 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         collector_ids = ["alpha", "beta", "gamma"]
         config = {
             "orchestration": {"collector_workers": 2},
-            "collectors": {
-                source_id: {"enabled": True} for source_id in collector_ids
-            },
+            "collectors": {source_id: {"enabled": True} for source_id in collector_ids},
             "processors": {},
         }
         cases = [
@@ -180,14 +183,17 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
                     raise RuntimeError(f"secret payload for {source_id}")
                 return {"collector": source_id, "status": "success", "error": None}
 
-            with self.subTest(successful=successful), patch.object(
-                orchestrator,
-                "get_all_collectors",
-                return_value={source_id: Mock() for source_id in collector_ids},
-            ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-                orchestrator, "run_collector", side_effect=collect
-            ), patch.object(orchestrator, "update_run_progress"), patch.object(
-                orchestrator, "logger"
+            with (
+                self.subTest(successful=successful),
+                patch.object(
+                    orchestrator,
+                    "get_all_collectors",
+                    return_value={source_id: Mock() for source_id in collector_ids},
+                ),
+                patch.object(orchestrator, "get_all_processors", return_value={}),
+                patch.object(orchestrator, "run_collector", side_effect=collect),
+                patch.object(orchestrator, "update_run_progress"),
+                patch.object(orchestrator, "logger"),
             ):
                 result = orchestrator._run_full_cycle_impl(
                     config, "cycle-id", manage_lifecycle=False
@@ -225,18 +231,19 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
 
         config = {
             "orchestration": {"collector_workers": 1},
-            "collectors": {
-                source_id: {"enabled": True} for source_id in collector_ids
-            },
+            "collectors": {source_id: {"enabled": True} for source_id in collector_ids},
             "processors": {},
         }
-        with patch.object(
-            orchestrator,
-            "get_all_collectors",
-            return_value={source_id: Mock() for source_id in collector_ids},
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator, "run_collector", side_effect=collect
-        ), patch.object(orchestrator, "update_run_progress"):
+        with (
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={source_id: Mock() for source_id in collector_ids},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "run_collector", side_effect=collect),
+            patch.object(orchestrator, "update_run_progress"),
+        ):
             result = orchestrator._run_full_cycle_impl(
                 config, "cycle-id", manage_lifecycle=False
             )
@@ -245,11 +252,12 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         self.assertEqual(order, collector_ids)
         self.assertEqual(list(result["collectors"]), collector_ids)
 
-        with patch.object(orchestrator, "get_all_collectors", return_value={}), patch.object(
-            orchestrator, "get_all_processors", return_value={}
-        ), patch.object(orchestrator, "update_run_progress"), patch.object(
-            orchestrator, "ThreadPoolExecutor"
-        ) as executor:
+        with (
+            patch.object(orchestrator, "get_all_collectors", return_value={}),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(orchestrator, "update_run_progress"),
+            patch.object(orchestrator, "ThreadPoolExecutor") as executor,
+        ):
             empty_result = orchestrator._run_full_cycle_impl(
                 {"collectors": {}, "processors": {}},
                 "empty-cycle",
@@ -260,15 +268,15 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         self.assertEqual(empty_result["collectors"], {})
         self.assertEqual(empty_result["status"], "success")
 
-    def test_parent_owns_single_heartbeat_and_component_locks_wrap_parallel_children(self):
+    def test_parent_owns_single_heartbeat_and_component_locks_wrap_parallel_children(
+        self,
+    ):
         import orchestrator
 
         collector_ids = ["alpha", "beta", "gamma"]
         config = {
             "orchestration": {"collector_workers": 3},
-            "collectors": {
-                source_id: {"enabled": True} for source_id in collector_ids
-            },
+            "collectors": {source_id: {"enabled": True} for source_id in collector_ids},
             "processors": {},
         }
         events = []
@@ -306,22 +314,28 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
                 "correlation_id": correlation_id,
             }
 
-        with patch.object(orchestrator, "accept_run"), patch.object(
-            orchestrator, "start_run", return_value=True
-        ), patch.object(
-            orchestrator, "maintain_run_heartbeat", side_effect=heartbeat_guard
-        ) as heartbeat, patch.object(
-            orchestrator, "advisory_lock", side_effect=tracked_lock
-        ), patch.object(
-            orchestrator,
-            "get_all_collectors",
-            return_value={source_id: Mock() for source_id in collector_ids},
-        ), patch.object(orchestrator, "get_all_processors", return_value={}), patch.object(
-            orchestrator, "_run_collector_impl", side_effect=collector_work
-        ), patch.object(orchestrator, "update_run_progress"), patch.object(
-            orchestrator, "finalize_run_safely", return_value=True
+        with (
+            patch.object(orchestrator, "accept_run"),
+            patch.object(orchestrator, "start_run", return_value=True),
+            patch.object(
+                orchestrator, "maintain_run_heartbeat", side_effect=heartbeat_guard
+            ) as heartbeat,
+            patch.object(orchestrator, "advisory_lock", side_effect=tracked_lock),
+            patch.object(
+                orchestrator,
+                "get_all_collectors",
+                return_value={source_id: Mock() for source_id in collector_ids},
+            ),
+            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(
+                orchestrator, "_run_collector_impl", side_effect=collector_work
+            ),
+            patch.object(orchestrator, "update_run_progress"),
+            patch.object(orchestrator, "finalize_run_safely", return_value=True),
         ):
-            result = orchestrator.run_full_cycle(config=config, correlation_id="cycle-id")
+            result = orchestrator.run_full_cycle(
+                config=config, correlation_id="cycle-id"
+            )
 
         heartbeat.assert_called_once()
         self.assertEqual(events[0][0], "heartbeat-enter")
@@ -355,14 +369,14 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             active -= 1
             return {"processor": processor_id, "status": "success"}
 
-        with patch.object(
-            orchestrator, "get_all_processors", return_value=processors
-        ), patch.object(orchestrator, "run_processor", side_effect=run):
+        with (
+            patch.object(orchestrator, "get_all_processors", return_value=processors),
+            patch.object(orchestrator, "run_processor", side_effect=run),
+        ):
             results = orchestrator._resolve_and_run_processors(
                 config={
                     "processors": {
-                        processor_id: {"enabled": True}
-                        for processor_id in processors
+                        processor_id: {"enabled": True} for processor_id in processors
                     }
                 },
                 correlation_id="cycle-id",
@@ -375,7 +389,9 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         )
         self.assertEqual(list(results), ["macro_regime", "independent", "briefing"])
         self.assertEqual(max_active, 1)
-        self.assertTrue(all(thread_id == coordinator_thread for _, thread_id, _ in calls))
+        self.assertTrue(
+            all(thread_id == coordinator_thread for _, thread_id, _ in calls)
+        )
         self.assertTrue(
             all(
                 kwargs["correlation_id"] == "cycle-id"

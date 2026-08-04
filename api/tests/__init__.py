@@ -8,7 +8,6 @@ from a running deployment.
 import os
 import tempfile
 
-
 _TEST_STATE_DIR = tempfile.mkdtemp(prefix="trading-api-tests-")
 os.environ["STATE_DIR"] = _TEST_STATE_DIR
 os.environ["LEGACY_STATE_DIR"] = ""

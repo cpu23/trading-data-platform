@@ -65,6 +65,36 @@ jobs:
       - name: Run orchestrator unit tests
         working-directory: orchestrator
         run: uv run python -m unittest discover -s tests -v
+  benchmark:
+    name: Published API benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up uv with cache
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: orchestrator/uv.lock
+      - name: Install locked benchmark environment
+        working-directory: orchestrator
+        run: uv sync --frozen
+      - name: Collect deterministic benchmark trend
+        working-directory: orchestrator
+        run: uv run python ../scripts/benchmark_api.py --fixture --warm-count 5 --output benchmark-api.json
+      - name: Upload benchmark trend artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-api-${{ github.run_id }}
+          path: orchestrator/benchmark-api.json
+          if-no-files-found: warn
+          retention-days: 30
+
 
   static:
     name: Static, migration, and fixture gates
@@ -93,8 +123,18 @@ jobs:
         run: uv sync --frozen
       - name: Compile Python sources
         run: python -m compileall -q -x '/\.venv/' api orchestrator scripts tests
-      - name: Lint syntax imports and undefined names
-        run: orchestrator/.venv/bin/ruff check api orchestrator scripts tests
+      - name: Run API Ruff quality gates
+        working-directory: api
+        run: uv run ruff check .
+      - name: Run orchestrator Ruff quality gates
+        working-directory: orchestrator
+        run: uv run ruff check .
+      - name: Type-check orchestrator database, configuration, and contracts
+        working-directory: orchestrator
+        run: uv run mypy db.py config_loader.py ../contracts
+      - name: Type-check API database, configuration, and contracts
+        working-directory: api
+        run: uv run mypy db.py config.py ../contracts
       - name: Validate migration inventory and behavior
         working-directory: orchestrator
         run: uv run python -m unittest tests/test_migrations.py -v

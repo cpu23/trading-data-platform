@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from http_client import make_request
 from logging_config import get_logger
@@ -29,7 +29,9 @@ class OandaCollector:
             if item.get("enabled", True)
         ]
 
-        account_id = self._get_account_id(base_url, api_key, oanda_config, correlation_id)
+        account_id = self._get_account_id(
+            base_url, api_key, oanda_config, correlation_id
+        )
         instruments = self._filter_supported_instruments(
             base_url, api_key, account_id, instruments, correlation_id
         )
@@ -104,14 +106,16 @@ class OandaCollector:
         )
         response.raise_for_status()
         supported = {
-            item.get("name") for item in response.json().get("instruments", [])
+            item.get("name")
+            for item in response.json().get("instruments", [])
             if item.get("name")
         }
         filtered = [
             item for item in instruments if item.get("oanda_instrument") in supported
         ]
         skipped = [
-            item.get("oanda_instrument") for item in instruments
+            item.get("oanda_instrument")
+            for item in instruments
             if item.get("oanda_instrument") not in supported
         ]
         if skipped:
@@ -246,8 +250,8 @@ class OandaCollector:
             raw = f"{prefix}.{fraction}{offset}"
         parsed = datetime.fromisoformat(raw)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     def get_schedule(self, config: dict) -> str:
         return config["collectors"]["oanda"]["schedule"]

@@ -2,6 +2,8 @@ import json
 import re
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from budgets import BudgetContext
 from db import get_session
 from llm_client import LLMStage, LLMValidationError
@@ -14,7 +16,6 @@ from processors.macro_trends import (
     format_macro_synthesis,
     format_trend_signals,
 )
-from sqlalchemy import text
 
 logger = get_logger("processor.macro_regime")
 

@@ -1,12 +1,14 @@
-import os
 import json
+import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+
 import httpx
 import yaml
 from fastapi import APIRouter, HTTPException, Request
+
 from auth import (
     ACTIVATION_FILE,
     AUTH_FILE,
@@ -95,9 +97,11 @@ def _write_secrets(updates: dict) -> None:
 def status():
     return {"setup_complete": setup_complete(), "demo_available": True}
 
+
 @router.post("/setup/activate")
 def activate(body: dict, request: Request):
-    if setup_complete(): raise HTTPException(409, "Setup is locked")
+    if setup_complete():
+        raise HTTPException(409, "Setup is locked")
     password = str(body.get("password", ""))
     if len(password) < 12:
         raise HTTPException(400, "Password must contain at least 12 characters")
@@ -123,27 +127,33 @@ def activate(body: dict, request: Request):
             os.replace(staging / filename, STATE_DIR / filename)
         _write_private_text(
             ACTIVATION_FILE,
-            json.dumps({
-                "activated_at": datetime.now(timezone.utc).isoformat(),
-                "version": 1,
-            }),
+            json.dumps(
+                {
+                    "activated_at": datetime.now(UTC).isoformat(),
+                    "version": 1,
+                }
+            ),
         )
         reload_config()
     except Exception as exc:
         ACTIVATION_FILE.unlink(missing_ok=True)
         for filename in ("auth.json", "operator.yaml", "secrets.env"):
             (STATE_DIR / filename).unlink(missing_ok=True)
-        raise HTTPException(500, "Setup could not be activated; you can safely retry") from exc
+        raise HTTPException(
+            500, "Setup could not be activated; you can safely retry"
+        ) from exc
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     request.session["authenticated"] = True
     request.session["csrf"] = os.urandom(24).hex()
-    request.session["issued_at"] = int(datetime.now(timezone.utc).timestamp())
+    request.session["issued_at"] = int(datetime.now(UTC).timestamp())
     return {"activated": True, "csrf_token": request.session["csrf"]}
+
 
 @router.put("/setup/profile")
 def update_profile(body: dict, request: Request):
-    if not request.session.get("authenticated"): raise HTTPException(401, "Login required")
+    if not request.session.get("authenticated"):
+        raise HTTPException(401, "Login required")
     path = STATE_DIR / "operator.yaml"
     profile = body.get("profile") or {}
     if "coverage" in body:
@@ -172,21 +182,26 @@ def test_connection(body: dict, request: Request):
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(400, f"Provider rejected the connection ({exc.response.status_code})") from exc
+        raise HTTPException(
+            400, f"Provider rejected the connection ({exc.response.status_code})"
+        ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(400, "Could not reach the provider endpoint") from exc
     return {"connected": True}
 
+
 @router.post("/login")
 def login(body: dict, request: Request):
-    if not setup_complete(): raise HTTPException(409, "Setup not complete")
+    if not setup_complete():
+        raise HTTPException(409, "Setup not complete")
     record = __import__("json").loads(AUTH_FILE.read_text())
     if not verify_password(str(body.get("password", "")), record):
         raise HTTPException(401, "Invalid credentials")
     request.session["authenticated"] = True
     request.session["csrf"] = os.urandom(24).hex()
-    request.session["issued_at"] = int(datetime.now(timezone.utc).timestamp())
+    request.session["issued_at"] = int(datetime.now(UTC).timestamp())
     return {"authenticated": True, "csrf_token": request.session["csrf"]}
+
 
 @router.post("/logout")
 def logout(request: Request):

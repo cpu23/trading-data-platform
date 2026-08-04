@@ -31,7 +31,11 @@ def _local_time(value, zone):
     if not value:
         return None
     try:
-        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
         return parsed.astimezone(zone).strftime("%d %b %Y %H:%M %Z")
     except (TypeError, ValueError):
         return None
@@ -42,8 +46,16 @@ def _duration_ms(row: dict):
     if value is not None:
         return value
     try:
-        start = row["started_at"] if isinstance(row["started_at"], datetime) else datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
-        end = row["completed_at"] if isinstance(row["completed_at"], datetime) else datetime.fromisoformat(str(row["completed_at"]).replace("Z", "+00:00"))
+        start = (
+            row["started_at"]
+            if isinstance(row["started_at"], datetime)
+            else datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
+        )
+        end = (
+            row["completed_at"]
+            if isinstance(row["completed_at"], datetime)
+            else datetime.fromisoformat(str(row["completed_at"]).replace("Z", "+00:00"))
+        )
         return max(0, int((end - start).total_seconds() * 1000))
     except (KeyError, TypeError, ValueError):
         return None
@@ -61,10 +73,18 @@ def _local_snapshot(request: Request) -> dict:
             params={"limit": OVERVIEW_LIMIT},
             config=config,
         )
-        processors = {"available": True, "items": [
-            {**row, "time_display": _local_time(row.get("started_at"), tz["display_zone"])}
-            for row in processor_rows
-        ]}
+        processors = {
+            "available": True,
+            "items": [
+                {
+                    **row,
+                    "time_display": _local_time(
+                        row.get("started_at"), tz["display_zone"]
+                    ),
+                }
+                for row in processor_rows
+            ],
+        }
     except Exception:
         processors = unavailable
 
@@ -81,18 +101,27 @@ def _local_snapshot(request: Request) -> dict:
             params={"limit": OVERVIEW_LIMIT},
             config=config,
         )
-        runs = {"available": True, "items": [
-            {
-                "correlation_id": str(row.get("correlation_id", "")),
-                "mode": row.get("run_kind") or "cycle",
-                "component": row.get("requested_component") or "all",
-                "status": row.get("result_status") or row.get("status") or "unknown",
-                "duration_ms": _duration_ms(row),
-                "time_display": _local_time(row.get("started_at"), tz["display_zone"]),
-                "summary": "Completed with errors" if row.get("error_message") else "—",
-            }
-            for row in run_rows
-        ]}
+        runs = {
+            "available": True,
+            "items": [
+                {
+                    "correlation_id": str(row.get("correlation_id", "")),
+                    "mode": row.get("run_kind") or "cycle",
+                    "component": row.get("requested_component") or "all",
+                    "status": row.get("result_status")
+                    or row.get("status")
+                    or "unknown",
+                    "duration_ms": _duration_ms(row),
+                    "time_display": _local_time(
+                        row.get("started_at"), tz["display_zone"]
+                    ),
+                    "summary": "Completed with errors"
+                    if row.get("error_message")
+                    else "—",
+                }
+                for row in run_rows
+            ],
+        }
     except Exception:
         runs = unavailable
 
@@ -108,15 +137,23 @@ async def operations_overview(request: Request):
         if isinstance(health, JSONResponse):
             source_state = unavailable
         else:
-            source_state = {"available": True, "readiness": health.get("readiness", "unknown"), "components": health.get("components", [])[:OVERVIEW_LIMIT]}
+            source_state = {
+                "available": True,
+                "readiness": health.get("readiness", "unknown"),
+                "components": health.get("components", [])[:OVERVIEW_LIMIT],
+            }
     except Exception:
         source_state = unavailable
 
-    return request.app.state.templates.TemplateResponse(request, "operations.html", {
-        "request": request,
-        **snapshot["tz"],
-        "source_state": source_state,
-        "processors": snapshot["processors"],
-        "feed": snapshot["feed"],
-        "runs": snapshot["runs"],
-    })
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "operations.html",
+        {
+            "request": request,
+            **snapshot["tz"],
+            "source_state": source_state,
+            "processors": snapshot["processors"],
+            "feed": snapshot["feed"],
+            "runs": snapshot["runs"],
+        },
+    )

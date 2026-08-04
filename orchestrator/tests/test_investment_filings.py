@@ -8,7 +8,6 @@ import investment_filings as filings
 
 
 class SecEdgarDiscoveryTests(unittest.TestCase):
-
     def test_pad_cik(self):
         self.assertEqual(filings._sec_pad_cik("320193"), "0000320193")
         self.assertEqual(filings._sec_pad_cik("0001045810"), "0001045810")
@@ -33,9 +32,17 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
             "filings": {
                 "recent": {
                     "form": ["10-K", "8-K", "DEF 14A"],
-                    "accessionNumber": ["0001045810-25-000001", "0001045810-25-000002", "0001045810-25-000003"],
+                    "accessionNumber": [
+                        "0001045810-25-000001",
+                        "0001045810-25-000002",
+                        "0001045810-25-000003",
+                    ],
                     "filingDate": ["2025-03-15", "2025-02-28", "2025-01-10"],
-                    "primaryDocument": ["nvda-20250131.htm", "nvda-8k.htm", "nvda-def14a.htm"],
+                    "primaryDocument": [
+                        "nvda-20250131.htm",
+                        "nvda-8k.htm",
+                        "nvda-def14a.htm",
+                    ],
                     "primaryDocDescription": ["10-K", "8-K", "DEF 14A"],
                 }
             }
@@ -43,7 +50,13 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
         mock_response.raise_for_status = MagicMock()
         mock_client.return_value.get.return_value = mock_response
 
-        company = {"company": "NVIDIA", "symbol": "NVDA", "cik": "1045810", "region": "US", "industry": "Semiconductors"}
+        company = {
+            "company": "NVIDIA",
+            "symbol": "NVDA",
+            "cik": "1045810",
+            "region": "US",
+            "industry": "Semiconductors",
+        }
         results = filings.discover_sec_filings(company, since=date(2025, 1, 1))
         # DEF 14A is not in SEC_FILING_FORMS, so only 2 results
         self.assertEqual(len(results), 2)
@@ -63,8 +76,20 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
                 "recent": {
                     "form": ["8-K", "8-K/A", "10-Q", "10-Q/A", "10-K"],
                     "accessionNumber": ["a1", "a2", "q1", "q2", "k1"],
-                    "filingDate": ["2026-07-05", "2026-07-04", "2026-07-03", "2026-07-02", "2026-07-01"],
-                    "primaryDocument": ["a1.htm", "a2.htm", "q1.htm", "q2.htm", "k1.htm"],
+                    "filingDate": [
+                        "2026-07-05",
+                        "2026-07-04",
+                        "2026-07-03",
+                        "2026-07-02",
+                        "2026-07-01",
+                    ],
+                    "primaryDocument": [
+                        "a1.htm",
+                        "a2.htm",
+                        "q1.htm",
+                        "q2.htm",
+                        "k1.htm",
+                    ],
                     "primaryDocDescription": ["8-K", "8-K/A", "10-Q", "10-Q/A", "10-K"],
                 }
             }
@@ -108,7 +133,6 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
         results = filings.discover_sec_filings(company, since=date(2025, 1, 1))
         self.assertEqual(results, [])
 
-
     @patch("investment_filings._sleep_between_requests")
     @patch("investment_filings.make_request")
     @patch("investment_filings.get_shared_client")
@@ -129,11 +153,15 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
             }
         }
         primary_response = MagicMock(
-            content=b"<html><body>" + b"Primary annual report evidence. " * 8 + b"</body></html>",
+            content=b"<html><body>"
+            + b"Primary annual report evidence. " * 8
+            + b"</body></html>",
             headers={"content-type": "text/html"},
         )
         exhibit_response = MagicMock(
-            content=b"<html><body>" + b"Investor presentation exhibit evidence. " * 8 + b"</body></html>",
+            content=b"<html><body>"
+            + b"Investor presentation exhibit evidence. " * 8
+            + b"</body></html>",
             headers={"content-type": "text/html"},
         )
         image_response = MagicMock(
@@ -193,14 +221,17 @@ class SecEdgarDiscoveryTests(unittest.TestCase):
             zip_response,
         ]
 
-        content, _, _ = filings._fetch_sec_directory_bundle({
-            "directory_url": "https://www.sec.gov/Archives/edgar/data/1/large/",
-            "filing_id": "0000000001-25-000003",
-            "filename": "0000000001-25-000003.txt",
-        })
+        content, _, _ = filings._fetch_sec_directory_bundle(
+            {
+                "directory_url": "https://www.sec.gov/Archives/edgar/data/1/large/",
+                "filing_id": "0000000001-25-000003",
+                "filename": "0000000001-25-000003.txt",
+            }
+        )
 
         self.assertEqual(mock_request.call_count, 3)
         self.assertIn(b'"filename": "exhibits.zip"', content)
+
 
 class EdinetDiscoveryTests(unittest.TestCase):
     @patch("investment_filings.get_shared_client")
@@ -216,6 +247,7 @@ class EdinetDiscoveryTests(unittest.TestCase):
         results = filings.discover_edinet_filings(company, api_key="test-key")
         self.assertEqual(results, [])
         mock_client.assert_not_called()
+
 
 class CompaniesHouseDiscoveryTests(unittest.TestCase):
     def test_rate_limit_stays_below_service_ceiling(self):
@@ -338,7 +370,6 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
         self.assertEqual(filename, "transaction-1.html")
         self.assertEqual(mime_type, "application/xhtml+xml")
 
-
     @patch("investment_filings.get_shared_client")
     def test_downloads_zip_when_it_is_the_only_resource(self, mock_client):
         metadata_response = MagicMock()
@@ -384,15 +415,36 @@ class OpenDartDiscoveryTests(unittest.TestCase):
         mock_response.json.return_value = {
             "status": "000",
             "list": [
-                {"report_code": "11011", "rcept_no": "20250315001234", "rcept_dt": "20250315", "report_nm": "Annual Report"},
-                {"report_code": "11013", "rcept_no": "20250515001234", "rcept_dt": "20250515", "report_nm": "Q1 Report"},
-                {"report_code": "99999", "rcept_no": "20250601001234", "rcept_dt": "20250601", "report_nm": "Other"},
+                {
+                    "report_code": "11011",
+                    "rcept_no": "20250315001234",
+                    "rcept_dt": "20250315",
+                    "report_nm": "Annual Report",
+                },
+                {
+                    "report_code": "11013",
+                    "rcept_no": "20250515001234",
+                    "rcept_dt": "20250515",
+                    "report_nm": "Q1 Report",
+                },
+                {
+                    "report_code": "99999",
+                    "rcept_no": "20250601001234",
+                    "rcept_dt": "20250601",
+                    "report_nm": "Other",
+                },
             ],
         }
         mock_response.raise_for_status = MagicMock()
         mock_client.return_value.get.return_value = mock_response
 
-        company = {"company": "Samsung", "symbol": "005930.KS", "dart_code": "00126380", "region": "ASIA", "industry": "Semiconductors"}
+        company = {
+            "company": "Samsung",
+            "symbol": "005930.KS",
+            "dart_code": "00126380",
+            "region": "ASIA",
+            "industry": "Semiconductors",
+        }
         results = filings.discover_opendart_filings(company, api_key="test-key")
         # Only 11011 and 11013 are valid report codes
         self.assertEqual(len(results), 2)
@@ -415,17 +467,34 @@ class FilingCollectionTests(unittest.TestCase):
     @patch("investment_filings.discover_sec_filings")
     def test_skips_already_ingested(self, mock_discover, mock_ingested):
         mock_discover.return_value = [
-            {"source": "sec_edgar", "filing_id": "0001045810-25-000001",
-             "company": "NVDA", "symbol": "NVDA", "region": "US",
-             "industry": "Semi", "document_type": "annual_report", "report_date": "2025-03-15",
-             "source_url": "https://example.com/filing1/", "directory_url": "https://example.com/filing1/",
-             "filename": "f1.htm", "form": "10-K"}
+            {
+                "source": "sec_edgar",
+                "filing_id": "0001045810-25-000001",
+                "company": "NVDA",
+                "symbol": "NVDA",
+                "region": "US",
+                "industry": "Semi",
+                "document_type": "annual_report",
+                "report_date": "2025-03-15",
+                "source_url": "https://example.com/filing1/",
+                "directory_url": "https://example.com/filing1/",
+                "filename": "f1.htm",
+                "form": "10-K",
+            }
         ]
         config = {
             "investment_filings": {
                 "enabled": True,
                 "lookback_days": 30,
-                "companies": [{"company": "NVDA", "symbol": "NVDA", "cik": "1045810", "region": "US", "industry": "Semi"}],
+                "companies": [
+                    {
+                        "company": "NVDA",
+                        "symbol": "NVDA",
+                        "cik": "1045810",
+                        "region": "US",
+                        "industry": "Semi",
+                    }
+                ],
             }
         }
         result = filings.run_filing_collection(config)
@@ -447,18 +516,35 @@ class FilingCollectionTests(unittest.TestCase):
         mock_store,
     ):
         mock_discover.return_value = [
-            {"source": "sec_edgar", "filing_id": "0001045810-25-000001",
-             "company": "NVDA", "symbol": "NVDA", "region": "US",
-             "industry": "Semi", "document_type": "annual_report", "report_date": "2025-03-15",
-             "source_url": "https://example.com/filing1/", "directory_url": "https://example.com/filing1/",
-             "filename": "f1.htm", "form": "10-K"}
+            {
+                "source": "sec_edgar",
+                "filing_id": "0001045810-25-000001",
+                "company": "NVDA",
+                "symbol": "NVDA",
+                "region": "US",
+                "industry": "Semi",
+                "document_type": "annual_report",
+                "report_date": "2025-03-15",
+                "source_url": "https://example.com/filing1/",
+                "directory_url": "https://example.com/filing1/",
+                "filename": "f1.htm",
+                "form": "10-K",
+            }
         ]
         mock_store.return_value = {"document_id": "abc-123", "status": "stored"}
         config = {
             "investment_filings": {
                 "enabled": True,
                 "lookback_days": 30,
-                "companies": [{"company": "NVDA", "symbol": "NVDA", "cik": "1045810", "region": "US", "industry": "Semi"}],
+                "companies": [
+                    {
+                        "company": "NVDA",
+                        "symbol": "NVDA",
+                        "cik": "1045810",
+                        "region": "US",
+                        "industry": "Semi",
+                    }
+                ],
             }
         }
         result = filings.run_filing_collection(config)
@@ -470,7 +556,6 @@ class FilingCollectionTests(unittest.TestCase):
         metadata = mock_store.call_args.args[1]
         self.assertEqual(metadata["filing_source"], "sec_edgar")
         self.assertEqual(metadata["filing_id"], "0001045810-25-000001")
-
 
     @patch("investment_filings._sleep_between_requests")
     @patch("investment_filings.discover_companies_house_filings", return_value=[])
@@ -501,12 +586,17 @@ class FilingCollectionTests(unittest.TestCase):
         discover_sec.assert_called_once()
         discover_companies_house.assert_called_once()
 
+
 class FilingSourceStatusTests(unittest.TestCase):
     @patch("investment_filings.get_session")
     def test_status_returns_sources(self, mock_session):
-        mock_session.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            execute=MagicMock(return_value=MagicMock(fetchone=MagicMock(return_value=None)))
-        ))
+        mock_session.return_value.__enter__ = MagicMock(
+            return_value=MagicMock(
+                execute=MagicMock(
+                    return_value=MagicMock(fetchone=MagicMock(return_value=None))
+                )
+            )
+        )
         mock_session.return_value.__exit__ = MagicMock(return_value=False)
 
         config = {
@@ -515,9 +605,24 @@ class FilingSourceStatusTests(unittest.TestCase):
                 "schedule": "0 8 * * 1-5",
                 "companies_house_api_key": "test-key",
                 "companies": [
-                    {"company": "NVDA", "cik": "1045810", "region": "US", "market": "US"},
-                    {"company": "AstraZeneca", "company_number": "02723534", "region": "EU", "market": "UK"},
-                    {"company": "SAP", "cik": "1000184", "region": "EU", "market": "EU"},
+                    {
+                        "company": "NVDA",
+                        "cik": "1045810",
+                        "region": "US",
+                        "market": "US",
+                    },
+                    {
+                        "company": "AstraZeneca",
+                        "company_number": "02723534",
+                        "region": "EU",
+                        "market": "UK",
+                    },
+                    {
+                        "company": "SAP",
+                        "cik": "1000184",
+                        "region": "EU",
+                        "market": "EU",
+                    },
                 ],
             }
         }
@@ -529,19 +634,16 @@ class FilingSourceStatusTests(unittest.TestCase):
         self.assertTrue(sec["enabled"])
         self.assertEqual(sec["companies"], 2)
         companies_house = next(
-            source for source in status["sources"]
-            if source["id"] == "companies_house"
+            source for source in status["sources"] if source["id"] == "companies_house"
         )
         self.assertTrue(companies_house["enabled"])
         self.assertEqual(companies_house["companies"], 1)
         self.assertTrue(companies_house["api_key_configured"])
         eu_esef = next(
-            source for source in status["sources"]
-            if source["id"] == "eu_esef"
+            source for source in status["sources"] if source["id"] == "eu_esef"
         )
         self.assertFalse(eu_esef["enabled"])
         self.assertEqual(eu_esef["companies"], 1)
-
 
     @patch("investment_filings.get_session")
     def test_status_reads_latest_durable_filings_run(self, get_session):
@@ -558,12 +660,14 @@ class FilingSourceStatusTests(unittest.TestCase):
         get_session.return_value.__enter__ = MagicMock(return_value=session)
         get_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        status = filings.get_filing_source_status({
-            "investment_filings": {
-                "enabled": True,
-                "companies": [],
+        status = filings.get_filing_source_status(
+            {
+                "investment_filings": {
+                    "enabled": True,
+                    "companies": [],
+                }
             }
-        })
+        )
 
         statement = str(session.execute.call_args.args[0])
         self.assertIn("FROM cycle_runs", statement)
@@ -585,9 +689,9 @@ class FilingSourceStatusTests(unittest.TestCase):
         get_session.return_value.__enter__ = MagicMock(return_value=session)
         get_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        status = filings.get_filing_source_status({
-            "investment_filings": {"enabled": True, "companies": []}
-        })
+        status = filings.get_filing_source_status(
+            {"investment_filings": {"enabled": True, "companies": []}}
+        )
 
         self.assertEqual(status["last_run"]["accepted_at"], "2026-07-29T15:40:15+00:00")
         self.assertEqual(status["last_run"]["completed_at"], "")
@@ -604,7 +708,9 @@ class FilingUniverseTests(unittest.TestCase):
         self.assertEqual(len(us_companies), 100)
         self.assertEqual(len(uk_companies), 100)
         self.assertEqual(len(eu_companies), 100)
-        self.assertEqual([company["market_rank"] for company in eu_companies], list(range(1, 101)))
+        self.assertEqual(
+            [company["market_rank"] for company in eu_companies], list(range(1, 101))
+        )
         self.assertEqual(len({company["symbol"] for company in eu_companies}), 100)
         self.assertEqual(sum(bool(company.get("cik")) for company in eu_companies), 29)
         self.assertEqual(len({company["symbol"] for company in universe}), 300)

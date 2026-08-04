@@ -1,4 +1,5 @@
 """Typed outcomes shared by news source collectors."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ class NewsCollectionResult:
     error: str | None = None
     publication: NewsPublication | None = None
     feed_published: bool = False
+    error_class: (
+        Literal["transient_source", "invalid_source_data", "persistence"] | None
+    ) = None
 
     @property
     def succeeded(self) -> bool:

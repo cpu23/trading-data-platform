@@ -1,21 +1,43 @@
 import os
 import re
+from typing import Any, TypeAlias, TypedDict, cast
 
 import yaml
 
-_config_cache: dict | None = None
+ConfigValue: TypeAlias = (
+    str | int | float | bool | None | dict[str, "ConfigValue"] | list["ConfigValue"]
+)
+ConfigMap: TypeAlias = dict[str, Any]
+
+
+class DatabaseConfig(TypedDict):
+    user: str
+    password: str
+    host: str
+    port: int | str
+    name: str
+
+
+class AppConfig(TypedDict, total=False):
+    database: DatabaseConfig
+    demo: dict[str, bool]
+    collectors: dict[str, dict[str, Any]]
+    processors: dict[str, dict[str, Any]]
+
+
+_config_cache: AppConfig | None = None
+
 _config_cache_path: str | None = None
 _config_cache_mtime_ns: int | None = None
 _operator_cache_mtime_ns: int | None = None
 
-_ENV_VAR_PATTERN = re.compile(
-    r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
-)
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 def _load_private_environment() -> None:
     path = os.environ.get("SECRETS_FILE", "/app/state/secrets.env")
-    if not os.path.exists(path): return
+    if not os.path.exists(path):
+        return
     with open(path) as handle:
         for line in handle:
             line = line.strip()
@@ -24,16 +46,17 @@ def _load_private_environment() -> None:
                 os.environ[key] = value
 
 
-def _merge(base, override):
+def _merge(base: object, override: object) -> object:
     if isinstance(base, dict) and isinstance(override, dict):
-        result = dict(base)
-        for key, value in override.items(): result[key] = _merge(result.get(key), value)
+        result: ConfigMap = dict(base)
+        for key, value in override.items():
+            result[str(key)] = _merge(result.get(str(key)), value)
         return result
     return override
 
 
 def _substitute_env_vars(value: str) -> str:
-    def _replace(match: re.Match) -> str:
+    def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
         default = match.group(2)
         if var_name in os.environ:
@@ -56,20 +79,26 @@ def _substitute_recursive(obj: object) -> object:
     if isinstance(obj, str):
         return _substitute_env_vars(obj)
     if isinstance(obj, dict):
-        return {k: _substitute_recursive(v) for k, v in obj.items()}
+        return {str(k): _substitute_recursive(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_substitute_recursive(item) for item in obj]
     return obj
 
 
-def load_config(config_path: str | None = None) -> dict:
+def load_config(config_path: str | None = None) -> AppConfig:
     _load_private_environment()
     if config_path is None:
         config_path = os.environ.get("CONFIG_DIR", "/app/config") + "/config.yaml"
 
-    global _config_cache, _config_cache_path, _config_cache_mtime_ns, _operator_cache_mtime_ns
+    global \
+        _config_cache, \
+        _config_cache_path, \
+        _config_cache_mtime_ns, \
+        _operator_cache_mtime_ns
     operator_path = os.environ.get("OPERATOR_CONFIG", "/app/state/operator.yaml")
-    operator_mtime_ns = os.stat(operator_path).st_mtime_ns if os.path.exists(operator_path) else None
+    operator_mtime_ns = (
+        os.stat(operator_path).st_mtime_ns if os.path.exists(operator_path) else None
+    )
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
@@ -88,7 +117,7 @@ def load_config(config_path: str | None = None) -> dict:
         with open(operator_path) as handle:
             raw_config = _merge(raw_config, yaml.safe_load(handle) or {})
 
-    config = _substitute_recursive(raw_config)
+    config = cast(AppConfig, _substitute_recursive(raw_config))
     if os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes"):
         config["demo"] = {"enabled": True}
     _config_cache = config
@@ -98,8 +127,12 @@ def load_config(config_path: str | None = None) -> dict:
     return config
 
 
-def reload_config(config_path: str | None = None) -> dict:
-    global _config_cache, _config_cache_path, _config_cache_mtime_ns, _operator_cache_mtime_ns
+def reload_config(config_path: str | None = None) -> AppConfig:
+    global \
+        _config_cache, \
+        _config_cache_path, \
+        _config_cache_mtime_ns, \
+        _operator_cache_mtime_ns
     _config_cache = None
     _config_cache_path = None
     _config_cache_mtime_ns = None

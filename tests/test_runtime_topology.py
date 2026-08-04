@@ -3,7 +3,6 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = (ROOT / "docker-compose.yml", ROOT / "docker-compose.demo.yml")
 

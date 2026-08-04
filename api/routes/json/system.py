@@ -1,14 +1,22 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
-from db import query_many, query_one
 from budgets import get_budget_status
-from staleness import get_staleness_config, is_stale
+from contracts import (
+    OrchestratorHealthResponse,
+    RunDetailResponse,
+    RunListResponse,
+    RunStatusResponse,
+    SystemHealthResponse,
+)
+from db import query_many, query_one
 from logging_config import get_logger
+from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
 
@@ -32,7 +40,7 @@ def _load_local_health_data():
            ORDER BY processor, started_at DESC""",
         config=config,
     )
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     cost_rows = query_many(
         "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, "
         "COALESCE(SUM(tokens_input + tokens_output), 0) as total_tokens "
@@ -51,21 +59,6 @@ def _normalized_lines(raw: str) -> int:
         raise HTTPException(status_code=422, detail="lines must be at least 1")
     return min(value, 1000)
 
-# Explicit enums mirror the values emitted by orchestrator/main.py,
-# scheduler.py, price_stream.py, and data_quality.py. Keep these contracts
-# narrow so malformed upstream data cannot reach downstream ``.get()`` calls.
-ORCHESTRATOR_COMPONENT_STATUSES = {"available", "unavailable", "degraded"}
-ORCHESTRATOR_COMPONENT_KINDS = {"service", "data"}
-ORCHESTRATOR_SCHEDULER_STATUSES = {"running", "stopped"}
-ORCHESTRATOR_STREAM_STATUSES = {"stopped", "simulated", "connected", "reconnecting"}
-ORCHESTRATOR_QUALITY_STATUSES = {
-    "healthy", "degraded", "unhealthy", "fresh", "stale", "future",
-    "future-invalid", "future_invalid",
-}
-ORCHESTRATOR_FRESHNESS_STATUSES = {
-    "fresh", "stale", "future", "future-invalid", "future_invalid",
-}
-
 
 def _fmt(value):
     if value is None:
@@ -75,148 +68,17 @@ def _fmt(value):
     return str(value)
 
 
-def _validate_orchestrator_health_contract(payload):
-    if not isinstance(payload, dict):
-        raise ValueError("invalid orchestrator health contract: payload must be an object")
-    if payload.get("liveness") != "ok":
-        raise ValueError("invalid orchestrator health contract: liveness must be 'ok'")
-    if payload.get("readiness") not in {"ready", "degraded", "unready"}:
-        raise ValueError("invalid orchestrator health contract: invalid readiness")
-    if payload.get("data_health") not in {"healthy", "degraded"}:
-        raise ValueError("invalid orchestrator health contract: invalid data_health")
-
-    components = payload.get("components")
-    if not isinstance(components, list):
-        raise ValueError("invalid orchestrator health contract: components must be a list")
-    for index, component in enumerate(components):
-        if not isinstance(component, dict):
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} must be an object"
-            )
-        if not isinstance(component.get("name"), str) or not component["name"].strip():
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} has invalid name"
-            )
-        if not isinstance(component.get("status"), str) or component["status"] not in ORCHESTRATOR_COMPONENT_STATUSES:
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} has invalid status"
-            )
-        if "kind" in component and (
-            not isinstance(component["kind"], str)
-            or component["kind"] not in ORCHESTRATOR_COMPONENT_KINDS
-        ):
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} has invalid kind"
-            )
-        if "critical" in component and not isinstance(component["critical"], bool):
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} has invalid critical flag"
-            )
-        if "reason" in component and component["reason"] is not None and not isinstance(
-            component["reason"], str
-        ):
-            raise ValueError(
-                f"invalid orchestrator health contract: component {index} has invalid reason"
-            )
-
-    if "scheduler" in payload:
-        scheduler = payload["scheduler"]
-        if not isinstance(scheduler, dict):
-            raise ValueError("invalid orchestrator health contract: scheduler must be an object")
-        if "status" in scheduler and (
-            not isinstance(scheduler["status"], str)
-            or scheduler["status"] not in ORCHESTRATOR_SCHEDULER_STATUSES
-        ):
-            raise ValueError("invalid orchestrator health contract: scheduler has invalid status")
-        if "checked_at" in scheduler and scheduler["checked_at"] is not None and not isinstance(
-            scheduler["checked_at"], str
-        ):
-            raise ValueError("invalid orchestrator health contract: scheduler has invalid checked_at")
-        jobs = scheduler.get("jobs")
-        if not isinstance(jobs, list):
-            raise ValueError("invalid orchestrator health contract: scheduler jobs must be a list")
-        for index, job in enumerate(jobs):
-            if not isinstance(job, dict):
-                raise ValueError(
-                    f"invalid orchestrator health contract: scheduler job {index} must be an object"
-                )
-            if not isinstance(job.get("id"), str) or not job["id"].strip():
-                raise ValueError(
-                    f"invalid orchestrator health contract: scheduler job {index} has invalid id"
-                )
-            if "next_due_at" in job and job["next_due_at"] is not None and not isinstance(
-                job["next_due_at"], str
-            ):
-                raise ValueError(
-                    f"invalid orchestrator health contract: scheduler job {index} has invalid next_due_at"
-                )
-
-    if "stream" in payload:
-        stream = payload["stream"]
-        if not isinstance(stream, dict):
-            raise ValueError("invalid orchestrator health contract: stream must be an object")
-        if not isinstance(stream.get("status"), str) or stream["status"] not in ORCHESTRATOR_STREAM_STATUSES:
-            raise ValueError("invalid orchestrator health contract: stream has invalid status")
-        for field in ("last_heartbeat", "error"):
-            if field in stream and stream[field] is not None and not isinstance(stream[field], str):
-                raise ValueError(
-                    f"invalid orchestrator health contract: stream has invalid {field}"
-                )
-
-
-def _validate_orchestrator_quality_contract(payload):
-    if not isinstance(payload, dict):
-        raise ValueError("invalid orchestrator quality contract: payload must be an object")
-    if payload.get("overall") not in {"healthy", "degraded", "unhealthy"}:
-        raise ValueError("invalid orchestrator quality contract: invalid overall status")
-
-    checks = payload.get("checks")
-    if not isinstance(checks, (dict, list)):
-        raise ValueError("invalid orchestrator quality contract: checks must be an object or list")
-    entries = checks.items() if isinstance(checks, dict) else enumerate(checks)
-    for check_id, check in entries:
-        if isinstance(checks, dict) and not isinstance(check_id, str):
-            raise ValueError("invalid orchestrator quality contract: check names must be strings")
-        if not isinstance(check, dict):
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} must be an object"
-            )
-        if not check:
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} must not be empty"
-            )
-        if not isinstance(check.get("healthy"), bool):
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} has invalid healthy flag"
-            )
-        for field in ("name", "status", "freshness", "detail", "source_id"):
-            if field in check and not isinstance(check[field], str):
-                raise ValueError(
-                    f"invalid orchestrator quality contract: check {check_id} has invalid {field}"
-                )
-        if not any(isinstance(check.get(field), str) and check[field].strip() for field in (
-            "status", "freshness", "detail",
-        )):
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} has no meaningful result"
-            )
-        if "status" in check and check["status"].lower() not in ORCHESTRATOR_QUALITY_STATUSES:
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} has invalid status"
-            )
-        if "freshness" in check and check["freshness"].lower() not in ORCHESTRATOR_FRESHNESS_STATUSES:
-            raise ValueError(
-                f"invalid orchestrator quality contract: check {check_id} has invalid freshness"
-            )
-
-
-@router.get("/system/health")
+@router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(request: Request):
     # ── DB queries (wrapped — failure → readiness "unready", HTTP 503) ──
     try:
-        config, thresholds, collector_rows, processor_rows, cost_rows = await run_in_threadpool(
-            _load_local_health_data
-        )
+        (
+            config,
+            thresholds,
+            collector_rows,
+            processor_rows,
+            cost_rows,
+        ) = await run_in_threadpool(_load_local_health_data)
     except Exception:
         logger.error("db_unavailable")
         return JSONResponse(
@@ -246,24 +108,49 @@ async def get_system_health(request: Request):
     # ── Initialize quality_warn_map BEFORE using it ──
     quality = {}
     quality_warn_map = {}
+    contract_error: str | None = None
 
     # ── Fetch and validate the orchestrator snapshot once ──
     try:
         health_response = await request.app.state.orchestrator_client.get(
-            "http://orchestrator:8000/health", timeout=5.0,
+            "http://orchestrator:8000/health",
+            timeout=5.0,
         )
         health_response.raise_for_status()
-        orchestration = health_response.json()
-        _validate_orchestrator_health_contract(orchestration)
-        if orchestration["readiness"] == "unready":
+        orchestration_model = OrchestratorHealthResponse.model_validate(
+            health_response.json()
+        )
+        if orchestration_model.readiness == "unready":
             raise ValueError(
-                f"orchestrator is not ready ({orchestration['readiness']})"
+                f"orchestrator is not ready ({orchestration_model.readiness})"
             )
-        quality = orchestration.get("quality")
-        _validate_orchestrator_quality_contract(quality)
+        orchestration = orchestration_model.model_dump(mode="python")
+        if orchestration_model.quality is None:
+            raise ValueError("invalid orchestrator quality contract: missing quality")
+        quality = orchestration_model.quality.model_dump(mode="python")
+    except ValidationError as exc:
+        quality_invalid = any(
+            error.get("loc") and error["loc"][0] == "quality"
+            for error in exc.errors(include_url=False, include_context=False)
+        )
+        contract_error = (
+            "invalid orchestrator quality contract"
+            if quality_invalid
+            else "invalid orchestrator health contract"
+        )
+        logger.warning(
+            "orchestrator_contract_unavailable",
+            error=contract_error,
+            validation_error_count=exc.error_count(),
+        )
     except Exception as exc:
-        reason = str(exc) or type(exc).__name__
-        logger.warning("orchestrator_contract_unavailable", error=reason)
+        contract_error = str(exc) or type(exc).__name__
+        logger.warning(
+            "orchestrator_contract_unavailable",
+            error=contract_error,
+            exception_type=type(exc).__name__,
+        )
+    if contract_error is not None:
         return JSONResponse(
             status_code=503,
             content={
@@ -273,15 +160,22 @@ async def get_system_health(request: Request):
                 "overall": "degraded",
                 "components": [
                     {
-                        "name": "orchestrator", "kind": "service",
-                        "last_run_at": None, "last_status": "error",
-                        "next_due_at": None, "stale": True,
-                        "quality_warn": False, "error_message": reason,
+                        "name": "orchestrator",
+                        "kind": "service",
+                        "last_run_at": None,
+                        "last_status": "error",
+                        "next_due_at": None,
+                        "stale": True,
+                        "quality_warn": False,
+                        "error_message": contract_error,
                     },
                     {
-                        "name": "live_prices", "kind": "stream",
-                        "last_run_at": None, "last_status": "unknown",
-                        "next_due_at": None, "stale": True,
+                        "name": "live_prices",
+                        "kind": "stream",
+                        "last_run_at": None,
+                        "last_status": "unknown",
+                        "next_due_at": None,
+                        "stale": True,
                         "quality_warn": False,
                         "error_message": "orchestrator unavailable",
                     },
@@ -299,9 +193,13 @@ async def get_system_health(request: Request):
     stream_info = orchestration.get("stream", {})
 
     raw_checks = quality["checks"]
-    checks_iter = raw_checks.items() if isinstance(raw_checks, dict) else (
-        (check.get("name", f"check_{index}"), check)
-        for index, check in enumerate(raw_checks)
+    checks_iter = (
+        raw_checks.items()
+        if isinstance(raw_checks, dict)
+        else (
+            (check.get("name", f"check_{index}"), check)
+            for index, check in enumerate(raw_checks)
+        )
     )
     unhealthy_checks = []
     invalid_states = {"unhealthy", "stale", "future-invalid", "future_invalid"}
@@ -320,16 +218,20 @@ async def get_system_health(request: Request):
     stream_stale = True
     if stream_info:
         stream_stale = stream_info.get("status") not in ("connected", "simulated")
-    components.append({
-        "name": "live_prices",
-        "kind": "stream",
-        "last_run_at": stream_info.get("last_heartbeat") if stream_info else None,
-        "last_status": stream_info.get("status", "stopped") if stream_info else "unknown",
-        "next_due_at": None,
-        "stale": stream_stale,
-        "quality_warn": quality_warn_map.get("live_prices", False),
-        "error_message": None,
-    })
+    components.append(
+        {
+            "name": "live_prices",
+            "kind": "stream",
+            "last_run_at": stream_info.get("last_heartbeat") if stream_info else None,
+            "last_status": stream_info.get("status", "stopped")
+            if stream_info
+            else "unknown",
+            "next_due_at": None,
+            "stale": stream_stale,
+            "quality_warn": quality_warn_map.get("live_prices", False),
+            "error_message": None,
+        }
+    )
 
     if quality_degraded:
         reasons = [
@@ -338,16 +240,18 @@ async def get_system_health(request: Request):
         ]
         if not reasons:
             reasons = [f"orchestrator quality overall is {quality.get('overall')}"]
-        components.append({
-            "name": "quality_checks",
-            "kind": "data",
-            "last_run_at": None,
-            "last_status": "degraded",
-            "next_due_at": None,
-            "stale": False,
-            "quality_warn": True,
-            "error_message": "; ".join(reasons),
-        })
+        components.append(
+            {
+                "name": "quality_checks",
+                "kind": "data",
+                "last_run_at": None,
+                "last_status": "degraded",
+                "next_due_at": None,
+                "stale": False,
+                "quality_warn": True,
+                "error_message": "; ".join(reasons),
+            }
+        )
 
     # ── Build collector/processor components ──
     enabled_collectors = config.get("collectors", {})
@@ -362,26 +266,32 @@ async def get_system_health(request: Request):
             if source_id == "forex_factory":
                 threshold_hours = thresholds.get("events_hours", 8)
             stale, _ = is_stale(row["started_at"], threshold_hours)
-            components.append({
-                "name": source_id,
-                "kind": "collector",
-                "last_run_at": _fmt(row["started_at"]),
-                "last_status": row.get("status", "unknown"),
-                "next_due_at": schedule_map.get(source_id),
-                "stale": stale,
-                "quality_warn": quality_warn_map.get(source_id, False),
-                "error_message": row.get("error_message") if row.get("status") in ("failed", "partial") else None,
-            })
+            components.append(
+                {
+                    "name": source_id,
+                    "kind": "collector",
+                    "last_run_at": _fmt(row["started_at"]),
+                    "last_status": row.get("status", "unknown"),
+                    "next_due_at": schedule_map.get(source_id),
+                    "stale": stale,
+                    "quality_warn": quality_warn_map.get(source_id, False),
+                    "error_message": row.get("error_message")
+                    if row.get("status") in ("failed", "partial")
+                    else None,
+                }
+            )
         else:
-            components.append({
-                "name": source_id,
-                "kind": "collector",
-                "last_run_at": None,
-                "last_status": "never_run",
-                "next_due_at": schedule_map.get(source_id),
-                "stale": True,
-                "quality_warn": quality_warn_map.get(source_id, False),
-            })
+            components.append(
+                {
+                    "name": source_id,
+                    "kind": "collector",
+                    "last_run_at": None,
+                    "last_status": "never_run",
+                    "next_due_at": schedule_map.get(source_id),
+                    "stale": True,
+                    "quality_warn": quality_warn_map.get(source_id, False),
+                }
+            )
 
     enabled_processors = config.get("processors", {})
     processor_map = {r["processor"]: r for r in processor_rows}
@@ -395,25 +305,29 @@ async def get_system_health(request: Request):
             if proc_id == "briefing":
                 threshold_hours = thresholds.get("briefing_hours", 18)
             stale, _ = is_stale(row["started_at"], threshold_hours)
-            components.append({
-                "name": proc_id,
-                "kind": "processor",
-                "last_run_at": _fmt(row["started_at"]),
-                "last_status": row.get("status", "unknown"),
-                "next_due_at": schedule_map.get(proc_id),
-                "stale": stale,
-                "quality_warn": quality_warn_map.get(proc_id, False),
-            })
+            components.append(
+                {
+                    "name": proc_id,
+                    "kind": "processor",
+                    "last_run_at": _fmt(row["started_at"]),
+                    "last_status": row.get("status", "unknown"),
+                    "next_due_at": schedule_map.get(proc_id),
+                    "stale": stale,
+                    "quality_warn": quality_warn_map.get(proc_id, False),
+                }
+            )
         else:
-            components.append({
-                "name": proc_id,
-                "kind": "processor",
-                "last_run_at": None,
-                "last_status": "never_run",
-                "next_due_at": schedule_map.get(proc_id),
-                "stale": True,
-                "quality_warn": quality_warn_map.get(proc_id, False),
-            })
+            components.append(
+                {
+                    "name": proc_id,
+                    "kind": "processor",
+                    "last_run_at": None,
+                    "last_status": "never_run",
+                    "next_due_at": schedule_map.get(proc_id),
+                    "stale": True,
+                    "quality_warn": quality_warn_map.get(proc_id, False),
+                }
+            )
 
     # ── Compute separate liveness/readiness/data_health ──
     liveness = "ok"
@@ -426,12 +340,7 @@ async def get_system_health(request: Request):
     any_quality_warn = any(c.get("quality_warn") for c in components)
     has_components = len(components) > 0
 
-    if not has_components:
-        readiness = "degraded"
-    elif any_stale or any_error:
-        readiness = "degraded"
-    else:
-        readiness = "ready"
+    readiness = "degraded" if not has_components or any_stale or any_error else "ready"
 
     if any_quality_warn or any_stale or not has_components:
         data_health = "degraded"
@@ -440,8 +349,7 @@ async def get_system_health(request: Request):
 
     # Keep backward-compatible overall for any consumers
     all_ok = all(
-        not c.get("stale")
-        and c["last_status"] in ("success", "connected", "simulated")
+        not c.get("stale") and c["last_status"] in ("success", "connected", "simulated")
         for c in components
     )
     overall = "healthy" if all_ok else "degraded"
@@ -516,8 +424,16 @@ def get_system_logs(
         where_clauses_processor.append("correlation_id = :correlation_id")
         params["correlation_id"] = correlation_id
 
-    collector_where = (" WHERE " + " AND ".join(where_clauses_collector)) if where_clauses_collector else ""
-    processor_where = (" WHERE " + " AND ".join(where_clauses_processor)) if where_clauses_processor else ""
+    collector_where = (
+        (" WHERE " + " AND ".join(where_clauses_collector))
+        if where_clauses_collector
+        else ""
+    )
+    processor_where = (
+        (" WHERE " + " AND ".join(where_clauses_processor))
+        if where_clauses_processor
+        else ""
+    )
 
     combined_sql = f"""
         SELECT * FROM (
@@ -535,7 +451,9 @@ def get_system_logs(
     for row in rows:
         entry = {
             "log_id": str(row["log_id"]),
-            "correlation_id": str(row["correlation_id"]) if row.get("correlation_id") else None,
+            "correlation_id": str(row["correlation_id"])
+            if row.get("correlation_id")
+            else None,
             "log_type": row["log_type"],
             "component": row["component"],
             "started_at": _fmt(row.get("started_at")),
@@ -583,7 +501,11 @@ def get_bounded_logs(lines: str = Query(default="200")):
         config=app_config.load_config(),
     )
     logs = [
-        {**row, "started_at": _fmt(row.get("started_at")), "completed_at": _fmt(row.get("completed_at"))}
+        {
+            **row,
+            "started_at": _fmt(row.get("started_at")),
+            "completed_at": _fmt(row.get("completed_at")),
+        }
         for row in rows
     ]
     return {"logs": logs, "lines": normalized}
@@ -593,6 +515,7 @@ def _run_payload(row: dict) -> dict:
     summary = row.get("summary") or {}
     if isinstance(summary, str):
         import json
+
         try:
             summary = json.loads(summary)
         except (TypeError, ValueError):
@@ -611,7 +534,7 @@ def _run_payload(row: dict) -> dict:
     }
 
 
-@router.get("/system/runs")
+@router.get("/system/runs", response_model=RunListResponse)
 def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
     rows = query_many(
         "SELECT * FROM cycle_runs ORDER BY started_at DESC LIMIT :limit",
@@ -621,7 +544,7 @@ def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
     return {"runs": [_run_payload(row) for row in rows], "limit": limit}
 
 
-@router.get("/system/runs/{correlation_id}")
+@router.get("/system/runs/{correlation_id}", response_model=RunDetailResponse)
 def get_system_run(correlation_id: str):
     config = app_config.load_config()
     row = query_one(
@@ -658,14 +581,16 @@ def get_system_run(correlation_id: str):
             "correlation_id": str(stage["correlation_id"]),
             "started_at": _fmt(stage.get("started_at")),
             "completed_at": _fmt(stage.get("completed_at")),
-            "cost_usd": float(stage["cost_usd"]) if stage.get("cost_usd") is not None else None,
+            "cost_usd": float(stage["cost_usd"])
+            if stage.get("cost_usd") is not None
+            else None,
         }
         for stage in stages
     ]
     return payload
 
 
-@router.get("/system/cycle-status")
+@router.get("/system/cycle-status", response_model=RunStatusResponse)
 def get_cycle_status(correlation_id: str = Query(...)):
     config = app_config.load_config()
 

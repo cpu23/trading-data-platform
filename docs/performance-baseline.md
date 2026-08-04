@@ -116,15 +116,50 @@ counts; do not infer pipeline performance from dashboard response time.
 
 ## Reproduction
 
-Run the offline gates:
+The published API can be measured one route at a time with one command. The
+first request is reported as the cold observation; the following sequential
+requests are the warm sample set (five by default). This records observations
+only and does not assert a production SLA:
+
+```bash
+python scripts/benchmark_api.py \
+  --url http://127.0.0.1:8000/api/investment/dashboard \
+  --scenario investment-dashboard \
+  --username "$DASHBOARD_USER" \
+  --password "$DASHBOARD_PASSWORD" \
+  --warm-count 5 \
+  --output benchmark-api.json
+```
+
+Repeat the command with each published route and a distinct `--scenario` label
+when collecting a route table; the URL path is used as a safe default label if
+the option is omitted. For a credential-free, deterministic run suitable for
+CI trend collection, use the in-process fixture server:
+
+```bash
+python scripts/benchmark_api.py \
+  --fixture \
+  --scenario investment-dashboard \
+  --warm-count 5 \
+  --output benchmark-api.json
+```
+
+Fixture responses contain a stable eight-record dataset. Use
+`--fixture-items` to vary its cardinality and `--fixture-delay-ms` to model a
+fixed server delay without involving PostgreSQL or external providers.
+
+The JSON artifact includes timestamp and environment metadata, route label and
+URL, request parameters, cold latency/status/response bytes, all successful
+warm samples, warm p50/p95, dataset cardinality plus its provenance (null when
+unknown), response size in bytes, and a `failures` array. Percentiles use linear
+interpolation over successful warm samples only. HTTP errors and transport
+exceptions remain separate failure entries and do not silently become latency
+samples.
+
+The offline gates remain useful for deployment checks:
 
 ```bash
 scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 ```
-
-For route measurements, warm each route once, then issue five sequential
-requests against the same local deployment. Record every sample, response size,
-authentication mode, cache state, and container topology rather than reporting
-only the fastest request.

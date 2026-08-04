@@ -5,12 +5,17 @@ from unittest.mock import MagicMock, patch
 
 import migrate
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DURABLE_JOBS_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "011_durable_jobs.sql"
-FRED_METADATA_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "012_macro_series_metadata.sql"
-PROCESSOR_FINGERPRINT_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "013_processor_input_fingerprints.sql"
-NEWS_RUN_LINEAGE_MIGRATION = REPOSITORY_ROOT / "db" / "migrations" / "014_news_run_lineage.sql"
+FRED_METADATA_MIGRATION = (
+    REPOSITORY_ROOT / "db" / "migrations" / "012_macro_series_metadata.sql"
+)
+PROCESSOR_FINGERPRINT_MIGRATION = (
+    REPOSITORY_ROOT / "db" / "migrations" / "013_processor_input_fingerprints.sql"
+)
+NEWS_RUN_LINEAGE_MIGRATION = (
+    REPOSITORY_ROOT / "db" / "migrations" / "014_news_run_lineage.sql"
+)
 RAW_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "002_raw_tables.sql"
 CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
 SYSTEM_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "004_system_tables.sql"
@@ -50,9 +55,7 @@ class MigrationApplicationTests(unittest.TestCase):
                 self.assertEqual(migrate.run_migrations({}), ["001"])
                 self.assertEqual(migrate.run_migrations({}), [])
 
-            apply_migration.assert_called_once_with(
-                "001", str(migration_path), {}
-            )
+            apply_migration.assert_called_once_with("001", str(migration_path), {})
 
     def test_apply_migration_records_computed_checksum_transactionally(self):
         with tempfile.TemporaryDirectory() as migrations_dir:
@@ -62,9 +65,7 @@ class MigrationApplicationTests(unittest.TestCase):
             session_context = MagicMock()
             session_context.__enter__.return_value = session
 
-            with patch.object(
-                migrate, "get_session", return_value=session_context
-            ):
+            with patch.object(migrate, "get_session", return_value=session_context):
                 migrate.apply_migration("001", str(migration_path), {})
 
             insert_call = session.execute.call_args_list[1]
@@ -131,9 +132,7 @@ class MigrationInventoryTests(unittest.TestCase):
                 patch.object(migrate, "get_session", return_value=session_context),
                 patch.object(migrate.logger, "info") as log_info,
             ):
-                result = migrate.run_migrations(
-                    {}, allow_checksum_backfill=True
-                )
+                result = migrate.run_migrations({}, allow_checksum_backfill=True)
 
             self.assertEqual(result, [])
             statement, params = session.execute.call_args.args
@@ -230,9 +229,7 @@ class NumericOrderingTests(unittest.TestCase):
             with (
                 patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
                 patch.object(migrate, "ensure_tracking_table"),
-                patch.object(
-                    migrate, "get_applied_migrations", return_value={}
-                ),
+                patch.object(migrate, "get_applied_migrations", return_value={}),
                 patch.object(migrate, "apply_migration") as apply_migration,
             ):
                 result = migrate.run_migrations({})
@@ -250,14 +247,10 @@ class NumericOrderingTests(unittest.TestCase):
             with (
                 patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
                 patch.object(migrate, "ensure_tracking_table"),
-                patch.object(
-                    migrate, "get_applied_migrations", return_value={}
-                ),
+                patch.object(migrate, "get_applied_migrations", return_value={}),
                 patch.object(migrate, "apply_migration") as apply_migration,
             ):
-                with self.assertRaisesRegex(
-                    RuntimeError, "ambiguous"
-                ):
+                with self.assertRaisesRegex(RuntimeError, "ambiguous"):
                     migrate.run_migrations({})
 
             apply_migration.assert_not_called()
@@ -270,9 +263,7 @@ class NumericOrderingTests(unittest.TestCase):
             with (
                 patch.object(migrate, "MIGRATIONS_DIR", migrations_dir),
                 patch.object(migrate, "ensure_tracking_table"),
-                patch.object(
-                    migrate, "get_applied_migrations", return_value={}
-                ),
+                patch.object(migrate, "get_applied_migrations", return_value={}),
                 patch.object(migrate, "apply_migration") as apply_migration,
             ):
                 result = migrate.run_migrations({})
@@ -280,9 +271,7 @@ class NumericOrderingTests(unittest.TestCase):
             self.assertEqual(result, ["001", "002", "010"])
             calls = apply_migration.call_args_list
             self.assertEqual(len(calls), 3)
-            self.assertEqual(
-                [c.args[0] for c in calls], ["001", "002", "010"]
-            )
+            self.assertEqual([c.args[0] for c in calls], ["001", "002", "010"])
 
 
 class AllOrNothingValidationTests(unittest.TestCase):
@@ -332,9 +321,7 @@ class AllOrNothingValidationTests(unittest.TestCase):
                 patch.object(migrate, "apply_migration") as apply_migration,
                 patch.object(migrate, "backfill_checksum") as backfill_checksum,
             ):
-                with self.assertRaisesRegex(
-                    RuntimeError, "001.*missing"
-                ) as ctx:
+                with self.assertRaisesRegex(RuntimeError, "001.*missing") as ctx:
                     migrate.run_migrations({})
 
             backfill_checksum.assert_not_called()
@@ -385,7 +372,11 @@ class DurableJobsSchemaTests(unittest.TestCase):
         self.assertLess(accepted_backfill, accepted_not_null)
         self.assertLess(heartbeat_backfill, accepted_not_null)
         self.assertLess(accepted_not_null, started_nullable)
-        for column in ("heartbeat_at timestamptz", "worker_id text", "idempotency_key text"):
+        for column in (
+            "heartbeat_at timestamptz",
+            "worker_id text",
+            "idempotency_key text",
+        ):
             self.assertIn(f"add column if not exists {column}", sql)
 
     def test_upgrade_replaces_status_constraint_without_unconstrained_window(self):
@@ -408,7 +399,9 @@ class DurableJobsSchemaTests(unittest.TestCase):
         self.assertLess(validate_expanded, drop_old)
         self.assertLess(drop_old, rename_expanded)
 
-    def test_upgrade_creates_partial_unique_idempotency_index_without_data_deletion(self):
+    def test_upgrade_creates_partial_unique_idempotency_index_without_data_deletion(
+        self,
+    ):
         sql = self._sql(DURABLE_JOBS_MIGRATION)
 
         self.assertIn(
@@ -416,7 +409,12 @@ class DurableJobsSchemaTests(unittest.TestCase):
             "on cycle_runs (idempotency_key) where idempotency_key is not null",
             sql,
         )
-        for destructive_statement in ("drop table", "drop column", "delete from", "truncate"):
+        for destructive_statement in (
+            "drop table",
+            "drop column",
+            "delete from",
+            "truncate",
+        ):
             self.assertNotIn(destructive_statement, sql)
 
 

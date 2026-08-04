@@ -1,7 +1,7 @@
+import json
 import os
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,9 +14,10 @@ os.environ["LEGACY_BASIC_AUTH"] = "true"
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
 
+from types import SimpleNamespace
+
 import auth
 from routes.json import setup
-from types import SimpleNamespace
 
 
 class AuthSecurityTests(unittest.TestCase):
@@ -28,7 +29,10 @@ class AuthSecurityTests(unittest.TestCase):
     def test_admin_file_is_private(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "auth.json"
-            with patch.object(auth, "STATE_DIR", Path(directory)), patch.object(auth, "AUTH_FILE", path):
+            with (
+                patch.object(auth, "STATE_DIR", Path(directory)),
+                patch.object(auth, "AUTH_FILE", path),
+            ):
                 auth.create_admin("a sufficiently long password")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
@@ -37,15 +41,19 @@ class AuthSecurityTests(unittest.TestCase):
             with self.assertRaises(setup.HTTPException) as raised:
                 setup.activate({"password": "too-short"}, object())
         self.assertEqual(raised.exception.status_code, 400)
-        self.assertEqual(raised.exception.detail, "Password must contain at least 12 characters")
+        self.assertEqual(
+            raised.exception.detail, "Password must contain at least 12 characters"
+        )
 
     def test_coverage_selection_maps_only_supported_collectors(self):
-        config = setup._coverage_config({
-            "fred": True,
-            "cftc": False,
-            "oecd": True,
-            "unknown": True,
-        })
+        config = setup._coverage_config(
+            {
+                "fred": True,
+                "cftc": False,
+                "oecd": True,
+                "unknown": True,
+            }
+        )
         self.assertEqual(set(config), set(setup.COVERAGE_SOURCES))
         self.assertTrue(config["fred"]["enabled"])
         self.assertTrue(config["oecd"]["enabled"])
@@ -66,7 +74,10 @@ class AuthSecurityTests(unittest.TestCase):
 
     def test_profile_merge_preserves_unedited_sections(self):
         merged = setup._merge_profile(
-            {"llm": {"default_model": "old", "timeout_seconds": 90}, "watchlist": {"trading": []}},
+            {
+                "llm": {"default_model": "old", "timeout_seconds": 90},
+                "watchlist": {"trading": []},
+            },
             {"llm": {"default_model": "new"}},
         )
         self.assertEqual(merged["llm"]["default_model"], "new")
@@ -82,7 +93,10 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(auth.verify_credentials(request, None), "bootstrap")
 
     def test_legacy_state_migrates_once_with_private_permissions(self):
-        with tempfile.TemporaryDirectory() as legacy_directory, tempfile.TemporaryDirectory() as state_directory:
+        with (
+            tempfile.TemporaryDirectory() as legacy_directory,
+            tempfile.TemporaryDirectory() as state_directory,
+        ):
             legacy = Path(legacy_directory)
             state = Path(state_directory)
             (legacy / "auth.json").write_text('{"hash": "legacy"}')
@@ -100,7 +114,9 @@ class AuthSecurityTests(unittest.TestCase):
             self.assertEqual((state / "auth.json").read_text(), '{"hash": "legacy"}')
             self.assertEqual((state / "auth.json").stat().st_mode & 0o777, 0o600)
 
-    def test_html_request_redirects_to_login_after_activation_without_basic_challenge(self):
+    def test_html_request_redirects_to_login_after_activation_without_basic_challenge(
+        self,
+    ):
         request = SimpleNamespace(
             method="GET",
             url=SimpleNamespace(path="/settings", query=""),
@@ -156,7 +172,9 @@ class AuthSecurityTests(unittest.TestCase):
             self.assertEqual((state / "secrets.env").stat().st_mode & 0o777, 0o600)
             self.assertTrue(request.session["authenticated"])
             self.assertIn("issued_at", request.session)
-            self.assertEqual(json.loads((state / "activated.json").read_text())["version"], 1)
+            self.assertEqual(
+                json.loads((state / "activated.json").read_text())["version"], 1
+            )
 
     def test_failed_activation_remains_retryable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -167,7 +185,9 @@ class AuthSecurityTests(unittest.TestCase):
                 patch.object(setup, "ACTIVATION_FILE", state / "activated.json"),
                 patch.object(setup, "AUTH_FILE", state / "auth.json"),
                 patch.object(setup, "setup_complete", return_value=False),
-                patch.object(setup, "reload_config", side_effect=RuntimeError("invalid config")),
+                patch.object(
+                    setup, "reload_config", side_effect=RuntimeError("invalid config")
+                ),
             ):
                 with self.assertRaises(setup.HTTPException) as raised:
                     setup.activate(
@@ -184,9 +204,10 @@ class AuthSecurityTests(unittest.TestCase):
             self.assertFalse((state / "operator.yaml").exists())
 
     def test_session_login_logout_and_html_redirect_flow(self):
+        from fastapi.testclient import TestClient
+
         import main
         from routes.views import setup as setup_views
-        from fastapi.testclient import TestClient
 
         config = {
             "logging": {"level": "INFO"},
@@ -203,7 +224,9 @@ class AuthSecurityTests(unittest.TestCase):
             auth_file = state / "auth.json"
             operator_file = state / "operator.yaml"
             activation_file = state / "activated.json"
-            auth_file.write_text(json.dumps(auth.hash_password("a sufficiently long password")))
+            auth_file.write_text(
+                json.dumps(auth.hash_password("a sufficiently long password"))
+            )
             operator_file.write_text("{}\n")
             activation_file.write_text('{"version": 1}\n')
             with (
@@ -252,8 +275,9 @@ class AuthSecurityTests(unittest.TestCase):
                 )
 
     def test_build_identity_is_public_and_does_not_expose_secrets(self):
-        import main
         from fastapi.testclient import TestClient
+
+        import main
 
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
@@ -262,7 +286,9 @@ class AuthSecurityTests(unittest.TestCase):
                 patch.object(main, "AUTH_FILE", state / "auth.json"),
                 patch.object(main, "OPERATOR_FILE", state / "operator.yaml"),
                 patch.object(main, "ACTIVATION_FILE", state / "activated.json"),
-                patch.object(main, "load_config", return_value={"logging": {"level": "INFO"}}),
+                patch.object(
+                    main, "load_config", return_value={"logging": {"level": "INFO"}}
+                ),
             ):
                 response = TestClient(main.create_app()).get("/api/meta/build")
             self.assertEqual(response.status_code, 200)

@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -34,13 +34,15 @@ class DataQualityTests(unittest.TestCase):
     # check_freshness
     # ------------------------------------------------------------------
     @patch("data_quality.get_session")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_check_freshness_returns_stale_when_no_recent_data(self, get_session):
         from data_quality import check_freshness
 
         # Simulate the most recent timestamp being 2 days old (48 hours),
         # which exceeds the max_age_hours of 30.
-        old_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         session = self._make_session(fetchone=(old_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -63,12 +65,14 @@ class DataQualityTests(unittest.TestCase):
         self.assertGreater(result["age_hours"], 40)
 
     @patch("data_quality.get_session")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_check_freshness_returns_healthy_with_recent_data(self, get_session):
         from data_quality import check_freshness
 
         # Most recent timestamp is only 1 hour old → still healthy.
-        recent_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        recent_ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         session = self._make_session(fetchone=(recent_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -87,7 +91,9 @@ class DataQualityTests(unittest.TestCase):
         self.assertLess(result["age_hours"], 12)
 
     @patch("data_quality.get_session")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_check_freshness_handles_empty_table(self, get_session):
         from data_quality import check_freshness
 
@@ -108,7 +114,9 @@ class DataQualityTests(unittest.TestCase):
         self.assertEqual(result["age_hours"], None)
         self.assertEqual(result["state"], "no_data")
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_disabled_source_is_not_reported_as_degraded(self):
         from data_quality import check_source_freshness
 
@@ -131,7 +139,7 @@ class DataQualityTests(unittest.TestCase):
         from data_quality import check_gaps
 
         # Create a 15-day window. Return dates that have gaps.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         # Return only 10 dates out of the last 15 — leaving 5 gaps.
         rows = []
         for i in range(15):
@@ -161,7 +169,7 @@ class DataQualityTests(unittest.TestCase):
     def test_check_gaps_healthy_when_no_gaps(self, get_session):
         from data_quality import check_gaps
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         # Every day present in the 15-day window (today back through 14 days ago)
         rows = [(today - timedelta(days=i)).isoformat() for i in range(15)]
         rows = [(r,) for r in rows]
@@ -180,11 +188,13 @@ class DataQualityTests(unittest.TestCase):
         self.assertEqual(len(result["gaps"]), 0)
 
     @patch("data_quality.get_session")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_check_gaps_does_not_treat_weekends_as_missing(self, get_session):
         from data_quality import check_gaps
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         rows = [
             ((today - timedelta(days=i)).isoformat(),)
             for i in range(15)
@@ -203,7 +213,9 @@ class DataQualityTests(unittest.TestCase):
 
         self.assertTrue(result["healthy"])
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     @patch("data_quality.get_session")
     def test_macro_gap_check_respects_series_frequency(self, get_session):
         from data_quality import check_macro_series_gaps
@@ -348,12 +360,12 @@ class DataQualityTests(unittest.TestCase):
         from data_quality import check_freshness
 
         # Friday 2026-07-10 17:00 UTC
-        friday_5pm = datetime(2026, 7, 10, 17, 0, 0, tzinfo=timezone.utc)
+        friday_5pm = datetime(2026, 7, 10, 17, 0, 0, tzinfo=UTC)
         session = self._make_session(fetchone=(friday_5pm.isoformat(),))
         get_session.return_value.__enter__.return_value = session
 
         # Monday 2026-07-13 09:00 UTC
-        monday_9am = datetime(2026, 7, 13, 9, 0, 0, tzinfo=timezone.utc)
+        monday_9am = datetime(2026, 7, 13, 9, 0, 0, tzinfo=UTC)
 
         with patch("data_quality.datetime") as mock_dt:
             mock_dt.now.return_value = monday_9am
@@ -367,9 +379,7 @@ class DataQualityTests(unittest.TestCase):
                 timestamp_column="observed_at",
                 max_age_hours=30,
                 config={
-                    "data_quality": {
-                        "fred": {"grace_periods": {"daily_business": 2}}
-                    }
+                    "data_quality": {"fred": {"grace_periods": {"daily_business": 2}}}
                 },
                 frequency="daily",
             )
@@ -385,7 +395,7 @@ class DataQualityTests(unittest.TestCase):
         from data_quality import check_freshness
 
         # 40 days ago — within 45-day monthly grace
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
         session = self._make_session(fetchone=(old_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -394,11 +404,7 @@ class DataQualityTests(unittest.TestCase):
             table="macro_series",
             timestamp_column="observed_at",
             max_age_hours=30,  # generic — should be ignored when frequency provided
-            config={
-                "data_quality": {
-                    "fred": {"grace_periods": {"monthly": 45}}
-                }
-            },
+            config={"data_quality": {"fred": {"grace_periods": {"monthly": 45}}}},
             frequency="monthly",
         )
 
@@ -412,7 +418,7 @@ class DataQualityTests(unittest.TestCase):
         """50-day-old data exceeds 45-day monthly grace — should be stale."""
         from data_quality import check_freshness
 
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=50)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=50)).isoformat()
         session = self._make_session(fetchone=(old_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -421,11 +427,7 @@ class DataQualityTests(unittest.TestCase):
             table="macro_series",
             timestamp_column="observed_at",
             max_age_hours=30,
-            config={
-                "data_quality": {
-                    "fred": {"grace_periods": {"monthly": 45}}
-                }
-            },
+            config={"data_quality": {"fred": {"grace_periods": {"monthly": 45}}}},
             frequency="monthly",
         )
 
@@ -443,7 +445,7 @@ class DataQualityTests(unittest.TestCase):
         """Future event timestamps are marked 'future', not assigned negative age."""
         from data_quality import check_freshness
 
-        future_ts = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        future_ts = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
         session = self._make_session(fetchone=(future_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -467,7 +469,7 @@ class DataQualityTests(unittest.TestCase):
         """A future calendar event is expected data, not a corrupt observation."""
         from data_quality import check_freshness
 
-        future_ts = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        future_ts = (datetime.now(UTC) + timedelta(days=3)).isoformat()
         session = self._make_session(fetchone=(future_ts,))
         get_session.return_value.__enter__.return_value = session
 
@@ -489,8 +491,8 @@ class DataQualityTests(unittest.TestCase):
         """daily maps to daily_business rather than the generic 30-hour fallback."""
         from data_quality import check_freshness
 
-        now = datetime(2026, 7, 15, 12, tzinfo=timezone.utc)  # Wednesday
-        monday = datetime(2026, 7, 13, 12, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 15, 12, tzinfo=UTC)  # Wednesday
+        monday = datetime(2026, 7, 13, 12, tzinfo=UTC)
         session = self._make_session(fetchone=(monday,))
         get_session.return_value.__enter__.return_value = session
 
@@ -501,7 +503,9 @@ class DataQualityTests(unittest.TestCase):
                 table="macro_series",
                 timestamp_column="observed_at",
                 max_age_hours=30,
-                config={"data_quality": {"fred": {"grace_periods": {"daily_business": 2}}}},
+                config={
+                    "data_quality": {"fred": {"grace_periods": {"daily_business": 2}}}
+                },
                 frequency="daily",
             )
 
@@ -518,7 +522,7 @@ class DataQualityTests(unittest.TestCase):
         # Simulate: all business days present, weekends missing
         # Monday 2026-07-13 through Friday 2026-07-17 present
         # But Sat/Sun (July 11-12) missing — shouldn't be flagged as gaps
-        today = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+        today = datetime(2026, 7, 15, 12, 0, 0, tzinfo=UTC)
         rows = []
         # Only include business days in the last 14-day window
         for i in range(15):
@@ -542,9 +546,7 @@ class DataQualityTests(unittest.TestCase):
                 date_column="observed_at",
                 expected_interval="1 day",
                 config={
-                    "data_quality": {
-                        "fred": {"grace_periods": {"daily_business": 2}}
-                    }
+                    "data_quality": {"fred": {"grace_periods": {"daily_business": 2}}}
                 },
                 frequency="daily",
             )
@@ -563,7 +565,7 @@ class DataQualityTests(unittest.TestCase):
         """Gap check operates per series — SQL includes series_id filter."""
         from data_quality import check_gaps
 
-        today = datetime.now(timezone.utc)
+        today = datetime.now(UTC)
         rows = [(today - timedelta(days=i)).isoformat() for i in range(15)]
         rows = [(r,) for r in rows]
         session = self._make_session(fetchall=rows)
@@ -582,10 +584,12 @@ class DataQualityTests(unittest.TestCase):
         call_args = session.execute.call_args
         sql_text = str(call_args[0][0]).lower() if call_args else ""
         params = call_args[0][1] if call_args and len(call_args[0]) > 1 else {}
-        self.assertIn("series_id", sql_text,
-                      f"SQL should filter by series_id; got: {sql_text}")
-        self.assertIn("series_id", params,
-                      f"SQL params should include series_id; got: {params}")
+        self.assertIn(
+            "series_id", sql_text, f"SQL should filter by series_id; got: {sql_text}"
+        )
+        self.assertIn(
+            "series_id", params, f"SQL params should include series_id; got: {params}"
+        )
 
     # ------------------------------------------------------------------
     # Series-aware anomalies — no cross-series mixing
@@ -613,10 +617,12 @@ class DataQualityTests(unittest.TestCase):
         call_args = session.execute.call_args
         sql_text = str(call_args[0][0]).lower() if call_args else ""
         params = call_args[0][1] if call_args and len(call_args[0]) > 1 else {}
-        self.assertIn("series_id", sql_text,
-                      f"SQL should filter by series_id; got: {sql_text}")
-        self.assertIn("series_id", params,
-                      f"SQL params should include series_id; got: {params}")
+        self.assertIn(
+            "series_id", sql_text, f"SQL should filter by series_id; got: {sql_text}"
+        )
+        self.assertIn(
+            "series_id", params, f"SQL params should include series_id; got: {params}"
+        )
         # Verify the series_id value is correct
         self.assertEqual(params.get("series_id"), "UNRATE")
 
@@ -625,28 +631,47 @@ class DataQualityTests(unittest.TestCase):
         from data_quality import run_quality_checks
 
         config = {
-            "collectors": {"fred": {"series": [
-                {"id": "CPIAUCSL", "frequency": "monthly"},
-                {"id": "DGS10", "frequency": "daily"},
-            ]}}
+            "collectors": {
+                "fred": {
+                    "series": [
+                        {"id": "CPIAUCSL", "frequency": "monthly"},
+                        {"id": "DGS10", "frequency": "daily"},
+                    ]
+                }
+            }
         }
         healthy = {"healthy": True, "detail": "ok"}
-        with patch("data_quality.check_freshness", return_value=healthy) as freshness, \
-             patch("data_quality.check_gaps", return_value=healthy) as gaps, \
-             patch("data_quality.check_anomalies", return_value=healthy) as anomalies, \
-             patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True):
+        with (
+            patch("data_quality.check_freshness", return_value=healthy) as freshness,
+            patch("data_quality.check_gaps", return_value=healthy) as gaps,
+            patch("data_quality.check_anomalies", return_value=healthy) as anomalies,
+            patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True),
+        ):
             results = run_quality_checks(config)
 
-        self.assertEqual(set(results), {
-            "fred_CPIAUCSL_freshness", "fred_CPIAUCSL_gaps", "fred_CPIAUCSL_anomalies",
-            "fred_DGS10_freshness", "fred_DGS10_gaps", "fred_DGS10_anomalies",
-        })
         self.assertEqual(
-            [(c.kwargs["series_id"], c.kwargs["frequency"]) for c in freshness.call_args_list],
+            set(results),
+            {
+                "fred_CPIAUCSL_freshness",
+                "fred_CPIAUCSL_gaps",
+                "fred_CPIAUCSL_anomalies",
+                "fred_DGS10_freshness",
+                "fred_DGS10_gaps",
+                "fred_DGS10_anomalies",
+            },
+        )
+        self.assertEqual(
+            [
+                (c.kwargs["series_id"], c.kwargs["frequency"])
+                for c in freshness.call_args_list
+            ],
             [("CPIAUCSL", "monthly"), ("DGS10", "daily")],
         )
         self.assertEqual(
-            [(c.kwargs["series_id"], c.kwargs["frequency"]) for c in gaps.call_args_list],
+            [
+                (c.kwargs["series_id"], c.kwargs["frequency"])
+                for c in gaps.call_args_list
+            ],
             [("CPIAUCSL", "monthly"), ("DGS10", "daily")],
         )
         self.assertEqual(
@@ -660,15 +685,26 @@ class DataQualityTests(unittest.TestCase):
         """One series/check failure degrades that key without suppressing later checks."""
         from data_quality import run_quality_checks
 
-        config = {"collectors": {"fred": {"series": [
-            {"id": "BROKEN", "frequency": "monthly"},
-            {"id": "DGS10", "frequency": "daily"},
-        ]}}}
+        config = {
+            "collectors": {
+                "fred": {
+                    "series": [
+                        {"id": "BROKEN", "frequency": "monthly"},
+                        {"id": "DGS10", "frequency": "daily"},
+                    ]
+                }
+            }
+        }
         healthy = {"healthy": True, "detail": "ok"}
-        with patch("data_quality.check_freshness", side_effect=[RuntimeError("db error"), healthy]), \
-             patch("data_quality.check_gaps", return_value=healthy), \
-             patch("data_quality.check_anomalies", return_value=healthy), \
-             patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True):
+        with (
+            patch(
+                "data_quality.check_freshness",
+                side_effect=[RuntimeError("db error"), healthy],
+            ),
+            patch("data_quality.check_gaps", return_value=healthy),
+            patch("data_quality.check_anomalies", return_value=healthy),
+            patch.dict("data_quality.DATA_QUALITY_CHECKS", {}, clear=True),
+        ):
             results = run_quality_checks(config)
 
         self.assertFalse(results["fred_BROKEN_freshness"]["healthy"])
@@ -685,16 +721,20 @@ class DataQualityTests(unittest.TestCase):
         from data_quality import run_quality_checks
 
         healthy = {"healthy": True, "detail": "ok"}
-        failed = Mock(side_effect=RuntimeError(
-            "connection postgresql://quality:hunter2@db/quality password=second-secret"
-        ))
+        failed = Mock(
+            side_effect=RuntimeError(
+                "connection postgresql://quality:hunter2@db/quality password=second-secret"
+            )
+        )
         later = Mock(return_value=healthy)
         registry = {
             "forex_factory_freshness": failed,
             "oanda_freshness": later,
         }
-        with patch.dict("data_quality.DATA_QUALITY_CHECKS", registry, clear=True), \
-             patch("data_quality.logger.error") as log_error:
+        with (
+            patch.dict("data_quality.DATA_QUALITY_CHECKS", registry, clear=True),
+            patch("data_quality.logger.error") as log_error,
+        ):
             results = run_quality_checks({})
 
         failure = results["forex_factory_freshness"]
@@ -706,13 +746,17 @@ class DataQualityTests(unittest.TestCase):
         self.assertTrue(results["oanda_freshness"]["healthy"])
         later.assert_called_once_with({})
         log_error.assert_called_once()
-        self.assertEqual(log_error.call_args.kwargs["check_id"], "forex_factory_freshness")
+        self.assertEqual(
+            log_error.call_args.kwargs["check_id"], "forex_factory_freshness"
+        )
         self.assertEqual(log_error.call_args.kwargs["source_id"], "forex_factory")
 
     # ------------------------------------------------------------------
     # DATA_QUALITY_CHECKS registry
     # ------------------------------------------------------------------
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_all_checks_registered(self):
         from data_quality import DATA_QUALITY_CHECKS
 
@@ -736,7 +780,9 @@ class DataQualityTests(unittest.TestCase):
             with self.subTest(check=key):
                 self.assertTrue(callable(fn), f"{key} is not callable")
 
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     @patch("data_quality.check_source_freshness")
     def test_official_registry_checks_accept_config_positionally(
         self, check_source_freshness

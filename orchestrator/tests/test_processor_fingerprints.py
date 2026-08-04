@@ -2,7 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import UUID
@@ -62,7 +62,7 @@ class CanonicalFingerprintTests(unittest.TestCase):
             "b": 2,
             "a": datetime(2026, 1, 2, 3, 4, tzinfo=timezone(timedelta(hours=2))),
         }
-        second = {"a": datetime(2026, 1, 2, 1, 4, tzinfo=timezone.utc), "b": 2}
+        second = {"a": datetime(2026, 1, 2, 1, 4, tzinfo=UTC), "b": 2}
         self.assertEqual(canonical_fingerprint(first), canonical_fingerprint(second))
         self.assertRegex(canonical_fingerprint(first), r"^[0-9a-f]{64}$")
 
@@ -317,15 +317,15 @@ class BoundedProcessorInputTests(unittest.TestCase):
         rows = [
             Row(
                 series_id="GDP",
-                observed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                observed_at=datetime(2026, 1, 2, tzinfo=UTC),
                 value=2.0,
-                updated_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 3, tzinfo=UTC),
             ),
             Row(
                 series_id="GDP",
-                observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                observed_at=datetime(2026, 1, 1, tzinfo=UTC),
                 value=1.0,
-                updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 2, tzinfo=UTC),
             ),
         ]
         session = Mock()
@@ -340,7 +340,7 @@ class BoundedProcessorInputTests(unittest.TestCase):
         self.assertEqual(params["history_limit"], 15)
         self.assertEqual(
             inputs["observations"][0]["observed_at"],
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, tzinfo=UTC),
         )
         self.assertEqual(inputs["observations"][1]["value"], 2.0)
         revised = dict(inputs)
@@ -356,20 +356,20 @@ class BoundedProcessorInputTests(unittest.TestCase):
         processor = DailyBriefingProcessor()
         window = {
             "today": datetime(2026, 1, 5).date(),
-            "period_start": datetime(2026, 1, 5, tzinfo=timezone.utc),
-            "period_end": datetime(2026, 1, 9, 23, 59, tzinfo=timezone.utc),
+            "period_start": datetime(2026, 1, 5, tzinfo=UTC),
+            "period_end": datetime(2026, 1, 9, 23, 59, tzinfo=UTC),
             "friday": datetime(2026, 1, 9).date(),
         }
         macro = Row(
             opinion_id="macro-1",
-            opinion_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+            opinion_created_at=datetime(2026, 1, 4, tzinfo=UTC),
             classification_id="class-1",
-            classification_created_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+            classification_created_at=datetime(2026, 1, 4, tzinfo=UTC),
         )
         calendar = Row(
             event_count=1,
-            latest_updated_at=datetime(2026, 1, 5, tzinfo=timezone.utc),
-            latest_scheduled_at=datetime(2026, 1, 6, tzinfo=timezone.utc),
+            latest_updated_at=datetime(2026, 1, 5, tzinfo=UTC),
+            latest_scheduled_at=datetime(2026, 1, 6, tzinfo=UTC),
             max_event_id="event-1",
         )
         session = Mock()

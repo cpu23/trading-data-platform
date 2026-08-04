@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from processors._validators import (
@@ -18,7 +17,6 @@ from processors._validators import (
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
 from processors.macro_regime import MacroRegimeProcessor
-
 
 WATCHLIST = [
     {"symbol": "EURUSD", "type": "forex"},
@@ -162,7 +160,9 @@ class PassOneValidatorTests(unittest.TestCase):
         event = valid_event()
         valid, issues = validate_event_impact_output(event, EVENTS, WATCHLIST)
         self.assertTrue(valid, issues)
-        event["events"][0]["market_implications"] = "Allocate capital after the release."
+        event["events"][0]["market_implications"] = (
+            "Allocate capital after the release."
+        )
         valid, issues = validate_event_impact_output(event, EVENTS, WATCHLIST)
         self.assertFalse(valid)
         self.assertTrue(any("sizing_allocation" in issue for issue in issues))
@@ -170,7 +170,9 @@ class PassOneValidatorTests(unittest.TestCase):
 
 class PassOneRepairTests(unittest.TestCase):
     @patch("processors.briefing.call_llm")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_briefing_repairs_once_then_quarantines(self, call_llm):
         call_llm.return_value = {
             "content": json.dumps(
@@ -201,7 +203,9 @@ class PassOneRepairTests(unittest.TestCase):
         call_llm.assert_called_once()
 
     @patch("processors.event_impact.call_llm")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_event_impact_repairs_once_then_quarantines(self, call_llm):
         invalid = valid_event()
         invalid["catalyst_summary"] = "Set a price target after CPI."
@@ -227,7 +231,9 @@ class PassOneRepairTests(unittest.TestCase):
         call_llm.assert_called_once()
 
     @patch("processors.macro_regime.call_llm")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_macro_repairs_once_and_adopts_only_valid_repair(self, call_llm):
         initial = valid_macro()
         initial["reasoning"] = "Enter after technical analysis confirms the move."
@@ -263,7 +269,9 @@ class PassOneRepairTests(unittest.TestCase):
 
 
 class PassOnePromptTests(unittest.TestCase):
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_all_prompts_state_economics_only_policy(self):
         prompt_dir = Path(__file__).resolve().parents[2] / "prompts"
         for prompt_path in prompt_dir.glob("*.txt"):

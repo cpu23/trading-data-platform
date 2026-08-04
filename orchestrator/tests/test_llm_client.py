@@ -44,7 +44,9 @@ def _response(
 
 
 class LlmClientTests(unittest.TestCase):
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_resolve_model_supports_string_and_structured_overrides(self):
         config = {
             "llm": {
@@ -64,7 +66,9 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(resolve_model(config, "macro", "explicit"), "explicit")
 
     @patch("llm_client.make_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_provider_neutral_endpoint_optional_auth_usage_and_metadata(self, request):
         request.return_value = _response(
             attempts=2, headers={"x-request-id": "header-request-id"}
@@ -87,7 +91,9 @@ class LlmClientTests(unittest.TestCase):
         self.assertNotIn("Authorization", kwargs["headers"])
         self.assertEqual(kwargs["max_retries"], 4)
         self.assertEqual(result["attempts"], 2)
-        self.assertEqual(result["duration_ms"], result["request_metadata"]["duration_ms"])
+        self.assertEqual(
+            result["duration_ms"], result["request_metadata"]["duration_ms"]
+        )
         self.assertEqual(result["tokens_input"], 11)
         self.assertEqual(result["tokens_output"], 7)
         self.assertEqual(result["total_tokens"], 18)
@@ -116,7 +122,9 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(body["reasoning"], {"effort": "low"})
 
     @patch("llm_client.make_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_sends_output_cap_and_provider_preferences(self, request):
         request.return_value = _response()
         config = {
@@ -140,8 +148,12 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(result["request_metadata"]["max_tokens"], 2400)
 
     @patch("llm_client.make_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
-    def test_reasoning_falls_back_only_for_explicit_unsupported_parameter(self, request):
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
+    def test_reasoning_falls_back_only_for_explicit_unsupported_parameter(
+        self, request
+    ):
         request.side_effect = [
             _response(
                 400,
@@ -176,12 +188,12 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(
             result["request_metadata"]["fallback_parameters"], ["reasoning_effort"]
         )
-        self.assertIsNone(
-            result["request_metadata"]["reasoning_effort_applied"]
-        )
+        self.assertIsNone(result["request_metadata"]["reasoning_effort_applied"])
 
     @patch("llm_client.make_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_generic_bad_request_does_not_trigger_capability_fallback(self, request):
         request.return_value = _response(
             400, {"error": {"message": "Malformed request"}}
@@ -200,7 +212,9 @@ class LlmClientTests(unittest.TestCase):
         request.assert_called_once()
 
     @patch("llm_client.make_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_sampling_fallback_removes_sampling_parameters(self, request):
         request.side_effect = [
             _response(
@@ -236,7 +250,9 @@ class LlmClientTests(unittest.TestCase):
 class HttpClientRetryTests(unittest.TestCase):
     @patch("http_client.time.sleep")
     @patch("http_client._do_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_configurable_attempt_limit_and_response_metadata(self, do_request, sleep):
         do_request.side_effect = [
             httpx.ConnectError("one"),
@@ -244,9 +260,7 @@ class HttpClientRetryTests(unittest.TestCase):
             _response(),
         ]
 
-        response = make_request(
-            "GET", "http://example.test", max_retries=3
-        )
+        response = make_request("GET", "http://example.test", max_retries=3)
 
         self.assertEqual(do_request.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
@@ -254,7 +268,9 @@ class HttpClientRetryTests(unittest.TestCase):
 
     @patch("http_client.time.sleep")
     @patch("http_client._do_request")
-    @unittest.skip("skip: codex/market-intelligence-expansion contract not implemented in master")
+    @unittest.skip(
+        "skip: codex/market-intelligence-expansion contract not implemented in master"
+    )
     def test_one_retry_setting_means_one_attempt(self, do_request, sleep):
         error = httpx.ConnectError("failed")
         do_request.side_effect = error

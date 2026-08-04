@@ -1,14 +1,14 @@
 from fastapi import APIRouter
 
-from routes.views.dashboard import router as dashboard_router
-from routes.views.logs import router as logs_router
-from routes.views.quality import router as quality_router
-from routes.views.operations import router as operations_router
-from routes.views.news import router as news_router
-from routes.views.settings import router as settings_router
 from routes.views.assets import router as assets_router
-from routes.views.setup import router as setup_router
+from routes.views.dashboard import router as dashboard_router
 from routes.views.investment import router as investment_router
+from routes.views.logs import router as logs_router
+from routes.views.news import router as news_router
+from routes.views.operations import router as operations_router
+from routes.views.quality import router as quality_router
+from routes.views.settings import router as settings_router
+from routes.views.setup import router as setup_router
 
 router = APIRouter()
 

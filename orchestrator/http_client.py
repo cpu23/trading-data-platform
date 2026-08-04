@@ -1,8 +1,8 @@
 import math
-import time
 import threading
+import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
 import httpx
@@ -60,13 +60,11 @@ def _retry_delay(
         try:
             retry_at = parsedate_to_datetime(raw_value)
             if retry_at.tzinfo is None:
-                retry_at = retry_at.replace(tzinfo=timezone.utc)
+                retry_at = retry_at.replace(tzinfo=UTC)
             now = wall_clock()
             if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            seconds = (
-                retry_at.astimezone(timezone.utc) - now.astimezone(timezone.utc)
-            ).total_seconds()
+                now = now.replace(tzinfo=UTC)
+            seconds = (retry_at.astimezone(UTC) - now.astimezone(UTC)).total_seconds()
         except (TypeError, ValueError, OverflowError):
             return fallback
         return min(max(seconds, 0.0), _MAX_RETRY_DELAY_SECONDS)
@@ -93,11 +91,13 @@ def make_request(
     client: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-    wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> httpx.Response:
     """Make an HTTP request, with ``max_retries`` interpreted as total attempts."""
     if max_retries < 1:
-        raise ValueError("max_retries must be at least 1 (it is the total attempt count)")
+        raise ValueError(
+            "max_retries must be at least 1 (it is the total attempt count)"
+        )
 
     started_at = clock()
     request_method = method.upper()
@@ -141,7 +141,9 @@ def make_request(
                         attempt=attempt,
                         max_attempts=max_retries,
                         status_code=response.status_code,
-                        category="success" if response.is_success else "non_transient_status",
+                        category="success"
+                        if response.is_success
+                        else "non_transient_status",
                         total_duration_ms=_duration_ms(clock, started_at),
                         response_size=response_size,
                         correlation_id=correlation_id or "none",

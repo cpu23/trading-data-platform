@@ -7,7 +7,6 @@ from unittest.mock import patch
 from processors._validators import OutputPolicyError, scan_prohibited_language
 from processors.intelligence import MarketIntelligenceProcessor
 
-
 EVIDENCE_ID = "opinion:11111111-1111-1111-1111-111111111111"
 SYMBOLS = ["EURUSD"]
 
@@ -40,7 +39,9 @@ def valid_role(role):
     }
 
 
-def narrative(source_claim_id, text_value="Relative policy expectations favor the dollar."):
+def narrative(
+    source_claim_id, text_value="Relative policy expectations favor the dollar."
+):
     return {
         "text": text_value,
         "source_claim_ids": [source_claim_id],
@@ -53,7 +54,9 @@ def valid_editor():
         "global": {
             "bias": "mixed",
             "confidence": "moderate",
-            "summary": narrative("analyst.global.1", "Growth and policy signals are mixed."),
+            "summary": narrative(
+                "analyst.global.1", "Growth and policy signals are mixed."
+            ),
             "drivers": [narrative("analyst.global.1")],
             "contradictions": [],
             "invalidation_conditions": [
@@ -101,9 +104,7 @@ class IntelligenceSchemaTests(unittest.TestCase):
         value["global"]["extra"] = True
         value["global"]["bias"] = "strongly bullish"
         value["assets"][0]["claims"][0]["evidence_ids"] = ["invented:1"]
-        issues = self.processor._validate_role(
-            value, SYMBOLS, "analyst", {EVIDENCE_ID}
-        )
+        issues = self.processor._validate_role(value, SYMBOLS, "analyst", {EVIDENCE_ID})
         self.assertTrue(any("unexpected keys" in issue for issue in issues))
         self.assertTrue(any("invalid value" in issue for issue in issues))
         self.assertTrue(any("unsupported id" in issue for issue in issues))
@@ -112,9 +113,7 @@ class IntelligenceSchemaTests(unittest.TestCase):
         value = valid_role("analyst")
         value["assets"][0]["claims"] = []
 
-        issues = self.processor._validate_role(
-            value, SYMBOLS, "analyst", {EVIDENCE_ID}
-        )
+        issues = self.processor._validate_role(value, SYMBOLS, "analyst", {EVIDENCE_ID})
 
         self.assertEqual(issues, [])
 
@@ -193,14 +192,18 @@ class IntelligenceSchemaTests(unittest.TestCase):
         value = valid_editor()
         value["global"]["drivers"][0]["source_claim_ids"] = ["invented.claim"]
         issues = self.processor._validate_editor(value, SYMBOLS, roles)
-        self.assertTrue(any("unsupported id 'invented.claim'" in issue for issue in issues))
+        self.assertTrue(
+            any("unsupported id 'invented.claim'" in issue for issue in issues)
+        )
 
     def test_editor_rejects_evidence_not_shared_by_cited_claims(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
         value = valid_editor()
         value["global"]["drivers"][0]["evidence_ids"] = ["event:invented"]
         issues = self.processor._validate_editor(value, SYMBOLS, roles)
-        self.assertTrue(any("unsupported id 'event:invented'" in issue for issue in issues))
+        self.assertTrue(
+            any("unsupported id 'event:invented'" in issue for issue in issues)
+        )
 
     def test_editor_accepts_union_of_evidence_from_cited_claims(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
@@ -222,7 +225,9 @@ class IntelligenceSchemaTests(unittest.TestCase):
         value = valid_editor()
         self.assertEqual(self.processor._validate_editor(value, SYMBOLS, roles), [])
         normalized = self.processor._normalize_editor(value)
-        self.assertEqual(normalized["global"]["summary"], "Growth and policy signals are mixed.")
+        self.assertEqual(
+            normalized["global"]["summary"], "Growth and policy signals are mixed."
+        )
         self.assertEqual(
             normalized["global"]["summary_evidence"]["evidence_ids"],
             [EVIDENCE_ID],
@@ -280,10 +285,11 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertEqual(value["assets"][0]["bias"], "neutral")
         self.assertEqual(value["assets"][0]["confidence"], "low")
-        self.assertIn("Insufficient direct evidence", value["assets"][0]["summary"]["text"])
+        self.assertIn(
+            "Insufficient direct evidence", value["assets"][0]["summary"]["text"]
+        )
         self.assertEqual(value["assets"][0]["drivers"], [])
         self.assertEqual(value["assets"][0]["invalidation_conditions"], [])
-
 
     def test_prompts_delimit_untrusted_data_and_align_policy_vocabulary(self):
         context = {
@@ -303,7 +309,9 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertIn("weaker dollar as a bearish force", prompt)
         self.assertIn("exactly one participant category", prompt)
         self.assertIn("eligibility map, not evidence", prompt)
-        self.assertIn("breakeven-inflation series is not a nominal or real yield", prompt)
+        self.assertIn(
+            "breakeven-inflation series is not a nominal or real yield", prompt
+        )
 
         editor_prompt = self.processor._editor_prompt(
             context,
@@ -317,14 +325,16 @@ class IntelligenceSchemaTests(unittest.TestCase):
     def test_editor_drops_optional_narrative_when_any_source_claim_is_unknown(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
         value = valid_editor()
-        value["assets"][0]["disagreements"] = [{
-            "text": "This sentence still describes an invented analyst claim.",
-            "source_claim_ids": [
-                "analyst.asset.EURUSD.999",
-                "auditor.asset.EURUSD.1",
-            ],
-            "evidence_ids": [EVIDENCE_ID],
-        }]
+        value["assets"][0]["disagreements"] = [
+            {
+                "text": "This sentence still describes an invented analyst claim.",
+                "source_claim_ids": [
+                    "analyst.asset.EURUSD.999",
+                    "auditor.asset.EURUSD.1",
+                ],
+                "evidence_ids": [EVIDENCE_ID],
+            }
+        ]
 
         issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
 
@@ -334,11 +344,13 @@ class IntelligenceSchemaTests(unittest.TestCase):
     def test_editor_drops_narrative_that_cites_a_claim_from_another_scope(self):
         roles = {role: valid_role(role) for role in ("analyst", "skeptic", "auditor")}
         value = valid_editor()
-        value["global"]["drivers"] = [{
-            "text": "Asset-specific positioning must not become a global driver.",
-            "source_claim_ids": ["analyst.asset.EURUSD.1"],
-            "evidence_ids": [EVIDENCE_ID],
-        }]
+        value["global"]["drivers"] = [
+            {
+                "text": "Asset-specific positioning must not become a global driver.",
+                "source_claim_ids": ["analyst.asset.EURUSD.1"],
+                "evidence_ids": [EVIDENCE_ID],
+            }
+        ]
 
         issues = self.processor._validate_prepared_editor(value, SYMBOLS, roles)
 
@@ -514,9 +526,11 @@ class IntelligenceDeltaTests(unittest.TestCase):
                 "assets": [],
             },
         }
-        with patch.object(self.processor, "_context", return_value=context), patch.object(
-            self.processor, "_previous", return_value=previous
-        ), patch("processors.intelligence.call_llm") as llm:
+        with (
+            patch.object(self.processor, "_context", return_value=context),
+            patch.object(self.processor, "_previous", return_value=previous),
+            patch("processors.intelligence.call_llm") as llm,
+        ):
             result = self.processor.process(
                 {"llm": {}, "watchlist": {"trading": []}}, "corr"
             )

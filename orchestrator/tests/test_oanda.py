@@ -1,11 +1,11 @@
 import unittest
-from datetime import timezone
+from datetime import UTC
 from unittest.mock import Mock, patch
 
 import httpx
 
-from collectors.oanda import OandaCollector
 from collectors import get_all_collectors
+from collectors.oanda import OandaCollector
 from price_stream import QuoteStream
 
 
@@ -16,10 +16,12 @@ class OandaCollectorTests(unittest.TestCase):
     def test_production_without_stream_does_not_simulate_prices(self):
         stream = QuoteStream()
 
-        stream.start({
-            "demo": {"enabled": False},
-            "collectors": {"oanda": {"stream_enabled": False}},
-        })
+        stream.start(
+            {
+                "demo": {"enabled": False},
+                "collectors": {"oanda": {"stream_enabled": False}},
+            }
+        )
 
         self.assertEqual(stream.state["status"], "disabled")
         self.assertEqual(stream.quotes, {})
@@ -28,12 +30,12 @@ class OandaCollectorTests(unittest.TestCase):
     def test_disabled_oanda_source_does_not_start_live_stream(self):
         stream = QuoteStream()
 
-        stream.start({
-            "demo": {"enabled": False},
-            "collectors": {
-                "oanda": {"enabled": False, "stream_enabled": True}
-            },
-        })
+        stream.start(
+            {
+                "demo": {"enabled": False},
+                "collectors": {"oanda": {"enabled": False, "stream_enabled": True}},
+            }
+        )
 
         self.assertEqual(stream.state["status"], "disabled")
         self.assertIsNone(stream._thread)
@@ -43,7 +45,7 @@ class OandaCollectorTests(unittest.TestCase):
 
         parsed = collector._parse_oanda_time("2016-10-17T15:16:40.123456789Z")
 
-        self.assertEqual(parsed.tzinfo, timezone.utc)
+        self.assertEqual(parsed.tzinfo, UTC)
         self.assertEqual(parsed.isoformat(), "2016-10-17T15:16:40.123456+00:00")
 
     def test_base_url_defaults_to_live(self):
@@ -57,10 +59,12 @@ class OandaCollectorTests(unittest.TestCase):
     def test_extract_mid_price_from_bid_ask(self):
         collector = OandaCollector()
 
-        price = collector._extract_mid_price({
-            "bids": [{"price": "1.1000"}],
-            "asks": [{"price": "1.1004"}],
-        })
+        price = collector._extract_mid_price(
+            {
+                "bids": [{"price": "1.1000"}],
+                "asks": [{"price": "1.1004"}],
+            }
+        )
 
         self.assertAlmostEqual(price, 1.1002)
 

@@ -1,7 +1,7 @@
 import json
 import math
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -25,9 +25,8 @@ class QuoteStream:
         demo = config.get("demo", {}).get("enabled", False)
         if demo:
             target = self._run_demo
-        elif (
-            oanda_config.get("enabled", True)
-            and oanda_config.get("stream_enabled", False)
+        elif oanda_config.get("enabled", True) and oanda_config.get(
+            "stream_enabled", False
         ):
             target = self._run_oanda
         else:
@@ -46,23 +45,33 @@ class QuoteStream:
     def snapshot(self) -> dict:
         return {"quotes": list(self.quotes.values()), "stream": dict(self.state)}
 
-    def _update(self, symbol: str, price: float, observed_at: str | None = None) -> None:
+    def _update(
+        self, symbol: str, price: float, observed_at: str | None = None
+    ) -> None:
         self.quotes[symbol] = {
             "symbol": symbol,
             "price": price,
-            "observed_at": observed_at or datetime.now(timezone.utc).isoformat(),
+            "observed_at": observed_at or datetime.now(UTC).isoformat(),
         }
 
     def _run_demo(self, config: dict) -> None:
-        bases = {"EURUSD": 1.0875, "AUDJPY": 98.42, "USDJPY": 149.35, "SP500": 5325.0,
-                 "XAUUSD": 2388.0, "XPTUSD": 1012.0, "GER40": 18650.0, "UK100": 8320.0}
+        bases = {
+            "EURUSD": 1.0875,
+            "AUDJPY": 98.42,
+            "USDJPY": 149.35,
+            "SP500": 5325.0,
+            "XAUUSD": 2388.0,
+            "XPTUSD": 1012.0,
+            "GER40": 18650.0,
+            "UK100": 8320.0,
+        }
         self.state["status"] = "simulated"
         tick = 0
         while not self._stop.wait(2):
             tick += 1
             for index, (symbol, base) in enumerate(bases.items()):
                 self._update(symbol, base * (1 + math.sin(tick / 7 + index) * 0.0004))
-            self.state["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+            self.state["last_heartbeat"] = datetime.now(UTC).isoformat()
 
     def _run_oanda(self, config: dict) -> None:
         oanda_config = config.get("collectors", {}).get("oanda", {})
@@ -73,15 +82,28 @@ class QuoteStream:
         while not self._stop.is_set():
             try:
                 api_base = collector._get_base_url(oanda_config)
-                account_id = collector._get_account_id(api_base, api_key, oanda_config, "price-stream")
+                account_id = collector._get_account_id(
+                    api_base, api_key, oanda_config, "price-stream"
+                )
                 instruments = collector._filter_supported_instruments(
-                    api_base, api_key, account_id,
-                    [item for item in oanda_config.get("instruments", []) if item.get("enabled", True)],
+                    api_base,
+                    api_key,
+                    account_id,
+                    [
+                        item
+                        for item in oanda_config.get("instruments", [])
+                        if item.get("enabled", True)
+                    ],
                     "price-stream",
                 )
                 names = ",".join(item["oanda_instrument"] for item in instruments)
-                symbol_map = {item["oanda_instrument"]: item["symbol"] for item in instruments}
-                headers = {"Authorization": f"Bearer {api_key}", "Accept-Datetime-Format": "RFC3339"}
+                symbol_map = {
+                    item["oanda_instrument"]: item["symbol"] for item in instruments
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept-Datetime-Format": "RFC3339",
+                }
                 self.state.update(status="connected", error=None)
                 with httpx.Client(timeout=None, follow_redirects=True) as client:
                     with client.stream(
@@ -107,8 +129,11 @@ class QuoteStream:
                                 self._update(symbol, price, payload.get("time"))
             except Exception as exc:
                 self.state.update(status="reconnecting", error=str(exc))
-                logger.warning("price_stream_reconnecting", error=str(exc), backoff=backoff)
+                logger.warning(
+                    "price_stream_reconnecting", error=str(exc), backoff=backoff
+                )
                 self._stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
+
 
 quote_stream = QuoteStream()

@@ -4,15 +4,21 @@ COPY --from=ghcr.io/astral-sh/uv@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f
 ENV UV_PYTHON=/usr/local/bin/python3 \
     UV_LINK_MODE=copy
 
+WORKDIR /build
+COPY contracts /build/contracts
+
 WORKDIR /build/api
 COPY api/pyproject.toml api/uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 WORKDIR /build/orchestrator
 COPY orchestrator/pyproject.toml orchestrator/uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 FROM python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=builder /build/api/.venv /app/api/.venv

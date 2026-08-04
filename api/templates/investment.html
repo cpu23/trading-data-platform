@@ -22,14 +22,70 @@
     </div>
   </section>
 
-  <!-- Key industry cards -->
+  <section class="section" aria-labelledby="inv-research-title">
+    <div class="section-heading">
+      <span class="label" id="inv-research-title">Research coverage</span>
+      <span class="section-note">Deterministic annual-report facts first; model narrative and classified news are kept separate.</span>
+    </div>
+    <p class="inv-legend dim" id="inv-legend" aria-label="How to read this dashboard">
+      <span class="inv-legend-item"><span class="tabular" aria-hidden="true">&mdash;</span> missing data</span>
+      <span class="inv-legend-item"><span class="tabular" aria-hidden="true">0</span> neutral zero</span>
+      <span class="inv-legend-item"><span class="inv-tag inv-tag-det" aria-hidden="true">Filing</span> deterministic report fact</span>
+      <span class="inv-legend-item"><span class="inv-tag inv-tag-nar" aria-hidden="true">Model</span> LLM narrative</span>
+      <span class="inv-legend-item"><span class="inv-tag inv-tag-news" aria-hidden="true">News</span> classified news</span>
+      <span class="inv-legend-item"><span aria-hidden="true">&#9650;</span>&nbsp;<span aria-hidden="true">&#9660;</span> period change</span>
+    </p>
+    <div class="inv-research-summary" id="inv-research-summary" aria-live="polite">
+      <div class="empty-state">Loading research coverage&hellip;</div>
+    </div>
+  </section>
+
+  <!-- Key industry ledger -->
   <section class="section" aria-labelledby="inv-industries-title">
-    <div class="section-heading"><span class="label" id="inv-industries-title">Key industries</span></div>
-    <div class="inv-industries-grid" id="inv-industries" aria-live="polite" data-inv-state="loading">
+    <div class="section-heading">
+      <span class="label" id="inv-industries-title">Key industries</span>
+      <span class="section-note">Filing-derived fundamentals and report/news evidence; no analyst consensus or live market estimates unless separately supplied.</span>
+      <button class="btn btn-secondary inv-industry-reset" id="inv-industry-all" type="button" aria-pressed="true">All industries</button>
+    </div>
+    <div class="inv-industry-ledger" id="inv-industries" aria-live="polite" data-inv-state="loading">
       <div class="empty-state">Loading industries…</div>
     </div>
   </section>
 
+  <section class="section" aria-labelledby="inv-monitor-title">
+    <div class="section-heading">
+      <span class="label" id="inv-monitor-title">Industry trend monitor</span>
+      <span class="section-note">Report fundamentals and classified news remain separate from the main macro dashboard.</span>
+    </div>
+    <div class="inv-monitor-grid">
+      <div>
+        <div class="label inv-monitor-label">Emerging themes</div>
+        <div id="inv-trends" class="inv-trend-list" aria-live="polite"></div>
+      </div>
+      <div>
+        <div class="label inv-monitor-label">Company &amp; industry news</div>
+        <div id="inv-investment-news" class="inv-news-list" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+  <!-- Latest analyses: per-company latest report fundamentals vs model narrative -->
+  <section class="section" aria-labelledby="inv-analyses-title">
+    <div class="section-heading">
+      <span class="label" id="inv-analyses-title">Latest analyses</span>
+      <span class="section-note">Report fundamentals are deterministic filing facts; the model narrative is generated and kept behind each row.</span>
+      <button class="btn btn-secondary" id="inv-refresh" type="button">Refresh</button>
+    </div>
+    <div id="inv-analyses" data-inv-state="loading" aria-live="polite">
+      <div class="empty-state">Loading analyses&hellip;</div>
+    </div>
+  </section>
+
+  <details class="section inv-controls-details">
+    <summary class="section-heading inv-controls-summary">
+      <span class="label">Filing intake &amp; valuation controls</span>
+      <span class="section-note dim">Upload reports, trigger filing collection, and override valuation inputs. Overrides apply when you run Analyze.</span>
+    </summary>
+    <div class="inv-controls-body">
   <!-- Intake panel: files + URLs + metadata + valuation inputs -->
   <section class="section" aria-labelledby="inv-intake-title">
     <div class="section-heading">
@@ -62,7 +118,19 @@
                   <option value="Asia">Asia</option>
                 </select>
               </label>
-              <label class="inv-field"><span class="inv-field-label">Industry</span><input type="text" id="inv-industry" name="industry" maxlength="120" placeholder="e.g. Semiconductors"></label>
+              <label class="inv-field"><span class="inv-field-label">Industry</span>
+                <select id="inv-industry" name="industry">
+                  <option value="Semiconductors &amp; Compute">Semiconductors &amp; Compute</option>
+                  <option value="Software, Cloud &amp; Communications">Software, Cloud &amp; Communications</option>
+                  <option value="Energy &amp; Utilities">Energy &amp; Utilities</option>
+                  <option value="Industrials &amp; Materials">Industrials &amp; Materials</option>
+                  <option value="Financials &amp; Real Estate">Financials &amp; Real Estate</option>
+                  <option value="Healthcare">Healthcare</option>
+                  <option value="Consumer">Consumer</option>
+                  <option value="Aerospace &amp; Defence">Aerospace &amp; Defence</option>
+                  <option value="Unclassified" selected>Unclassified</option>
+                </select>
+              </label>
               <label class="inv-field"><span class="inv-field-label">Document type</span>
                 <select id="inv-type" name="document_type">
                   <option value="annual_report">Annual report</option>
@@ -96,7 +164,19 @@
                   <option value="Asia">Asia</option>
                 </select>
               </label>
-              <label class="inv-field"><span class="inv-field-label">Industry</span><input type="text" id="inv-url-industry" name="industry" maxlength="120"></label>
+              <label class="inv-field"><span class="inv-field-label">Industry</span>
+                <select id="inv-url-industry" name="industry">
+                  <option value="Semiconductors &amp; Compute">Semiconductors &amp; Compute</option>
+                  <option value="Software, Cloud &amp; Communications">Software, Cloud &amp; Communications</option>
+                  <option value="Energy &amp; Utilities">Energy &amp; Utilities</option>
+                  <option value="Industrials &amp; Materials">Industrials &amp; Materials</option>
+                  <option value="Financials &amp; Real Estate">Financials &amp; Real Estate</option>
+                  <option value="Healthcare">Healthcare</option>
+                  <option value="Consumer">Consumer</option>
+                  <option value="Aerospace &amp; Defence">Aerospace &amp; Defence</option>
+                  <option value="Unclassified" selected>Unclassified</option>
+                </select>
+              </label>
               <label class="inv-field"><span class="inv-field-label">Document type</span>
                 <select id="inv-url-type" name="document_type">
                   <option value="annual_report">Annual report</option>
@@ -139,6 +219,8 @@
       <label class="inv-field"><span class="inv-field-label">Terminal growth (%)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-tg" name="terminal_growth" placeholder="auto"></label>
     </div>
   </section>
+    </div>
+  </details>
 
   <!-- Report queue -->
   <section class="section" aria-labelledby="inv-queue-title">
@@ -148,13 +230,6 @@
     </div>
   </section>
 
-  <!-- Latest analysis cards -->
-  <section class="section" aria-labelledby="inv-analyses-title">
-    <div class="section-heading"><span class="label" id="inv-analyses-title">Latest analyses</span><button class="btn btn-secondary" id="inv-refresh" type="button">Refresh</button></div>
-    <div id="inv-analyses" data-inv-state="loading" aria-live="polite">
-      <div class="empty-state">Loading analyses…</div>
-    </div>
-  </section>
 </main>
 
 <noscript><div class="error-block" role="alert">This page requires JavaScript to fetch and render investment data.</div></noscript>
@@ -164,6 +239,77 @@
   "use strict";
 
   var REGION_CODES = ["US", "EU", "Asia"];
+  var CANONICAL_INDUSTRIES = [
+    "Semiconductors & Compute",
+    "Software, Cloud & Communications",
+    "Energy & Utilities",
+    "Industrials & Materials",
+    "Financials & Real Estate",
+    "Healthcare",
+    "Consumer",
+    "Aerospace & Defence",
+    "Unclassified"
+  ];
+  var ALIAS_CANONICAL = {
+    "semiconductors & memory": "Semiconductors & Compute",
+    "semiconductors & compute": "Semiconductors & Compute",
+    "semiconductor": "Semiconductors & Compute", "memory": "Semiconductors & Compute",
+    "dram": "Semiconductors & Compute", "nand": "Semiconductors & Compute", "foundry": "Semiconductors & Compute", "chip": "Semiconductors & Compute",
+    "ai infrastructure & data centres": "Software, Cloud & Communications",
+    "ai infrastructure": "Software, Cloud & Communications",
+    "software, cloud & communications": "Software, Cloud & Communications",
+    "software": "Software, Cloud & Communications", "cloud": "Software, Cloud & Communications", "saas": "Software, Cloud & Communications", "communications": "Software, Cloud & Communications",
+    "data centre": "Software, Cloud & Communications", "data center": "Software, Cloud & Communications", "datacenter": "Software, Cloud & Communications", "cloud infrastructure": "Software, Cloud & Communications",
+    "energy, utilities & power grid": "Energy & Utilities",
+    "energy & utilities": "Energy & Utilities",
+    "energy": "Energy & Utilities", "utility": "Energy & Utilities", "utilities": "Energy & Utilities", "power grid": "Energy & Utilities", "electricity": "Energy & Utilities", "renewable": "Energy & Utilities",
+    "industrials & materials": "Industrials & Materials",
+    "industrials": "Industrials & Materials", "industrial": "Industrials & Materials", "materials": "Industrials & Materials", "chemicals": "Industrials & Materials", "mining": "Industrials & Materials", "metals": "Industrials & Materials",
+    "financials & real estate": "Financials & Real Estate",
+    "financials": "Financials & Real Estate", "financial": "Financials & Real Estate", "banks": "Financials & Real Estate", "insurance": "Financials & Real Estate", "real estate": "Financials & Real Estate", "reits": "Financials & Real Estate",
+    "healthcare": "Healthcare", "pharma": "Healthcare", "pharmaceutical": "Healthcare", "biotech": "Healthcare", "medical": "Healthcare", "medical devices": "Healthcare",
+    "consumer": "Consumer", "retail": "Consumer", "consumer goods": "Consumer", "staples": "Consumer", "discretionary": "Consumer", "consumer discretionary": "Consumer", "consumer staples": "Consumer",
+    "aerospace & defence": "Aerospace & Defence",
+    "aerospace": "Aerospace & Defence", "defence": "Aerospace & Defence", "defense": "Aerospace & Defence", "aerospace and defence": "Aerospace & Defence"
+  };
+  var dashboardData = null;
+  var selectedIndustry = null;
+
+  function canonicalizeIndustry(value) {
+    if (value == null) return "Unclassified";
+    var cleaned = String(value).trim();
+    if (!cleaned) return "Unclassified";
+    if (CANONICAL_INDUSTRIES.indexOf(cleaned) >= 0) return cleaned;
+    var key = cleaned.toLowerCase();
+    if (ALIAS_CANONICAL[key]) return ALIAS_CANONICAL[key];
+    for (var alias in ALIAS_CANONICAL) {
+      if (key.indexOf(alias) >= 0) return ALIAS_CANONICAL[alias];
+    }
+    return "Unclassified";
+  }
+  function signedNum(value, digits) {
+    if (value == null || value === '') return '';
+    var n = Number(value);
+    if (!isFinite(n)) return '';
+    var d = digits == null ? 2 : digits;
+    var s = Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    return (n > 0 ? '+' : '') + s;
+  }
+  function signedTextEl(value, cls, isPct) {
+    var node = el('span', cls + ' tabular');
+    if (value == null || value === '') { node.className = cls + ' dim tabular'; node.textContent = '—'; node.setAttribute('aria-label', 'no change'); return node; }
+    var n = Number(value);
+    if (!isFinite(n)) { node.textContent = String(value); return node; }
+    var up = n > 0, down = n < 0;
+    node.textContent = (up ? '▲ +' : down ? '▼ ' : '') + (isPct ? n.toLocaleString(undefined, { maximumFractionDigits: 1 }) + '%' : (n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n.toLocaleString(undefined, { maximumFractionDigits: 2 })));
+    node.classList.add(up ? 'inv-delta-up' : down ? 'inv-delta-down' : 'inv-delta-flat');
+    node.setAttribute('aria-label', (up ? 'up ' : down ? 'down ' : 'flat ') + node.textContent.replace(/[▲▼\s+%]/g, ''));
+    return node;
+  }
+  function severityOrdinal(label) {
+    var v = String(label || '').trim().toLowerCase();
+    return v === 'low' ? 1 : v === 'medium' ? 2 : v === 'high' ? 3 : null;
+  }
 
   function csrfHeader() {
     var item = document.cookie.split(';').map(function (v) { return v.trim(); }).find(function (v) { return v.indexOf('csrf-token=') === 0; });
@@ -216,6 +362,20 @@
     return node;
   }
 
+  function tagEl(kind, text) {
+    var node = el('span', 'inv-tag inv-tag-' + kind);
+    node.textContent = text || ({ det: 'Filing', nar: 'Model', news: 'News' })[kind];
+    node.setAttribute('aria-hidden', 'true');
+    return node;
+  }
+  function groupHeading(labelText, tagKind, noteText) {
+    var h = el('div', 'section-heading inv-group-heading');
+    var l = el('span', 'label'); l.textContent = labelText; h.appendChild(l);
+    if (tagKind) h.appendChild(tagEl(tagKind));
+    if (noteText) { var n = el('span', 'section-note dim'); n.textContent = noteText; h.appendChild(n); }
+    return h;
+  }
+
   // ---- Regional coverage strip ----
   function renderRegions(regions) {
     var host = document.getElementById('inv-regions');
@@ -247,68 +407,338 @@
     });
   }
 
-  // ---- Industry cards ----
+  // ---- Industry ledger ----
+  function buildIndustryIndex(industries) {
+    var index = {};
+    (industries || []).forEach(function (ind) {
+      if (!ind) return;
+      var key = canonicalizeIndustry(ind.name);
+      if (!index[key]) index[key] = ind;
+    });
+    return index;
+  }
+
+  function claimText(claim, fallbackCompanyCount, fallbackBreadthPct) {
+    if (!claim) return '';
+    if (typeof claim === 'object') {
+      var label = claim.label || claim.text || claim.risk || claim.name || '';
+      if (!label) return '';
+      var cc = claim.company_count != null ? claim.company_count : fallbackCompanyCount;
+      var bp = claim.breadth_pct != null ? claim.breadth_pct : fallbackBreadthPct;
+      var parts = [label];
+      if (cc != null) parts.push(cc + (cc === 1 ? ' company' : ' companies'));
+      if (bp != null && isFinite(Number(bp))) parts.push(fmtNum(bp, 0) + '% breadth');
+      return parts.join(' · ');
+    }
+    return String(claim);
+  }
+
   function renderIndustries(industries) {
     var host = document.getElementById('inv-industries');
-    if (!Array.isArray(industries) || !industries.length) {
-      host.setAttribute('data-inv-state', 'empty');
-      clear(host);
-      var empty = el('div', 'empty-state'); empty.textContent = 'No industries with coverage yet.'; host.appendChild(empty);
-      return;
+    var index = buildIndustryIndex(industries);
+    if (selectedIndustry == null) {
+      var covered = CANONICAL_INDUSTRIES.filter(function (name) {
+        var ind = index[name];
+        return ind && Number(ind.company_count || 0) > 0 && name !== 'Unclassified';
+      });
+      if (covered.length) selectedIndustry = covered[0];
     }
     host.setAttribute('data-inv-state', 'success');
     clear(host);
-    industries.forEach(function (ind) {
-      var card = el('article', 'inv-industry-card');
-      var head = el('div', 'inv-industry-head');
-      var name = el('h3', 'inv-industry-name'); name.textContent = ind.name || '—'; head.appendChild(name);
-      if (ind.regions) { var regs = el('span', 'inv-industry-regions dim tabular'); regs.textContent = Array.isArray(ind.regions) ? ind.regions.join(' · ') : ind.regions; head.appendChild(regs); }
-      card.appendChild(head);
 
-      var stage = el('div', 'inv-industry-stage');
-      stage.textContent = ind.stage || ind.state || 'monitor';
-      card.appendChild(stage);
-
-      var scoreRow = el('div', 'inv-industry-score-row');
-      var score = el('span', 'inv-industry-score tabular');
-      var sv = ind.score;
-      score.textContent = (sv == null || !isFinite(Number(sv))) ? '—' : Number(sv).toFixed(1);
-      var scoreLabel = el('span', 'dim'); scoreLabel.textContent = 'score';
-      scoreRow.appendChild(score); scoreRow.appendChild(scoreLabel);
-      card.appendChild(scoreRow);
-
-      var cc = el('span', 'inv-industry-counts dim tabular');
-      cc.textContent = (ind.company_count != null ? ind.company_count : '—') + ' companies';
-      card.appendChild(cc);
-
-      addList(card, 'inv-industry-drivers', 'Drivers', ind.drivers);
-      addList(card, 'inv-industry-risks', 'Risks', ind.risks);
-
-      host.appendChild(card);
+    var header = el('div', 'inv-industry-row inv-industry-row-head');
+    [['Industry', 'inv-col-name'], ['Score', 'inv-col-score'], ['Revenue growth', 'inv-col-revgrowth'], ['FCF margin', 'inv-col-fcf'], ['Deterministic', 'inv-col-det'], ['Companies', 'inv-col-co'], ['News', 'inv-col-news'], ['Top driver · risk claims', 'inv-col-claims']].forEach(function (c) {
+      var cell = el('span', c[1] + ' dim'); cell.textContent = c[0]; header.appendChild(cell);
     });
+    host.appendChild(header);
+
+    CANONICAL_INDUSTRIES.forEach(function (name) {
+      host.appendChild(renderIndustryRow(name, index[name] || {}));
+    });
+    syncIndustrySelection();
   }
 
-  function addList(parent, cls, label, items) {
-    if (!items || (Array.isArray(items) && !items.length)) return;
-    var block = el('div', cls);
-    var lab = el('span', 'label'); lab.textContent = label; block.appendChild(lab);
-    var ul = el('ul'); ul.className = 'inv-bullets';
-    var arr = Array.isArray(items) ? items : [items];
-    arr.forEach(function (it) {
-      var li = el('li');
-      if (it && typeof it === 'object') {
-        // {risk, mitigation} style
-        li.appendChild(esc(it.risk || it.text || it.label || it.name || ''));
-        if (it.mitigation) {
-          var m = el('span', 'inv-mitigation dim'); m.textContent = ' · mitigation: ' + String(it.mitigation); li.appendChild(m);
-        }
-      } else {
-        li.appendChild(esc(it));
-      }
-      ul.appendChild(li);
+  function renderIndustryRow(name, ind) {
+    var row = el('button', 'inv-industry-row');
+    row.type = 'button';
+    row.dataset.industry = name;
+    var hasCoverage = Number(ind.company_count || 0) > 0;
+
+    var stage = String(ind.stage || ind.state || (hasCoverage ? 'monitor' : 'none')).toLowerCase();
+    var nameCell = el('span', 'inv-col-name');
+    var nm = el('span', 'inv-industry-name'); nm.textContent = name; nameCell.appendChild(nm);
+    var stg = el('span', 'inv-industry-stage inv-stage-' + stage.replace(/[^a-z-]/g, '')); stg.textContent = stage; nameCell.appendChild(stg);
+    row.appendChild(nameCell);
+
+    var scoreCell = el('span', 'inv-col-score tabular');
+    var sv = ind.score;
+    var scoreSpan = el('span', 'inv-industry-score');
+    scoreSpan.textContent = (sv == null || !isFinite(Number(sv))) ? '—' : Number(sv).toFixed(1);
+    scoreCell.appendChild(scoreSpan);
+    var mom = ind.momentum && typeof ind.momentum === 'object' ? ind.momentum : null;
+    if (mom && mom.score_delta != null) {
+      scoreCell.appendChild(signedTextEl(mom.score_delta, 'inv-momentum'));
+    }
+    row.appendChild(scoreCell);
+
+    var fund = ind.fundamentals && typeof ind.fundamentals === 'object' ? ind.fundamentals : {};
+    var revCell = el('span', 'inv-col-revgrowth tabular');
+    if (fund.revenue_growth_pct != null) {
+      revCell.appendChild(signedTextEl(fund.revenue_growth_pct, 'inv-ledger-value', true));
+      if (fund.revenue_growth_company_count != null) { var rcc = el('span', 'dim'); rcc.textContent = ' · ' + fund.revenue_growth_company_count; revCell.appendChild(rcc); }
+    } else { revCell.className += ' dim'; revCell.textContent = '—'; }
+    row.appendChild(revCell);
+
+    var fcfCell = el('span', 'inv-col-fcf tabular');
+    if (fund.fcf_margin_pct != null) {
+      fcfCell.appendChild(signedTextEl(fund.fcf_margin_pct, 'inv-ledger-value', true));
+      if (fund.fcf_margin_company_count != null) { var fcc = el('span', 'dim'); fcc.textContent = ' · ' + fund.fcf_margin_company_count; fcfCell.appendChild(fcc); }
+    } else { fcfCell.className += ' dim'; fcfCell.textContent = '—'; }
+    row.appendChild(fcfCell);
+
+    var detCell = el('span', 'inv-col-det tabular');
+    var detPct = ind.deterministic_coverage_pct;
+    if (detPct != null && isFinite(Number(detPct))) {
+      detCell.textContent = fmtNum(detPct, 0) + '%';
+    } else { detCell.className += ' dim'; detCell.textContent = '—'; }
+    if (ind.deterministic_company_count != null) { var dc = el('span', 'dim'); dc.textContent = ' · ' + ind.deterministic_company_count; detCell.appendChild(dc); }
+    row.appendChild(detCell);
+
+    var coCell = el('span', 'inv-col-co tabular');
+    coCell.textContent = ind.company_count != null ? ind.company_count : '—';
+    row.appendChild(coCell);
+
+    var newsCell = el('span', 'inv-col-news tabular');
+    var newsCount = Number(ind.news_count || 0);
+    if (newsCount > 0) { newsCell.textContent = String(newsCount); }
+    else { newsCell.className += ' dim'; newsCell.textContent = '—'; newsCell.setAttribute('aria-label', 'no classified news'); }
+    row.appendChild(newsCell);
+
+    var claimsCell = el('span', 'inv-col-claims');
+    var driverClaims = Array.isArray(ind.driver_claims) && ind.driver_claims.length ? ind.driver_claims
+      : (Array.isArray(ind.drivers) && ind.drivers.length ? ind.drivers.slice(0, 2).map(function (d) {
+          return { label: typeof d === 'string' ? d : (d && (d.label || d.text)) || '', company_count: ind.company_count, breadth_pct: ind.breadth_pct };
+        }) : []);
+    var riskClaims = Array.isArray(ind.risk_claims) && ind.risk_claims.length ? ind.risk_claims
+      : (Array.isArray(ind.risks) && ind.risks.length ? ind.risks.slice(0, 2).map(function (r) {
+          return { label: typeof r === 'string' ? r : (r && (r.risk || r.label || r.text)) || '', company_count: ind.company_count, breadth_pct: ind.breadth_pct };
+        }) : []);
+    var topD = driverClaims.slice(0, 2).map(function (c) { return claimText(c); }).filter(Boolean);
+    var topR = riskClaims.slice(0, 2).map(function (c) { return claimText(c); }).filter(Boolean);
+    if (topD.length) { var d = el('span', 'inv-claim inv-claim-driver'); d.appendChild(esc('Drivers: ' + topD.join(' · '))); claimsCell.appendChild(d); }
+    if (topR.length) { var r = el('span', 'inv-claim inv-claim-risk dim'); r.appendChild(esc('Risks: ' + topR.join(' · '))); claimsCell.appendChild(r); }
+    if (!claimsCell.childNodes.length) { claimsCell.className += ' dim'; claimsCell.textContent = '—'; }
+    row.appendChild(claimsCell);
+
+    return row;
+  }
+
+  function syncIndustrySelection() {
+    var rows = document.getElementById('inv-industries');
+    if (!rows) return;
+    Array.prototype.forEach.call(rows.querySelectorAll('.inv-industry-row'), function (row) {
+      if (row.classList.contains('inv-industry-row-head')) return;
+      var pressed = selectedIndustry != null && row.dataset.industry === selectedIndustry;
+      row.setAttribute('aria-pressed', pressed ? 'true' : 'false');
     });
-    block.appendChild(ul);
-    parent.appendChild(block);
+    var allBtn = document.getElementById('inv-industry-all');
+    if (allBtn) allBtn.setAttribute('aria-pressed', selectedIndustry == null ? 'true' : 'false');
+  }
+
+  function bindIndustrySelection() {
+    var host = document.getElementById('inv-industries');
+    if (host) host.addEventListener('click', function (ev) {
+      var btn = ev.target.closest && ev.target.closest('.inv-industry-row');
+      if (!btn || btn.classList.contains('inv-industry-row-head')) return;
+      selectIndustry(btn.dataset.industry || null);
+    });
+    var all = document.getElementById('inv-industry-all');
+    if (all) all.addEventListener('click', function () { selectIndustry(null); });
+  }
+
+  function selectIndustry(name) {
+    selectedIndustry = name && name !== '__all__' ? name : null;
+    syncIndustrySelection();
+    if (dashboardData) {
+      renderTrendMonitoring(dashboardData.emerging_trends, dashboardData.trend_series, dashboardData.industry_history);
+      renderInvestmentNews(dashboardData.news);
+      renderAnalyses(dashboardData.analyses);
+    }
+  }
+
+  function renderResearchSummary(summary) {
+    var host = document.getElementById('inv-research-summary');
+    clear(host);
+    var s = summary || {};
+    var companyCount = s.company_count != null ? s.company_count : null;
+    var analysisCount = s.analysis_count != null ? s.analysis_count : null;
+    var detCount = s.deterministic_analysis_count != null ? s.deterministic_analysis_count : null;
+    var coveragePct = (analysisCount && detCount != null && analysisCount > 0) ? Math.round(detCount / analysisCount * 100) : null;
+    var missing = (analysisCount != null && detCount != null) ? Math.max(0, analysisCount - detCount) : null;
+    function stat(valueText, labelText, sub, subDim) {
+      var card = el('div', 'inv-research-stat');
+      var value = el('strong', 'tabular'); value.textContent = valueText; card.appendChild(value);
+      var label = el('span', 'dim'); label.textContent = labelText; card.appendChild(label);
+      if (sub) { var sNode = el('span', 'inv-research-sub tabular' + (subDim ? ' dim' : '')); sNode.textContent = sub; card.appendChild(sNode); }
+      return card;
+    }
+    var coverageValue = detCount == null
+      ? '—'
+      : String(detCount) + (companyCount == null ? '' : ' / ' + String(companyCount));
+    host.appendChild(stat(coverageValue, 'Verified filing coverage', coveragePct == null ? null : coveragePct + '% of companies', true));
+    host.appendChild(stat(missing == null ? '—' : String(missing), 'Missing filing facts', missing != null && missing > 0 ? 'awaiting deterministic extraction' : 'complete', true));
+    host.appendChild(stat(
+      s.history_point_count == null ? '—' : String(s.history_point_count),
+      'Dated research history',
+      (s.historical_report_count == null ? '—' : String(s.historical_report_count)) + ' reports · ' +
+        (s.update_analysis_count == null ? '—' : String(s.update_analysis_count)) + ' updates',
+      true
+    ));
+    host.appendChild(stat(
+      s.llm_cost_usd != null ? '$' + Number(s.llm_cost_usd).toFixed(4) : '—',
+      'Luna cost',
+      s.average_duration_ms != null ? fmtNum(Number(s.average_duration_ms) / 1000, 1) + 's average end-to-end' : null,
+      true
+    ));
+  }
+
+  function renderTrendRow(trend) {
+    var row = el('div', 'inv-trend-row');
+    var name = el('span', 'inv-trend-name'); name.textContent = trend.label || '—'; row.appendChild(name);
+    var scope = el('span', 'dim'); scope.textContent = trend.scope || 'theme'; row.appendChild(scope);
+    var momentum = el('span', 'tabular'); var n = Number(trend.momentum || 0);
+    momentum.textContent = (n > 0 ? '+' : '') + n + ' · ' + (trend.stage || 'stable'); row.appendChild(momentum);
+    return row;
+  }
+  function renderTrendPointRow(industry, p) {
+    var row = el('div', 'inv-trend-row inv-trend-point');
+    var name = el('span', 'inv-trend-name tabular'); name.textContent = (p.date || '—'); row.appendChild(name);
+    var scope = el('span', 'dim'); scope.textContent = industry; row.appendChild(scope);
+    var bits = ['score ' + (p.score != null ? Number(p.score).toFixed(1) : '—')];
+    if (p.company_count != null) bits.push(p.company_count + (p.company_count === 1 ? ' company' : ' companies'));
+    if (p.revenue_growth_pct != null) bits.push('revenue growth ' + signedNum(p.revenue_growth_pct, 1) + '%');
+    if (p.fcf_margin_pct != null) bits.push('FCF margin ' + fmtNum(p.fcf_margin_pct, 1) + '%');
+    var m = el('span', 'tabular'); m.textContent = bits.join(' · '); row.appendChild(m);
+    return row;
+  }
+
+  function renderObservationPointRow(industry, p) {
+    var row = el('div', 'inv-trend-row inv-trend-point');
+    var dateNode = el('span', 'inv-trend-name tabular');
+    dateNode.textContent = p.date || '—';
+    row.appendChild(dateNode);
+    var scope = el('span', 'dim');
+    scope.textContent = industry;
+    row.appendChild(scope);
+    var bits = [];
+    if (p.report_count) bits.push(p.report_count + (p.report_count === 1 ? ' report' : ' reports'));
+    if (p.news_count) bits.push(p.news_count + (p.news_count === 1 ? ' news item' : ' news items'));
+    if (p.company_count) bits.push(p.company_count + (p.company_count === 1 ? ' company' : ' companies'));
+    if (p.deterministic_metric_count) bits.push(p.deterministic_metric_count + ' filing facts');
+    if (p.average_score != null) bits.push('score ' + Number(p.average_score).toFixed(1));
+    var themes = Array.isArray(p.themes) ? p.themes.slice(0, 3) : [];
+    if (themes.length) bits.push(themes.map(prettyName).join(', '));
+    var detail = el('span', 'tabular');
+    detail.textContent = bits.length ? bits.join(' · ') : 'observation recorded';
+    row.appendChild(detail);
+    return row;
+  }
+  function renderTrendMonitoring(trends, series, history) {
+    var host = document.getElementById('inv-trends');
+    clear(host);
+    var items = Array.isArray(trends) ? trends.slice() : [];
+    var historyEntries = Array.isArray(history) ? history.filter(function (entry) {
+      return entry && Array.isArray(entry.points) && entry.points.length;
+    }) : [];
+
+    if (selectedIndustry) {
+      historyEntries.filter(function (entry) {
+        return canonicalizeIndustry(entry.industry) === selectedIndustry;
+      }).forEach(function (entry) {
+        entry.points.slice(-6).forEach(function (point) {
+          host.appendChild(renderObservationPointRow(entry.industry, point));
+        });
+      });
+      if (!host.childNodes.length) {
+        (Array.isArray(series) ? series : []).forEach(function (entry) {
+          if (canonicalizeIndustry(entry.industry) !== selectedIndustry) return;
+          (Array.isArray(entry.points) ? entry.points : []).slice(-6).forEach(function (point) {
+            host.appendChild(renderTrendPointRow(entry.industry, point));
+          });
+        });
+      }
+      items = items.filter(function (trend) {
+        return trend && trend.scope === 'industry' && canonicalizeIndustry(trend.label) === selectedIndustry;
+      }).slice(0, 6);
+    } else {
+      historyEntries.map(function (entry) {
+        return {
+          industry: entry.industry,
+          point: entry.points[entry.points.length - 1]
+        };
+      }).sort(function (left, right) {
+        return String(right.point.date || '').localeCompare(String(left.point.date || ''));
+      }).slice(0, 8).forEach(function (entry) {
+        host.appendChild(renderObservationPointRow(entry.industry, entry.point));
+      });
+      if (!host.childNodes.length && !items.length && Array.isArray(series)) {
+        items = series.filter(function (entry) {
+          return entry.points && entry.points.length;
+        }).slice(0, 12).map(function (entry) {
+          var points = entry.points;
+          var latest = points[points.length - 1];
+          var prior = points.length > 1 ? points[points.length - 2] : null;
+          return {
+            label: entry.industry,
+            scope: 'industry',
+            recent_count: latest.company_count,
+            momentum: prior ? Number(latest.score) - Number(prior.score) : 0,
+            stage: 'report trend'
+          };
+        });
+      }
+      items = items.slice(0, Math.max(0, 12 - host.childNodes.length));
+    }
+
+    items.forEach(function (trend) { host.appendChild(renderTrendRow(trend)); });
+    if (!host.childNodes.length) {
+      var empty = el('div', 'empty-state');
+      empty.textContent = 'No classified trend evidence yet.';
+      host.appendChild(empty);
+    }
+  }
+
+  function safeNewsUrl(value) {
+    try {
+      var parsed = new URL(String(value || ''), window.location.origin);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+    } catch (_) { return ''; }
+  }
+
+  function renderInvestmentNews(news) {
+    var host = document.getElementById('inv-investment-news');
+    clear(host);
+    var items = Array.isArray(news) ? news.slice() : [];
+    if (selectedIndustry) {
+      items = items.filter(function (item) {
+        return Array.isArray(item.industries) && item.industries.some(function (i) { return canonicalizeIndustry(i) === selectedIndustry; });
+      });
+    }
+    items = items.slice(0, 20);
+    if (!items.length) { var empty = el('div', 'empty-state'); empty.textContent = 'No company or industry news classified yet.'; host.appendChild(empty); return; }
+    items.forEach(function (item) {
+      var row = el('article', 'inv-news-row');
+      var href = safeNewsUrl(item.url);
+      var title = href ? el('a', 'quiet-link') : el('span');
+      title.textContent = item.title || 'Untitled';
+      if (href) { title.href = href; title.target = '_blank'; title.rel = 'noopener noreferrer'; }
+      row.appendChild(title);
+      var meta = el('div', 'dim tabular');
+      var categories = [].concat(item.companies || [], item.industries || [], item.themes || []).slice(0, 4);
+      meta.textContent = [item.source, item.published, categories.join(' · '), item.ambiguity].filter(Boolean).join(' · ');
+      row.appendChild(meta);
+      host.appendChild(row);
+    });
   }
 
   // ---- Report queue ----
@@ -356,17 +786,114 @@
   // ---- Analyses ----
   function renderAnalyses(analyses) {
     var host = document.getElementById('inv-analyses');
-    if (!Array.isArray(analyses) || !analyses.length) {
+    var list = Array.isArray(analyses) ? analyses : [];
+    var filtered = selectedIndustry ? list.filter(function (a) { return canonicalizeIndustry(a && a.industry) === selectedIndustry; }) : list;
+    if (!filtered.length) {
       host.setAttribute('data-inv-state', 'empty');
       clear(host);
-      var e = el('div', 'empty-state'); e.textContent = 'No analyses yet. Wait for automated intake or add a report manually, then run Analyze.'; host.appendChild(e);
+      var e = el('div', 'empty-state');
+      e.textContent = selectedIndustry
+        ? 'No analyses for ' + selectedIndustry + ' yet. Use Manual intake or run Analyze.'
+        : 'No analyses yet. Wait for automated intake or add a report manually, then run Analyze.';
+      host.appendChild(e);
       return;
     }
     host.setAttribute('data-inv-state', 'success');
     clear(host);
-    analyses.forEach(function (a) {
-      host.appendChild(renderAnalysisCard(a));
+    var head = el('div', 'inv-co-head dim');
+    head.setAttribute('role', 'presentation');
+    head.setAttribute('aria-hidden', 'true');
+    ['Company', 'Stage \u00B7 score', 'Revenue growth', 'FCF margin', 'Lead signal', 'Coverage'].forEach(function (c) {
+      var cell = el('span'); cell.textContent = c; head.appendChild(cell);
     });
+    host.appendChild(head);
+    filtered.forEach(function (a) { host.appendChild(renderCompanyDetails(a)); });
+  }
+
+  function strongestSignal(signals) {
+    var best = null;
+    Object.keys(signals || {}).forEach(function (name) {
+      var s = signals[name] && typeof signals[name] === 'object' ? signals[name] : {};
+      var score = Number(s.score);
+      if (!isFinite(score)) score = 0;
+      var hasObserved = s.observed_value != null || s.prior_value != null || s.change != null || s.change_pct != null;
+      if (!hasObserved && score === 0) return;
+      if (!best || Math.abs(score) > Math.abs(Number(best.score))) {
+        best = { name: name, score: s.score, observed: s.observed_value, prior: s.prior_value, change: s.change, change_pct: s.change_pct };
+      }
+    });
+    return best;
+  }
+
+  function renderCompanyDetails(a) {
+    var details = el('details', 'inv-company-row');
+    var summary = el('summary', 'inv-company-summary');
+
+    var name = el('span', 'inv-co-name tabular');
+    var ch = el('span', 'inv-co-disclosure'); ch.setAttribute('aria-hidden', 'true'); ch.textContent = '\u25BE'; name.appendChild(ch);
+    var nameText = el('span', 'inv-co-name-text'); nameText.textContent = (a.company || '—') + (a.symbol ? ' · ' + a.symbol : ''); name.appendChild(nameText);
+    summary.appendChild(name);
+
+    var stateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
+    stateValue = String(stateValue || 'monitor').toLowerCase();
+    var stageCell = el('span', 'inv-co-stage');
+    var stg = el('span', 'inv-stage inv-stage-' + stateValue.replace(/[^a-z-]/g, ''));
+    stg.textContent = stateValue; stageCell.appendChild(stg);
+    var stateScore = a.state && typeof a.state === 'object' ? a.state.score : a.score;
+    if (stateScore != null) { var sc = el('span', 'inv-co-score tabular'); sc.textContent = Number(stateScore).toFixed(1); stageCell.appendChild(sc); }
+    summary.appendChild(stageCell);
+
+    var metrics = a.metrics && typeof a.metrics === 'object' ? a.metrics : {};
+    var rev = metrics.revenue || {};
+    var revCell = el('span', 'inv-co-revgrowth tabular');
+    if (rev && rev.change_pct != null) { revCell.appendChild(signedTextEl(rev.change_pct, 'inv-co-delta', true)); }
+    else { revCell.className += ' dim'; revCell.textContent = '—'; }
+    summary.appendChild(revCell);
+
+    var fcf = metrics.fcf_margin || {};
+    var fcfCell = el('span', 'inv-co-fcf tabular');
+    if (fcf && fcf.value != null) { fcfCell.appendChild(signedTextEl(fcf.value, 'inv-co-delta', true)); }
+    else { fcfCell.className += ' dim'; fcfCell.textContent = '—'; }
+    summary.appendChild(fcfCell);
+
+    var strongest = strongestSignal(a.signals);
+    var sigCell = el('span', 'inv-co-signal tabular');
+    if (!strongest) { sigCell.className += ' dim'; sigCell.textContent = '—'; }
+    else {
+      var nm = el('span', 'inv-co-signal-name'); nm.textContent = prettyName(strongest.name); sigCell.appendChild(nm);
+      sigCell.appendChild(signedTextEl(strongest.score, 'inv-co-delta'));
+      var cp = el('span', 'dim'); cp.textContent = 'current ' + (strongest.observed == null ? '—' : fmtCompact(strongest.observed)) + ' · prior ' + (strongest.prior == null ? '—' : fmtCompact(strongest.prior)); sigCell.appendChild(cp);
+    }
+    summary.appendChild(sigCell);
+
+    var extraction = a.extraction && typeof a.extraction === 'object' ? a.extraction : {};
+    var detCount = extraction.deterministic_metric_count;
+    var detStatus = extraction.status;
+    var covCell = el('span', 'inv-co-coverage tabular');
+    if (detStatus === 'success' && detCount != null) {
+      covCell.appendChild(tagEl('det'));
+      var cn = el('span', 'dim'); cn.textContent = ' ' + detCount + ' facts'; covCell.appendChild(cn);
+      covCell.setAttribute('title', detCount + ' deterministic filing facts; fundamentals below are filing-derived.');
+    } else if (detStatus === 'unsupported') {
+      covCell.className += ' dim'; covCell.textContent = 'LLM only';
+      covCell.setAttribute('title', 'No standardized filing source; figures are model-derived only.');
+    } else {
+      covCell.className += ' dim'; covCell.textContent = '—';
+      covCell.setAttribute('aria-label', 'no deterministic filing facts');
+    }
+    summary.appendChild(covCell);
+
+    details.appendChild(summary);
+    var body = el('div', 'inv-company-body');
+    details.appendChild(body);
+    var built = false;
+    details.addEventListener('toggle', function () {
+      if (details.open && !built && body) {
+        built = true;
+        body.appendChild(renderAnalysisCard(a));
+      }
+    });
+    return details;
   }
 
   function renderAnalysisCard(a) {
@@ -401,17 +928,13 @@
     head.appendChild(stageRow);
     card.appendChild(head);
 
-    if (a.summary) {
-      var sum = el('p', 'inv-summary'); sum.appendChild(esc(a.summary)); card.appendChild(sum);
-    }
-
-    // Key metrics including FCF / P-E / DCF
+    // --- Report fundamentals (deterministic) ---
+    var detGroup = el('div', 'inv-group inv-group-det');
+    detGroup.appendChild(groupHeading('Report fundamentals', 'det', 'All values come from deterministic filing extraction or deterministic derived calculations; missing data stays blank.'));
     var metricBlock = el('div', 'inv-metrics-block');
     var mLabel = el('div', 'section-heading'); var mlSpan = el('span', 'label'); mlSpan.textContent = 'Key metrics'; mLabel.appendChild(mlSpan); metricBlock.appendChild(mLabel);
-
     var metricGrid = el('div', 'inv-metric-grid');
     var metrics = a.metrics && typeof a.metrics === 'object' ? a.metrics : {};
-    // Standard metrics order; gracefully fall back.
     var order = ['revenue', 'operating_cash_flow', 'free_cash_flow', 'fcf', 'capex', 'net_income', 'diluted_eps', 'shares_outstanding', 'market_price', 'net_debt', 'gross_margin', 'inventory', 'backlog'];
     var seen = {};
     order.forEach(function (name) {
@@ -425,14 +948,15 @@
       metricGrid.appendChild(renderMetric(name, metrics[name]));
     });
     metricBlock.appendChild(metricGrid);
-
-    // Valuation strip: FCF / P-E / DCF
     var val = a.valuation && typeof a.valuation === 'object' ? a.valuation : {};
     var valStrip = el('div', 'inv-valuation-strip');
     var vLabel = el('div', 'section-heading'); var vl = el('span', 'label'); vl.textContent = 'Valuation'; vLabel.appendChild(vl); valStrip.appendChild(vLabel);
     var vGrid = el('div', 'inv-valuation-grid');
     vGrid.appendChild(valCell('P/E', val.pe != null ? val.pe : val.pe_ratio));
-    vGrid.appendChild(valCell('FCF', (val.fcf != null ? val.fcf : (metrics.free_cash_flow != null ? metrics.free_cash_flow : (metrics.fcf != null ? metrics.fcf : metrics.fcf_margin))), val.currency_unit));
+    var fcfRecord = val.fcf != null ? val.fcf : (metrics.free_cash_flow != null ? metrics.free_cash_flow : (metrics.fcf != null ? metrics.fcf : metrics.fcf_margin));
+    var fcfValue = fcfRecord && typeof fcfRecord === 'object' ? fcfRecord.value : fcfRecord;
+    var fcfUnit = fcfRecord && typeof fcfRecord === 'object' && fcfRecord.unit ? fcfRecord.unit : val.currency_unit;
+    vGrid.appendChild(valCell('FCF', fcfValue, fcfUnit));
     vGrid.appendChild(valCell('DCF / share', val.dcf_per_share != null ? val.dcf_per_share : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
     vGrid.appendChild(valCell('Intrinsic / share', val.intrinsic_value != null ? val.intrinsic_value : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
     var marketPrice = metrics.market_price && typeof metrics.market_price === 'object' ? metrics.market_price.value : metrics.market_price;
@@ -441,21 +965,69 @@
     if (val.margin_of_safety != null) mos = val.margin_of_safety;
     vGrid.appendChild(valCell('Margin of safety', mos, null, true));
     valStrip.appendChild(vGrid);
-
+    var fundamentals = a.fundamentals && typeof a.fundamentals === 'object' ? a.fundamentals : {};
+    if (Object.keys(fundamentals).length) {
+      var fLabel = el('div', 'section-heading'); var fl = el('span', 'label'); fl.textContent = 'Ratios'; fLabel.appendChild(fl); valStrip.appendChild(fLabel);
+      var fGrid = el('div', 'inv-valuation-grid');
+      fGrid.appendChild(valCell('Net margin', fundamentals.net_margin_pct, null, true));
+      fGrid.appendChild(valCell('ROE', fundamentals.return_on_equity_pct, null, true));
+      fGrid.appendChild(valCell('ROA', fundamentals.return_on_assets_pct, null, true));
+      fGrid.appendChild(valCell('Debt / equity', fundamentals.debt_to_equity));
+      fGrid.appendChild(valCell('Current ratio', fundamentals.current_ratio));
+      fGrid.appendChild(valCell('Capex / revenue', fundamentals.capex_to_revenue_pct, null, true));
+      fGrid.appendChild(valCell('Cash conversion', fundamentals.operating_cash_conversion));
+      valStrip.appendChild(fGrid);
+    }
     metricBlock.appendChild(valStrip);
-    card.appendChild(metricBlock);
+    detGroup.appendChild(metricBlock);
+    addSignalsSection(detGroup, a.signals);
+    card.appendChild(detGroup);
 
-    addSignalsSection(card, a.signals);
-    // Drivers / catalysts / risks / watch items
-    addSection(card, 'inv-drivers', 'Drivers', a.drivers);
-    addSection(card, 'inv-catalysts', 'Catalysts', a.catalysts);
+    // --- Model narrative (LLM) ---
+    var narGroup = el('div', 'inv-group inv-group-nar');
+    narGroup.appendChild(groupHeading('Model narrative', 'nar', 'Generated by the analysis model; verify against the deterministic fundamentals above.'));
+    if (a.summary) { var sum = el('p', 'inv-summary'); sum.appendChild(esc(a.summary)); narGroup.appendChild(sum); }
+    if (a.thesis) { var t = el('p', 'inv-thesis'); t.appendChild(esc(a.thesis)); narGroup.appendChild(t); }
+    addClaimsSection(narGroup, 'Qualitative & report claims', a.drivers);
+    addCatalystsSection(narGroup, a.catalysts);
+    card.appendChild(narGroup);
+
+    var recentUpdates = Array.isArray(a.recent_updates) ? a.recent_updates : [];
+    if (recentUpdates.length) {
+      var updateGroup = el('div', 'inv-group inv-group-nar');
+      updateGroup.appendChild(groupHeading('Recent company updates', 'nar', 'Later earnings releases and interim reports, kept separate from the annual baseline.'));
+      var updateList = el('ul', 'inv-claim-list');
+      recentUpdates.forEach(function (update) {
+        var item = el('li');
+        var updateBits = [];
+        if (update.report_date) updateBits.push(update.report_date);
+        if (update.document_type) updateBits.push(prettyName(update.document_type));
+        var prefix = updateBits.length ? updateBits.join(' · ') + ' — ' : '';
+        item.textContent = prefix + (update.summary || update.thesis || 'No narrative summary available.');
+        updateList.appendChild(item);
+      });
+      updateGroup.appendChild(updateList);
+      card.appendChild(updateGroup);
+    }
+
+    // --- Risks & watch items (already behind the company row) ---
     addRisksSection(card, a.risks);
     addSection(card, 'inv-watch', 'Watch items', a.watch_items);
+
+    // --- Detailed evidence and peer comparison behind nested expandable sections ---
     addEvidenceSection(card, a.evidence);
+    addPeerComparisonSection(card, a.peer_comparison);
 
     if (a.model) {
       var foot = el('footer', 'inv-analysis-foot dim tabular');
-      foot.textContent = 'model: ' + a.model;
+      var usage = a.llm_usage && typeof a.llm_usage === 'object' ? a.llm_usage : {};
+      var extraction = a.extraction && typeof a.extraction === 'object' ? a.extraction : {};
+      var footBits = ['model: ' + a.model];
+      if (usage.cost_usd != null) footBits.push('$' + Number(usage.cost_usd).toFixed(5));
+      if (a.duration_ms != null) footBits.push('total ' + (Number(a.duration_ms) / 1000).toFixed(1) + 's');
+      if (usage.duration_ms != null) footBits.push('LLM ' + (Number(usage.duration_ms) / 1000).toFixed(1) + 's');
+      if (extraction.deterministic_metric_count != null) footBits.push(extraction.deterministic_metric_count + ' deterministic facts');
+      foot.textContent = footBits.join(' · ');
       card.appendChild(foot);
     }
     return card;
@@ -482,7 +1054,11 @@
       var n = Number(value);
       if (!isFinite(n)) sval = String(value);
       else if (isPct) sval = fmtCompact(Math.abs(n) < 1 && n !== 0 ? n * 100 : n) + '%';
-      else sval = (unit === '$' ? '$' : '') + fmtCompact(n) + (unit && unit !== '$' && unit !== '%' ? ' ' + unit : '');
+      else {
+        var scaledUnit = /m$|bn$|\bmillion\b|\bbillion\b/i.test(unit);
+        var formatted = scaledUnit ? fmtNum(n, 2) : fmtCompact(n);
+        sval = (unit === '$' ? '$' : '') + formatted + (unit && unit !== '$' && unit !== '%' ? ' ' + unit : '');
+      }
     }
     val.textContent = sval;
     valRow.appendChild(val);
@@ -546,20 +1122,81 @@
     parent.appendChild(block);
   }
 
+  function addClaimsSection(parent, label, items) {
+    if (!items || (Array.isArray(items) && !items.length)) return;
+    var block = el('div', 'inv-subsection inv-claims');
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = label || 'Qualitative & report claims'; h.appendChild(l); block.appendChild(h);
+    var ul = el('ul'); ul.className = 'inv-bullets';
+    var arr = Array.isArray(items) ? items : [items];
+    arr.forEach(function (it) {
+      var text = (it && typeof it === 'object') ? (it.label || it.text || it.name || '') : it;
+      if (text == null || text === '') return;
+      var li = el('li'); li.appendChild(esc(text));
+      if (it && typeof it === 'object' && it.company_count != null) {
+        var meta = el('span', 'dim tabular'); meta.textContent = ' · ' + it.company_count + (it.company_count === 1 ? ' company' : ' companies') + (it.breadth_pct != null ? ' · ' + fmtNum(it.breadth_pct, 0) + '% breadth' : ''); li.appendChild(meta);
+      }
+      if (it && typeof it === 'object' && it.evidence) { var ev = el('div', 'inv-claim-evidence dim'); ev.appendChild(esc(it.evidence)); li.appendChild(ev); }
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
+  function addCatalystsSection(parent, catalysts) {
+    if (!catalysts || (Array.isArray(catalysts) && !catalysts.length)) return;
+    var block = el('div', 'inv-subsection inv-catalysts');
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Catalysts'; h.appendChild(l); block.appendChild(h);
+    var ul = el('ul'); ul.className = 'inv-bullets inv-catalysts-list';
+    var arr = Array.isArray(catalysts) ? catalysts : [catalysts];
+    arr.forEach(function (c) {
+      var label = c && typeof c === 'object' ? (c.catalyst || c.text || c.label || '') : c;
+      if (label == null || String(label).trim() === '') return; // no blank bullets
+      var li = el('li');
+      var head = el('span', 'inv-catalyst-head'); head.appendChild(esc(label)); li.appendChild(head);
+      var meta = [];
+      if (c && typeof c === 'object' && c.horizon) meta.push('horizon ' + c.horizon);
+      if (meta.length) { var m = el('span', 'dim tabular'); m.textContent = ' · ' + meta.join(' · '); li.appendChild(m); }
+      if (c && typeof c === 'object' && c.evidence) { var ev = el('div', 'inv-catalyst-evidence dim'); ev.appendChild(esc(c.evidence)); li.appendChild(ev); }
+      ul.appendChild(li);
+    });
+    block.appendChild(ul);
+    parent.appendChild(block);
+  }
+
   function addSignalsSection(parent, signals) {
     if (!signals || typeof signals !== 'object' || !Object.keys(signals).length) return;
     var block = el('div', 'inv-subsection inv-signals');
-    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Deterministic signal ledger'; h.appendChild(l); block.appendChild(h);
+    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Deterministic signals'; h.appendChild(l); block.appendChild(h);
     var ledger = el('div', 'inv-signal-ledger');
     Object.keys(signals).forEach(function (name) {
       var signal = signals[name] && typeof signals[name] === 'object' ? signals[name] : {};
       var row = el('div', 'inv-signal-row');
       var title = el('span', 'inv-signal-name'); title.textContent = prettyName(name); row.appendChild(title);
-      var score = el('span', 'inv-signal-score tabular'); var scoreValue = Number(signal.score); score.textContent = isFinite(scoreValue) ? (scoreValue > 0 ? '+' : '') + scoreValue : '—'; row.appendChild(score);
+      var score = el('span', 'inv-signal-score tabular');
+      var scoreValue = Number(signal.score);
+      score.textContent = isFinite(scoreValue) ? (scoreValue > 0 ? '+' : '') + scoreValue : '—'; row.appendChild(score);
+      var deltaCell = el('span', 'inv-signal-delta tabular');
+      if (signal.change != null || signal.change_pct != null) {
+        var dParts = [];
+        if (signal.change != null) dParts.push(signedNum(signal.change, 2));
+        if (signal.change_pct != null) dParts.push(signedNum(signal.change_pct, 1) + '%');
+        deltaCell.appendChild(signedTextEl(signal.change_pct != null ? signal.change_pct : signal.change, 'inv-co-delta', signal.change_pct != null));
+        var dmeta = el('span', 'dim'); dmeta.textContent = ' (' + dParts.join(' · ') + ')'; deltaCell.appendChild(dmeta);
+      } else { deltaCell.className += ' dim'; deltaCell.textContent = '—'; }
+      row.appendChild(deltaCell);
+      var basisCell = el('span', 'inv-signal-basis dim tabular');
+      var basisBits = [];
+      if (signal.basis) basisBits.push(signal.basis);
+      if (signal.comparable != null) basisBits.push(signal.comparable ? 'comparable' : 'not comparable');
+      basisCell.textContent = basisBits.length ? basisBits.join(' · ') : '—';
+      row.appendChild(basisCell);
       var observed = el('span', 'inv-signal-observed dim tabular');
       observed.textContent = 'current ' + (signal.observed_value == null ? '—' : fmtCompact(signal.observed_value)) + ' · prior ' + (signal.prior_value == null ? '—' : fmtCompact(signal.prior_value));
       row.appendChild(observed);
       var rule = el('span', 'inv-signal-rule dim'); rule.textContent = signal.rule || ''; row.appendChild(rule);
+      if (signal.evidence) {
+        var ev = el('div', 'inv-signal-evidence dim'); ev.appendChild(esc(signal.evidence)); row.appendChild(ev);
+      }
       ledger.appendChild(row);
     });
     block.appendChild(ledger);
@@ -574,17 +1211,34 @@
     var ul = el('ul'); ul.className = 'inv-bullets inv-risks-list';
     var arr = Array.isArray(risks) ? risks : [risks];
     arr.forEach(function (r) {
+      var label = (r && typeof r === 'object' && (r.risk || r.risk_text)) ? (r.risk || r.risk_text)
+        : (r && typeof r === 'object') ? (r.text || r.label || r.name || '') : r;
+      if (label == null || String(label).trim() === '') return;
       var li = el('li');
-      if (r && typeof r === 'object' && (r.risk || r.risk_text)) {
-        li.appendChild(esc(r.risk || r.risk_text));
-        if (r.mitigation || r.mitigation_text) {
-          var m = el('div', 'inv-mitigation dim'); m.appendChild(esc('Mitigation: ' + (r.mitigation || r.mitigation_text))); li.appendChild(m);
-        }
-      } else if (r && typeof r === 'object') {
-        li.appendChild(esc(r.text || r.label || r.name || ''));
-      } else {
-        li.appendChild(esc(r));
+      var head = el('span', 'inv-risk-head'); head.appendChild(esc(label)); li.appendChild(head);
+      var likelihood = r && typeof r === 'object' ? (r.likelihood) : null;
+      var impact = r && typeof r === 'object' ? (r.impact) : null;
+      var lOrd = severityOrdinal(likelihood);
+      var iOrd = severityOrdinal(impact);
+      if ((likelihood || impact) && (r && typeof r === 'object')) {
+        var meta = el('span', 'dim tabular');
+        var parts = [];
+        if (likelihood) parts.push('likelihood ' + likelihood);
+        if (impact) parts.push('impact ' + impact);
+        meta.textContent = ' · ' + parts.join(' · ');
+        li.appendChild(meta);
       }
+      if (lOrd != null && iOrd != null) {
+        var severity = lOrd * iOrd;
+        var sev = el('span', 'inv-risk-severity inv-risk-sev-' + severity + ' tabular');
+        sev.textContent = 'severity ' + severity + ' (' + lOrd + '\u00D7' + iOrd + ')';
+        sev.setAttribute('title', 'deterministic ordinal = likelihood (' + lOrd + ') \u00D7 impact (' + iOrd + ')');
+        li.appendChild(sev);
+      }
+      if (r && typeof r === 'object' && (r.mitigation || r.mitigation_text)) {
+        var m = el('div', 'inv-mitigation dim'); m.appendChild(esc('Mitigation: ' + (r.mitigation || r.mitigation_text))); li.appendChild(m);
+      }
+      if (r && typeof r === 'object' && r.evidence) { var ev = el('div', 'inv-risk-evidence dim'); ev.appendChild(esc(r.evidence)); li.appendChild(ev); }
       ul.appendChild(li);
     });
     block.appendChild(ul);
@@ -593,8 +1247,13 @@
 
   function addEvidenceSection(parent, evidence) {
     if (!evidence || (Array.isArray(evidence) && !evidence.length)) return;
-    var block = el('div', 'inv-subsection inv-evidence');
-    var h = el('div', 'section-heading'); var l = el('span', 'label'); l.textContent = 'Evidence'; h.appendChild(l); block.appendChild(h);
+    var det = el('details', 'inv-subsection inv-evidence inv-detail-block');
+    var sum = el('summary', 'inv-detail-summary');
+    var l = el('span', 'label'); l.textContent = 'Evidence'; sum.appendChild(l);
+    var note = el('span', 'section-note dim tabular');
+    note.textContent = (Array.isArray(evidence) ? evidence.length : 1) + (Array.isArray(evidence) && evidence.length === 1 ? ' quote' : ' quotes');
+    sum.appendChild(note);
+    det.appendChild(sum);
     var ul = el('ul'); ul.className = 'inv-evidence-list';
     var arr = Array.isArray(evidence) ? evidence : [evidence];
     arr.forEach(function (e) {
@@ -607,8 +1266,64 @@
       }
       ul.appendChild(li);
     });
-    block.appendChild(ul);
-    parent.appendChild(block);
+    det.appendChild(ul);
+    parent.appendChild(det);
+  }
+  var PEER_METRIC_LABELS = {
+    revenue_growth_pct: 'Revenue growth',
+    fcf_margin_pct: 'FCF margin',
+    net_margin_pct: 'Net margin',
+    return_on_equity_pct: 'ROE',
+    debt_to_equity: 'Debt / equity'
+  };
+  function addPeerComparisonSection(parent, peer) {
+    if (!peer || typeof peer !== 'object') return;
+    var metrics = peer.metrics && typeof peer.metrics === 'object' ? peer.metrics : {};
+    var observedNames = Object.keys(PEER_METRIC_LABELS).filter(function (name) {
+      var m = metrics[name] && typeof metrics[name] === 'object' ? metrics[name] : null;
+      return m && m.sample_count > 0 && (m.value != null || m.median != null);
+    });
+    if (!observedNames.length) return;
+    var det = el('details', 'inv-subsection inv-peer-comparison inv-detail-block');
+    var hEl = el('summary', 'inv-detail-summary');
+    var l = el('span', 'label'); l.textContent = 'Peer comparison'; hEl.appendChild(l);
+    var note = el('span', 'section-note dim'); note.textContent = peer.industry ? (peer.industry + (peer.company_count != null ? ' · ' + peer.company_count + ' peers' : '')) : 'expand to compare'; hEl.appendChild(note);
+    det.appendChild(hEl);
+    var ledger = el('div', 'inv-peer-ledger');
+    var header = el('div', 'inv-peer-row inv-peer-row-head');
+    ['Metric', 'Company', 'Industry median', '\u0394 vs median', 'Percentile', 'Sample'].forEach(function (c) {
+      var cell = el('span', 'dim'); cell.textContent = c; header.appendChild(cell);
+    });
+    ledger.appendChild(header);
+    observedNames.forEach(function (name) {
+      var m = metrics[name] && typeof metrics[name] === 'object' ? metrics[name] : {};
+      var row = el('div', 'inv-peer-row');
+      var labelCell = el('span', 'inv-peer-metric'); labelCell.textContent = PEER_METRIC_LABELS[name] || prettyName(name); row.appendChild(labelCell);
+      var companyCell = el('span', 'inv-peer-company tabular');
+      companyCell.appendChild(signedTextEl(m.value, 'inv-ledger-value', /pct|margin|roe|equity/i.test(name) && m.value != null));
+      row.appendChild(companyCell);
+      var medianCell = el('span', 'inv-peer-median tabular');
+      medianCell.appendChild(signedTextEl(m.median, 'inv-ledger-value', /pct|margin|roe|equity/i.test(name) && m.median != null));
+      row.appendChild(medianCell);
+      var deltaCell = el('span', 'inv-peer-delta tabular');
+      if (m.delta != null) { deltaCell.appendChild(signedTextEl(m.delta, 'inv-co-delta', /pct|margin|roe|equity/i.test(name))); }
+      else if (m.value != null && m.median != null && isFinite(Number(m.value)) && isFinite(Number(m.median))) {
+        deltaCell.appendChild(signedTextEl(Number(m.value) - Number(m.median), 'inv-co-delta', /pct|margin|roe|equity/i.test(name)));
+      } else { deltaCell.className += ' dim'; deltaCell.textContent = '—'; }
+      row.appendChild(deltaCell);
+      var pctCell = el('span', 'inv-peer-percentile tabular');
+      if (m.percentile != null && isFinite(Number(m.percentile))) {
+        var p = Math.max(0, Math.min(100, Number(m.percentile)));
+        p = Math.round(p);
+        pctCell.textContent = String(p);
+        pctCell.setAttribute('title', 'company is at the ' + p + 'th percentile of its industry peers');
+      } else { pctCell.className += ' dim'; pctCell.textContent = '—'; }
+      row.appendChild(pctCell);
+      var sampleCell = el('span', 'inv-peer-sample tabular dim'); sampleCell.textContent = 'n=' + (m.sample_count != null ? m.sample_count : '—'); sampleCell.setAttribute('title', 'number of peers used for this comparison'); row.appendChild(sampleCell);
+      ledger.appendChild(row);
+    });
+    det.appendChild(ledger);
+    parent.appendChild(det);
   }
 
   // ---- State banner ----
@@ -623,9 +1338,13 @@
         return r.json().catch(function () { return {}; });
       })
       .then(function (data) {
+        dashboardData = data;
         setText(document.getElementById('inv-model'), data.model ? ('model ' + data.model) : 'model —');
         renderRegions(data.regions);
         renderIndustries(data.industries);
+        renderResearchSummary(data.research_summary || {});
+        renderTrendMonitoring(data.emerging_trends, data.trend_series, data.industry_history);
+        renderInvestmentNews(data.news);
         renderDocuments(data.documents);
         renderAnalyses(data.analyses);
         decorateQueueMeta(data);
@@ -633,7 +1352,7 @@
       })
       .catch(function (err) {
         var msg = 'Unable to load dashboard: ' + (err && err.message ? err.message : err);
-        [['inv-regions', '1'], ['inv-industries', '1'], ['inv-documents', '1'], ['inv-analyses', '1']].forEach(function (p) {
+        [['inv-regions', '1'], ['inv-industries', '1'], ['inv-research-summary', '1'], ['inv-trends', '1'], ['inv-investment-news', '1'], ['inv-documents', '1'], ['inv-analyses', '1']].forEach(function (p) {
           var host = document.getElementById(p[0]);
           if (host) { host.setAttribute('data-inv-state', 'error'); clear(host); var e = el('div', 'error-block'); e.setAttribute('role', 'alert'); e.textContent = msg; host.appendChild(e); }
         });
@@ -903,6 +1622,7 @@
     bindAnalyze();
     bindRefresh();
     bindFilingCollect();
+    bindIndustrySelection();
     loadDashboard();
     loadFilingStatus();
   });

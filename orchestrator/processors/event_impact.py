@@ -1,14 +1,14 @@
 import json
 import os
 import re
-from datetime import datetime, timezone
 from uuid import uuid4
+
+from sqlalchemy import text
 
 from budgets import BudgetContext
 from db import get_session
 from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("processor.event_impact")
 
@@ -59,7 +59,9 @@ class EventImpactProcessor:
         except ValueError as exc:
             stage.add_validation_warnings(["response was not valid JSON"])
             if stage.policy.validation_retries < 1:
-                raise LLMValidationError("LLM response validation failed", stage.telemetry) from exc
+                raise LLMValidationError(
+                    "LLM response validation failed", stage.telemetry
+                ) from exc
             retry_prompt = (
                 prompt_text
                 + "\n\nIMPORTANT CORRECTION: Return only one valid JSON object matching "
@@ -85,7 +87,9 @@ class EventImpactProcessor:
         ]
 
         direction = self._derive_direction(parsed)
-        confidence = "high" if len(events) >= 3 else "moderate" if len(events) >= 1 else "low"
+        confidence = (
+            "high" if len(events) >= 3 else "moderate" if len(events) >= 1 else "low"
+        )
 
         opinion = {
             "opinion_id": opinion_id,
@@ -190,7 +194,6 @@ class EventImpactProcessor:
                 regime += f" ({sub_regime.replace('_', ' ').title()})"
             confidence = r.get("confidence", "unknown")
 
-            summary = r.get("summary", "")
             key_factors = r.get("key_factors", [])
             if isinstance(key_factors, str):
                 try:
@@ -211,7 +214,11 @@ class EventImpactProcessor:
                 if v is not None:
                     indicator_parts.append(f"{k}: {v}")
 
-            indicators_str = ", ".join(indicator_parts) if indicator_parts else "no indicators available"
+            indicators_str = (
+                ", ".join(indicator_parts)
+                if indicator_parts
+                else "no indicators available"
+            )
 
             return (
                 f"Current macro regime: {regime}, {confidence} confidence. "
@@ -265,7 +272,6 @@ class EventImpactProcessor:
 
     def _static_no_events_result(self, correlation_id: str) -> dict:
         opinion_id = str(uuid4())
-        now = datetime.now(timezone.utc).isoformat()
 
         opinion = {
             "opinion_id": opinion_id,
@@ -320,7 +326,11 @@ class EventImpactProcessor:
         usd_bullish = 0
         usd_bearish = 0
         for e in events:
-            for scenario_key in ["consensus_met_scenario", "upside_surprise_scenario", "downside_surprise_scenario"]:
+            for scenario_key in [
+                "consensus_met_scenario",
+                "upside_surprise_scenario",
+                "downside_surprise_scenario",
+            ]:
                 scenario = e.get(scenario_key, {})
                 direction = scenario.get("direction", "")
                 if "bullish_usd" in direction:
@@ -360,7 +370,10 @@ class EventImpactProcessor:
             "overall_volatility_outlook": str,
             "risk_management_note": str,
         }
-        if any(not isinstance(parsed.get(key), expected) for key, expected in required_types.items()):
+        if any(
+            not isinstance(parsed.get(key), expected)
+            for key, expected in required_types.items()
+        ):
             raise ValueError("LLM response did not match required schema")
         if any(not isinstance(event, dict) for event in parsed["events"]):
             raise ValueError("LLM response did not match required schema")

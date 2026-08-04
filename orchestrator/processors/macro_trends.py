@@ -1,7 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable
-
 
 HISTORY_LIMIT = 15
 

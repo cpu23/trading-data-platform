@@ -26,20 +26,31 @@ class ApiLoggingRedactionTests(unittest.TestCase):
         sanitized = logging_config.redact_credentials(None, "info", original)
         rendered = json.dumps(sanitized)
 
-        self.assertEqual(original["headers"]["authorization"], "Bearer api-header-secret")
+        self.assertEqual(
+            original["headers"]["authorization"], "Bearer api-header-secret"
+        )
         self.assertEqual(sanitized["headers"]["authorization"], "[REDACTED]")
         self.assertEqual(sanitized["nested"][0]["Refresh_Token"], "[REDACTED]")
         self.assertEqual(sanitized["nested"][0]["token_count"], 3)
         self.assertEqual(sanitized["monkey"], "safe")
         self.assertIn("limit=10", rendered)
         self.assertIn("[REDACTED]", rendered)
-        for secret in ("api-header-secret", "api-refresh-secret", "api-query-secret", "api-bearer-secret"):
+        for secret in (
+            "api-header-secret",
+            "api-refresh-secret",
+            "api-query-secret",
+            "api-bearer-secret",
+        ):
             self.assertNotIn(secret, rendered)
 
     def test_processor_redacts_serialized_credentials_and_url_userinfo(self):
         sentinels = (
-            "json-secret-201", "json-spaced secret-202", "repr-secret-203",
-            "equals-secret-204", "userinfo-secret-205", "query-secret-206",
+            "json-secret-201",
+            "json-spaced secret-202",
+            "repr-secret-203",
+            "equals-secret-204",
+            "userinfo-secret-205",
+            "query-secret-206",
             "encoded-user-secret-207",
         )
         message = (
@@ -62,7 +73,9 @@ class ApiLoggingRedactionTests(unittest.TestCase):
         self.assertIn("{'api_key': '[REDACTED]'}", event)
         self.assertIn("client_secret=[REDACTED]", event)
         self.assertIn("https://[REDACTED]@example.test/path", event)
-        self.assertIn("https://[REDACTED]@example.test:8443/path?token=[REDACTED]#frag", event)
+        self.assertIn(
+            "https://[REDACTED]@example.test:8443/path?token=[REDACTED]#frag", event
+        )
         self.assertIn("https://[REDACTED]@example.test/encoded", event)
         self.assertIn("token_count=12 monkey=banana keyboard=qwerty", event)
         for sentinel in sentinels:

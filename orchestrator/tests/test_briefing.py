@@ -1,7 +1,7 @@
 import json
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
@@ -9,11 +9,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from processors._validators import (
-    validate_briefing_sections,
     coerce_briefing_fields,
+    validate_briefing_sections,
 )
 from processors.briefing import DailyBriefingProcessor
-
 
 WATCHLIST = [
     {"symbol": "EURUSD", "type": "forex"},
@@ -43,7 +42,7 @@ class BriefingTests(unittest.TestCase):
         event = {
             "event_name": "ISM Services PMI",
             "country": "US",
-            "scheduled_at": datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+            "scheduled_at": datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
             "impact_level": "high",
             "consensus": "53.0",
             "previous": "52.0",
@@ -94,6 +93,7 @@ class BriefingTests(unittest.TestCase):
             this_week_events="No high- or medium-impact relevant events scheduled.",
             asset_context='{"EURUSD": {"channels": ["relative monetary policy"]}}',
             watchlist=processor._format_watchlist(CONFIG),
+            investment_news='[{"title":"Semiconductor capex rises"}]',
         )
 
         self.assertIn("Risk-on but USD firm.", prompt)
@@ -103,6 +103,8 @@ class BriefingTests(unittest.TestCase):
         self.assertIn("relative monetary policy", prompt)
         self.assertIn("eligibility rules, not evidence", prompt)
         self.assertIn("calculated from stored time-series observations", prompt)
+        self.assertIn("Semiconductor capex rises", prompt)
+        self.assertNotIn("{{investment_news}}", prompt)
 
     @patch("processors.briefing.get_session")
     def test_previous_briefing_excludes_old_catalysts_and_thresholds(self, get_session):

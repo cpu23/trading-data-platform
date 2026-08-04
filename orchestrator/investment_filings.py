@@ -5,12 +5,12 @@ available to analysis. Companies House statutory accounts are polled by
 permanent company number and deduplicated by transaction ID.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import PurePath
 from urllib.parse import urlsplit
@@ -31,25 +31,34 @@ from logging_config import get_logger
 logger = get_logger("investment.filings")
 
 # SEC requires a descriptive User-Agent with contact email.
-SEC_USER_AGENT = "TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)"
+SEC_USER_AGENT = (
+    "TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)"
+)
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_ARCHIVE_DIRECTORY_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/"
 SEC_FILING_FORMS = frozenset(
     {
-        "10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A",
-        "10-Q", "10-Q/A", "6-K", "8-K", "8-K/A",
+        "10-K",
+        "10-K/A",
+        "20-F",
+        "20-F/A",
+        "40-F",
+        "40-F/A",
+        "10-Q",
+        "10-Q/A",
+        "6-K",
+        "8-K",
+        "8-K/A",
     }
 )
 
-COMPANIES_HOUSE_HISTORY_URL = (
-    "https://api.company-information.service.gov.uk/company/{company_number}/filing-history"
-)
-COMPANIES_HOUSE_DOCUMENT_URL = (
-    "https://document-api.company-information.service.gov.uk/document/{document_id}/content"
-)
+COMPANIES_HOUSE_HISTORY_URL = "https://api.company-information.service.gov.uk/company/{company_number}/filing-history"
+COMPANIES_HOUSE_DOCUMENT_URL = "https://document-api.company-information.service.gov.uk/document/{document_id}/content"
 
 EDINET_LIST_URL = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
-EDINET_CONTENT_URL = "https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}/contents.zip"
+EDINET_CONTENT_URL = (
+    "https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}/contents.zip"
+)
 
 OPENDART_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 OPENDART_REPORT_URL = "https://opendart.fss.or.kr/dsab001/main.do?rcpNo={rcp_no}"
@@ -94,9 +103,7 @@ def _sleep_for_companies_house() -> None:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
             now = time.monotonic()
-        _companies_house_next_request_at = (
-            now + COMPANIES_HOUSE_REQUEST_DELAY_SECONDS
-        )
+        _companies_house_next_request_at = now + COMPANIES_HOUSE_REQUEST_DELAY_SECONDS
 
 
 def _clean(value: object, limit: int = 200) -> str:
@@ -108,6 +115,7 @@ def _clean(value: object, limit: int = 200) -> str:
 # ---------------------------------------------------------------------------
 # SEC EDGAR (US)
 # ---------------------------------------------------------------------------
+
 
 def _sec_pad_cik(cik: str) -> str:
     """Pad CIK to 10 digits with leading zeros."""
@@ -162,6 +170,7 @@ def discover_sec_filings(
     forms = filings.get("form", [])
     accessions = filings.get("accessionNumber", [])
     dates = filings.get("filingDate", [])
+    report_dates = filings.get("reportDate", [])
     primary_docs = filings.get("primaryDocument", [])
     descriptions = filings.get("primaryDocDescription", [])
 
@@ -183,23 +192,29 @@ def discover_sec_filings(
         selected_document_types.add(document_type)
         primary_doc = primary_docs[index] if index < len(primary_docs) else ""
         directory_url = _sec_directory_url(cik, accession)
-        results.append({
-            "source": "sec_edgar",
-            "filing_id": accession,
-            "company": company.get("company", ""),
-            "symbol": company.get("symbol", ""),
-            "region": company.get("region", "US"),
-            "industry": company.get("industry", ""),
-            "document_type": document_type,
-            "report_date": filing_date or None,
-            "source_url": directory_url,
-            "directory_url": directory_url,
-            "filename": f"{accession}.txt",
-            "primary_document": primary_doc,
-            "accession": accession,
-            "form": form,
-            "description": descriptions[index] if index < len(descriptions) else "",
-        })
+        results.append(
+            {
+                "source": "sec_edgar",
+                "filing_id": accession,
+                "company": company.get("company", ""),
+                "symbol": company.get("symbol", ""),
+                "region": company.get("region", "US"),
+                "industry": company.get("industry", ""),
+                "document_type": document_type,
+                "report_date": (
+                    report_dates[index]
+                    if index < len(report_dates) and report_dates[index]
+                    else filing_date or None
+                ),
+                "source_url": directory_url,
+                "directory_url": directory_url,
+                "filename": f"{accession}.txt",
+                "primary_document": primary_doc,
+                "accession": accession,
+                "form": form,
+                "description": descriptions[index] if index < len(descriptions) else "",
+            }
+        )
         if len(results) >= MAX_FILINGS_PER_COMPANY:
             break
     return results
@@ -240,7 +255,11 @@ def _fetch_sec_directory_bundle(
     for item in items:
         raw_name = item.get("name") if isinstance(item, dict) else ""
         filename = PurePath(_clean(raw_name, 240)).name
-        if not filename or filename != raw_name or filename in {".", "..", "index.json"}:
+        if (
+            not filename
+            or filename != raw_name
+            or filename in {".", "..", "index.json"}
+        ):
             continue
         declared_size = item.get("size")
         try:
@@ -250,6 +269,20 @@ def _fetch_sec_directory_bundle(
         if declared_size is not None and declared_size > MAX_DIRECTORY_FILE_BYTES:
             raise ValueError(f"SEC filing file exceeds limit: {filename}")
         file_specs.append((filename, declared_size))
+
+    primary_document = PurePath(_clean(filing.get("primary_document"), 240)).name
+    file_specs.sort(
+        key=lambda spec: (
+            0
+            if spec[0] == primary_document
+            else 1
+            if spec[0].lower().endswith((".htm", ".html"))
+            else 2
+            if spec[0].lower().endswith((".xml", ".xsd", ".json"))
+            else 3,
+            spec[0].casefold(),
+        )
+    )
 
     if not file_specs:
         raise ValueError("SEC filing directory contained no files")
@@ -281,6 +314,7 @@ def _fetch_sec_directory_bundle(
     manifest = []
     sections = []
     extracted_chars = 0
+
     def add_file(fetched: tuple[str, bytes, str]) -> None:
         nonlocal total_bytes, extracted_chars
         filename, content, content_type = fetched
@@ -289,12 +323,14 @@ def _fetch_sec_directory_bundle(
             raise ValueError("SEC filing directory exceeds 1 GB")
 
         digest = hashlib.sha256(content).hexdigest()
-        manifest.append({
-            "filename": filename,
-            "bytes": len(content),
-            "content_type": content_type.split(";", 1)[0],
-            "sha256": digest,
-        })
+        manifest.append(
+            {
+                "filename": filename,
+                "bytes": len(content),
+                "content_type": content_type.split(";", 1)[0],
+                "sha256": digest,
+            }
+        )
         is_large_submission = (
             filename == filing.get("filename")
             and len(content) > MAX_PARALLEL_SEC_FILE_BYTES
@@ -349,6 +385,7 @@ def _fetch_sec_directory_bundle(
 # Companies House (UK)
 # ---------------------------------------------------------------------------
 
+
 def discover_companies_house_filings(
     company: dict,
     api_key: str,
@@ -396,33 +433,31 @@ def discover_companies_house_filings(
             2048,
         )
         document_id = PurePath(urlsplit(metadata_link).path).name
-        if (
-            not transaction_id
-            or not document_id
-            or document_id in {".", ".."}
-        ):
+        if not transaction_id or not document_id or document_id in {".", ".."}:
             continue
         selected_account_types.add(account_type)
         metadata_url = COMPANIES_HOUSE_DOCUMENT_URL.format(
             document_id=document_id
         ).removesuffix("/content")
-        results.append({
-            "source": "companies_house",
-            "filing_id": transaction_id,
-            "company_number": company_number,
-            "company": company.get("company", ""),
-            "symbol": company.get("symbol", ""),
-            "region": "EU",
-            "industry": company.get("industry", ""),
-            "document_type": (
-                "quarterly_report" if account_type == "interim" else "annual_report"
-            ),
-            "report_date": filing_date or None,
-            "source_url": metadata_url,
-            "document_metadata_url": metadata_url,
-            "filename": f"{transaction_id}.pdf",
-            "form": description,
-        })
+        results.append(
+            {
+                "source": "companies_house",
+                "filing_id": transaction_id,
+                "company_number": company_number,
+                "company": company.get("company", ""),
+                "symbol": company.get("symbol", ""),
+                "region": "EU",
+                "industry": company.get("industry", ""),
+                "document_type": (
+                    "quarterly_report" if account_type == "interim" else "annual_report"
+                ),
+                "report_date": filing_date or None,
+                "source_url": metadata_url,
+                "document_metadata_url": metadata_url,
+                "filename": f"{transaction_id}.pdf",
+                "form": description,
+            }
+        )
         if len(results) >= MAX_FILINGS_PER_COMPANY:
             break
     return results
@@ -465,10 +500,7 @@ def _fetch_companies_house_document(
         declared_size = int(declared_size)
     except (TypeError, ValueError):
         declared_size = None
-    if (
-        declared_size is not None
-        and declared_size > MAX_COMPANIES_HOUSE_DOCUMENT_BYTES
-    ):
+    if declared_size is not None and declared_size > MAX_COMPANIES_HOUSE_DOCUMENT_BYTES:
         raise ValueError("Companies House document exceeds 100 MB")
 
     url = COMPANIES_HOUSE_DOCUMENT_URL.format(document_id=document_id)
@@ -498,6 +530,7 @@ def _fetch_companies_house_document(
 # ---------------------------------------------------------------------------
 # Japan EDINET
 # ---------------------------------------------------------------------------
+
 
 def _fetch_edinet_documents(api_key: str, target_date: str) -> list[dict]:
     """Fetch EDINET document list for a given date."""
@@ -544,19 +577,25 @@ def discover_edinet_filings(
             doc_id = doc.get("docID", "")
             if not doc_id:
                 continue
-            results.append({
-                "source": "edinet",
-                "company": company.get("company", ""),
-                "symbol": company.get("symbol", ""),
-                "region": "ASIA",
-                "industry": company.get("industry", ""),
-                "document_type": "annual_report" if doc_type_raw == "120" else "quarterly_report",
-                "report_date": doc.get("docDescription", "").split(" ")[-1] if doc.get("docDescription") else current.isoformat(),
-                "source_url": EDINET_CONTENT_URL.format(doc_id=doc_id),
-                "filename": f"{edinet_code}_{doc_id}.zip",
-                "doc_id": doc_id,
-                "doc_type_code": doc_type_raw,
-            })
+            results.append(
+                {
+                    "source": "edinet",
+                    "company": company.get("company", ""),
+                    "symbol": company.get("symbol", ""),
+                    "region": "ASIA",
+                    "industry": company.get("industry", ""),
+                    "document_type": "annual_report"
+                    if doc_type_raw == "120"
+                    else "quarterly_report",
+                    "report_date": doc.get("docDescription", "").split(" ")[-1]
+                    if doc.get("docDescription")
+                    else current.isoformat(),
+                    "source_url": EDINET_CONTENT_URL.format(doc_id=doc_id),
+                    "filename": f"{edinet_code}_{doc_id}.zip",
+                    "doc_id": doc_id,
+                    "doc_type_code": doc_type_raw,
+                }
+            )
             if len(results) >= MAX_FILINGS_PER_COMPANY:
                 break
         _sleep_between_requests()
@@ -570,6 +609,7 @@ def discover_edinet_filings(
 # ---------------------------------------------------------------------------
 # Korea OpenDART
 # ---------------------------------------------------------------------------
+
 
 def _fetch_opendart_list(api_key: str, corp_code: str, bgn_de: str) -> list[dict]:
     """Fetch OpenDART filing list."""
@@ -615,20 +655,22 @@ def discover_opendart_filings(
         if not rcp_no:
             continue
         doc_type = "annual_report" if report_code == "11011" else "quarterly_report"
-        results.append({
-            "source": "opendart",
-            "company": company.get("company", ""),
-            "symbol": company.get("symbol", ""),
-            "region": "ASIA",
-            "industry": company.get("industry", ""),
-            "document_type": doc_type,
-            "report_date": filing.get("rcept_dt", ""),
-            "source_url": OPENDART_REPORT_URL.format(rcp_no=rcp_no),
-            "filename": f"{corp_code}_{rcp_no}.html",
-            "rcp_no": rcp_no,
-            "report_code": report_code,
-            "report_name": filing.get("report_nm", ""),
-        })
+        results.append(
+            {
+                "source": "opendart",
+                "company": company.get("company", ""),
+                "symbol": company.get("symbol", ""),
+                "region": "ASIA",
+                "industry": company.get("industry", ""),
+                "document_type": doc_type,
+                "report_date": filing.get("rcept_dt", ""),
+                "source_url": OPENDART_REPORT_URL.format(rcp_no=rcp_no),
+                "filename": f"{corp_code}_{rcp_no}.html",
+                "rcp_no": rcp_no,
+                "report_code": report_code,
+                "report_name": filing.get("report_nm", ""),
+            }
+        )
         if len(results) >= MAX_FILINGS_PER_COMPANY:
             break
     return results
@@ -637,6 +679,7 @@ def discover_opendart_filings(
 # ---------------------------------------------------------------------------
 # Orchestration: discover + ingest + analyze
 # ---------------------------------------------------------------------------
+
 
 def _configured_companies(
     filings_config: dict,
@@ -709,7 +752,13 @@ def _ingest_filing(
                     sec_user_agent,
                 )
             metadata["filename"] = filename
-            doc = store_document(config, metadata, content, mime_type)
+            doc = store_document(
+                config,
+                metadata,
+                content,
+                mime_type,
+                preserve_content=True,
+            )
         elif source == "companies_house":
             content, filename, mime_type = _fetch_companies_house_document(
                 filing,
@@ -791,9 +840,7 @@ def run_filing_collection(
         # Companies House filing is unavailable or not machine-readable.
         if cik:
             _sleep_between_requests()
-            discovered.extend(
-                discover_sec_filings(company, since, sec_user_agent)
-            )
+            discovered.extend(discover_sec_filings(company, since, sec_user_agent))
 
         if company_number and companies_house_key:
             discovered.extend(
@@ -812,7 +859,9 @@ def run_filing_collection(
         if company.get("dart_code") or company.get("corp_code"):
             if opendart_key:
                 _sleep_between_requests()
-                discovered.extend(discover_opendart_filings(company, opendart_key, since))
+                discovered.extend(
+                    discover_opendart_filings(company, opendart_key, since)
+                )
 
         company_result = {
             "company": company_name,
@@ -834,13 +883,15 @@ def run_filing_collection(
                 sec_user_agent=sec_user_agent,
                 companies_house_api_key=companies_house_key,
             )
-            company_result["filings"].append({
-                "filing_id": filing.get("filing_id", ""),
-                "source": filing.get("source", ""),
-                "source_url": filing.get("source_url", ""),
-                "form": filing.get("form", filing.get("report_name", "")),
-                "result": result,
-            })
+            company_result["filings"].append(
+                {
+                    "filing_id": filing.get("filing_id", ""),
+                    "source": filing.get("source", ""),
+                    "source_url": filing.get("source_url", ""),
+                    "form": filing.get("form", filing.get("report_name", "")),
+                    "result": result,
+                }
+            )
             status = result.get("status", "failed")
             if status == "ingested":
                 company_result["ingested"] += 1
@@ -895,50 +946,54 @@ def get_filing_source_status(config: dict) -> dict:
             or not company.get("company_number")
         )
     ]
-    sources.append({
-        "id": "sec_edgar",
-        "name": "SEC EDGAR (US and cross-listed)",
-        "enabled": enabled and bool(sec_companies),
-        "companies": len(sec_companies),
-        "api_key_required": False,
-        "note": "Complete accession directories, including exhibits.",
-        "url": "https://www.sec.gov/edgar/search/",
-    })
+    sources.append(
+        {
+            "id": "sec_edgar",
+            "name": "SEC EDGAR (US and cross-listed)",
+            "enabled": enabled and bool(sec_companies),
+            "companies": len(sec_companies),
+            "api_key_required": False,
+            "note": "Complete accession directories, including exhibits.",
+            "url": "https://www.sec.gov/edgar/search/",
+        }
+    )
 
     companies_house_companies = [
         company for company in companies if company.get("company_number")
     ]
     companies_house_key = filings_config.get("companies_house_api_key", "")
-    sources.append({
-        "id": "companies_house",
-        "name": "Companies House (UK)",
-        "enabled": (
-            enabled
-            and bool(companies_house_companies)
-            and bool(companies_house_key)
-        ),
-        "companies": len(companies_house_companies),
-        "api_key_required": True,
-        "api_key_configured": bool(companies_house_key),
-        "note": "Statutory accounts by permanent company number.",
-        "url": "https://find-and-update.company-information.service.gov.uk/",
-    })
+    sources.append(
+        {
+            "id": "companies_house",
+            "name": "Companies House (UK)",
+            "enabled": (
+                enabled
+                and bool(companies_house_companies)
+                and bool(companies_house_key)
+            ),
+            "companies": len(companies_house_companies),
+            "api_key_required": True,
+            "api_key_configured": bool(companies_house_key),
+            "note": "Statutory accounts by permanent company number.",
+            "url": "https://find-and-update.company-information.service.gov.uk/",
+        }
+    )
 
-    eu_companies = [
-        company for company in companies if company.get("market") == "EU"
-    ]
-    sources.append({
-        "id": "eu_esef",
-        "name": "EU ESEF / national OAMs",
-        "enabled": False,
-        "companies": len(eu_companies),
-        "api_key_required": False,
-        "note": (
-            "EU issuers with SEC registrations are collected automatically; "
-            "remaining ESEF reports are decentralized across national OAMs."
-        ),
-        "url": "https://www.esma.europa.eu/issuer-disclosure/officially-appointed-mechanisms",
-    })
+    eu_companies = [company for company in companies if company.get("market") == "EU"]
+    sources.append(
+        {
+            "id": "eu_esef",
+            "name": "EU ESEF / national OAMs",
+            "enabled": False,
+            "companies": len(eu_companies),
+            "api_key_required": False,
+            "note": (
+                "EU issuers with SEC registrations are collected automatically; "
+                "remaining ESEF reports are decentralized across national OAMs."
+            ),
+            "url": "https://www.esma.europa.eu/issuer-disclosure/officially-appointed-mechanisms",
+        }
+    )
 
     edinet_companies = [
         company
@@ -946,15 +1001,17 @@ def get_filing_source_status(config: dict) -> dict:
         if company.get("edinet_code") or company.get("edinet")
     ]
     edinet_key = filings_config.get("edinet_api_key", "")
-    sources.append({
-        "id": "edinet",
-        "name": "EDINET (Japan)",
-        "enabled": enabled and bool(edinet_companies) and bool(edinet_key),
-        "companies": len(edinet_companies),
-        "api_key_required": True,
-        "api_key_configured": bool(edinet_key),
-        "url": "https://disclosure2.edinet-fsa.go.jp/",
-    })
+    sources.append(
+        {
+            "id": "edinet",
+            "name": "EDINET (Japan)",
+            "enabled": enabled and bool(edinet_companies) and bool(edinet_key),
+            "companies": len(edinet_companies),
+            "api_key_required": True,
+            "api_key_configured": bool(edinet_key),
+            "url": "https://disclosure2.edinet-fsa.go.jp/",
+        }
+    )
 
     dart_companies = [
         company
@@ -962,15 +1019,17 @@ def get_filing_source_status(config: dict) -> dict:
         if company.get("dart_code") or company.get("corp_code")
     ]
     opendart_key = filings_config.get("opendart_api_key", "")
-    sources.append({
-        "id": "opendart",
-        "name": "OpenDART (Korea)",
-        "enabled": enabled and bool(dart_companies) and bool(opendart_key),
-        "companies": len(dart_companies),
-        "api_key_required": True,
-        "api_key_configured": bool(opendart_key),
-        "url": "https://opendart.fss.or.kr/",
-    })
+    sources.append(
+        {
+            "id": "opendart",
+            "name": "OpenDART (Korea)",
+            "enabled": enabled and bool(dart_companies) and bool(opendart_key),
+            "companies": len(dart_companies),
+            "api_key_required": True,
+            "api_key_configured": bool(opendart_key),
+            "url": "https://opendart.fss.or.kr/",
+        }
+    )
 
     # Last run info
     with get_session(config) as session:

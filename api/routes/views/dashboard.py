@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
@@ -9,16 +9,16 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
+from budgets import get_budget_status
 from db import query_many, query_one
+from logging_config import get_logger
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import get_events_upcoming_data
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
-from routes.json.system import get_system_health
 from routes.json.settings import timezone_context
+from routes.json.system import get_system_health
 from routes.views.news import load_news_context
-from budgets import get_budget_status
-from logging_config import get_logger
 from staleness import get_staleness_config, is_stale
 
 logger = get_logger("dashboard")
@@ -29,10 +29,46 @@ ASSET_EVENT_RULES = {
     "USDJPY": {"currencies": {"USD", "JPY"}},
     "AUDJPY": {"currencies": {"AUD", "JPY"}},
     "SP500": {"currencies": {"USD"}, "countries": {"US"}},
-    "XAUUSD": {"currencies": {"USD"}, "keywords": {"inflation", "cpi", "ppi", "rates", "rate", "fed", "fomc", "yield", "risk", "jobs", "payroll"}},
-    "XPTUSD": {"currencies": {"USD"}, "keywords": {"inflation", "cpi", "ppi", "industrial", "manufacturing", "pmi", "risk", "growth", "china"}},
-    "GER40": {"currencies": {"EUR"}, "countries": {"EU", "DE"}, "keywords": {"germany", "german", "ecb", "eurozone"}},
-    "UK100": {"currencies": {"GBP"}, "countries": {"GB", "UK"}, "keywords": {"uk", "britain", "boe", "bank of england"}},
+    "XAUUSD": {
+        "currencies": {"USD"},
+        "keywords": {
+            "inflation",
+            "cpi",
+            "ppi",
+            "rates",
+            "rate",
+            "fed",
+            "fomc",
+            "yield",
+            "risk",
+            "jobs",
+            "payroll",
+        },
+    },
+    "XPTUSD": {
+        "currencies": {"USD"},
+        "keywords": {
+            "inflation",
+            "cpi",
+            "ppi",
+            "industrial",
+            "manufacturing",
+            "pmi",
+            "risk",
+            "growth",
+            "china",
+        },
+    },
+    "GER40": {
+        "currencies": {"EUR"},
+        "countries": {"EU", "DE"},
+        "keywords": {"germany", "german", "ecb", "eurozone"},
+    },
+    "UK100": {
+        "currencies": {"GBP"},
+        "countries": {"GB", "UK"},
+        "keywords": {"uk", "britain", "boe", "bank of england"},
+    },
 }
 
 
@@ -85,7 +121,7 @@ def _parse_iso(value) -> datetime | None:
 def _format_stale_reason(stale_reason: str | None, section: str) -> str | None:
     if not stale_reason or not stale_reason.startswith("Data is "):
         return stale_reason
-    hours_part = stale_reason[len("Data is "):]
+    hours_part = stale_reason[len("Data is ") :]
     if section == "regime":
         return f"Macro data is {hours_part}"
     if section == "briefing":
@@ -95,7 +131,9 @@ def _format_stale_reason(stale_reason: str | None, section: str) -> str | None:
     return stale_reason
 
 
-def _freshness_dot(stale: bool = False, failed: bool = False, title: str | None = None) -> dict:
+def _freshness_dot(
+    stale: bool = False, failed: bool = False, title: str | None = None
+) -> dict:
     if failed:
         return {"state": "failed", "title": title or "Section failed to load"}
     if stale:
@@ -103,17 +141,31 @@ def _freshness_dot(stale: bool = False, failed: bool = False, title: str | None 
     return {"state": "", "title": ""}
 
 
-def _section_dots(regime: dict, events_data: dict, briefing: dict | None, indicators_stale: bool, indicators_stale_reason: str | None) -> dict:
+def _section_dots(
+    regime: dict,
+    events_data: dict,
+    briefing: dict | None,
+    indicators_stale: bool,
+    indicators_stale_reason: str | None,
+) -> dict:
     return {
         "regime": _freshness_dot(
             stale=bool(isinstance(regime, dict) and regime.get("stale")),
             failed=bool(isinstance(regime, dict) and regime.get("error")),
-            title=(regime.get("error") or regime.get("stale_reason") or regime.get("created_at")) if isinstance(regime, dict) else None,
+            title=(
+                regime.get("error")
+                or regime.get("stale_reason")
+                or regime.get("created_at")
+            )
+            if isinstance(regime, dict)
+            else None,
         ),
         "events": _freshness_dot(
             stale=bool(isinstance(events_data, dict) and events_data.get("stale")),
             failed=bool(isinstance(events_data, dict) and events_data.get("error")),
-            title=(events_data.get("error") or events_data.get("stale_reason")) if isinstance(events_data, dict) else None,
+            title=(events_data.get("error") or events_data.get("stale_reason"))
+            if isinstance(events_data, dict)
+            else None,
         ),
         "indicators": _freshness_dot(
             stale=indicators_stale,
@@ -123,17 +175,15 @@ def _section_dots(regime: dict, events_data: dict, briefing: dict | None, indica
         "briefing": _freshness_dot(
             stale=bool(briefing and briefing.get("stale")),
             failed=False,
-            title=(briefing.get("stale_reason") or briefing.get("created_at")) if briefing else None,
+            title=(briefing.get("stale_reason") or briefing.get("created_at"))
+            if briefing
+            else None,
         ),
     }
 
 
 def _primary_timezone(config: dict) -> ZoneInfo:
-    tz_name = (
-        config.get("timezone", {})
-        .get("primary", {})
-        .get("name", "Europe/London")
-    )
+    tz_name = config.get("timezone", {}).get("primary", {}).get("name", "Europe/London")
     return ZoneInfo(tz_name)
 
 
@@ -144,7 +194,9 @@ def _event_template_context(
     display_zone: ZoneInfo | None = None,
 ) -> dict:
     grouped = events_data.get("grouped", {}) if isinstance(events_data, dict) else {}
-    filtered_events = events_data.get("events", []) if isinstance(events_data, dict) else []
+    filtered_events = (
+        events_data.get("events", []) if isinstance(events_data, dict) else []
+    )
     high_impact_grouped = {}
     for day_key, events in grouped.items():
         high_impact_events = [
@@ -208,12 +260,12 @@ def _event_datetime(event: dict) -> datetime:
     scheduled = _parse_iso(event.get("scheduled_at"))
     if scheduled:
         return scheduled
-    return datetime.max.replace(tzinfo=timezone.utc)
+    return datetime.max.replace(tzinfo=UTC)
 
 
 def _event_time_key(event: dict) -> tuple:
     scheduled = _event_datetime(event)
-    if scheduled != datetime.max.replace(tzinfo=timezone.utc):
+    if scheduled != datetime.max.replace(tzinfo=UTC):
         return (0, scheduled)
     return (1, event.get("london_time") or event.get("time_display") or "")
 
@@ -224,7 +276,7 @@ def _chronological_event_key(event: dict) -> tuple:
 
 def _event_day_time_display(event: dict) -> str:
     scheduled = _event_datetime(event)
-    if scheduled != datetime.max.replace(tzinfo=timezone.utc):
+    if scheduled != datetime.max.replace(tzinfo=UTC):
         day_label = event.get("day_label_short") or scheduled.strftime("%a")
         return f"{day_label} · {event.get('time_display') or scheduled.strftime('%H:%M UTC')}"
     return event.get("time_display") or "Time TBC"
@@ -239,7 +291,8 @@ def _with_event_display(event: dict) -> dict:
 def _top_catalysts(events_data: dict, limit: int = 6) -> list[dict]:
     """High-impact events spread across the week instead of stacking on one busy day."""
     high = [
-        ev for ev in (events_data.get("events") or [])
+        ev
+        for ev in (events_data.get("events") or [])
         if (ev.get("impact_level") or "").lower() == "high"
     ]
     by_day: dict[str, list[dict]] = {}
@@ -281,7 +334,9 @@ def _event_exposure_key(event: dict) -> str | None:
     return currency or country or None
 
 
-def _matched_asset_events(symbol: str, events: list[dict], limit: int = 6) -> list[dict]:
+def _matched_asset_events(
+    symbol: str, events: list[dict], limit: int = 6
+) -> list[dict]:
     rules = ASSET_EVENT_RULES.get((symbol or "").upper(), {})
     matches = sorted(
         [event for event in events if _event_matches_asset(symbol, event)],
@@ -292,10 +347,16 @@ def _matched_asset_events(symbol: str, events: list[dict], limit: int = 6) -> li
     currencies = rules.get("currencies", set())
     if len(currencies) > 1 and len(matches) > limit:
         selected_exposures = {_event_exposure_key(event) for event in selected}
-        missing = [currency for currency in currencies if currency not in selected_exposures]
+        missing = [
+            currency for currency in currencies if currency not in selected_exposures
+        ]
         for currency in missing:
             replacement = next(
-                (event for event in matches if _event_exposure_key(event) == currency and event not in selected),
+                (
+                    event
+                    for event in matches
+                    if _event_exposure_key(event) == currency and event not in selected
+                ),
                 None,
             )
             if replacement:
@@ -329,7 +390,12 @@ def _list_values(value, limit: int) -> list[str]:
         items = []
         for item in value:
             if isinstance(item, dict):
-                text = item.get("summary") or item.get("note") or item.get("text") or item.get("name")
+                text = (
+                    item.get("summary")
+                    or item.get("note")
+                    or item.get("text")
+                    or item.get("name")
+                )
             else:
                 text = str(item)
             if text:
@@ -370,7 +436,10 @@ def _briefing_sections(briefing: dict | None) -> list[dict]:
 
     if not any([what_changed, interpretation, invalidation]):
         legacy = [
-            ("Macro trend", sections.get("macro_trend") or sections.get("macro_summary")),
+            (
+                "Macro trend",
+                sections.get("macro_trend") or sections.get("macro_summary"),
+            ),
             ("Today", sections.get("today")),
             ("This week", sections.get("this_week") or sections.get("upcoming_events")),
         ]
@@ -457,10 +526,15 @@ def _data_status(health: dict | None) -> dict:
         label, state = f"{n} source{'s' if n != 1 else ''} delayed", "delayed"
     else:
         label, state = "Data current", "current"
-    return {"label": label, "state": state, "delayed_count": len(delayed), "components": components}
+    return {
+        "label": label,
+        "state": state,
+        "delayed_count": len(delayed),
+        "components": components,
+    }
+
 
 router = APIRouter()
-
 
 
 @router.get("/")
@@ -523,13 +597,9 @@ async def dashboard(request: Request):
     if not isinstance(macro_result, Exception):
         indicator_configs = config.get("dashboard", {}).get("indicators", [])
         precision_map = {
-            item["series_id"]: item.get("precision", 2)
-            for item in indicator_configs
+            item["series_id"]: item.get("precision", 2) for item in indicator_configs
         }
-        note_map = {
-            item["series_id"]: item.get("note")
-            for item in indicator_configs
-        }
+        note_map = {item["series_id"]: item.get("note") for item in indicator_configs}
         for indicator in macro_result.get("indicators", []):
             indicator["precision"] = precision_map.get(indicator["series_id"], 2)
             indicator["note"] = note_map.get(indicator["series_id"])
@@ -567,9 +637,7 @@ async def dashboard(request: Request):
             else last_cycle_text
         ),
         "last_cycle_status": (
-            "unknown"
-            if isinstance(last_cycle_status, Exception)
-            else last_cycle_status
+            "unknown" if isinstance(last_cycle_status, Exception) else last_cycle_status
         ),
         "system_health": system_health,
         "regime": regime,
@@ -598,8 +666,6 @@ async def dashboard(request: Request):
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 
-
-
 @router.get("/partials/header")
 async def partial_header(request: Request):
     config = await run_in_threadpool(app_config.load_config)
@@ -607,41 +673,19 @@ async def partial_header(request: Request):
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
 
-    regime = {}
-    try:
-        regime = await run_in_threadpool(get_regime_current)
-    except Exception:
-        pass
-
-    briefing = None
-    try:
-        briefing = await run_in_threadpool(get_briefing_latest)
-    except Exception:
-        pass
-
-    events_data = {}
-    try:
-        events_data = await run_in_threadpool(get_events_upcoming_data, request=request, days=14)
-    except Exception:
-        pass
-
-    indicators = []
-    try:
-        macro_data = await run_in_threadpool(get_macro_dashboard)
-        indicators = macro_data.get("indicators", [])
-    except Exception:
-        pass
-
-
-    return templates.TemplateResponse(request, "partials/header.html", {
-        "request": request,
-        "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
-        "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
-        "current_time": now,
-        "data_status": _data_status(await _get_dashboard_health(request)),
-        "budget": await run_in_threadpool(get_budget_status),
-        **tz_context,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/header.html",
+        {
+            "request": request,
+            "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
+            "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
+            "current_time": now,
+            "data_status": _data_status(await _get_dashboard_health(request)),
+            "budget": await run_in_threadpool(get_budget_status),
+            **tz_context,
+        },
+    )
 
 
 @router.get("/partials/regime")
@@ -652,14 +696,20 @@ def partial_regime(request: Request):
         regime = get_regime_current()
         if regime.get("stale") and regime.get("stale_reason"):
             regime = dict(regime)
-            regime["stale_reason"] = _format_stale_reason(regime["stale_reason"], "regime")
+            regime["stale_reason"] = _format_stale_reason(
+                regime["stale_reason"], "regime"
+            )
     except Exception as exc:
         regime = {"error": str(exc)}
-    return templates.TemplateResponse(request, "partials/regime_section.html", {
-        "request": request,
-        "regime": regime,
-        "dot": _section_dots(regime, {}, None, False, None)["regime"],
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/regime_section.html",
+        {
+            "request": request,
+            "regime": regime,
+            "dot": _section_dots(regime, {}, None, False, None)["regime"],
+        },
+    )
 
 
 @router.get("/partials/events")
@@ -682,23 +732,31 @@ def partial_events(request: Request):
         display_zone=tz_context["display_zone"],
     )
 
-    return templates.TemplateResponse(request, "partials/events_section.html", {
-        "request": request,
-        "events_data": events_data,
-        "current_time": now,
-        "timedelta": timedelta,
-        "dot": _section_dots({}, events_data, None, False, None)["events"],
-        **tz_context,
-        **event_context,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/events_section.html",
+        {
+            "request": request,
+            "events_data": events_data,
+            "current_time": now,
+            "timedelta": timedelta,
+            "dot": _section_dots({}, events_data, None, False, None)["events"],
+            **tz_context,
+            **event_context,
+        },
+    )
 
 
 @router.get("/partials/cards/clear")
 def partial_cards_clear(request: Request):
     templates = _get_templates(request)
-    return templates.TemplateResponse(request, "partials/expansion_panel.html", {
-        "request": request,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/expansion_panel.html",
+        {
+            "request": request,
+        },
+    )
 
 
 @router.get("/partials/cards/{symbol}")
@@ -729,19 +787,29 @@ def partial_cards_symbol(request: Request, symbol: str):
                 ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
         except Exception:
             events = []
-        return templates.TemplateResponse(request, "partials/expansion_content.html", {
-            "request": request,
-            "note": note,
-            "price": _get_latest_prices(config).get(symbol),
-            "drivers": _asset_drivers(note),
-            "matched_events": _matched_asset_events(symbol, events),
-            "opinion_id": briefing.get("opinion_ids", [])[-1] if briefing.get("opinion_ids") else None,
-        })
+        return templates.TemplateResponse(
+            request,
+            "partials/expansion_content.html",
+            {
+                "request": request,
+                "note": note,
+                "price": _get_latest_prices(config).get(symbol),
+                "drivers": _asset_drivers(note),
+                "matched_events": _matched_asset_events(symbol, events),
+                "opinion_id": briefing.get("opinion_ids", [])[-1]
+                if briefing.get("opinion_ids")
+                else None,
+            },
+        )
 
     # Symbol not found: return empty panel
-    return templates.TemplateResponse(request, "partials/expansion_panel.html", {
-        "request": request,
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/expansion_panel.html",
+        {
+            "request": request,
+        },
+    )
 
 
 @router.get("/partials/cards")
@@ -753,14 +821,20 @@ def partial_cards(request: Request):
         briefing = get_briefing_latest()
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
-            briefing["stale_reason"] = _format_stale_reason(briefing["stale_reason"], "briefing")
+            briefing["stale_reason"] = _format_stale_reason(
+                briefing["stale_reason"], "briefing"
+            )
     except Exception:
         briefing = None
-    return templates.TemplateResponse(request, "partials/cards_section.html", {
-        "request": request,
-        "briefing": briefing,
-        "price_map": _get_latest_prices(config),
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/cards_section.html",
+        {
+            "request": request,
+            "briefing": briefing,
+            "price_map": _get_latest_prices(config),
+        },
+    )
 
 
 @router.get("/partials/indicators")
@@ -773,7 +847,9 @@ def partial_indicators(request: Request):
     try:
         macro_data = get_macro_dashboard()
         indicator_configs = config.get("dashboard", {}).get("indicators", [])
-        precision_map = {ic["series_id"]: ic.get("precision", 2) for ic in indicator_configs}
+        precision_map = {
+            ic["series_id"]: ic.get("precision", 2) for ic in indicator_configs
+        }
         note_map = {ic["series_id"]: ic.get("note") for ic in indicator_configs}
         for ind in macro_data.get("indicators", []):
             ind["precision"] = precision_map.get(ind["series_id"], 2)
@@ -787,21 +863,29 @@ def partial_indicators(request: Request):
             )
             stale_reason = _format_stale_reason(stale_reason, "indicators")
     except Exception as exc:
-        return templates.TemplateResponse(request, "partials/indicators_section.html", {
+        return templates.TemplateResponse(
+            request,
+            "partials/indicators_section.html",
+            {
+                "request": request,
+                "error": str(exc),
+                "indicators": [],
+                "stale": False,
+                "stale_reason": None,
+                "dot": _freshness_dot(failed=True, title=str(exc)),
+            },
+        )
+    return templates.TemplateResponse(
+        request,
+        "partials/indicators_section.html",
+        {
             "request": request,
-            "error": str(exc),
-            "indicators": [],
-            "stale": False,
-            "stale_reason": None,
-            "dot": _freshness_dot(failed=True, title=str(exc)),
-        })
-    return templates.TemplateResponse(request, "partials/indicators_section.html", {
-        "request": request,
-        "indicators": indicators,
-        "stale": stale,
-        "stale_reason": stale_reason,
-        "dot": _freshness_dot(stale=stale, title=stale_reason),
-    })
+            "indicators": indicators,
+            "stale": stale,
+            "stale_reason": stale_reason,
+            "dot": _freshness_dot(stale=stale, title=stale_reason),
+        },
+    )
 
 
 @router.get("/partials/briefing")
@@ -812,9 +896,13 @@ def partial_briefing(request: Request):
         briefing = get_briefing_latest()
     except Exception:
         briefing = None
-    return templates.TemplateResponse(request, "partials/briefing_prose.html", {
-        "request": request,
-        "briefing": briefing,
-        "dot": _section_dots({}, {}, briefing, False, None)["briefing"],
-        "briefing_sections": _briefing_sections(briefing),
-    })
+    return templates.TemplateResponse(
+        request,
+        "partials/briefing_prose.html",
+        {
+            "request": request,
+            "briefing": briefing,
+            "dot": _section_dots({}, {}, briefing, False, None)["briefing"],
+            "briefing_sections": _briefing_sections(briefing),
+        },
+    )

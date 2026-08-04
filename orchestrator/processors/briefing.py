@@ -1,17 +1,20 @@
 import json
 import re
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
+
 from budgets import BudgetContext
 from db import get_session
+from investment_news import load_classified_news
 from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
-from processors._validators import validate_briefing_sections, coerce_briefing_fields
+from processors._validators import coerce_briefing_fields, validate_briefing_sections
 from processors.base import load_prompt_template
 from processors.macro_trends import format_macro_synthesis
-from sqlalchemy import text
 
 logger = get_logger("processor.briefing")
 
@@ -102,6 +105,22 @@ class DailyBriefingProcessor:
         regime_summary = self._get_regime_summary(config)
         calendar_bundle = self._get_calendar_bundle(config)
         previous_briefing = self._get_previous_briefing_text(config)
+        investment_news = [
+            {
+                key: item.get(key)
+                for key in (
+                    "source",
+                    "title",
+                    "published",
+                    "industries",
+                    "themes",
+                    "macro_relevant",
+                    "ambiguity",
+                )
+            }
+            for item in load_classified_news(config, limit=100)
+            if item.get("macro_relevant")
+        ][:20]
         watchlist_config = config.get("watchlist", {}).get("trading", [])
         watchlist_str = self._format_watchlist(config)
         asset_context = (
@@ -128,6 +147,7 @@ class DailyBriefingProcessor:
             watchlist=watchlist_str,
             asset_context=json.dumps(asset_context, sort_keys=True),
             previous_briefing=previous_briefing,
+            investment_news=json.dumps(investment_news, sort_keys=True),
         )
 
         stage = LLMStage(
@@ -307,8 +327,8 @@ class DailyBriefingProcessor:
               )
         """)
         params = {
-            "start": window["period_start"].astimezone(timezone.utc),
-            "end": window["period_end"].astimezone(timezone.utc),
+            "start": window["period_start"].astimezone(UTC),
+            "end": window["period_end"].astimezone(UTC),
         }
         with get_session(config) as session:
             macro_row = session.execute(macro_sql).fetchone()
@@ -656,8 +676,8 @@ class DailyBriefingProcessor:
                 result = session.execute(
                     sql,
                     {
-                        "start": window["period_start"].astimezone(timezone.utc),
-                        "end": window["period_end"].astimezone(timezone.utc),
+                        "start": window["period_start"].astimezone(UTC),
+                        "end": window["period_end"].astimezone(UTC),
                     },
                 )
                 rows = [dict(row._mapping) for row in result]
@@ -785,6 +805,7 @@ class DailyBriefingProcessor:
         this_week_events: str,
         watchlist: str,
         asset_context: str = "{}",
+        investment_news: str = "[]",
         previous_briefing: str = "",
     ) -> str:
         template, _ = load_prompt_template(template_path)
@@ -796,6 +817,7 @@ class DailyBriefingProcessor:
         result = result.replace("{{this_week_events}}", this_week_events)
         result = result.replace("{{watchlist}}", watchlist)
         result = result.replace("{{asset_context}}", asset_context)
+        result = result.replace("{{investment_news}}", investment_news)
         result = result.replace("{{previous_briefing}}", previous_briefing)
 
         return result

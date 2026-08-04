@@ -8,11 +8,12 @@ mock ``config`` dict.
 
 import re
 import statistics
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
+
+from sqlalchemy import text
 
 from db import get_session
 from logging_config import get_logger
-from sqlalchemy import text
 
 logger = get_logger("data_quality")
 
@@ -34,6 +35,7 @@ def _safe_error_message(exc: Exception) -> str:
 # ---------------------------------------------------------------------------
 # Business-day helpers — simple weekday calendar (no holiday package)
 # ---------------------------------------------------------------------------
+
 
 def _is_business_day(d: date) -> bool:
     """Return True for Monday–Friday."""
@@ -81,6 +83,7 @@ def _resolve_grace_hours(
 # Check implementations
 # ---------------------------------------------------------------------------
 
+
 def check_freshness(
     source_id: str,
     table: str,
@@ -104,7 +107,10 @@ def check_freshness(
         If given, the SQL query is scoped to a single FRED series.
     """
     grace_hours = _resolve_grace_hours(
-        config, source_id, frequency, max_age_hours,
+        config,
+        source_id,
+        frequency,
+        max_age_hours,
     )
     logger.info(
         "check_freshness_running",
@@ -122,9 +128,7 @@ def check_freshness(
         where += " AND series_id = :series_id"
         params["series_id"] = series_id
 
-    sql = text(
-        f"SELECT MAX({timestamp_column}) FROM {table} {where}"
-    )
+    sql = text(f"SELECT MAX({timestamp_column}) FROM {table} {where}")
     with get_session(config) as session:
         result = session.execute(sql, params)
         row = result.fetchone()
@@ -141,10 +145,10 @@ def check_freshness(
     if isinstance(latest_at, str):
         latest_at = datetime.fromisoformat(latest_at.replace("Z", "+00:00"))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Ensure both are offset-aware for subtraction
     if latest_at.tzinfo is None:
-        latest_at = latest_at.replace(tzinfo=timezone.utc)
+        latest_at = latest_at.replace(tzinfo=UTC)
 
     # ── future timestamp → mark as "future" ────────────────────────────
     if latest_at > now:
@@ -181,8 +185,7 @@ def check_freshness(
             return {
                 "healthy": False,
                 "detail": (
-                    f"stale ({bdays} business day(s) old, "
-                    f"max {grace_bdays:.0f})"
+                    f"stale ({bdays} business day(s) old, max {grace_bdays:.0f})"
                 ),
                 "latest_at": latest_at.isoformat(),
                 "age_hours": round(float(bdays) * 24.0, 2),
@@ -244,7 +247,7 @@ def check_gaps(
         frequency=frequency,
         series_id=series_id,
     )
-    now = datetime.now(timezone.utc).date()
+    now = datetime.now(UTC).date()
     cutoff = now - timedelta(days=14)
 
     where = "WHERE source = :source_id"
@@ -361,7 +364,9 @@ def check_duplicates(
     dupes = total - distinct
 
     if dupes > 0:
-        logger.warning("check_duplicates_unhealthy", source_id=source_id, duplicate_count=dupes)
+        logger.warning(
+            "check_duplicates_unhealthy", source_id=source_id, duplicate_count=dupes
+        )
         return {
             "healthy": False,
             "detail": f"{dupes} duplicate row(s) detected",
@@ -394,7 +399,7 @@ def check_anomalies(
     When *series_id* is given the query is scoped so values from different
     series are never mixed in the same z-score calculation.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=30)
     logger.info(
         "check_anomalies_running",
@@ -450,11 +455,15 @@ def check_anomalies(
         z = abs(val - mean) / stdev
         if z > z_threshold:
             anomalies.append(
-                f"value {val} at position {i+1} (z={z:.2f}, threshold={z_threshold})"
+                f"value {val} at position {i + 1} (z={z:.2f}, threshold={z_threshold})"
             )
 
     if anomalies:
-        logger.warning("check_anomalies_unhealthy", source_id=source_id, anomaly_count=len(anomalies))
+        logger.warning(
+            "check_anomalies_unhealthy",
+            source_id=source_id,
+            anomaly_count=len(anomalies),
+        )
         return {
             "healthy": False,
             "detail": f"{len(anomalies)} anomaly(s) detected",
@@ -554,19 +563,32 @@ def run_quality_checks(config: dict) -> dict[str, dict]:
         series_id = series["id"]
         frequency = series.get("frequency")
         checks = {
-            "freshness": lambda: check_freshness(
-                source_id="fred", table="macro_series",
-                timestamp_column="observed_at", max_age_hours=30,
-                config=config, series_id=series_id, frequency=frequency,
+            "freshness": lambda series_id=series_id,
+            frequency=frequency: check_freshness(
+                source_id="fred",
+                table="macro_series",
+                timestamp_column="observed_at",
+                max_age_hours=30,
+                config=config,
+                series_id=series_id,
+                frequency=frequency,
             ),
-            "gaps": lambda: check_gaps(
-                source_id="fred", table="macro_series",
-                date_column="observed_at", expected_interval="1 day",
-                config=config, series_id=series_id, frequency=frequency,
+            "gaps": lambda series_id=series_id, frequency=frequency: check_gaps(
+                source_id="fred",
+                table="macro_series",
+                date_column="observed_at",
+                expected_interval="1 day",
+                config=config,
+                series_id=series_id,
+                frequency=frequency,
             ),
-            "anomalies": lambda: check_anomalies(
-                source_id="fred", table="macro_series", value_column="value",
-                timestamp_column="observed_at", config=config, series_id=series_id,
+            "anomalies": lambda series_id=series_id: check_anomalies(
+                source_id="fred",
+                table="macro_series",
+                value_column="value",
+                timestamp_column="observed_at",
+                config=config,
+                series_id=series_id,
             ),
         }
         for check_name, check_fn in checks.items():

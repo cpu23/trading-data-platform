@@ -1,9 +1,13 @@
+import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
+from config_loader import AppConfig
 from logging_config import get_logger
 
 logger = get_logger("db")
@@ -27,11 +31,12 @@ class WriteResult:
             return "failed"
         return "partial"
 
-_engine = None
-_SessionFactory = None
+
+_engine: Engine | None = None
+_SessionFactory: sessionmaker[Session] | None = None
 
 
-def get_engine(config: dict | None = None):
+def get_engine(config: AppConfig | None = None) -> Engine:
     global _engine
     if _engine is not None:
         return _engine
@@ -50,7 +55,7 @@ def get_engine(config: dict | None = None):
     return _engine
 
 
-def _get_session_factory(config: dict | None = None):
+def _get_session_factory(config: AppConfig | None = None) -> sessionmaker[Session]:
     global _SessionFactory
     if _SessionFactory is not None:
         return _SessionFactory
@@ -60,7 +65,7 @@ def _get_session_factory(config: dict | None = None):
 
 
 @contextmanager
-def get_session(config: dict | None = None):
+def get_session(config: AppConfig | None = None) -> Generator[Session, None, None]:
     factory = _get_session_factory(config)
     session = factory()
     committed = False
@@ -93,9 +98,9 @@ def get_session(config: dict | None = None):
 
 def upsert_records(
     table_name: str,
-    records: list[dict],
+    records: list[dict[str, Any]],
     conflict_columns: list[str],
-    config: dict | None = None,
+    config: AppConfig | None = None,
 ) -> WriteResult:
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
@@ -133,11 +138,11 @@ def upsert_records(
 
 def query_latest(
     table_name: str,
-    filters: dict | None = None,
+    filters: dict[str, Any] | None = None,
     order_by: str = "created_at DESC",
     limit: int = 100,
-    config: dict | None = None,
-) -> list[dict]:
+    config: AppConfig | None = None,
+) -> list[dict[str, Any]]:
     where_clause = ""
     params = {}
     if filters:
@@ -158,7 +163,7 @@ def query_latest(
     return rows
 
 
-def check_connection(config: dict | None = None) -> bool:
+def check_connection(config: AppConfig | None = None) -> bool:
     try:
         with get_session(config) as session:
             session.execute(text("SELECT 1"))
@@ -169,7 +174,7 @@ def check_connection(config: dict | None = None) -> bool:
 
 
 def check_tables_exist(
-    table_names: list[str], config: dict | None = None
+    table_names: list[str], config: AppConfig | None = None
 ) -> dict[str, bool]:
     results = {}
     for table_name in table_names:
@@ -184,8 +189,8 @@ def check_tables_exist(
 
 def insert_records(
     table_name: str,
-    records: list[dict],
-    config: dict | None = None,
+    records: list[dict[str, Any]],
+    config: AppConfig | None = None,
 ) -> WriteResult:
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
@@ -242,7 +247,9 @@ def _prepare_record(record: dict, table_name: str = "") -> dict:
         key: (
             value
             if table_name == "processing_log" and key == "output_ids"
-            else json.dumps(value) if isinstance(value, (dict, list)) else value
+            else json.dumps(value)
+            if isinstance(value, (dict, list))
+            else value
         )
         for key, value in record.items()
     }
@@ -312,7 +319,7 @@ def _write_records(
     table_name: str,
     records: list[dict],
     stmt,
-    config: dict | None,
+    config: AppConfig | None,
 ) -> WriteResult:
     """Try one executemany, then diagnose failures in a fresh transaction."""
 
@@ -349,9 +356,7 @@ def _write_records(
                         session.execute(stmt, prepared)
                     written += 1
                 except Exception as row_exc:
-                    errors.append(
-                        f"record {index} failed ({_exception_type(row_exc)})"
-                    )
+                    errors.append(f"record {index} failed ({_exception_type(row_exc)})")
                     logger.error(
                         f"{operation}_record_failed",
                         action=f"{operation}_record",
@@ -406,4 +411,4 @@ def _log_write_completed(
 
 
 def _now_ms() -> float:
-    return __import__("time").monotonic() * 1000
+    return time.monotonic() * 1000
