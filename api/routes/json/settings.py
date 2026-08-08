@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Body, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from config import load_config, reload_config
@@ -34,10 +34,21 @@ ALLOWED_SECRET_KEYS = {
     "OPENROUTER_API_KEY",
     "FRED_API_KEY",
     "OANDA_API_KEY",
-    "TWITTERAPIKEY",
     "TWITTERAPI_KEY",
 }
-ALLOWED_PROCESSORS = {"macro_regime", "event_impact", "briefing"}
+
+
+def active_model(config: dict | None = None) -> str:
+    """The single active model slug (mirrors orchestrator resolution)."""
+    llm = (config or load_config()).get("llm", {})
+    llm = llm if isinstance(llm, dict) else {}
+    models = llm.get("models", {})
+    models = models if isinstance(models, dict) else {}
+    default = models.get("default")
+    if isinstance(default, str) and default.strip():
+        return default.strip()
+    legacy = llm.get("default_model")
+    return legacy.strip() if isinstance(legacy, str) and legacy.strip() else ""
 
 
 class TimezoneUpdate(BaseModel):
@@ -125,18 +136,21 @@ def set_timezone_setting(update: TimezoneUpdate, response: Response):
 @router.put("/settings/operator")
 def update_operator_settings(body: dict):
     llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
-    default_model = str(llm.get("default_model") or "").strip()
+    models = llm.get("models") if isinstance(llm.get("models"), dict) else {}
+    candidates = [models.get("default"), llm.get("default_model")]
+    candidates.extend(
+        value for key, value in models.items() if key != "default"
+    )
+    default_model = next(
+        (
+            str(candidate).strip()
+            for candidate in candidates
+            if isinstance(candidate, str) and candidate.strip()
+        ),
+        "",
+    )
     if not default_model or len(default_model) > 200:
         raise HTTPException(422, "A valid default model is required")
-    models = llm.get("models") if isinstance(llm.get("models"), dict) else {}
-    clean_models = {
-        key: str(value).strip()
-        for key, value in models.items()
-        if key in ALLOWED_PROCESSORS
-        and isinstance(value, str)
-        and value.strip()
-        and len(value) <= 200
-    }
     try:
         daily_budget = float(body.get("daily_budget_usd"))
     except (TypeError, ValueError):
@@ -144,13 +158,17 @@ def update_operator_settings(body: dict):
     if not 0 <= daily_budget <= 1000:
         raise HTTPException(422, "Daily budget must be between 0 and 1000")
     operator = {
-        "llm": {"default_model": default_model, "models": clean_models},
+        "llm": {"models": {"default": default_model}},
         "budgets": {"daily_llm_usd": daily_budget},
     }
     _atomic_private_write(OPERATOR_CONFIG, yaml.safe_dump(operator, sort_keys=False))
     _write_secrets(body.get("secrets") if isinstance(body.get("secrets"), dict) else {})
     reload_config()
-    return {"saved": True, "applies_to_next_run": True}
+    return {
+        "saved": True,
+        "applies_to_next_run": True,
+        "model": default_model,
+    }
 
 
 @router.post("/settings/test-openrouter")
@@ -177,3 +195,38 @@ def test_openrouter(body: dict):
     except httpx.HTTPError as exc:
         raise HTTPException(400, "Could not reach OpenRouter") from exc
     return {"connected": True}
+
+
+@router.post("/settings/test-model")
+async def test_model(request: Request, body: dict | None = Body(default=None)):
+    """Preflight the active (or requested) model slug without paid inference."""
+    from routes.json.triggers import ORCHESTRATOR_URL, _internal_basic_auth
+
+    requested = None
+    if isinstance(body, dict) and isinstance(body.get("model"), str):
+        requested = body.get("model").strip() or None
+    try:
+        auth = _internal_basic_auth()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503, detail="Internal authentication unavailable"
+        ) from exc
+    payload = {"model": requested} if requested else {}
+    try:
+        client = request.app.state.orchestrator_client
+        response = await client.post(
+            f"{ORCHESTRATOR_URL}/model/preflight", json=payload, auth=auth
+        )
+    except (AttributeError, TypeError):
+        async with httpx.AsyncClient(timeout=20.0) as fallback:
+            response = await fallback.post(
+                f"{ORCHESTRATOR_URL}/model/preflight", json=payload, auth=auth
+            )
+    except httpx.TransportError:
+        raise HTTPException(503, "Orchestrator unavailable") from None
+    if response.status_code != 200:
+        raise HTTPException(502, "Model preflight could not be completed")
+    result = response.json()
+    if not isinstance(result, dict):
+        raise HTTPException(502, "Model preflight returned an invalid payload")
+    return result

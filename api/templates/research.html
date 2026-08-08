@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Long-horizon research — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">{% include "partials/navigation.html" %}</div>
+</header>
+
+<main aria-label="Long-horizon research workspace">
+  <p class="rs-page-note" role="note">Long-horizon research - updated on save, not live</p>
+
+  <section class="section" aria-labelledby="rs-funnel-title">
+    <div class="section-heading">
+      <span class="label" id="rs-funnel-title">Idea funnel</span>
+      <span class="section-note">How a long-horizon idea is built, step by step.</span>
+    </div>
+    <ol class="rs-funnel">
+      {% for step in index.funnel %}
+        <li class="rs-funnel-step">
+          <span class="rs-funnel-index">{{ loop.index }}</span>
+          <span class="rs-funnel-label">{{ step.label }}</span>
+          {% if step.detail %}<span class="rs-funnel-detail">{{ step.detail }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  <section class="section" aria-labelledby="rs-themes-title">
+    <div class="section-heading">
+      <span class="label" id="rs-themes-title">Research themes</span>
+      <span class="section-note">Structured long-horizon bets under active review.</span>
+    </div>
+    {% if index.status == 'unavailable' %}
+      <div class="error-block" role="alert">Unavailable</div>
+    {% elif not index.themes %}
+      <div class="empty-state">No research themes yet.</div>
+    {% else %}
+      <ul class="rs-theme-list">
+        {% for theme in index.themes %}
+          <li class="rs-theme-row">
+            <a class="rs-theme-link" href="/research/themes/{{ theme.id }}">{{ theme.name }}</a>
+            <span class="rs-theme-meta">
+              {{ theme.status }}{% if theme.horizon %} · {{ theme.horizon }}{% endif %}
+              {%- if theme.confidence is not none %} · confidence {{ '%.2f'|format(theme.confidence) }}{% endif %}
+            </span>
+            {% if theme.definition %}<p class="rs-theme-definition">{{ theme.definition }}</p>{% endif %}
+            <p class="rs-theme-counts">
+              <span>{{ theme.entity_count }} entities</span>
+              <span>{{ theme.thesis_count }} theses</span>
+              {% if theme.review_at %}<span>review {{ theme.review_at }}</span>{% endif %}
+            </p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

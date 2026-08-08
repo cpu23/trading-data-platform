@@ -13,63 +13,18 @@ from budgets import get_budget_status
 from db import query_many, query_one
 from logging_config import get_logger
 from routes.json.briefing import get_briefing_latest
-from routes.json.events import get_events_upcoming_data
+from routes.json.events import get_events_upcoming_data, get_macro_release_cards_data
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
-from routes.views.news import load_news_context
+from routes.views.asset_rules import ASSET_EVENT_RULES
+from routes.views.cockpit_panels import load_top_strip
+from routes.views.news import load_story_context
+from routes.views.since_last_view import load_since_last_view
 from staleness import get_staleness_config, is_stale
 
 logger = get_logger("dashboard")
-
-ASSET_EVENT_RULES = {
-    "EURUSD": {"currencies": {"EUR", "USD"}},
-    "DXY": {"currencies": {"USD"}},
-    "USDJPY": {"currencies": {"USD", "JPY"}},
-    "AUDJPY": {"currencies": {"AUD", "JPY"}},
-    "SP500": {"currencies": {"USD"}, "countries": {"US"}},
-    "XAUUSD": {
-        "currencies": {"USD"},
-        "keywords": {
-            "inflation",
-            "cpi",
-            "ppi",
-            "rates",
-            "rate",
-            "fed",
-            "fomc",
-            "yield",
-            "risk",
-            "jobs",
-            "payroll",
-        },
-    },
-    "XPTUSD": {
-        "currencies": {"USD"},
-        "keywords": {
-            "inflation",
-            "cpi",
-            "ppi",
-            "industrial",
-            "manufacturing",
-            "pmi",
-            "risk",
-            "growth",
-            "china",
-        },
-    },
-    "GER40": {
-        "currencies": {"EUR"},
-        "countries": {"EU", "DE"},
-        "keywords": {"germany", "german", "ecb", "eurozone"},
-    },
-    "UK100": {
-        "currencies": {"GBP"},
-        "countries": {"GB", "UK"},
-        "keywords": {"uk", "britain", "boe", "bank of england"},
-    },
-}
 
 
 def _get_templates(request: Request):
@@ -534,6 +489,10 @@ def _data_status(health: dict | None) -> dict:
     }
 
 
+def _live_updates_enabled(config: dict) -> bool:
+    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
+
+
 router = APIRouter()
 
 
@@ -546,6 +505,7 @@ async def dashboard(request: Request):
         regime_result,
         briefing_result,
         events_result,
+        macro_release_result,
         macro_result,
         price_result,
         last_cycle_text,
@@ -553,17 +513,22 @@ async def dashboard(request: Request):
         system_health,
         budget,
         news,
+        top_strip_result,
+        since_last_view_result,
     ) = await asyncio.gather(
         run_in_threadpool(get_regime_current),
         run_in_threadpool(get_briefing_latest),
         run_in_threadpool(get_events_upcoming_data, request=request, days=14),
+        run_in_threadpool(get_macro_release_cards_data, config=config, limit=6),
         run_in_threadpool(get_macro_dashboard),
         run_in_threadpool(_get_latest_prices, config),
         run_in_threadpool(_last_cycle_text, config),
         run_in_threadpool(_latest_cycle_status, config),
         _get_dashboard_health(request),
         run_in_threadpool(get_budget_status),
-        run_in_threadpool(load_news_context, config, 5),
+        run_in_threadpool(load_story_context, limit=12),
+        run_in_threadpool(load_top_strip, config),
+        run_in_threadpool(load_since_last_view, config),
         return_exceptions=True,
     )
 
@@ -587,6 +552,11 @@ async def dashboard(request: Request):
         {"error": str(events_result)}
         if isinstance(events_result, Exception)
         else events_result
+    )
+    macro_releases = (
+        {"cards": []}
+        if isinstance(macro_release_result, Exception)
+        else macro_release_result
     )
     for event in events_data.get("events", []):
         event["scheduled_at"] = _parse_iso(event.get("scheduled_at"))
@@ -642,7 +612,9 @@ async def dashboard(request: Request):
         "system_health": system_health,
         "regime": regime,
         "briefing": briefing,
+        "live_updates_enabled": _live_updates_enabled(config),
         "events_data": events_data,
+        "macro_releases": macro_releases,
         "indicators": indicators,
         "stale": indicators_stale,
         "stale_reason": indicators_stale_reason,
@@ -659,11 +631,54 @@ async def dashboard(request: Request):
         ),
         "price_map": {} if isinstance(price_result, Exception) else price_result,
         "budget": {} if isinstance(budget, Exception) else budget,
-        "news": {"items": []} if isinstance(news, Exception) else news,
+        "stories": {"clusters": [], "lanes": {}}
+        if isinstance(news, Exception)
+        else news,
+        "strip": {} if isinstance(top_strip_result, Exception) else top_strip_result,
+        "since_last_view": (
+            {"available": False, "marker": None, "sections": [], "counts": {}}
+            if isinstance(since_last_view_result, Exception)
+            else since_last_view_result
+        ),
         **tz_context,
         **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
+
+
+@router.get("/partials/dashboard/macro-releases")
+def partial_macro_releases(request: Request):
+    config = app_config.load_config()
+    templates = _get_templates(request)
+    try:
+        releases = get_macro_release_cards_data(config=config, limit=6)
+    except Exception:
+        releases = {"cards": [], "error": "Release cards unavailable."}
+    return templates.TemplateResponse(
+        request,
+        "partials/macro_release_cards.html",
+        {
+            "request": request,
+            "macro_releases": releases,
+            "live_updates_enabled": _live_updates_enabled(config),
+        },
+    )
+
+
+@router.get("/partials/dashboard/news")
+def partial_news(request: Request):
+    config = app_config.load_config()
+    templates = _get_templates(request)
+    stories = load_story_context(limit=12)
+    return templates.TemplateResponse(
+        request,
+        "partials/news_section.html",
+        {
+            "request": request,
+            "stories": stories,
+            "live_updates_enabled": _live_updates_enabled(config),
+        },
+    )
 
 
 @router.get("/partials/header")
@@ -812,6 +827,7 @@ def partial_cards_symbol(request: Request, symbol: str):
     )
 
 
+@router.get("/partials/dashboard/watchlist")
 @router.get("/partials/cards")
 def partial_cards(request: Request):
     config = app_config.load_config()
@@ -826,13 +842,18 @@ def partial_cards(request: Request):
             )
     except Exception:
         briefing = None
+    try:
+        price_map = _get_latest_prices(config)
+    except Exception:
+        price_map = {}
     return templates.TemplateResponse(
         request,
         "partials/cards_section.html",
         {
             "request": request,
             "briefing": briefing,
-            "price_map": _get_latest_prices(config),
+            "price_map": price_map,
+            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 

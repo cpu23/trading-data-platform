@@ -39,15 +39,22 @@ skipped.
 
 Authenticated endpoints:
 
-- `GET /api/news/feed` returns the normalized feed.
+- `GET /api/news/clusters` returns bounded canonical story clusters with
+  allowlisted evidence, source names, public scores, change summaries, related
+  entities/markets, and descriptive headline-market confirmation observations.
+  Lane/state filters are validated before database access and database failures
+  fail soft with HTTP 503.
 - `GET /api/news/sources` reports enabled state, last poll, status, and error.
 - `POST /api/triggers/news/{source_id}` accepts an authenticated durable news
   job for `reuters` or `kobeissi` and forwards internal Basic authentication to
   the orchestrator.
 
-A feed item always includes `id`, `source`, `source_label`, `title`, `summary`,
-`url`, `published`, `symbols`, `tags`, `engagement`, `media`, `meta`, and
-`fetched_at`.
+Collected feed items are normalized into `market_events` and clustered into
+canonical stories (`story_clusters`, `story_cluster_members`,
+`story_cluster_versions`, `story_market_confirmations`). Repeated coverage adds
+evidence without duplicating canonical summaries; material changes append
+immutable version audit rows. The `/news` page and dashboard news section read
+only the canonical story tables.
 
 ## Reliability and recovery
 

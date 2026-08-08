@@ -363,6 +363,17 @@ def _run_full_cycle_impl(
         "processors": processor_results,
         "correlation_id": correlation_id,
     }
+    if overall_status == "success":
+        try:
+            from reconciliation import reconcile_event_pipeline
+
+            cycle_result["reconciliation"] = reconcile_event_pipeline(config)
+        except Exception:
+            cycle_result["reconciliation"] = {
+                "jobs_reconciled": 0,
+                "snapshots_reconciled": 0,
+                "error_count": 1,
+            }
     facade.logger.info(
         "full_cycle_work_finished",
         action="run_full_cycle",

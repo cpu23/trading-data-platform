@@ -1,0 +1,30 @@
+<section class="section catalysts-section" id="catalysts"
+         {% if live_updates_enabled %}data-live-section="catalysts"
+         data-live-event="section_changed"
+         data-live-url="/partials/dashboard/catalysts"{% else %}
+         hx-get="/partials/dashboard/catalysts"
+         hx-trigger="every 90s"
+         hx-swap="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <span class="label">Upcoming catalysts</span>
+    <span class="section-note">Next {{ catalysts.days }} days</span>
+  </div>
+  {% if not catalysts.available %}
+    <div class="empty-state">Catalyst data unavailable.</div>
+  {% elif not catalysts.catalysts %}
+    <div class="empty-state">No high-impact events in this window.</div>
+  {% else %}
+    <ul class="catalyst-list">
+      {% for event in catalysts.catalysts %}
+        <li class="catalyst-row">
+          <span class="catalyst-day">{{ event.day_label }}</span>
+          <span class="catalyst-name">{{ event.event_name }}</span>
+          <span class="catalyst-countdown tabular">{% if event.countdown_display %}in {{ event.countdown_display }}{% else %}—{% endif %}</span>
+          {% if event.impacted_symbols %}
+            <span class="catalyst-symbols">{% for symbol in event.impacted_symbols %}<span class="market-tag">{{ symbol }}</span>{% endfor %}</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>

@@ -25,10 +25,14 @@ Use the credential-free deterministic stack for local acceptance:
 
 ```bash
 docker compose -f docker-compose.demo.yml up --build
-# http://127.0.0.1:8001 — demo / demo
+# http://127.0.0.1:8000 — demo / demo
 ```
 
-Demo mode disables external collectors, paid APIs, and the live price stream. It uses fictional local fixtures.
+Demo mode disables external collectors, provider quote streams, and paid
+inference. `demo-live` instead publishes four bounded fictional prices and a
+real watchlist invalidation every five seconds. The browser receives the event
+through `/stream` and refreshes the normal HTMX partial; no demo-only UI path
+exists.
 
 ## Migration procedure
 
@@ -218,3 +222,69 @@ The first health request after cache expiry can include one live quality sweep.
 Record warm and refresh-path measurements separately.
 
 `failure_drills.py` is unit-only by default. `--docker` opts into the full smoke test. Neither default path calls paid or external data sources.
+
+## Queue and outbox troubleshooting
+
+Use `/operations` first. It exposes outbox backlog, analysis jobs by state,
+oldest queued work, retryable failures, and abandoned leases without requiring
+log access. A growing outbox with no claimed rows indicates an outbox worker or
+database-connectivity problem. Old `running` jobs indicate a dead worker;
+reconciliation returns expired leases to a retryable state and preserves the
+last valid section snapshot.
+
+Confirm service and database health:
+
+```bash
+docker compose ps
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py health
+curl -fsS http://127.0.0.1:8000/api/system/health
+```
+
+Do not delete queued rows to recover a backlog. Diagnose the worker, run the
+normal reconciliation cycle, and retain the event/job lineage for audit.
+
+## SSE and partial-refresh troubleshooting
+
+`/stream` carries only invalidation identity: event ID, event name, section
+key, scope, and version. Reconnect with the last received event ID to exercise
+the retained replay window. A cursor older than retention causes a safe
+section refresh rather than payload replay. If SSE is unavailable, enabled
+sections retain bounded HTMX polling; initial HTML remains functional.
+
+```bash
+curl -N --user \"$DASHBOARD_USER:$DASHBOARD_PASSWORD\" \
+  'http://127.0.0.1:8000/stream?last_event_id=0'
+```
+
+Check `ui_events` growth only after confirming a source observation or section
+snapshot actually changed. Unchanged content intentionally creates no visible
+version or wakeup.
+
+## Model compatibility and spend troubleshooting
+
+`/settings` owns the single default model and request profile. `/operations`
+and the cost views expose spend by processor/model/provider, schema repairs,
+cache use, duplicate/materiality avoidance, and budget suppression. A
+`suppressed_budget` job is not a collector failure; deterministic collection
+continues.
+
+Before changing the default, run `benchmark-models` against all committed
+suites, complete the generated `blind-review.html`, and run `benchmark-score`
+with its downloaded review JSON. A recommendation is invalid while
+`blind_review_complete` is false. Never weaken a schema, enable provider
+fallback, or use a per-processor override to make a candidate pass. Follow ADR
+0011 and retain the artifact with actual cost, latency, identity key, scores,
+and rationale.
+
+If any candidate rejects sampling controls, pass `--omit-temperature`. The
+flag removes `temperature` from every candidate request in that benchmark; it
+does not create a model-specific request profile.
+
+## Stale-data troubleshooting
+
+`/quality` and source-health partials are authoritative. `source_freshness_state`
+distinguishes expected idle, cached fallback, stale, failed, recovered, and
+never-run states from source schedule and observation time. A previously valid
+snapshot may remain visible, but its stale/failure state must remain visible.
+Check the source schedule, last attempt, last success, last observation,
+reason code, and consecutive failures before retrying collection.

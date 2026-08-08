@@ -117,15 +117,18 @@ derived outputs inspectable without mixing raw source data with analysis.
   and market snapshots as hypertables.
 - **Operational visibility:** health, freshness, cycle status, logs, and daily
   LLM spend are available through both the API and dashboard.
+- **Durable live delivery:** append-only domain events, transactional outbox,
+  leased analysis jobs, immutable section snapshots, replayable SSE
+  invalidations, and bounded HTMX partial refreshes decouple ingestion from
+  presentation.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
 - **Bounded read latency:** dashboard datasets load concurrently, macro
   indicators use one batched query, and the health path reuses a 30-second
   quality snapshot while `/quality` remains an explicit live diagnostic.
-- **Investment research:** automated SEC and Companies House filing intake,
-  optional EDINET/OpenDART adapters, strict evidence extraction, deterministic
-  signal/valuation rules, durable report history, and a dedicated Investments
-  view. See
+- **Investment research:** deterministic filing deltas, versioned themes and
+  theses, evidence history, company dossiers, optional read-only portfolio
+  context, and automated SEC/Companies House intake. See
   [docs/investment-research.md](docs/investment-research.md).
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
@@ -136,23 +139,27 @@ derived outputs inspectable without mixing raw source data with analysis.
   process restarts. See [docs/operations.md](docs/operations.md).
 - **Measured acceptance** — offline HTTP and browser baselines are recorded in
   [docs/performance-baseline.md](docs/performance-baseline.md).
+- **Offline model promotion:** committed core, adversarial, long-context, and
+  regression fixtures compare pinned provider slugs with raw usage artifacts,
+  blind review, weighted scores, and hard disqualifiers.
 
 ## Dashboard
 
 The dashboard is designed as a trader-facing morning context view rather than a
 signal engine. It includes:
 
-- Source and processor health with freshness indicators
-- Current macro regime and supporting indicators
-- Historical regime timeline and multi-series macro comparison chart
-- Watchlist cards with price snapshots, context, and matched catalysts
-- Upcoming high-impact economic events
-- Bounded Reuters/Kobeissi dashboard summary plus a full source/symbol-filtered News view
-- Daily briefing and analytical summaries
-- A dedicated Investments view for automated filings, report evidence,
-  deterministic company analysis, and valuation context
-- Refresh, analyze, and explicit force-full cycle controls with live status
-- Authenticated Dashboard, Investments, Settings, Logs, Quality, News, and Operations views
+- Session snapshot, latest price update, material event, regime, next catalyst,
+  source state, and budget in a compact top strip
+- Since-last-view change summary
+- Material change feed and dense sortable watchlist
+- Asset evidence drawer, cross-asset context, catalysts, and briefing delta
+- Staged macro-release cards and canonical evolving news stories
+- Source/processor freshness and historical regime/indicator context
+- A separate Research workspace for maintained themes, versioned theses,
+  company dossiers, filing deltas, and read-only portfolio context
+- Refresh, analyze, and explicit force-full cycle controls with durable status
+- Authenticated Dashboard, Research, Investments, Settings, Logs, Quality,
+  News, and Operations views
 
 Independent dashboard datasets are loaded concurrently. The dashboard and
 settings pages each consume one consolidated system-health response instead of
@@ -217,16 +224,17 @@ The database keeps responsibilities explicit:
 
 ## Quick Start
 
-For a populated, credential-free portfolio demo:
+For a populated, credential-free live demo:
 
 ```bash
 docker compose -f docker-compose.demo.yml up --build
-# Open http://127.0.0.1:8001 and sign in with demo / demo
+# Open http://127.0.0.1:8000 and sign in with demo / demo
 ```
 
-The demo seeds deterministic fictional analysis, three-point comparison-series
-history, linked operational runs, and an in-memory simulated quote stream. It
-makes no external or paid API calls.
+The demo seeds deterministic fictional analysis and operational history, then
+publishes four bounded fictional prices plus real replayable watchlist
+invalidations every five seconds. It exercises the production DB→SSE→HTMX
+partial path and makes no external or paid API calls.
 
 ### Prerequisites
 

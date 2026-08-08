@@ -10,6 +10,8 @@ from logging_config import get_logger
 logger = get_logger("llm_client")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Single pinned production model slug (spec §2.1). No floating "latest" alias.
+DEFAULT_MODEL_SLUG = "deepseek/deepseek-v4-flash-0731"
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 MAX_ALLOWED_OUTPUT_TOKENS = 4096
 DEFAULT_STAGE_TIMEOUT_SECONDS = 90.0
@@ -40,7 +42,14 @@ class LLMAttemptTelemetry:
     max_output_tokens: int = 0
     tokens_input_total: int = 0
     tokens_output_total: int = 0
+    tokens_reasoning_total: int = 0
+    tokens_cached_total: int = 0
     cost_usd_total: float = 0.0
+    last_requested_model: str = ""
+    last_resolved_model: str = ""
+    last_provider: str | None = None
+    last_retry_count: int = 0
+    last_generation_id: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -52,7 +61,14 @@ class LLMAttemptTelemetry:
             "max_output_tokens": self.max_output_tokens,
             "tokens_input_total": self.tokens_input_total,
             "tokens_output_total": self.tokens_output_total,
+            "tokens_reasoning_total": self.tokens_reasoning_total,
+            "tokens_cached_total": self.tokens_cached_total,
             "cost_usd_total": self.cost_usd_total,
+            "requested_model": self.last_requested_model,
+            "resolved_model": self.last_resolved_model,
+            "provider": self.last_provider,
+            "retry_count": self.last_retry_count,
+            "generation_id": self.last_generation_id,
         }
 
 
@@ -97,18 +113,67 @@ def _processor_value(llm_config: dict, key: str, processor_id: str, default):
     return configured
 
 
+_warned_legacy_model_keys: set[str] = set()
+
+
+def _models_map(llm_config: dict) -> dict:
+    models = llm_config.get("models", {})
+    return models if isinstance(models, dict) else {}
+
+
+def _legacy_model_keys(llm_config: dict) -> list[str]:
+    """List deprecated model selector keys present in the configuration."""
+    keys: list[str] = []
+    legacy_default = llm_config.get("default_model")
+    if isinstance(legacy_default, str) and legacy_default.strip():
+        keys.append("llm.default_model")
+    for processor, value in _models_map(llm_config).items():
+        if processor == "default":
+            continue
+        override = value.get("model") if isinstance(value, dict) else value
+        if isinstance(override, str) and override.strip():
+            keys.append(f"llm.models.{processor}")
+    return keys
+
+
+def _warn_legacy_model_config(llm_config: dict) -> None:
+    keys = _legacy_model_keys(llm_config)
+    unseen = [key for key in keys if key not in _warned_legacy_model_keys]
+    if not unseen:
+        return
+    _warned_legacy_model_keys.update(unseen)
+    logger.warning(
+        "llm_model_config_deprecated",
+        legacy_keys=unseen,
+        replacement="llm.models.default",
+    )
+
+
 def resolve_model(
     config: dict, processor_id: str | None = None, model: str | None = None
 ) -> str:
-    """Resolve a provider/model identifier without coupling processors to a provider."""
+    """Resolve the single active model slug for every LLM processor.
+
+    Precedence: explicit call argument, then ``llm.models.default`` (the one
+    source of truth), then deprecated legacy selectors for one release.
+    """
     if model:
         return model
     llm_config = config.get("llm", {})
+    default = _models_map(llm_config).get("default")
+    if isinstance(default, str) and default.strip():
+        return default.strip()
+    _warn_legacy_model_config(llm_config)
     if processor_id:
-        override = llm_config.get("models", {}).get(processor_id)
-        if override:
-            return override
-    return llm_config.get("default_model", "deepseek/deepseek-v4-flash")
+        override = _models_map(llm_config).get(processor_id)
+        if isinstance(override, dict):
+            override = override.get("model")
+        if isinstance(override, str) and override.strip():
+            return override.strip()
+    legacy_default = llm_config.get("default_model")
+    if isinstance(legacy_default, str) and legacy_default.strip():
+        return legacy_default.strip()
+    return DEFAULT_MODEL_SLUG
 
 
 def resolve_request_policy(
@@ -249,7 +314,22 @@ class LLMStage:
         self.telemetry.tokens_output_total += _safe_token_count(
             result.get("tokens_output")
         )
+        self.telemetry.tokens_reasoning_total += _safe_token_count(
+            result.get("tokens_reasoning")
+        )
+        self.telemetry.tokens_cached_total += _safe_token_count(
+            result.get("tokens_cached")
+        )
         self.telemetry.cost_usd_total += _safe_cost_usd(result.get("cost_usd"))
+        self.telemetry.last_requested_model = str(
+            result.get("requested_model") or self.telemetry.last_requested_model
+        )
+        self.telemetry.last_resolved_model = str(
+            result.get("model") or self.telemetry.last_resolved_model
+        )
+        self.telemetry.last_provider = result.get("provider")
+        self.telemetry.last_retry_count = _safe_token_count(result.get("retry_count"))
+        self.telemetry.last_generation_id = result.get("generation_id")
 
     def call(self, prompt: str) -> dict:
         if self.telemetry.attempt_count >= 1 + self.policy.validation_retries:
@@ -313,12 +393,14 @@ def call_llm(
     correlation_id: str | None = None,
     config: dict | None = None,
     *,
+    messages: list[dict] | None = None,
     processor_id: str = "default",
     max_output_tokens: int | None = None,
     timeout: float | None = None,
     structured_response: bool | None = None,
     response_schema: dict | None = None,
     reasoning_effort: str | None = None,
+    include_temperature: bool | None = None,
     budget_context: BudgetContext | None = None,
     _budget_permit: BudgetPermit | None = None,
 ) -> dict:
@@ -328,6 +410,10 @@ def call_llm(
         config = load_config()
 
     llm_config = config["llm"]
+    if include_temperature is None:
+        include_temperature = llm_config.get("include_temperature", True)
+    if not isinstance(include_temperature, bool):
+        raise ValueError("llm.include_temperature must be a boolean")
     policy = resolve_request_policy(
         config,
         processor_id,
@@ -341,12 +427,29 @@ def call_llm(
         _budget_permit = enforce_budget(config, processor_id, budget_context)
     request_attempts = policy.request_attempts if max_retries is None else max_retries
 
+    if messages is None:
+        request_messages = [{"role": "user", "content": prompt}]
+    else:
+        if not messages:
+            raise ValueError("messages must be a non-empty array")
+        request_messages = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("each message must be an object")
+            role = message.get("role")
+            content = message.get("content")
+            if role not in {"system", "user", "assistant"}:
+                raise ValueError("message role is invalid")
+            if not isinstance(content, str) or not content:
+                raise ValueError("message content must be a non-empty string")
+            request_messages.append(dict(message))
     request_body = {
         "model": policy.model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": policy.temperature,
+        "messages": request_messages,
         "max_tokens": policy.max_output_tokens,
     }
+    if include_temperature:
+        request_body["temperature"] = policy.temperature
     provider_preferences = {}
     max_price = _processor_value(llm_config, "max_prices", processor_id, None)
     if max_price is not None:
@@ -433,26 +536,115 @@ def call_llm(
     usage = data.get("usage")
     if not isinstance(usage, dict):
         usage = {}
+    details = usage.get("details")
+    prompt_details = usage.get("prompt_tokens_details")
     tokens_input = _safe_token_count(usage.get("prompt_tokens", 0))
     tokens_output = _safe_token_count(usage.get("completion_tokens", 0))
+    tokens_reasoning = _safe_token_count(
+        (details or {}).get("reasoning_tokens", 0) if isinstance(details, dict) else 0
+    )
+    tokens_cached = _safe_token_count(
+        (prompt_details or {}).get("cached_tokens", 0)
+        if isinstance(prompt_details, dict)
+        else 0
+    )
     model_used = data.get("model", policy.model)
+    provider_name = data.get("provider")
     cost_usd = _safe_cost_usd(usage.get("cost"))
+    generation_id = data.get("id")
+    transport_metadata = getattr(response, "extensions", {}).get("request_metadata")
+    if not isinstance(transport_metadata, dict):
+        transport_metadata = {}
+    retry_count = max(0, _safe_token_count(transport_metadata.get("attempts")) - 1)
+    schema_valid_first_pass = None if response_schema is None else True
 
     logger.info(
         "llm_call_completed",
         action="llm_call",
         model=model_used,
+        requested_model=policy.model,
+        provider=provider_name or "unknown",
         tokens_input=tokens_input,
         tokens_output=tokens_output,
+        tokens_reasoning=tokens_reasoning,
+        tokens_cached=tokens_cached,
         cost_usd=cost_usd,
         duration_ms=duration_ms,
+        retry_count=retry_count,
         correlation_id=correlation_id or "none",
     )
     return {
         "content": content,
         "model": model_used,
+        "requested_model": policy.model,
+        "provider": provider_name if isinstance(provider_name, str) else None,
+        "generation_id": generation_id if isinstance(generation_id, str) else None,
         "tokens_input": tokens_input,
         "tokens_output": tokens_output,
+        "tokens_reasoning": tokens_reasoning,
+        "tokens_cached": tokens_cached,
         "cost_usd": cost_usd,
         "duration_ms": duration_ms,
+        "retry_count": retry_count,
+        "schema_valid_first_pass": schema_valid_first_pass,
+    }
+
+
+def model_preflight(config: dict, model: str | None = None) -> dict:
+    """Verify the active model slug without performing paid inference.
+
+    Resolves the slug exactly as processors do, then checks it against the
+    OpenRouter public model catalogue. Read-only and credential-light: the
+    catalogue endpoint does not require authentication.
+    """
+    slug = resolve_model(config, model=model)
+    llm_config = config.get("llm", {})
+    api_key = llm_config.get("api_key") or ""
+    headers = {"HTTP-Referer": "https://github.com/trading-data-platform"}
+    if isinstance(api_key, str) and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        response = make_request(
+            method="GET",
+            url="https://openrouter.ai/api/v1/models",
+            headers=headers,
+            timeout=15.0,
+            max_retries=1,
+        )
+        response.raise_for_status()
+        catalogue = response.json().get("data")
+    except Exception as exc:
+        return {
+            "model": slug,
+            "listed": None,
+            "error": f"model catalogue unreachable ({type(exc).__name__})",
+        }
+    if not isinstance(catalogue, list):
+        return {
+            "model": slug,
+            "listed": None,
+            "error": "model catalogue returned an unexpected payload",
+        }
+    matched = next(
+        (
+            entry
+            for entry in catalogue
+            if isinstance(entry, dict) and entry.get("id") == slug
+        ),
+        None,
+    )
+    if matched is None:
+        return {
+            "model": slug,
+            "listed": False,
+            "error": "slug not present in the OpenRouter catalogue",
+        }
+    return {
+        "model": slug,
+        "listed": True,
+        "structured_outputs": bool(
+            isinstance(matched.get("supported_parameters"), list)
+            and "structured_outputs" in matched["supported_parameters"]
+        ),
+        "context_length": matched.get("context_length"),
     }

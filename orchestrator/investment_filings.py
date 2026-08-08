@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import text
 
 from db import get_session
+from filing_deltas import compute_filing_delta
 from http_client import get_shared_client, make_request
 from investment_service import (
     analyze_document,
@@ -782,6 +783,16 @@ def _ingest_filing(
             "document_id": str(document_id),
             "filing_id": filing_id,
         }
+        if document_id:
+            try:
+                delta = compute_filing_delta(config, str(document_id))
+                result["filing_delta"] = delta.get("categories", 0)
+            except Exception as exc:
+                logger.warning(
+                    "filing_delta_failed",
+                    document_id=str(document_id),
+                    error_type=type(exc).__name__,
+                )
         if auto_analyze and document_id:
             try:
                 analysis = analyze_document(config, str(document_id))

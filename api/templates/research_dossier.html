@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{{ dossier.company if dossier else 'Company research' }} — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">
+    {% include "partials/navigation.html" %}
+    <a class="rs-back-link" href="/research">← Research</a>
+  </div>
+</header>
+
+<main aria-label="Company research dossier">
+  <p class="rs-page-note" role="note">Long-horizon research - updated on save, not live</p>
+
+  {% if not dossier %}
+    <div class="error-block" role="alert">Unavailable</div>
+  {% else %}
+    <section class="section" aria-labelledby="rs-dossier-title">
+      <div class="section-heading">
+        <span class="label" id="rs-dossier-title">Dossier</span>
+        <span class="section-note">Long-horizon research on one company.</span>
+      </div>
+      <h1 class="rs-company-name">{{ dossier.company }}{% if dossier.profile and dossier.profile.symbol %} <span class="dim">({{ dossier.profile.symbol }})</span>{% endif %}</h1>
+      {% if dossier.latest_document %}
+        <p class="rs-theme-meta">
+          <span>{{ dossier.latest_document.document_type }}</span>
+          {% if dossier.latest_document.report_date %}<span>{{ dossier.latest_document.report_date }}</span>{% endif %}
+          <span>{{ dossier.latest_document.status }}</span>
+          {% if dossier.latest_document.region %}<span>{{ dossier.latest_document.region }}</span>{% endif %}
+          {% if dossier.latest_document.industry %}<span>{{ dossier.latest_document.industry }}</span>{% endif %}
+        </p>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-profile-title">
+      <div class="section-heading">
+        <span class="label" id="rs-profile-title">Research profile</span>
+        {% if dossier.profile %}<span class="section-note">Saved with the latest research pass.</span>{% endif %}
+      </div>
+      {% if not dossier.profile %}
+        <div class="empty-state">No research profile yet.</div>
+      {% else %}
+        {% if dossier.profile.business_overview %}
+          <h2 class="rs-section-title">Business overview</h2>
+          <p class="rs-profile-text">{{ dossier.profile.business_overview }}</p>
+        {% endif %}
+        {% if dossier.profile.key_operating_drivers %}
+          <h2 class="rs-section-title">Key operating drivers</h2>
+          <ul class="rs-chip-list">
+            {% for driver in dossier.profile.key_operating_drivers %}<li>{{ driver }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+        {% if dossier.profile.segments %}
+          <details class="rs-thesis-detail">
+            <summary>Segments</summary>
+            <ul class="rs-invalidation-list">
+              {% for segment in dossier.profile.segments %}<li>{{ segment }}</li>{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+        {% if dossier.profile.capital_allocation %}
+          <h2 class="rs-section-title">Capital allocation</h2>
+          <p class="rs-profile-text">{{ dossier.profile.capital_allocation }}</p>
+        {% endif %}
+        {% if dossier.profile.valuation_assumptions %}
+          <details class="rs-thesis-detail">
+            <summary>Valuation assumptions</summary>
+            <dl class="rs-kv-list">
+              {% for key, value in dossier.profile.valuation_assumptions.items() %}
+                <dt>{{ key }}</dt><dd>{{ value }}</dd>
+              {% endfor %}
+            </dl>
+          </details>
+        {% endif %}
+        {% if dossier.profile.guidance %}
+          <details class="rs-thesis-detail">
+            <summary>Guidance</summary>
+            <dl class="rs-kv-list">
+              {% for key, value in dossier.profile.guidance.items() %}
+                <dt>{{ key }}</dt><dd>{{ value }}</dd>
+              {% endfor %}
+            </dl>
+          </details>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-dossier-theses-title">
+      <div class="section-heading">
+        <span class="label" id="rs-dossier-theses-title">Theses</span>
+        {% if dossier.theses.available %}<span class="section-note">Research theses referencing this company.</span>{% endif %}
+      </div>
+      {% if not dossier.theses.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not dossier.theses.rows %}
+        <div class="empty-state">No theses reference this company.</div>
+      {% else %}
+        <ul class="rs-theme-list">
+          {% for thesis in dossier.theses.rows %}
+            <li class="rs-theme-row">
+              <a class="rs-theme-link" href="/research/themes/{{ thesis.theme_id }}">{{ thesis.claim }}</a>
+              <span class="rs-theme-meta">
+                {{ thesis.status }}{% if thesis.theme_name %} · {{ thesis.theme_name }}{% endif %}
+                {%- if thesis.horizon %} · {{ thesis.horizon }}{% endif %}
+                {%- if thesis.confidence is not none %} · confidence {{ '%.2f'|format(thesis.confidence) }}{% endif %}
+              </span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-changes-title">
+      <div class="section-heading">
+        <span class="label" id="rs-changes-title">Changes since previous analysis</span>
+        {% if dossier.deltas.available %}<span class="section-note">Deterministic diffs in the latest filing.</span>{% endif %}
+      </div>
+      {% if not dossier.deltas.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not dossier.changes_since_previous %}
+        <div class="empty-state">No material changes in the latest filing.</div>
+      {% else %}
+        <ul class="rs-delta-list">
+          {% for delta in dossier.changes_since_previous %}
+            <li class="rs-delta-row rs-delta-{{ delta.change_kind }}">
+              <span class="rs-delta-category">{{ delta.category }}</span>
+              <span class="rs-delta-kind">{{ delta.change_kind }}</span>
+              {% if delta.excerpt %}<span class="rs-delta-excerpt">{{ delta.excerpt }}</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if dossier.deltas.available and dossier.deltas.rows %}
+        <details class="rs-thesis-detail">
+          <summary>All filing deltas · {{ dossier.deltas.rows | length }}</summary>
+          <ul class="rs-delta-list">
+            {% for delta in dossier.deltas.rows %}
+              <li class="rs-delta-row rs-delta-{{ delta.change_kind }}">
+                <span class="rs-delta-category">{{ delta.category }}</span>
+                <span class="rs-delta-kind">{{ delta.change_kind }}</span>
+                {% if delta.excerpt %}<span class="rs-delta-excerpt">{{ delta.excerpt }}</span>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-financial-title">
+      <div class="section-heading">
+        <span class="label" id="rs-financial-title">Financial trends</span>
+        <span class="section-note">Extracted metrics from the latest analyses.</span>
+      </div>
+      {% if not dossier.financial_trends.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not dossier.financial_trends.rows %}
+        <div class="empty-state">No analyses recorded yet.</div>
+      {% else %}
+        {% for trend in dossier.financial_trends.rows %}
+          <details class="rs-thesis-detail" open>
+            <summary>{{ trend.document_type }}{% if trend.report_date %} · {{ trend.report_date }}{% endif %} · {{ trend.created_at }}</summary>
+            <table class="rs-metric-table">
+              <thead>
+                <tr><th>Metric</th><th>Value</th><th>Unit</th><th>Period</th><th>Change %</th></tr>
+              </thead>
+              <tbody>
+                {% for metric in trend.metrics %}
+                  <tr>
+                    <td>{{ metric.name }}</td>
+                    <td>{{ metric.value }}</td>
+                    <td>{{ metric.unit or '' }}</td>
+                    <td>{{ metric.period or '' }}</td>
+                    <td>{% if metric.change_pct is not none %}{{ '%.2f'|format(metric.change_pct) }}{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </details>
+        {% endfor %}
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-sources-title">
+      <div class="section-heading">
+        <span class="label" id="rs-sources-title">Source documents</span>
+        <span class="section-note">Filings with evidence links into the workspace.</span>
+      </div>
+      {% if not dossier.sources.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not dossier.sources.rows %}
+        <div class="empty-state">No source documents for this company.</div>
+      {% else %}
+        <ul class="rs-source-list">
+          {% for source in dossier.sources.rows %}
+            <li class="rs-source-row">
+              <span>{{ source.document_type }}</span>
+              {% if source.report_date %}<span class="dim">{{ source.report_date }}</span>{% endif %}
+              <span class="dim">{{ source.status }}</span>
+              <span class="rs-evidence-count">{{ source.evidence_count }} evidence links</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+  {% endif %}
+</main>
+{% endblock %}

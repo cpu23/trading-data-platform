@@ -10,15 +10,17 @@ llm:
   api_key: ${OPENROUTER_API_KEY}
   api_keys:
     investment_analysis: ${OPENROUTER_API_KEY}
-  # 2026-08-01 five-report benchmark: Luna returned valid first-pass schemas
-  # with disciplined abstention; deterministic XBRL supplies financial facts.
-  default_model: ${OPENROUTER_MODEL}
+  # 2026-08-08 core benchmark: Luna delivered 100% first-pass strict schemas
+  # and evidence validity across 36 runs at $0.0002 mean request cost.
+  # Single source of truth: every LLM processor inherits llm.models.default.
+  # Per-processor model selectors are deprecated and ignored by the settings
+  # form; legacy keys in old operator profiles remain readable for one release
+  # with a deprecation warning.
   models:
-    macro_regime: ${OPENROUTER_MODEL}
-    event_impact: ${OPENROUTER_MODEL}
-    briefing: google/gemini-3.5-flash-lite
-    market_intelligence: ${OPENROUTER_MODEL}
-    investment_analysis: openai/gpt-5.6-luna
+    default: openai/gpt-5.6-luna
+  # OpenRouter's Luna endpoint rejects sampling controls; omit temperature
+  # globally so every production processor uses the compatible request profile.
+  include_temperature: false
   # OpenRouter must fail rather than route above this published unit-price ceiling.
   max_prices:
     briefing:
@@ -76,6 +78,162 @@ logging:
 
 orchestration:
   collector_workers: 3
+
+event_pipeline:
+  enabled: true
+  sse:
+    enabled: true
+    heartbeat_seconds: 15
+    poll_seconds: 0.5
+    replay_limit: 100
+    max_streams_per_client: 3
+    retention_hours: 48
+  sources: [fred, oanda]
+  outbox_worker_enabled: true
+  batch_size: 50
+  poll_interval_seconds: 1.0
+  lease_seconds: 120
+  max_attempts: 8
+  base_backoff_seconds: 1.0
+  max_backoff_seconds: 300.0
+  freshness_grace_seconds: 300
+  jobs:
+    enabled: true
+    batch_size: 25
+    lease_seconds: 120
+    worker:
+      enabled: true
+      id: analysis-jobs
+      batch_size: 25
+      poll_seconds: 1.0
+      poll_interval_seconds: 1.0
+      lease_seconds: 120
+    retry:
+      max_attempts: 5
+      base_seconds: 1.0
+      max_seconds: 300.0
+      jitter_seconds: 0.25
+      base_backoff_seconds: 1.0
+      max_backoff_seconds: 300.0
+    query:
+      max_source_rows: 100
+      max_watchlist_rows: 100
+      max_release_cards: 20
+      max_story_clusters: 50
+      max_reconcile_jobs: 100
+      max_reconcile_freshness: 100
+      max_reconcile_snapshots: 100
+
+market_state:
+  enabled: true
+  query_limit: 500
+  snapshot_limit: 100
+  trend_window: 20
+  zscore_window: 60
+  realized_volatility_window: 30
+  state_thresholds:
+    volatility_high: 0.02
+    correlation_high: 0.75
+    trend_epsilon: 0.001
+  baskets:
+    global_risk: [EURUSD, AUDJPY, SP500, XAUUSD, GER40, UK100]
+  yield_curves:
+    us_10y_2y: [DGS10, DGS2]
+    us_10y_3m: [DGS10, DGS3MO]
+
+macro_event_mappings:
+  PAYEMS:
+    event_name: US nonfarm payrolls
+    instruments: [EURUSD, USDJPY, SP500, XAUUSD]
+    priority: 10
+    expected_sensitivity:
+      EURUSD: negative
+      USDJPY: positive
+      SP500: neutral
+      XAUUSD: negative
+  CPIAUCSL:
+    event_name: US consumer prices
+    instruments: [EURUSD, USDJPY, SP500, XAUUSD]
+    priority: 10
+    expected_sensitivity:
+      EURUSD: negative
+      USDJPY: positive
+      SP500: negative
+      XAUUSD: neutral
+  FEDFUNDS:
+    event_name: Federal funds rate
+    instruments: [EURUSD, USDJPY, SP500, XAUUSD]
+    priority: 10
+    expected_sensitivity:
+      EURUSD: negative
+      USDJPY: positive
+      SP500: negative
+      XAUUSD: negative
+
+event_class_time_sensitivity:
+  macro_release: 1.0
+  macro_revision: 1.0
+  calendar_event_changed: 0.9
+  price_tick: 0.8
+  headline_published: 0.8
+  regulatory_filing_published: 0.7
+  manual_research_event: 0.3
+
+reaction_windows:
+  baseline_lookback_minutes: 120
+  target_tolerance_minutes: 5
+  max_event_age_minutes: 360
+  session_close: "21:00:00"
+  backfill_limit: 100
+
+story_clustering:
+  enabled: true
+  publish_limit: 500
+  candidate_window_hours: 72
+  candidate_limit: 100
+  similarity_threshold: 0.55
+  material_change_threshold: 0.25
+  low_confidence_threshold: 0.55
+  market_moving_min_importance: 0.75
+  watchlist: [EURUSD, AUDJPY, USDJPY, SP500, XAUUSD, XPTUSD, GER40, UK100]
+  source_confidence:
+    default: 0.60
+    reuters: 0.85
+    kobeissi: 0.65
+  lane_keywords:
+    macro_central_banks: [fed, ecb, boj, boe, central, bank, inflation, gdp, payrolls, rates]
+    filings_regulators: [filing, sec, regulator, antitrust, lawsuit, investigation]
+
+story_confirmation:
+  target_tolerance_minutes: 5
+  pre_headline_minutes: 5
+  material_move_percent: 0.25
+  session_close: "21:00:00"
+  query_limit: 5000
+  backfill_limit: 100
+
+analysis_atoms:
+  enabled: true
+  event_interpretation_hours: 48
+  regime_hours: 168
+  intraday_session_close: "21:00:00"
+  expire_limit: 100
+
+analysis_routing:
+  event_atom_min_score: 0.55
+  story_summary_min_score: 0.60
+  briefing_invalidation_min_score: 0.50
+  investment_thesis_review_min_score: 0.65
+  reaction_window_min_score: 0.55
+  source_confidence:
+    default: 0.70
+    fred: 0.95
+    oanda: 0.95
+    forex_factory: 0.75
+    reuters: 0.85
+    kobeissi: 0.65
+  debounce_seconds: 30
+  max_debounce_seconds: 120
 
 collectors:
   fred:

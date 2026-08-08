@@ -1,0 +1,21 @@
+<section aria-labelledby="since-last-view-title" class="since-last-view" data-since-last-view-marker
+  {% if live_updates_enabled %}data-live-section="since_last_view" data-live-event="section_changed" data-live-url="/partials/dashboard/since-last-view"{% else %}hx-get="/partials/dashboard/since-last-view" hx-trigger="every 90s"{% endif %}>
+  <h2 id="since-last-view-title">Since your last view <span class="section-note">deterministic</span></h2>
+  {% if not since_last_view.available %}<p role="status">Unavailable</p>
+  {% elif not since_last_view.marker %}<p>No last-view marker yet — this summary appears after your first visit.</p>
+  {% elif not since_last_view.sections %}<p>Nothing material changed since {{ since_last_view.marker[:16] }}.</p>
+  {% else %}
+  <ul class="since-last-view-list">
+    {% for section in since_last_view.sections %}
+    <li class="since-last-view-group">
+      <h3>{{ section.title }} <span class="section-note tabular">{{ since_last_view.counts.get(section.key, section.rows|length) }}</span></h3>
+      <ul>
+        {% for row in section.rows %}
+        <li><span class="tabular since-last-view-at">{{ row.at[:16] if row.at else '—' }}</span> {{ row.label }}{% if row.detail %} <span class="since-last-view-detail">{{ row.detail }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>

@@ -6,7 +6,7 @@ class ServiceContractScriptTests(unittest.TestCase):
     def test_live_contract_runner_covers_required_boundaries(self):
         source = (Path(__file__).resolve().parents[1] / "scripts/test_service_contracts.py").read_text()
         for marker in (
-            "/api/system/health", "/quality", "/api/news/sources", "/api/news/feed",
+            "/api/system/health", "/quality", "/api/news/sources", "/api/news/clusters",
             "/api/triggers/collectors/not-real", "401", "404", "abandoned",
             "restart", "ON_ERROR_STOP",
         ):

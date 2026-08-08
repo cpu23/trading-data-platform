@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -18,6 +19,8 @@ from processors.macro_trends import (
 )
 
 logger = get_logger("processor.macro_regime")
+
+_ATOM_CONFIDENCE = {"high": 0.8, "moderate": 0.6, "low": 0.4}
 
 SERIES_USED = [
     "GDP",
@@ -240,10 +243,20 @@ class MacroRegimeProcessor:
             "cost_usd": stage.telemetry.cost_usd_total,
         }
 
+        atoms = self._publish_regime_atom(
+            config,
+            parsed=parsed,
+            series_ids_used=series_ids_used,
+            llm_result=llm_result,
+            model=model,
+            correlation_id=correlation_id,
+        )
+
         return {
             "opinion": opinion,
             "extra_records": {"regime_classifications": [classification]},
             "processing_log": processing_log,
+            "atoms": atoms,
         }
 
     def get_prompt_version(self) -> str:
@@ -259,6 +272,144 @@ class MacroRegimeProcessor:
 
     def get_depends_on(self) -> list[str]:
         return ["fred"]
+
+    @staticmethod
+    def _regime_claim(
+        regime: str, sub_regime: str | None, direction: str, confidence: str
+    ) -> str:
+        label = f"Regime: {regime}"
+        if sub_regime:
+            label += f" ({sub_regime})"
+        return f"{label} — {direction}, {confidence} confidence"
+
+    def _publish_regime_atom(
+        self,
+        config: dict,
+        *,
+        parsed: dict,
+        series_ids_used: list[str],
+        llm_result: dict,
+        model: str,
+        correlation_id: str,
+        now: datetime | None = None,
+    ) -> dict | None:
+        """Publish one current regime atom with evidence-linked macro series.
+
+        The classification is part of the input fingerprint so identical
+        classifications reuse the existing atom (unique fingerprint index) and
+        only a changed classification supersedes the prior current regime atom.
+        Failures are logged and never fail the processor.
+        """
+        settings = config.get("analysis_atoms", {})
+        if not isinstance(settings, dict) or not settings.get("enabled", False):
+            return None
+        try:
+            from atoms import current_atoms, publish_atom
+            from processors.base import canonical_fingerprint
+
+            regime = str(parsed.get("regime") or "quiet").strip().lower() or "quiet"
+            sub_regime = str(parsed.get("sub_regime") or "").strip().lower() or None
+            if sub_regime in {"null", "none"}:
+                sub_regime = None
+            direction = (
+                str(parsed.get("direction") or "neutral").strip().lower() or "neutral"
+            )
+            confidence = str(parsed.get("confidence") or "low").strip().lower() or "low"
+            timeframe = (
+                str(parsed.get("timeframe") or "medium_term").strip().lower()
+                or "medium_term"
+            )
+            summary = str(parsed.get("summary") or "").strip()
+            claim = self._regime_claim(regime, sub_regime, direction, confidence)
+            try:
+                regime_hours = max(1, min(720, int(settings.get("regime_hours", 168))))
+            except (TypeError, ValueError, OverflowError):
+                regime_hours = 168
+            current = now or datetime.now(UTC)
+            model_slug = str(llm_result.get("model") or model or "").strip() or None
+            prompt_version = self.get_prompt_version()
+            fingerprint = canonical_fingerprint(
+                {
+                    "subject_type": "regime",
+                    "subject_id": "global",
+                    "claim_type": "regime",
+                    "classification": {
+                        "regime": regime,
+                        "sub_regime": sub_regime,
+                        "direction": direction,
+                        "confidence": confidence,
+                        "timeframe": timeframe,
+                        "summary": summary,
+                    },
+                    "prompt_version": prompt_version,
+                    "model": model_slug,
+                }
+            )
+            evidence = [
+                {
+                    "evidence_type": "macro_series",
+                    "evidence_id": str(series_id),
+                    "relationship": "supports",
+                }
+                for series_id in sorted(series_ids_used)
+                if str(series_id).strip()
+            ]
+            with get_session(config) as session:
+                supersedes = None
+                prior = current_atoms(
+                    session, subject_type="regime", subject_id="global", limit=1
+                )
+                if prior and str(prior[0].get("claim") or "") != claim:
+                    supersedes = prior[0].get("id")
+                atom = {
+                    "subject_type": "regime",
+                    "subject_id": "global",
+                    "claim_type": "regime",
+                    "claim": claim,
+                    "observation_text": (
+                        f"Regime: {regime}"
+                        + (f" ({sub_regime})" if sub_regime else "")
+                        + f"; direction {direction}; confidence {confidence}; "
+                        f"timeframe {timeframe}."
+                    ),
+                    "interpretation_text": summary or None,
+                    "scenario_text": None,
+                    "unknowns": [],
+                    "affected_assets": [],
+                    "time_horizon": f"{regime_hours}h",
+                    "confidence": _ATOM_CONFIDENCE.get(confidence, 0.6),
+                    "confidence_components": {"source": "llm_regime_classification"},
+                    "valid_from": current,
+                    "expires_at": current + timedelta(hours=regime_hours),
+                    "carry_forward": False,
+                    "invalidation_conditions": [
+                        "macro data revision",
+                        "new regime classification",
+                    ],
+                    "supersedes_atom_id": supersedes,
+                    "input_fingerprint": fingerprint,
+                    "source_event_id": None,
+                    "prompt_version": prompt_version,
+                    "model_slug": model_slug,
+                    "generation_attempt_id": None,
+                }
+                result = publish_atom(session, atom, evidence, now=current)
+            return {
+                "published": result,
+                "supersedes_atom_id": supersedes,
+                "expires_at": (current + timedelta(hours=regime_hours))
+                .astimezone(UTC)
+                .isoformat(),
+            }
+        except Exception as exc:
+            logger.warning(
+                "atom_publish_failed",
+                action="publish_regime_atom",
+                processor=self.processor_id,
+                error=type(exc).__name__,
+                correlation_id=correlation_id,
+            )
+            return None
 
     def get_fingerprint_inputs(self, config: dict) -> dict:
         """Return revision-aware observations for every value consumed by trend rules."""

@@ -25,10 +25,13 @@ class RuntimeTopologyTests(unittest.TestCase):
         for path in COMPOSE_FILES:
             with self.subTest(path=path.name):
                 services = load_compose(path)["services"]
-                self.assertEqual(
-                    {"postgres", "migrate", "orchestrator", "api"}, set(services)
-                )
-                for name in ("migrate", "orchestrator", "api"):
+                expected = {"postgres", "migrate", "orchestrator", "api"}
+                image_services = {"migrate", "orchestrator", "api"}
+                if path.name == "docker-compose.demo.yml":
+                    expected.add("demo-live")
+                    image_services.add("demo-live")
+                self.assertEqual(expected, set(services))
+                for name in image_services:
                     self.assertEqual(services[name]["build"]["context"], ".")
                     self.assertEqual(services[name]["build"]["dockerfile"], "Dockerfile")
                     self.assertEqual(services[name]["image"], "trading-data-platform:0.1.0")
@@ -67,6 +70,18 @@ class RuntimeTopologyTests(unittest.TestCase):
                 self.assertEqual(len(api["ports"]), 1)
                 self.assertTrue(api["ports"][0].endswith(":8000"))
 
+                if "demo-live" in services:
+                    publisher = services["demo-live"]
+                    self.assertIn("demo_live.py", " ".join(publisher["command"]))
+                    self.assertEqual(publisher["restart"], "unless-stopped")
+                    self.assertEqual(
+                        publisher["depends_on"]["migrate"]["condition"],
+                        "service_completed_successfully",
+                    )
+                    self.assertEqual(
+                        api["depends_on"]["demo-live"]["condition"], "service_started"
+                    )
+
     def test_upstream_images_are_immutable_and_runtime_is_non_root(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertGreaterEqual(dockerfile.count("@sha256:"), 3)
@@ -94,7 +109,7 @@ class RuntimeTopologyTests(unittest.TestCase):
         rendered = (ROOT / "docker-compose.demo.yml").read_text()
         self.assertNotIn("${FRED_API_KEY", rendered)
         self.assertNotIn("${OPENROUTER_API_KEY", rendered)
-        for name in ("migrate", "orchestrator", "api"):
+        for name in ("migrate", "orchestrator", "demo-live", "api"):
             environment = demo["services"][name]["environment"]
             self.assertEqual(environment["DEMO_MODE"], "true")
             self.assertEqual(environment["FRED_API_KEY"], "demo-disabled")

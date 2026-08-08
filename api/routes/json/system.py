@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -615,4 +615,90 @@ def get_cycle_status(correlation_id: str = Query(...)):
         "error_message": row.get("error_message"),
         "progress": run.get("summary", {}).get("progress", {}),
         "stages": run.get("stages", []),
+    }
+
+
+def _snapshot_payload(row: dict | None) -> dict | None:
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["id"] = str(payload["id"])
+    payload["source_event_ids"] = [
+        str(value) for value in (payload.get("source_event_ids") or [])
+    ]
+    for key in (
+        "data_freshness_at",
+        "analysis_freshness_at",
+        "created_at",
+        "published_at",
+    ):
+        payload[key] = _fmt(payload.get(key))
+    return payload
+
+
+@router.get("/sections/{section_key}")
+def get_section_snapshot(
+    section_key: str = Path(pattern=r"^[a-z][a-z0-9_]{0,63}$"),
+):
+    """Return the current published snapshot and bounded publication history."""
+    config = app_config.load_config()
+    fields = """
+        id, section_key, scope_key, version, status, payload, render_context,
+        content_hash, data_freshness_at, analysis_freshness_at, source_event_ids,
+        created_at, published_at
+    """
+    current = query_one(
+        f"""SELECT {fields}
+            FROM section_snapshots
+            WHERE section_key = :section_key
+              AND scope_key = 'global'
+              AND status = 'published'
+            ORDER BY version DESC
+            LIMIT 1""",
+        {"section_key": section_key},
+        config=config,
+    )
+    history = query_many(
+        f"""SELECT {fields}
+            FROM section_snapshots
+            WHERE section_key = :section_key
+              AND scope_key = 'global'
+            ORDER BY version DESC
+            LIMIT 20""",
+        {"section_key": section_key},
+        config=config,
+    )
+    return {
+        "section_key": section_key,
+        "current": _snapshot_payload(current),
+        "history": [_snapshot_payload(row) for row in history],
+    }
+
+
+@router.get("/analysis/jobs/status")
+def get_analysis_jobs_status():
+    """Return bounded aggregate queue state without job payloads or errors."""
+    config = app_config.load_config()
+    rows = query_many(
+        """SELECT state, COUNT(*) AS count, MIN(created_at) AS oldest_created_at
+           FROM analysis_jobs
+           GROUP BY state
+           ORDER BY state""",
+        config=config,
+    )
+    counts = {str(row["state"]): int(row["count"]) for row in rows}
+    active_states = {"queued", "leased", "running", "failed_retryable"}
+    active_rows = [row for row in rows if row["state"] in active_states]
+    oldest_pending_at = min(
+        (
+            row["oldest_created_at"]
+            for row in active_rows
+            if row.get("oldest_created_at") is not None
+        ),
+        default=None,
+    )
+    return {
+        "counts": counts,
+        "active": sum(counts.get(state, 0) for state in active_states),
+        "oldest_pending_at": _fmt(oldest_pending_at),
     }

@@ -1,25 +1,22 @@
-<section class="section news-section" id="news-section">
+<section class="section news-section story-monitor-compact" id="news-section"
+         {% if live_updates_enabled %}data-live-section="news_clusters"
+         data-live-event="section_changed"
+         data-live-url="/partials/dashboard/news"{% else %}
+         hx-get="/partials/dashboard/news"
+         hx-trigger="every 90s"
+         hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
-    <span class="label">News</span>
-    <a class="quiet-link news-generated" href="/news">View all</a>
-    {% if news.status == 'published' and news.generated_at %}
-      <span class="news-generated tabular">Published {{ news.generated_at }}</span>
-    {% endif %}
+    <span class="label">Canonical stories</span>
+    <a class="quiet-link news-generated" href="/news">Open story monitor</a>
+    <span class="section-note">Repeated coverage grouped by story</span>
   </div>
-  {% if news.status == 'published' and news['items'] %}
-    <div class="news-list">
-      {% for item in news['items'] %}
-        <article class="news-item">
-          <div class="news-meta tabular">{{ item.source }}{% if item.published %} · {{ item.published }}{% endif %}</div>
-          <h3>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3>
-          {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
-          {% if item.symbols or item.tags %}<div class="news-tags">{% for value in item.symbols + item.tags %}<span>{{ value }}</span>{% endfor %}</div>{% endif %}
-        </article>
-      {% endfor %}
+  {% if stories.status == 'published' and stories.clusters %}
+    <div class="story-card-list">
+      {% for story in stories.clusters %}{% include "partials/story_card.html" %}{% endfor %}
     </div>
-  {% elif news.status == 'not_published' %}
-    <div class="empty-state">News feed not published yet. Check source status in <a href="/operations">Operations</a>.</div>
+  {% elif stories.status == 'unavailable' %}
+    <div class="error-block" role="alert">Canonical stories are temporarily unavailable.</div>
   {% else %}
-    <div class="error-block" role="alert">News feed unavailable. The last valid source files remain untouched.</div>
+    <div class="empty-state">No canonical stories yet. Check source status in <a href="/operations">Operations</a>.</div>
   {% endif %}
 </section>

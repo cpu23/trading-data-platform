@@ -26,6 +26,15 @@ class ComponentIdValidationTests(unittest.TestCase):
     """Task 10: Validate component IDs before accepting background work."""
 
     def setUp(self):
+        self.auth_patcher = patch.dict(
+            os.environ,
+            {
+                "DASHBOARD_USER": "internal-user",
+                "DASHBOARD_PASSWORD": "internal-pass",
+            },
+        )
+        self.auth_patcher.start()
+        self.addCleanup(self.auth_patcher.stop)
         from fastapi.testclient import TestClient
 
         from main import app
@@ -1172,6 +1181,13 @@ class AbandonedRunRecoveryTests(unittest.TestCase):
         import main
 
         with (
+            patch.dict(
+                os.environ,
+                {
+                    "DASHBOARD_USER": "internal-user",
+                    "DASHBOARD_PASSWORD": "internal-pass",
+                },
+            ),
             patch("main._get_config", return_value={}),
             patch("main.get_run_for_retry") as lookup,
             patch("main.accept_run") as accept,

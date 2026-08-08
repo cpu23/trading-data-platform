@@ -122,6 +122,86 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(body["reasoning"], {"effort": "low"})
 
     @patch("llm_client.make_request")
+    def test_explicit_messages_are_sent_unchanged(self, request):
+        request.return_value = _response()
+        config = {
+            "llm": {
+                "api_key": "key",
+                "models": {"default": "provider/model"},
+            }
+        }
+        messages = [
+            {"role": "system", "content": "Use only supplied evidence."},
+            {"role": "user", "content": "Interpret [e1]."},
+        ]
+
+        call_llm(
+            "ignored when explicit messages are supplied",
+            config=config,
+            messages=messages,
+            _budget_permit=Mock(valid=True),
+        )
+
+        self.assertEqual(request.call_args.kwargs["json_body"]["messages"], messages)
+
+    @patch("llm_client.make_request")
+    def test_temperature_can_be_omitted_for_incompatible_models(self, request):
+        request.return_value = _response()
+        config = {
+            "llm": {
+                "api_key": "key",
+                "models": {"default": "provider/model"},
+                "temperature": 0.2,
+            }
+        }
+
+        call_llm(
+            "hello",
+            config=config,
+            include_temperature=False,
+            _budget_permit=Mock(valid=True),
+        )
+
+        self.assertNotIn("temperature", request.call_args.kwargs["json_body"])
+
+    @patch("llm_client.make_request")
+    def test_temperature_omission_can_be_configured(self, request):
+        request.return_value = _response()
+        config = {
+            "llm": {
+                "api_key": "key",
+                "models": {"default": "provider/model"},
+                "temperature": 0.2,
+                "include_temperature": False,
+            }
+        }
+
+        call_llm(
+            "hello",
+            config=config,
+            _budget_permit=Mock(valid=True),
+        )
+
+        self.assertNotIn("temperature", request.call_args.kwargs["json_body"])
+
+    @patch("llm_client.make_request")
+    def test_invalid_explicit_messages_fail_before_transport(self, request):
+        config = {
+            "llm": {
+                "api_key": "key",
+                "models": {"default": "provider/model"},
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "message role"):
+            call_llm(
+                "ignored",
+                config=config,
+                messages=[{"role": "tool", "content": "unsafe"}],
+                _budget_permit=Mock(valid=True),
+            )
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
     @unittest.skip(
         "skip: codex/market-intelligence-expansion contract not implemented in master"
     )

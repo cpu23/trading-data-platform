@@ -2,11 +2,34 @@
 
 {% block content %}
   {% include "partials/header.html" %}
+  {% include "partials/top_strip.html" %}
+  {% include "partials/since_last_view.html" %}
+  <section class="cockpit-shell" hx-get="/partials/dashboard/change-feed" hx-trigger="load" hx-swap="outerHTML">
+    <h2>Change feed</h2>
+    <p role="status">Loading…</p>
+  </section>
+  <section class="cockpit-shell" hx-get="/partials/dashboard/watchlist-grid" hx-trigger="load" hx-swap="outerHTML">
+    <h2>Watchlist monitor</h2>
+    <p role="status">Loading…</p>
+  </section>
+  {% include "partials/expansion_panel.html" %}
+  <section class="cockpit-shell" hx-get="/partials/dashboard/cross-asset" hx-trigger="load" hx-swap="outerHTML">
+    <h2>Cross-asset context</h2>
+    <p role="status">Loading…</p>
+  </section>
+  <section class="cockpit-shell" hx-get="/partials/dashboard/catalysts" hx-trigger="load" hx-swap="outerHTML">
+    <h2>Upcoming catalysts</h2>
+    <p role="status">Loading…</p>
+  </section>
+  {% include "partials/macro_release_cards.html" %}
+  {% include "partials/news_section.html" %}
+  <section class="cockpit-shell" hx-get="/partials/dashboard/briefing-delta" hx-trigger="load" hx-swap="outerHTML">
+    <h2>Briefing delta</h2>
+    <p role="status">Loading…</p>
+  </section>
+  {% include "partials/briefing_prose.html" %}
+  {% include "partials/cards_section.html" %}
   {% include "partials/regime_section.html" %}
   {% include "partials/indicators_section.html" %}
-  {% include "partials/cards_section.html" %}
-  {% include "partials/expansion_panel.html" %}
   {% include "partials/events_section.html" %}
-  {% include "partials/news_section.html" %}
-  {% include "partials/briefing_prose.html" %}
 {% endblock %}

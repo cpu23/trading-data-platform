@@ -1,0 +1,72 @@
+{% macro change_feed_rows(feed) %}
+  {% if feed.rows %}
+    <ul class="change-feed-list">
+      {% for row in feed.rows %}
+        <li class="change-feed-row">
+          <div class="change-feed-head">
+            <span class="change-feed-title">{{ row.title }}</span>
+            {% if row.state %}<span class="bias-text bias-{{ row.state_class }}">{{ row.state }}</span>{% endif %}
+            <span class="change-feed-time tabular">{{ row.time_display or '—' }}</span>
+          </div>
+          <div class="change-feed-meta">
+            <span class="change-feed-source">{{ row.source }}</span>
+            {% if row.importance_label %}
+              <span class="impact-badge impact-{{ row.importance_class }}">{{ row.importance_label }}</span>
+            {% endif %}
+            {% if row.novelty_display %}
+              <span class="change-feed-novelty tabular">novelty {{ row.novelty_display }}</span>
+            {% endif %}
+            {% if row.interpretation_available %}
+              <a class="quiet-link" href="/news">interpretation</a>
+            {% endif %}
+          </div>
+          {% if row.markets %}
+            <div class="change-feed-markets">
+              {% for symbol in row.markets %}<span class="market-tag">{{ symbol }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if row.reaction_windows %}
+            <ul class="reaction-window-list">
+              {% for window in row.reaction_windows %}
+                <li class="reaction-window">
+                  <span class="reaction-horizon tabular">{{ window.horizon }}</span>
+                  <span class="reaction-move tabular{% if window.direction == 'up' %} change-up{% elif window.direction == 'down' %} change-down{% endif %}">{{ window.display or '—' }}</span>
+                  {% if window.reaction_state %}<span class="reaction-state">{{ window.reaction_state }}</span>{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% if feed.has_earlier and feed.oldest_observed_at %}
+    <button type="button" class="feed-load-earlier"
+            hx-get="/partials/dashboard/change-feed?before={{ feed.oldest_observed_at | urlencode }}&amp;limit={{ feed.limit }}"
+            hx-swap="afterend"
+            hx-target="this">Load earlier</button>
+  {% endif %}
+{% endmacro %}
+{% if append %}
+  {{ change_feed_rows(feed) }}
+{% else %}
+<section class="section change-feed-section" id="change-feed"
+         {% if live_updates_enabled %}data-live-section="change_feed"
+         data-live-event="section_changed"
+         data-live-url="/partials/dashboard/change-feed"{% else %}
+         hx-get="/partials/dashboard/change-feed"
+         hx-trigger="every 90s"
+         hx-swap="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <span class="label">Change feed</span>
+    <a class="quiet-link" href="/news">Open story monitor</a>
+  </div>
+  {% if not feed.available %}
+    <div class="error-block" role="alert">Change feed unavailable.</div>
+  {% elif not feed.rows %}
+    <div class="empty-state">No routed market events yet.</div>
+  {% else %}
+    {{ change_feed_rows(feed) }}
+  {% endif %}
+</section>
+{% endif %}

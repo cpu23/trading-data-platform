@@ -88,6 +88,28 @@ services:
       retries: 10
       start_period: 20s
 
+  demo-live:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:0.1.0
+    pids_limit: 64
+    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "demo_live.py"]
+    environment:
+      <<: *demo_environment
+      DEMO_LIVE_INTERVAL_SECONDS: "5"
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -118,6 +140,8 @@ services:
         condition: service_completed_successfully
       orchestrator:
         condition: service_healthy
+      demo-live:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)\""]

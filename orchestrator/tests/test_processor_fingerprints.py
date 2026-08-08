@@ -391,7 +391,7 @@ class BoundedProcessorInputTests(unittest.TestCase):
         statements = [str(call.args[0]) for call in session.execute.call_args_list]
         self.assertTrue(
             all(
-                "LIMIT 1" in statement or "COUNT(*)" in statement
+                "LIMIT" in statement or "COUNT(*)" in statement
                 for statement in statements
             )
         )

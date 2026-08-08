@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
 import tempfile
 import unittest
+from contextlib import ExitStack
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -600,6 +601,56 @@ class TestSystemRoutes(unittest.TestCase):
         resp = client.get("/api/system/health")
         self.assertEqual(resp.status_code, 401)
 
+    @patch("routes.json.system.query_many")
+    @patch("routes.json.system.query_one")
+    def test_section_snapshot_returns_current_and_bounded_history(
+        self, query_one, query_many
+    ):
+        snapshot = {
+            "id": "snapshot-1",
+            "section_key": "watchlist",
+            "scope_key": "global",
+            "version": 1,
+            "status": "published",
+            "payload": {"instruments": []},
+            "render_context": {},
+            "content_hash": "a" * 64,
+            "data_freshness_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "analysis_freshness_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "source_event_ids": ["event-1"],
+            "created_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "published_at": datetime(2026, 8, 5, tzinfo=UTC),
+        }
+        query_one.return_value = snapshot
+        query_many.return_value = [snapshot]
+
+        resp = client.get("/api/sections/watchlist", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["current"]["version"], 1)
+        self.assertEqual(len(resp.json()["history"]), 1)
+        self.assertIn("LIMIT 20", query_many.call_args.args[0])
+
+    @patch(
+        "routes.json.system.query_many",
+        return_value=[
+            {
+                "state": "queued",
+                "count": 2,
+                "oldest_created_at": datetime(2026, 8, 5, tzinfo=UTC),
+            },
+            {"state": "succeeded", "count": 5, "oldest_created_at": None},
+        ],
+    )
+    def test_analysis_job_status_exposes_aggregates_only(self, _query_many):
+        resp = client.get("/api/analysis/jobs/status", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["counts"], {"queued": 2, "succeeded": 5})
+        self.assertEqual(resp.json()["active"], 2)
+        self.assertNotIn("payload", resp.text)
+        self.assertNotIn("last_error", resp.text)
+
     @patch("routes.json.system.query_many", return_value=[])
     def test_logs_returns_list(self, _mock_qm):
         """GET /api/system/logs returns a JSON object with 'logs' list."""
@@ -739,6 +790,348 @@ class TestTimezoneSettings(unittest.TestCase):
         self.assertEqual(response.json()["current"], "Europe/London")
 
 
+class TestLiveViewPartials(unittest.TestCase):
+    ENABLED_CONFIG = {
+        **MOCK_CONFIG,
+        "event_pipeline": {"sse": {"enabled": True}},
+    }
+    BRIEFING = {
+        "sections": {
+            "watchlist_notes": [
+                {
+                    "symbol": "EURUSD",
+                    "asset_class": "forex",
+                    "bias": "bullish",
+                    "summary": "Momentum remains constructive",
+                }
+            ]
+        }
+    }
+    PRICE_MAP = {"EURUSD": {"price": 1.125, "change": 0.002}}
+
+    @staticmethod
+    def _dashboard_response(config, briefing, price_map, releases=None):
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard.app_config.load_config",
+                    return_value=config,
+                )
+            )
+            stack.enter_context(
+                patch("routes.views.dashboard.get_regime_current", return_value={})
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard.get_briefing_latest",
+                    return_value=briefing,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard.get_events_upcoming_data",
+                    return_value={"events": [], "grouped": {}},
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard.get_macro_release_cards_data",
+                    return_value=releases or {"cards": []},
+                )
+            )
+            stack.enter_context(
+                patch("routes.views.dashboard.get_macro_dashboard", return_value={})
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard._get_latest_prices",
+                    return_value=price_map,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard._last_cycle_text",
+                    return_value="No cycle run yet",
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard._latest_cycle_status",
+                    return_value="unknown",
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard._get_dashboard_health",
+                    new_callable=AsyncMock,
+                    return_value={"components": []},
+                )
+            )
+            stack.enter_context(
+                patch("routes.views.dashboard.get_budget_status", return_value={})
+            )
+            stack.enter_context(
+                patch(
+                    "routes.views.dashboard.load_story_context",
+                    return_value={"status": "empty", "clusters": [], "lanes": {}},
+                )
+            )
+            return client.get("/", headers=AUTH)
+
+    @staticmethod
+    def _operations_snapshot(live_updates_enabled):
+        unavailable = {"available": False, "message": "Unavailable"}
+        return {
+            "tz": {
+                "current_timezone": "Europe/London",
+                "display_timezone": "Europe/London",
+                "display_timezone_label": "London",
+                "timezone_options": [],
+            },
+            "processors": unavailable,
+            "feed": unavailable,
+            "runs": unavailable,
+            "event_pipeline": unavailable,
+            "claim_history": {"available": False, "groups": []},
+            "live_updates_enabled": live_updates_enabled,
+        }
+
+    def test_watchlist_partial_matches_enabled_initial_section(self):
+        with (
+            patch(
+                "routes.views.dashboard.app_config.load_config",
+                return_value=self.ENABLED_CONFIG,
+            ),
+            patch(
+                "routes.views.dashboard.get_briefing_latest",
+                return_value=self.BRIEFING,
+            ),
+            patch(
+                "routes.views.dashboard._get_latest_prices",
+                return_value=self.PRICE_MAP,
+            ),
+        ):
+            partial = client.get(
+                "/partials/dashboard/watchlist",
+                headers=AUTH,
+            )
+        initial = self._dashboard_response(
+            self.ENABLED_CONFIG,
+            self.BRIEFING,
+            self.PRICE_MAP,
+        )
+
+        self.assertEqual(partial.status_code, 200)
+        self.assertEqual(initial.status_code, 200)
+        self.assertIn(partial.text.strip(), initial.text)
+        self.assertIn("Watchlist", partial.text)
+        self.assertIn("EURUSD", partial.text)
+        self.assertIn('data-live-section="watchlist"', partial.text)
+        self.assertIn('data-live-event="watchlist_changed"', partial.text)
+        self.assertIn(
+            'data-live-url="/partials/dashboard/watchlist"',
+            partial.text,
+        )
+
+    def test_source_health_partial_matches_enabled_initial_and_is_bounded(self):
+        components = [
+            {
+                "name": f"source-{index:02d}",
+                "last_status": "success",
+                "next_due_at": "later",
+            }
+            for index in range(10)
+        ]
+        components.append(
+            {
+                "name": "overflow-source",
+                "last_status": "success",
+                "next_due_at": "later",
+            }
+        )
+        health = {"readiness": "ready", "components": components}
+        with (
+            patch(
+                "routes.views.operations.load_config",
+                return_value=self.ENABLED_CONFIG,
+            ),
+            patch(
+                "routes.views.operations._local_snapshot",
+                return_value=self._operations_snapshot(True),
+            ),
+            patch(
+                "routes.views.operations.get_system_health",
+                new_callable=AsyncMock,
+                return_value=health,
+            ),
+        ):
+            initial = client.get("/operations", headers=AUTH)
+            partial = client.get(
+                "/partials/operations/source-health",
+                headers=AUTH,
+            )
+
+        self.assertEqual(partial.status_code, 200)
+        self.assertEqual(initial.status_code, 200)
+        self.assertIn(partial.text.strip(), initial.text)
+        self.assertIn("Source &amp; scheduler state", partial.text)
+        self.assertIn("source-09", partial.text)
+        self.assertNotIn("overflow-source", partial.text)
+        self.assertIn('data-live-section="source_health"', partial.text)
+        self.assertIn('data-live-event="source_health_changed"', partial.text)
+        self.assertIn(
+            'data-live-url="/partials/operations/source-health"',
+            partial.text,
+        )
+
+    def test_partial_routes_fail_soft_and_remain_authenticated(self):
+        self.assertEqual(
+            client.get("/partials/dashboard/watchlist").status_code,
+            401,
+        )
+        self.assertEqual(
+            client.get("/partials/operations/source-health").status_code,
+            401,
+        )
+        with (
+            patch(
+                "routes.views.dashboard.app_config.load_config",
+                return_value=self.ENABLED_CONFIG,
+            ),
+            patch(
+                "routes.views.dashboard.get_briefing_latest",
+                side_effect=RuntimeError("RAW_BRIEFING_SECRET"),
+            ),
+            patch(
+                "routes.views.dashboard._get_latest_prices",
+                side_effect=RuntimeError("RAW_PRICE_SECRET"),
+            ),
+        ):
+            watchlist = client.get(
+                "/partials/dashboard/watchlist",
+                headers=AUTH,
+            )
+        with (
+            patch(
+                "routes.views.operations.load_config",
+                return_value=self.ENABLED_CONFIG,
+            ),
+            patch(
+                "routes.views.operations.get_system_health",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("RAW_HEALTH_SECRET"),
+            ),
+        ):
+            source_health = client.get(
+                "/partials/operations/source-health",
+                headers=AUTH,
+            )
+
+        self.assertEqual(watchlist.status_code, 200)
+        self.assertIn("No briefing has been generated yet", watchlist.text)
+        self.assertNotIn("RAW_", watchlist.text)
+        self.assertEqual(source_health.status_code, 200)
+        self.assertIn("Unavailable", source_health.text)
+        self.assertNotIn("RAW_", source_health.text)
+
+    def test_disabled_initial_pages_render_without_live_contract(self):
+        dashboard = self._dashboard_response(
+            MOCK_CONFIG,
+            self.BRIEFING,
+            self.PRICE_MAP,
+        )
+        with (
+            patch(
+                "routes.views.operations._local_snapshot",
+                return_value=self._operations_snapshot(False),
+            ),
+            patch(
+                "routes.views.operations.get_system_health",
+                new_callable=AsyncMock,
+                return_value={"readiness": "ready", "components": []},
+            ),
+        ):
+            operations = client.get("/operations", headers=AUTH)
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Watchlist", dashboard.text)
+        self.assertNotIn("data-live-section", dashboard.text)
+        self.assertEqual(operations.status_code, 200)
+        self.assertIn("Source &amp; scheduler state", operations.text)
+        self.assertNotIn("data-live-section", operations.text)
+
+    def test_macro_release_card_is_public_bounded_and_live(self):
+        released_at = datetime(2026, 8, 6, 12, tzinfo=UTC)
+        row = {
+            "id": "card-1",
+            "release_identity": "fred:PAYEMS:2026-08-06",
+            "series_id": "PAYEMS",
+            "revision_number": 0,
+            "event_name": "US nonfarm payrolls",
+            "actual": 180.0,
+            "consensus": 160.0,
+            "previous": 150.0,
+            "revised_previous": None,
+            "absolute_surprise": 20.0,
+            "standardized_surprise": 1.5,
+            "impact": "high",
+            "source": "fred",
+            "observed_at": released_at,
+            "released_at": released_at,
+            "revision_at": None,
+            "quality_flags": [],
+            "stage": "t0",
+            "reaction_summary": {},
+            "created_at": released_at,
+            "updated_at": released_at,
+        }
+        cards = {
+            "cards": [
+                {
+                    **row,
+                    "released_at": released_at.isoformat(),
+                    "observed_at": released_at.isoformat(),
+                    "created_at": released_at.isoformat(),
+                    "updated_at": released_at.isoformat(),
+                    "display_time": "06 Aug 12:00 UTC",
+                }
+            ]
+        }
+        with (
+            patch(
+                "routes.views.dashboard.app_config.load_config",
+                return_value=self.ENABLED_CONFIG,
+            ),
+            patch(
+                "routes.views.dashboard.get_macro_release_cards_data",
+                return_value=cards,
+            ),
+        ):
+            partial = client.get(
+                "/partials/dashboard/macro-releases",
+                headers=AUTH,
+            )
+        initial = self._dashboard_response(
+            self.ENABLED_CONFIG,
+            self.BRIEFING,
+            self.PRICE_MAP,
+            releases=cards,
+        )
+        with patch("routes.json.events.query_many", return_value=[row]) as query:
+            response = client.get("/api/events/releases?limit=6", headers=AUTH)
+
+        self.assertEqual(partial.status_code, 200)
+        self.assertIn(partial.text.strip(), initial.text)
+        self.assertIn("US nonfarm payrolls", partial.text)
+        self.assertIn("Deterministic · no model inference", partial.text)
+        self.assertIn('data-live-section="macro_releases"', partial.text)
+        self.assertIn('data-live-event="section_changed"', partial.text)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cards"][0]["actual"], 180.0)
+        self.assertNotIn("source_payload", response.text)
+        self.assertEqual(query.call_args.kwargs["params"]["limit"], 6)
+
+
 class TestOperationsOverview(unittest.TestCase):
     @patch(
         "routes.views.operations.get_system_health",
@@ -758,6 +1151,8 @@ class TestOperationsOverview(unittest.TestCase):
             "processors": {"available": False, "message": "Unavailable"},
             "feed": {"available": False, "message": "Unavailable"},
             "runs": {"available": False, "message": "Unavailable"},
+            "event_pipeline": {"available": False, "message": "Unavailable"},
+            "claim_history": {"available": False, "groups": []},
         }
         response = client.get("/operations", headers=AUTH)
         self.assertEqual(response.status_code, 200)
@@ -798,6 +1193,25 @@ class TestOperationsOverview(unittest.TestCase):
                     "error_message": "RAW_SECRET",
                 }
             ],
+            [
+                {
+                    "pending": 2,
+                    "claimed": 1,
+                    "failed": 0,
+                    "oldest_pending_at": "2026-07-16T00:00:00+00:00",
+                }
+            ],
+            [{"events_24h": 12}],
+            [
+                {
+                    "source": "fred",
+                    "state": "current",
+                    "expected_next_at": "2026-07-17T06:00:00+00:00",
+                    "last_success_at": "2026-07-16T06:00:00+00:00",
+                    "lag_seconds": 0,
+                    "reason_code": "success_with_records",
+                }
+            ],
         ]
         feed.return_value = {
             "status": "published",
@@ -812,6 +1226,7 @@ class TestOperationsOverview(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         for label in (
             "Source &amp; scheduler state",
+            "Event pipeline",
             "Latest processor outcomes",
             "Feed publication state",
             "Recent durable runs",
@@ -820,10 +1235,17 @@ class TestOperationsOverview(unittest.TestCase):
         self.assertIn("briefing", response.text)
         self.assertIn("Asia/Tokyo", response.text)
         self.assertNotIn("RAW_SECRET", response.text)
-        self.assertEqual(query.call_count, 2)
-        for call in query.call_args_list:
-            self.assertEqual(call.kwargs["params"]["limit"], 10)
+        self.assertEqual(query.call_count, 5)
+        bounded_calls = [
+            call
+            for call in query.call_args_list
+            if call.kwargs.get("params", {}).get("limit") == 10
+        ]
+        self.assertEqual(len(bounded_calls), 3)
+        for call in bounded_calls:
             self.assertIn("LIMIT :limit", call.args[0])
+        self.assertIn("12", response.text)
+        self.assertIn("current", response.text)
 
     @patch(
         "routes.views.operations.get_system_health",
@@ -925,17 +1347,15 @@ class TestBudgetRoute(unittest.TestCase):
 
 
 class TestNewsRoutes(unittest.TestCase):
-    def test_feed_handles_invalid_utf8_as_temporarily_unavailable(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, "feed.json").write_bytes(b'\xff\xfe{"items": []}')
-            cfg = {"news_feed": {"output_path": tmp}}
-            with patch("config.load_config", return_value=cfg):
-                resp = client.get("/api/news/feed", headers=AUTH)
-
+    @patch("routes.views.news.query_many", side_effect=RuntimeError("private sql"))
+    def test_clusters_fail_soft_without_exposing_database_error(self, _query):
+        resp = client.get("/api/news/clusters", headers=AUTH)
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(
-            resp.json(), {"error": "News feed is temporarily unavailable."}
+            resp.json(),
+            {"error": "Canonical news stories are temporarily unavailable."},
         )
+        self.assertNotIn("private sql", resp.text)
 
     def test_sources_handles_invalid_utf8_state_file(self):
         with tempfile.TemporaryDirectory() as tmp:

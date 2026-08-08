@@ -163,3 +163,25 @@ scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 ```
+
+## Dashboard cockpit acceptance — 8 August 2026
+
+After the live cockpit, dense watchlist, change feed, cross-asset panels,
+catalysts, and since-last-view marker were enabled, the deployed local
+dashboard was measured through the same authenticated
+`scripts/benchmark_api.py` method:
+
+| Route | Cold ms | Warm p50 ms | Warm p95 ms | Response bytes | Samples |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Dashboard cockpit `/` | 289.944 | 141.233 | 156.268 | 48,116 | 159.308, 144.109, 141.233, 139.420, 139.395 |
+
+The prior dashboard warm median was 141.53 ms, so the observed cockpit median
+is effectively unchanged (-0.21%). This is an observed local acceptance result,
+not an SLA. Artifact:
+`artifacts/performance/dashboard-cockpit-20260808.json`.
+
+SSE is intentionally excluded from request-latency samples because it is a
+long-lived connection. Demo smoke separately proves that the deterministic
+publisher inserts a price observation, appends a `watchlist_changed`
+invalidation, and that `/stream` replays that event. The browser then performs
+the normal bounded partial request.

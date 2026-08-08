@@ -7,13 +7,14 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from atoms import assemble_atom_context
 from budgets import BudgetContext
 from db import get_session
 from investment_news import load_classified_news
 from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
 from processors._validators import coerce_briefing_fields, validate_briefing_sections
-from processors.base import load_prompt_template
+from processors.base import canonical_fingerprint, load_prompt_template
 from processors.macro_trends import format_macro_synthesis
 
 logger = get_logger("processor.briefing")
@@ -138,6 +139,8 @@ class DailyBriefingProcessor:
             regime_summary = "No macro regime classification available yet. Run the macro_regime processor first."
             missing_context.append("macro regime classification")
 
+        current_atoms = self._get_atom_section(config, correlation_id)
+
         prompt_text = self._build_prompt(
             template_path=prompt_template_path,
             current_date=current_date,
@@ -148,6 +151,7 @@ class DailyBriefingProcessor:
             asset_context=json.dumps(asset_context, sort_keys=True),
             previous_briefing=previous_briefing,
             investment_news=json.dumps(investment_news, sort_keys=True),
+            current_atoms=current_atoms,
         )
 
         stage = LLMStage(
@@ -333,6 +337,7 @@ class DailyBriefingProcessor:
         with get_session(config) as session:
             macro_row = session.execute(macro_sql).fetchone()
             calendar_row = session.execute(calendar_sql, params).fetchone()
+            atom_marker = self._atom_fingerprint_marker(session, config)
         macro = dict(macro_row._mapping) if macro_row is not None else None
         calendar = (
             dict(calendar_row._mapping)
@@ -362,7 +367,37 @@ class DailyBriefingProcessor:
                 "ny_timezone": str(window.get("ny_tz", "")),
             },
             "watchlist": watchlist,
+            "atoms": atom_marker,
         }
+
+    def _atom_fingerprint_marker(self, session, config: dict) -> dict:
+        """Bounded current-atom marker; identical atom sets reuse prior reports."""
+        try:
+            rows = assemble_atom_context(
+                session, config, limit=self._atom_limit(config)
+            )
+            markers = sorted(
+                (
+                    {
+                        "atom_id": str(row.get("id") or ""),
+                        "input_fingerprint": row.get("input_fingerprint"),
+                        "prompt_version": row.get("prompt_version"),
+                        "model_slug": row.get("model_slug"),
+                        "status": row.get("status"),
+                    }
+                    for row in rows
+                ),
+                key=lambda marker: str(marker["atom_id"]),
+            )
+            return {
+                "count": len(markers),
+                "fingerprint": canonical_fingerprint({"atoms": markers}),
+            }
+        except Exception:
+            logger.warning(
+                "atom_fingerprint_unavailable", action="get_fingerprint_inputs"
+            )
+            return {"count": 0, "fingerprint": canonical_fingerprint({"atoms": []})}
 
     def _validate_and_fix_sections(
         self,
@@ -807,6 +842,7 @@ class DailyBriefingProcessor:
         asset_context: str = "{}",
         investment_news: str = "[]",
         previous_briefing: str = "",
+        current_atoms: str = "",
     ) -> str:
         template, _ = load_prompt_template(template_path)
 
@@ -819,8 +855,61 @@ class DailyBriefingProcessor:
         result = result.replace("{{asset_context}}", asset_context)
         result = result.replace("{{investment_news}}", investment_news)
         result = result.replace("{{previous_briefing}}", previous_briefing)
+        result = result.replace("{{current_atoms}}", current_atoms)
 
         return result
+
+    def _atom_limit(self, config: dict) -> int:
+        """Bound the atom set size from processor config (default 30)."""
+        processor_config = config.get("processors", {}).get("briefing", {})
+        try:
+            limit = int(processor_config.get("max_atoms", 30) or 30)
+        except (TypeError, ValueError, OverflowError):
+            limit = 30
+        return max(1, min(200, limit))
+
+    def _get_atom_section(self, config: dict, correlation_id: str = "") -> str:
+        """Deterministic current-atoms prompt section; empty on any failure."""
+        try:
+            with get_session(config) as session:
+                rows = assemble_atom_context(
+                    session, config, limit=self._atom_limit(config)
+                )
+        except Exception:
+            logger.warning(
+                "atom_context_unavailable",
+                action="assemble_atom_context",
+                correlation_id=correlation_id,
+            )
+            return ""
+        return self._format_atom_section(rows)
+
+    def _format_atom_section(self, atoms: list) -> str:
+        """Bounded deterministic JSON over current atoms for the prompt."""
+        items = []
+        for row in atoms:
+            evidence_ids = sorted(
+                str(item.get("evidence_id") or "")
+                for item in (row.get("evidence") or [])
+                if isinstance(item, dict) and item.get("evidence_id")
+            )
+            items.append(
+                {
+                    "subject_type": row.get("subject_type"),
+                    "subject_id": row.get("subject_id"),
+                    "claim_type": row.get("claim_type"),
+                    "claim": row.get("claim"),
+                    "observation_text": row.get("observation_text"),
+                    "interpretation_text": row.get("interpretation_text"),
+                    "confidence": row.get("confidence"),
+                    "time_horizon": row.get("time_horizon"),
+                    "evidence_ids": evidence_ids,
+                }
+            )
+        if not items:
+            return ""
+        items.sort(key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return json.dumps(items, sort_keys=True, ensure_ascii=False)
 
     def _get_previous_briefing_text(self, config: dict) -> str:
         """Fetch prior top-level analysis without reusable catalysts or thresholds."""

@@ -35,6 +35,60 @@ def _bounded_positive_integer(raw: str, *, maximum: int, name: str) -> int:
     return min(value, maximum)
 
 
+def _serialize_release_card(row: dict) -> dict:
+    card = dict(row)
+    for key in (
+        "observed_at",
+        "released_at",
+        "revision_at",
+        "created_at",
+        "updated_at",
+    ):
+        value = card.get(key)
+        if isinstance(value, datetime):
+            card[key] = value.isoformat()
+    timestamp = (
+        row.get("released_at") or row.get("observed_at") or row.get("created_at")
+    )
+    card["display_time"] = (
+        timestamp.astimezone(UTC).strftime("%d %b %H:%M UTC")
+        if isinstance(timestamp, datetime)
+        else "Time unavailable"
+    )
+    return card
+
+
+def get_macro_release_cards_data(
+    *, config: dict | None = None, limit: int = 20
+) -> dict:
+    config = config or load_config()
+    bounded_limit = max(1, min(100, int(limit)))
+    rows = query_many(
+        """SELECT c.id, c.release_identity, c.series_id, c.revision_number,
+                  c.event_name, c.actual, c.consensus, c.previous,
+                  c.revised_previous, c.absolute_surprise,
+                  c.standardized_surprise, c.impact, c.source, c.observed_at,
+                  c.released_at, c.revision_at, c.quality_flags,
+                  p.stage, p.reaction_summary, c.created_at, p.updated_at
+           FROM macro_release_cards_current p
+           JOIN macro_release_cards c ON c.id = p.card_id
+           ORDER BY COALESCE(c.released_at, c.observed_at, c.created_at) DESC,
+                    c.id DESC
+           LIMIT :limit""",
+        params={"limit": bounded_limit},
+        config=config,
+    )
+    return {
+        "cards": [_serialize_release_card(row) for row in rows],
+        "limit": bounded_limit,
+    }
+
+
+@router.get("/events/releases")
+def get_macro_release_cards(limit: int = Query(default=20, ge=1, le=100)):
+    return get_macro_release_cards_data(limit=limit)
+
+
 @router.get("/calendar/events")
 def get_calendar_events(
     request: Request,

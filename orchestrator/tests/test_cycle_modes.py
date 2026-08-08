@@ -18,6 +18,15 @@ INTERNAL_AUTH = {
 
 class CycleModeEndpointTests(unittest.TestCase):
     def setUp(self):
+        self.auth_patcher = patch.dict(
+            os.environ,
+            {
+                "DASHBOARD_USER": "internal-user",
+                "DASHBOARD_PASSWORD": "internal-pass",
+            },
+        )
+        self.auth_patcher.start()
+        self.addCleanup(self.auth_patcher.stop)
         from fastapi.testclient import TestClient
 
         import main

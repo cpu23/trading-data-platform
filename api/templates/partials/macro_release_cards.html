@@ -1,0 +1,50 @@
+<section class="section macro-release-section" id="macro-release-section"
+         {% if live_updates_enabled %}data-live-section="macro_releases"
+         data-live-event="section_changed"
+         data-live-url="/partials/dashboard/macro-releases"{% else %}
+         hx-get="/partials/dashboard/macro-releases"
+         hx-trigger="every 45s"
+         hx-swap="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <span class="label">Macro release monitor</span>
+    <span class="section-note">Deterministic · no model inference</span>
+  </div>
+  {% if macro_releases.error %}
+    <div class="error-block" role="alert">{{ macro_releases.error }}</div>
+  {% elif not macro_releases.cards %}
+    <div class="empty-state">No release cards have been published yet.</div>
+  {% else %}
+    <div class="calendar-scroll scroll-affordance" tabindex="0" aria-label="Latest macro release cards; scroll horizontally for all columns">
+      <table class="calendar-table macro-release-table">
+        <caption class="sr-only">Latest deterministic macro release cards</caption>
+        <thead>
+          <tr>
+            <th scope="col">Released</th>
+            <th scope="col">Event</th>
+            <th scope="col">Impact</th>
+            <th scope="col" class="numeric">Actual</th>
+            <th scope="col" class="numeric">Consensus</th>
+            <th scope="col" class="numeric">Surprise</th>
+            <th scope="col">State</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for card in macro_releases.cards %}
+          <tr class="event-row event-row-{{ card.impact if card.impact in ['high', 'medium', 'low'] else 'low' }}">
+            <td class="event-time tabular">{{ card.display_time }}</td>
+            <th scope="row" class="event-name">
+              {{ card.event_name }}
+              {% if card.revision_number %}<span class="section-note">Revision {{ card.revision_number }}</span>{% endif %}
+            </th>
+            <td><span class="impact-badge impact-{{ card.impact if card.impact in ['high', 'medium', 'low'] else 'low' }}">{{ card.impact | title }}</span></td>
+            <td class="numeric tabular">{{ card.actual if card.actual is not none else '—' }}</td>
+            <td class="numeric tabular">{{ card.consensus if card.consensus is not none else '—' }}</td>
+            <td class="numeric tabular">{{ '%+.3f' | format(card.absolute_surprise) if card.absolute_surprise is not none else '—' }}</td>
+            <td class="section-note">{{ card.stage | replace('_', ' ') | title }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>

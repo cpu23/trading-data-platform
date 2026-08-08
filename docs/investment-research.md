@@ -1,7 +1,7 @@
 # Investment Research and Filing Intake
 
 **Status:** Current  
-**Last reviewed:** 2026-08-01
+**Last reviewed:** 2026-08-08
 
 ## Scope
 
@@ -27,11 +27,11 @@ flowchart LR
     Regulators["SEC EDGAR<br/>Companies House<br/>EDINET<br/>OpenDART"]
     Extract["Primary-report text extraction"]
     XBRL["Accession-scoped SEC XBRL facts"]
-    LLM["Qualitative analysis<br/>GPT-5.6 Luna"]
+    LLM["Qualitative analysis<br/>single configured default model"]
     Rules["Deterministic fundamentals,<br/>signal, trend, and valuation engine"]
     News["Deterministically classified news"]
-    DB[("investment_documents<br/>investment_analyses<br/>processing_log<br/>cycle_runs")]
-    UI["Investment research dashboard"]
+    DB[("investment documents and analyses<br/>themes, theses, evidence, catalysts,<br/>risks, watch items, filing deltas, portfolio context")]
+    UI["Investment dashboard and<br/>maintained research workspace"]
 
     Operator --> UI --> API
     Operator --> Manual --> API
@@ -258,6 +258,35 @@ OPENDART_API_KEY=
 Never commit live regulator keys. Missing optional keys disable only their
 source; SEC coverage continues without an API key.
 
+
+## Maintained Research Workspace
+
+`/research` is the long-horizon workspace and is visually and temporally
+separate from the intraday dashboard. Normalized `investment_themes` connect
+to companies, industries, macro series, and other entities. Each thesis update
+appends an `investment_thesis_versions` record before changing the current
+thesis. Evidence links explicitly support, contradict, or provide context;
+catalysts, risks, watch items, confidence components, invalidation conditions,
+and review dates remain first-class fields.
+
+`/research/themes/{theme_id}` presents the funnel from structural trend to
+affected industries, candidate companies, evidence, expectations, and
+valuation. `/research/companies/{company}` is a maintained dossier with the
+business profile, active theses, filing-delta timeline, evidence, catalysts,
+risks, and changes since the previous analysis. Read loaders are bounded,
+fail-soft by section, and never expose full extracted documents.
+
+Filing ingestion computes `investment_filing_deltas` deterministically before
+any optional narrative analysis. Section hashes classify new, changed,
+removed, and unchanged content; excerpts and normalized numeric facts are
+bounded. Automatic model analysis after filing ingestion remains disabled by
+default.
+
+Optional portfolio context is read-only. An operator may import or maintain a
+holdings set; derived sector, country, currency, rate/commodity sensitivity,
+theme concentration, catalyst, and review-schedule summaries do not connect to
+an execution API and cannot place or recommend trades.
+
 ## Operations
 
 Check the read paths:
@@ -275,7 +304,7 @@ A failed source or company is counted in the filing summary without discarding
 successful company results. Ingested documents remain available when analysis
 is skipped, budget-blocked, or fails.
 
-## GPT-5.6 Luna Quality Check
+## Historical GPT-5.6 Luna Quality Check
 
 Five annual reports—Microsoft, NXP Semiconductors, ArcelorMittal, Deutsche Bank,
 and Sanofi—were run concurrently through the strict schema before the extraction

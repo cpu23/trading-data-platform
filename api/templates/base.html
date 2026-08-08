@@ -9,7 +9,7 @@
   <meta name="csrf-token" content="{{ request.state.csrf_token | default('') }}">
   <script src="/static/vendor/htmx.min.js"></script>
   <script src="/static/vendor/chart.min.js"></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v={{ app_asset_version }}" defer></script>
 </head>
 <body>
   <div class="container">

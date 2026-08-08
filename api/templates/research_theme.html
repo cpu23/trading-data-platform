@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}{{ theme.name if theme else 'Research theme' }} — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">
+    {% include "partials/navigation.html" %}
+    <a class="rs-back-link" href="/research">← Research</a>
+  </div>
+</header>
+
+<main aria-label="Research theme">
+  <p class="rs-page-note" role="note">Long-horizon research - updated on save, not live</p>
+
+  {% if not theme %}
+    <div class="error-block" role="alert">Unavailable</div>
+  {% else %}
+    <section class="section" aria-labelledby="rs-theme-title">
+      <div class="section-heading">
+        <span class="label" id="rs-theme-title">Theme</span>
+        <span class="section-note">{{ theme.status }}{% if theme.horizon %} · {{ theme.horizon }}{% endif %}</span>
+      </div>
+      <h1 class="rs-theme-name">{{ theme.name }}</h1>
+      <p class="rs-theme-definition">{{ theme.definition }}</p>
+      <p class="rs-theme-meta">
+        {% if theme.confidence is not none %}<span>confidence {{ '%.2f'|format(theme.confidence) }}</span>{% endif %}
+        {% if theme.review_at %}<span>review due {{ theme.review_at }}</span>{% endif %}
+        <span>updated {{ theme.updated_at }}</span>
+      </p>
+
+      {% if theme.macro_drivers %}
+        <h2 class="rs-section-title">Macro drivers</h2>
+        <ul class="rs-chip-list">
+          {% for driver in theme.macro_drivers %}<li>{{ driver }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if theme.invalidation_conditions %}
+        <h2 class="rs-section-title">Invalidation conditions</h2>
+        <ul class="rs-invalidation-list">
+          {% for condition in theme.invalidation_conditions %}<li>{{ condition }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if theme.confidence_components %}
+        <h2 class="rs-section-title">Confidence components</h2>
+        <dl class="rs-component-list">
+          {% for component in theme.confidence_components %}
+            <dt>{{ component.name }}</dt>
+            <dd>
+              {% if component.score is not none %}{{ '%.2f'|format(component.score) }}{% endif %}
+              {%- if component.label %} · {{ component.label }}{% endif %}
+            </dd>
+          {% endfor %}
+        </dl>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-entities-title">
+      <div class="section-heading">
+        <span class="label" id="rs-entities-title">Affected entities</span>
+        {% if theme.entities.available %}<span class="section-note">Grouped by type.</span>{% endif %}
+      </div>
+      {% if not theme.entities.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not theme.entities.groups %}
+        <div class="empty-state">No entities linked to this theme yet.</div>
+      {% else %}
+        {% for entity_type, entities in theme.entities.groups.items() %}
+          <details class="rs-entity-group">
+            <summary>{{ entity_type }} <span class="rs-count">{{ entities | length }}</span></summary>
+            <ul class="rs-entity-list">
+              {% for entity in entities %}
+                <li>{{ entity.display_name }}{% if entity.display_name != entity.entity_id %} <span class="dim">({{ entity.entity_id }})</span>{% endif %}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endfor %}
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-indicators-title">
+      <div class="section-heading">
+        <span class="label" id="rs-indicators-title">Key indicators</span>
+        <span class="section-note">Latest values for the theme&rsquo;s macro series.</span>
+      </div>
+      {% if not theme.indicators.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not theme.indicators.rows %}
+        <div class="empty-state">No key indicators tracked for this theme.</div>
+      {% else %}
+        <ul class="rs-indicator-list">
+          {% for indicator in theme.indicators.rows %}
+            <li class="rs-indicator-row">
+              <span class="rs-indicator-name">{{ indicator.title or indicator.series_id }}</span>
+              <span class="rs-indicator-value">{{ indicator.value }}</span>
+              {% if indicator.units %}<span class="rs-indicator-units">{{ indicator.units }}</span>{% endif %}
+              {% if indicator.observed_at %}<span class="rs-indicator-date">{{ indicator.observed_at }}</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-events-title">
+      <div class="section-heading">
+        <span class="label" id="rs-events-title">Upcoming economic events</span>
+        <span class="section-note">Next ten scheduled releases.</span>
+      </div>
+      {% if not theme.events.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not theme.events.rows %}
+        <div class="empty-state">No upcoming economic events scheduled.</div>
+      {% else %}
+        <ul class="rs-event-list">
+          {% for event in theme.events.rows %}
+            <li class="rs-event-row">
+              <span class="rs-event-name">{{ event.event_name }}</span>
+              <span class="rs-event-country">{{ event.country }}</span>
+              {% if event.scheduled_at %}<span class="rs-event-date">{{ event.scheduled_at }}</span>{% endif %}
+              {% if event.impact_level %}<span class="rs-event-impact">{{ event.impact_level }}</span>{% endif %}
+              {% if event.consensus or event.previous or event.actual %}
+                <span class="rs-event-figures">
+                  {% if event.consensus %}consensus {{ event.consensus }}{% endif %}
+                  {%- if event.previous %} · previous {{ event.previous }}{% endif %}
+                  {%- if event.actual %} · actual {{ event.actual }}{% endif %}
+                </span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="rs-theses-title">
+      <div class="section-heading">
+        <span class="label" id="rs-theses-title">Theses</span>
+        {% if theme.theses.available %}<span class="section-note">{{ theme.theses.rows | length }} thesis{% if theme.theses.rows | length != 1 %}es{% endif %} under this theme.</span>{% endif %}
+      </div>
+      {% if not theme.theses.available %}
+        <div class="error-block" role="alert">Unavailable</div>
+      {% elif not theme.theses.rows %}
+        <div class="empty-state">No theses under this theme yet.</div>
+      {% else %}
+        {% for thesis in theme.theses.rows %}
+          <article class="rs-thesis-card">
+            <h2 class="rs-thesis-claim">{{ thesis.claim }}</h2>
+            <p class="rs-thesis-meta">
+              {% if thesis.company %}<span>{{ thesis.company }}{% if thesis.symbol %} ({{ thesis.symbol }}){% endif %}</span>{% endif %}
+              <span>{{ thesis.status }}</span>
+              {% if thesis.horizon %}<span>{{ thesis.horizon }}</span>{% endif %}
+              {% if thesis.confidence is not none %}<span>confidence {{ '%.2f'|format(thesis.confidence) }}</span>{% endif %}
+              {% if thesis.review_at %}<span>review {{ thesis.review_at }}</span>{% endif %}
+            </p>
+            {% if thesis.variant_perception %}<p class="rs-thesis-perception">{{ thesis.variant_perception }}</p>{% endif %}
+
+            {% if thesis.rationale %}
+              <details class="rs-thesis-detail">
+                <summary>Latest rationale{% if thesis.version is not none %} · version {{ thesis.version }}{% endif %}</summary>
+                <p>{{ thesis.rationale }}</p>
+                {% if thesis.version_created_at %}<p class="dim">updated {{ thesis.version_created_at }}</p>{% endif %}
+              </details>
+            {% endif %}
+
+            <p class="rs-evidence-counts">
+              <span class="rs-evidence-supports">{{ thesis.evidence_counts.supports }} supporting</span>
+              <span class="rs-evidence-contradicts">{{ thesis.evidence_counts.contradicts }} contradicting</span>
+              <span class="rs-evidence-context">{{ thesis.evidence_counts.context }} context</span>
+            </p>
+
+            {% if thesis.atoms.available and (thesis.atoms.supporting or thesis.atoms.contradicting) %}
+              <div class="rs-evidence-timeline">
+                <h3 class="rs-subheading">Evidence atoms</h3>
+                <ul class="rs-atom-list">
+                  {% for atom in thesis.atoms.supporting %}
+                    <li class="rs-atom rs-atom-supports">
+                      <span class="rs-atom-role">Supports</span>
+                      <span class="rs-atom-claim">{{ atom.claim }}</span>
+                      <span class="rs-atom-meta">{{ atom.status }}{% if atom.confidence is not none %} · {{ '%.2f'|format(atom.confidence) }}{% endif %}{% if atom.published_at %} · {{ atom.published_at }}{% endif %}</span>
+                    </li>
+                  {% endfor %}
+                  {% for atom in thesis.atoms.contradicting %}
+                    <li class="rs-atom rs-atom-contradicts">
+                      <span class="rs-atom-role">Contradicts</span>
+                      <span class="rs-atom-claim">{{ atom.claim }}</span>
+                      <span class="rs-atom-meta">{{ atom.status }}{% if atom.confidence is not none %} · {{ '%.2f'|format(atom.confidence) }}{% endif %}{% if atom.published_at %} · {{ atom.published_at }}{% endif %}</span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+
+            {% if thesis.invalidation_conditions %}
+              <details class="rs-thesis-detail">
+                <summary>Invalidation conditions</summary>
+                <ul class="rs-invalidation-list">
+                  {% for condition in thesis.invalidation_conditions %}<li>{{ condition }}</li>{% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+
+            {% if thesis.catalysts.available and thesis.catalysts.rows %}
+              <details class="rs-thesis-detail">
+                <summary>Catalysts</summary>
+                <ul class="rs-catalyst-list">
+                  {% for catalyst in thesis.catalysts.rows %}
+                    <li>
+                      {{ catalyst.description }}
+                      {%- if catalyst.expected_at %} <span class="dim">({{ catalyst.expected_at }})</span>{% endif %}
+                      {%- if catalyst.state %} <span class="rs-catalyst-state">{{ catalyst.state }}</span>{% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+
+            {% if thesis.risks.available and thesis.risks.rows %}
+              <details class="rs-thesis-detail">
+                <summary>Risks</summary>
+                <ul class="rs-risk-list">
+                  {% for risk in thesis.risks.rows %}
+                    <li>
+                      {{ risk.description }}
+                      <span class="rs-risk-kind">{{ risk.kind }} · {{ risk.severity }}</span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+          </article>
+        {% endfor %}
+      {% endif %}
+    </section>
+  {% endif %}
+</main>
+{% endblock %}

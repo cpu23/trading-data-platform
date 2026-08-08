@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -11,6 +12,8 @@ from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
 
 logger = get_logger("processor.event_impact")
+
+_ATOM_CONFIDENCE = {"high": 0.8, "moderate": 0.6, "low": 0.4}
 
 
 class EventImpactProcessor:
@@ -133,10 +136,22 @@ class EventImpactProcessor:
             "cost_usd": stage.telemetry.cost_usd_total,
         }
 
+        atoms = self._publish_atoms(
+            config,
+            parsed=parsed,
+            events=events,
+            regime_opinion_id=self._current_regime_opinion_id(config),
+            llm_result=llm_result,
+            model=model,
+            confidence=confidence,
+            correlation_id=correlation_id,
+        )
+
         return {
             "opinion": opinion,
             "extra_records": {},
             "processing_log": processing_log,
+            "atoms": atoms,
         }
 
     def get_prompt_version(self) -> str:
@@ -145,9 +160,334 @@ class EventImpactProcessor:
     def get_depends_on(self) -> list[str]:
         return ["forex_factory"]
 
+    def _current_regime_opinion_id(self, config: dict) -> str | None:
+        """Return the latest regime classification's opinion id, if any."""
+        sql = text("""
+            SELECT so.opinion_id
+            FROM regime_classifications rc
+            JOIN structured_opinions so ON rc.opinion_id = so.opinion_id
+            ORDER BY rc.created_at DESC
+            LIMIT 1
+        """)
+        try:
+            with get_session(config) as session:
+                result = session.execute(sql)
+                row = result.fetchone()
+            if row is None:
+                return None
+            opinion_id = str(dict(row._mapping).get("opinion_id") or "").strip()
+            return opinion_id or None
+        except Exception:
+            return None
+
+    def _publish_atoms(
+        self,
+        config: dict,
+        *,
+        parsed: dict,
+        events: list[dict],
+        regime_opinion_id: str | None,
+        llm_result: dict,
+        model: str,
+        confidence: str,
+        correlation_id: str,
+        now: datetime | None = None,
+    ) -> dict | None:
+        """Publish one atom per parsed event plus one overall atom.
+
+        Atom publication is gated on ``analysis_atoms.enabled`` and always fails
+        soft: a validation or persistence problem is logged as a warning and the
+        processor's opinion result still succeeds.
+        """
+        settings = config.get("analysis_atoms", {})
+        if not isinstance(settings, dict) or not settings.get("enabled", False):
+            return None
+        try:
+            from atoms import publish_atom
+            from processors.base import canonical_fingerprint
+
+            try:
+                interpretation_hours = max(
+                    1,
+                    min(168, int(settings.get("event_interpretation_hours", 48))),
+                )
+            except (TypeError, ValueError, OverflowError):
+                interpretation_hours = 48
+            current = now or datetime.now(UTC)
+            expires_at = current + timedelta(hours=interpretation_hours)
+            model_slug = str(llm_result.get("model") or model or "").strip() or None
+            prompt_version = self.get_prompt_version()
+
+            event_ids = [
+                str(row.get("event_id") or "").strip()
+                for row in events
+                if str(row.get("event_id") or "").strip()
+            ]
+            evidence: list[dict] = [
+                {
+                    "evidence_type": "econ_events",
+                    "evidence_id": event_id,
+                    "relationship": "context",
+                }
+                for event_id in event_ids
+            ]
+            if regime_opinion_id:
+                evidence.append(
+                    {
+                        "evidence_type": "opinion",
+                        "evidence_id": regime_opinion_id,
+                        "relationship": "context",
+                    }
+                )
+
+            source_by_name: dict[str, dict] = {}
+            for row in events:
+                name = str(row.get("event_name") or "").strip()
+                if name and name not in source_by_name:
+                    source_by_name[name] = row
+
+            published: list[dict] = []
+            with get_session(config) as session:
+                for event in parsed.get("events", []):
+                    if not isinstance(event, dict):
+                        continue
+                    name = str(event.get("event_name") or "").strip()
+                    source_row = source_by_name.get(name)
+                    event_id = (
+                        str(source_row.get("event_id") or "").strip()
+                        if source_row
+                        else ""
+                    )
+                    scheduled_at = str(event.get("scheduled_at") or "").strip()
+                    subject_id = event_id or (
+                        f"{name}-{scheduled_at}" if name else scheduled_at
+                    )
+                    if not subject_id:
+                        continue
+                    fingerprint = canonical_fingerprint(
+                        {
+                            "subject_type": "econ_event",
+                            "subject_id": subject_id,
+                            "claim_type": "event_interpretation",
+                            "event_ids": event_ids,
+                            "regime_opinion_id": regime_opinion_id,
+                            "prompt_version": prompt_version,
+                            "model": model_slug,
+                        }
+                    )
+                    atom = self._event_interpretation_atom(
+                        event,
+                        subject_id=subject_id,
+                        confidence=confidence,
+                        prompt_version=prompt_version,
+                        model_slug=model_slug,
+                        fingerprint=fingerprint,
+                        valid_from=current,
+                        expires_at=expires_at,
+                    )
+                    published.append(publish_atom(session, atom, evidence, now=current))
+                overall_fingerprint = canonical_fingerprint(
+                    {
+                        "subject_type": "econ_event",
+                        "subject_id": "overall",
+                        "claim_type": "event_interpretation",
+                        "event_ids": event_ids,
+                        "regime_opinion_id": regime_opinion_id,
+                        "prompt_version": prompt_version,
+                        "model": model_slug,
+                    }
+                )
+                overall = self._overall_interpretation_atom(
+                    parsed,
+                    events=events,
+                    confidence=confidence,
+                    prompt_version=prompt_version,
+                    model_slug=model_slug,
+                    fingerprint=overall_fingerprint,
+                    valid_from=current,
+                    expires_at=expires_at,
+                )
+                published.append(publish_atom(session, overall, evidence, now=current))
+            return {
+                "published": published,
+                "evidence_ids": event_ids,
+                "regime_opinion_id": regime_opinion_id,
+                "expires_at": expires_at.astimezone(UTC).isoformat(),
+            }
+        except Exception as exc:
+            logger.warning(
+                "atom_publish_failed",
+                action="publish_atoms",
+                processor=self.processor_id,
+                error=type(exc).__name__,
+                correlation_id=correlation_id,
+            )
+            return None
+
+    @staticmethod
+    def _event_interpretation_atom(
+        event: dict,
+        *,
+        subject_id: str,
+        confidence: str,
+        prompt_version: str,
+        model_slug: str | None,
+        fingerprint: str,
+        valid_from: datetime,
+        expires_at: datetime,
+    ) -> dict:
+        name = str(event.get("event_name") or "event").strip()
+        scheduled_at = str(event.get("scheduled_at") or "").strip()
+        consensus = str(event.get("consensus") or "N/A")
+        previous = str(event.get("previous") or "N/A")
+        context = str(event.get("context") or "").strip()
+        observation = (
+            f"Scheduled: {scheduled_at or 'N/A'}. Consensus: {consensus}. "
+            f"Previous: {previous}."
+        )
+        if context:
+            observation += f" Context: {context}"
+        scenario_keys = (
+            ("consensus_met_scenario", "Consensus met"),
+            ("upside_surprise_scenario", "Upside surprise"),
+            ("downside_surprise_scenario", "Downside surprise"),
+        )
+        scenario_lines: list[str] = []
+        directions: list[str] = []
+        for key, label in scenario_keys:
+            scenario = event.get(key)
+            if not isinstance(scenario, dict):
+                continue
+            direction = str(scenario.get("direction") or "").strip()
+            volatility = str(scenario.get("volatility") or "").strip()
+            narrative = str(scenario.get("narrative") or "").strip()
+            if direction:
+                directions.append(direction)
+            parts = [label, direction, volatility]
+            if narrative:
+                parts.append(narrative)
+            scenario_lines.append(": ".join(part for part in parts if part))
+        market_implications = str(event.get("market_implications") or "").strip()
+        if market_implications:
+            scenario_lines.append(f"Market implications: {market_implications}")
+        assets: list[str] = []
+        scenario_assets: list[str] = []
+        instruments = event.get("affected_instruments")
+        if isinstance(instruments, list):
+            for item in instruments:
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("symbol") or "").strip()
+                if symbol and symbol not in assets:
+                    assets.append(symbol)
+                    reaction = str(item.get("expected_reaction") or "").strip()
+                    scenario_assets.append(
+                        f"{symbol} ({item.get('sensitivity') or 'unknown'})"
+                        + (f": {reaction}" if reaction else "")
+                    )
+        claim = name
+        if market_implications:
+            claim = f"{name}: {market_implications}"
+        elif directions:
+            claim = f"{name}: {'/'.join(dict.fromkeys(directions))} scenarios"
+        interpretation = " ".join(line for line in scenario_lines if line).strip()
+        return {
+            "subject_type": "econ_event",
+            "subject_id": subject_id,
+            "claim_type": "event_interpretation",
+            "claim": claim,
+            "observation_text": observation,
+            "interpretation_text": interpretation or None,
+            "scenario_text": "; ".join(scenario_assets) if scenario_assets else None,
+            "unknowns": [],
+            "affected_assets": assets,
+            "time_horizon": "48h",
+            "confidence": _ATOM_CONFIDENCE.get(confidence.lower(), 0.6),
+            "confidence_components": {"source": "llm_event_interpretation"},
+            "valid_from": valid_from,
+            "expires_at": expires_at,
+            "carry_forward": False,
+            "invalidation_conditions": [
+                "event actual released",
+                "source data revised",
+            ],
+            "input_fingerprint": fingerprint,
+            "supersedes_atom_id": None,
+            "source_event_id": None,
+            "prompt_version": prompt_version,
+            "model_slug": model_slug,
+            "generation_attempt_id": None,
+        }
+
+    @staticmethod
+    def _overall_interpretation_atom(
+        parsed: dict,
+        *,
+        events: list[dict],
+        confidence: str,
+        prompt_version: str,
+        model_slug: str | None,
+        fingerprint: str,
+        valid_from: datetime,
+        expires_at: datetime,
+    ) -> dict:
+        names = [
+            str(event.get("event_name") or "").strip()
+            for event in events
+            if isinstance(event, dict)
+        ]
+        names = [name for name in names if name]
+        outlook = str(parsed.get("overall_volatility_outlook") or "").strip()
+        catalyst = str(parsed.get("catalyst_summary") or "").strip()
+        risk_note = str(parsed.get("risk_management_note") or "").strip()
+        interpretation = " ".join(
+            part for part in (outlook, catalyst, risk_note) if part
+        ).strip()
+        assets: list[str] = []
+        for event in parsed.get("events", []):
+            if not isinstance(event, dict):
+                continue
+            instruments = event.get("affected_instruments")
+            if not isinstance(instruments, list):
+                continue
+            for item in instruments:
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("symbol") or "").strip()
+                if symbol and symbol not in assets:
+                    assets.append(symbol)
+        return {
+            "subject_type": "econ_event",
+            "subject_id": "overall",
+            "claim_type": "event_interpretation",
+            "claim": f"{len(names)} high-impact event(s) in next 48h"
+            + (f": {', '.join(names)}" if names else ""),
+            "observation_text": f"Window: next 48h. Events: {', '.join(names) or 'none'}.",
+            "interpretation_text": interpretation or None,
+            "scenario_text": None,
+            "unknowns": [],
+            "affected_assets": assets,
+            "time_horizon": "48h",
+            "confidence": _ATOM_CONFIDENCE.get(confidence.lower(), 0.6),
+            "confidence_components": {"source": "llm_event_interpretation"},
+            "valid_from": valid_from,
+            "expires_at": expires_at,
+            "carry_forward": False,
+            "invalidation_conditions": [
+                "event actual released",
+                "source data revised",
+            ],
+            "input_fingerprint": fingerprint,
+            "supersedes_atom_id": None,
+            "source_event_id": None,
+            "prompt_version": prompt_version,
+            "model_slug": model_slug,
+            "generation_attempt_id": None,
+        }
+
     def _fetch_upcoming_events(self, config: dict) -> list[dict]:
         sql = text("""
-            SELECT event_name, country, scheduled_at, impact_level, consensus, previous, actual
+            SELECT event_id, event_name, country, scheduled_at, impact_level, consensus, previous, actual
             FROM econ_events
             WHERE scheduled_at > NOW()
               AND scheduled_at < NOW() + INTERVAL '48 hours'

@@ -29,6 +29,7 @@ from auth import (
 from config import load_config
 from logging_config import setup_logging
 from routes.json import router as json_router
+from routes.stream import stream_router
 from routes.views import router as views_router
 
 
@@ -163,7 +164,7 @@ def create_app(
         if (
             request.method == "GET"
             and response.status_code < 400
-            and path not in {"/static", "/api/quotes/stream"}
+            and path not in {"/static", "/api/quotes/stream", "/stream"}
         ):
             secure = os.environ.get("COOKIE_SECURE", "0").lower() in {
                 "1",
@@ -182,8 +183,13 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     app.state.templates = Jinja2Templates(directory="templates")
+    app.state.templates.env.globals["app_asset_version"] = os.stat(
+        "static/app.js"
+    ).st_mtime_ns
+    app.state.config = config
 
     app.include_router(json_router)
+    app.include_router(stream_router)
     app.include_router(views_router)
 
     @app.get("/api/meta/build")

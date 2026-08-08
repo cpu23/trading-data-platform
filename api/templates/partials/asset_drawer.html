@@ -1,0 +1,196 @@
+<aside id="expansion-panel" class="expansion-panel expanded" data-symbol="{{ drawer.symbol }}">
+  <div class="expansion-header">
+    <div class="expansion-header-left">
+      <span class="instrument-symbol tabular">{{ drawer.symbol }}</span>
+      <span class="expansion-price tabular" data-live-price="{{ drawer.symbol }}">{{ drawer.last_price_text or '—' }}</span>
+      {% if drawer.vol_state %}
+        <span class="expansion-meta vol-state vol-{{ drawer.vol_state }}">{{ drawer.vol_state | title }} vol</span>
+      {% endif %}
+    </div>
+    <button class="expansion-close"
+            hx-get="/partials/cards/clear"
+            hx-target="#expansion-panel"
+            hx-swap="outerHTML"
+            aria-label="Close">close ✕</button>
+  </div>
+
+  {% if drawer.chart_point_count %}
+  <div class="expansion-subsection">
+    <div class="expansion-label">Intraday · last 8 hours</div>
+    <div class="asset-intraday chart-frame" data-chart="asset-intraday" aria-busy="false"
+         data-chart-labels="{{ drawer.chart_labels | tojson | forceescape }}"
+         data-chart-values="{{ drawer.chart_values | tojson | forceescape }}">
+      <div class="chart-status" role="status" aria-live="polite" hidden>Chart data unavailable.</div>
+      <canvas id="asset-intraday-chart" aria-label="Intraday price chart for {{ drawer.symbol }}" role="img"></canvas>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Session &amp; day</div>
+    <ul class="compact-list">
+      <li>Session
+        <span class="tabular{{ ' change-up' if drawer.session_change and drawer.session_change > 0 else ' change-down' if drawer.session_change and drawer.session_change < 0 else '' }}">{{ drawer.session_change_text or '—' }}</span></li>
+      <li>Day
+        <span class="tabular{{ ' change-up' if drawer.day_change and drawer.day_change > 0 else ' change-down' if drawer.day_change and drawer.day_change < 0 else '' }}">{{ drawer.day_change_text or '—' }}</span></li>
+      <li>Volatility <span class="vol-state">{{ drawer.vol_state or '—' }}</span></li>
+    </ul>
+  </div>
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Related events</div>
+    {% if drawer.related_events %}
+      <ul class="compact-list">
+        {% for event in drawer.related_events %}
+          <li>
+            <span class="event-time tabular" title="{{ event.effective_at or '' }}">{{ event.effective_text or '—' }}</span>
+            <span class="event-name">{{ event.title }}</span>
+            {% if event.source %}<span class="section-note">{{ event.source }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-state">No recent routed events for this asset.</div>
+    {% endif %}
+  </div>
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Macro exposures</div>
+    {% if drawer.macro_exposures %}
+      <ul class="compact-list">
+        {% for indicator in drawer.macro_exposures %}
+          <li>
+            <span class="event-name">{{ indicator.label }}</span>
+            <span class="tabular">{{ indicator.latest_value if indicator.latest_value is not none else '—' }}</span>
+            {% if indicator.change_pct is not none %}
+              <span class="tabular{{ ' change-up' if indicator.change_pct > 0 else ' change-down' if indicator.change_pct < 0 else '' }}">{{ '%+.2f%%' | format(indicator.change_pct) }}</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-state">No macro exposures for this asset.</div>
+    {% endif %}
+  </div>
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Upcoming catalysts</div>
+    {% if drawer.catalysts %}
+      <div class="matched-events">
+        {% for event in drawer.catalysts %}
+          <div class="matched-event">
+            <span class="event-time tabular">{{ event.day_label_short }} · {{ event.time_display }}</span>
+            <span class="event-impact event-impact-{{ event.impact_level }}">{{ event.impact_level | upper }} · {{ event.currency or event.country }}</span>
+            <span class="event-name">{{ event.event_name }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state">No major matched catalysts.</div>
+    {% endif %}
+  </div>
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Current analysis</div>
+    {% if drawer.atoms %}
+      {% for atom in drawer.atoms %}
+        <p class="expansion-prose">{{ atom.claim }}</p>
+        {% if atom.invalidation_conditions %}
+          <details>
+            <summary>What would change this view</summary>
+            <ul class="compact-list">
+              {% for condition in atom.invalidation_conditions %}<li>{{ condition }}</li>{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <div class="empty-state">No current analysis atoms.</div>
+    {% endif %}
+  </div>
+
+  <div class="expansion-subsection">
+    <div class="expansion-label">Operator notes</div>
+    {% if drawer.notes %}
+      <ul class="compact-list">
+        {% for note in drawer.notes %}<li>{{ note }}</li>{% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-state">No operator notes yet</div>
+    {% endif %}
+  </div>
+
+  {% if drawer.chart_point_count %}
+  <script>
+    (function () {
+      'use strict';
+      var panel = document.getElementById('expansion-panel');
+      if (!panel || typeof window.Chart === 'undefined') return;
+      var container = panel.querySelector('[data-chart="asset-intraday"]');
+      var canvas = container && container.querySelector('canvas');
+      if (!container || !canvas) return;
+      var labels = [];
+      var values = [];
+      try {
+        labels = JSON.parse(container.dataset.chartLabels || '[]');
+        values = JSON.parse(container.dataset.chartValues || '[]');
+      } catch (_error) {
+        labels = [];
+        values = [];
+      }
+      var existing = window.Chart.getChart(canvas);
+      if (existing) existing.destroy();
+      if (!values.length) {
+        container.setAttribute('aria-busy', 'false');
+        return;
+      }
+      window.setTimeout(function () {
+        var chart = new window.Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: panel.dataset.symbol,
+              data: values,
+              borderColor: '#DCDCD4',
+              borderWidth: 1.5,
+              pointRadius: 0,
+              fill: false,
+              spanGaps: false
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            scales: {
+              x: {
+                display: true,
+                grid: { color: 'rgba(220, 220, 212, 0.08)' },
+                ticks: { color: '#6B6B66', maxTicksLimit: 12, maxRotation: 0 }
+              },
+              y: {
+                display: true,
+                grid: { color: 'rgba(220, 220, 212, 0.08)' },
+                ticks: { color: '#6B6B66' }
+              }
+            },
+            plugins: {
+              legend: { display: false }
+            }
+          }
+        });
+        container.setAttribute('aria-busy', 'false');
+        if (chart && chart.data && chart.data.datasets &&
+            chart.data.datasets[0].data.length === 0) {
+          var status = container.querySelector('.chart-status');
+          if (status) {
+            status.textContent = 'No intraday data.';
+            status.hidden = false;
+          }
+        }
+      }, 0);
+    })();
+  </script>
+  {% endif %}
+</aside>

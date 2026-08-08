@@ -25,6 +25,8 @@ from errors import (
     TransientSourceError,
     classify_error,
 )
+from events.freshness import record_collection_freshness
+from events.publisher import publish_collector_records_atomic
 from locks import advisory_lock
 from logging_config import get_logger
 from publication import _write_collection_log
@@ -46,6 +48,8 @@ logger = get_logger("orchestrator.collector_execution")
 _LOCAL_DEPENDENCIES = {
     "get_collector": get_collector,
     "upsert_records": upsert_records,
+    "publish_collector_records_atomic": publish_collector_records_atomic,
+    "record_collection_freshness": record_collection_freshness,
     "get_session": get_session,
     "advisory_lock": advisory_lock,
     "accept_run": accept_run,
@@ -185,6 +189,72 @@ def _structured_collection_policy(errors: list[dict]) -> dict[str, Any]:
     return _policy_metadata(error)
 
 
+def _event_pipeline_settings(config: dict) -> dict:
+    settings = config.get("event_pipeline", {})
+    return settings if isinstance(settings, dict) else {}
+
+
+def _event_publication_enabled(source_id: str, config: dict) -> bool:
+    settings = _event_pipeline_settings(config)
+    sources = settings.get("sources", ())
+    return (
+        bool(settings.get("enabled", False))
+        and isinstance(sources, (list, tuple, set, frozenset))
+        and source_id in sources
+    )
+
+
+def _record_source_freshness(
+    *,
+    collector: Any,
+    source_id: str,
+    config: dict,
+    started_at: datetime,
+    completed_at: datetime,
+    status: str,
+    records_fetched: int,
+    error_class: str | None,
+) -> None:
+    settings = _event_pipeline_settings(config)
+    if not settings.get("enabled", False):
+        return
+    source_config = dict(config.get("collectors", {}).get(source_id, {}))
+    source_config.setdefault(
+        "freshness_grace_seconds",
+        settings.get("freshness_grace_seconds", 300),
+    )
+    result_metadata = getattr(collector, "last_result_metadata", {})
+    cache_mode = (
+        result_metadata.get("payload_source")
+        if isinstance(result_metadata, dict)
+        else None
+    )
+    freshness_status = status
+    if status not in {"success", "partial"}:
+        freshness_status = "rate_limited" if status == "rate_limited" else "failed"
+    try:
+        with _dependency("get_session")(config) as session:
+            _dependency("record_collection_freshness")(
+                session,
+                source=source_id,
+                source_config=source_config,
+                status=freshness_status,
+                attempted_at=started_at,
+                completed_at=completed_at,
+                records_fetched=records_fetched,
+                cache_mode=cache_mode,
+                reason_code=error_class or status,
+                detail={"collection_status": status},
+            )
+    except Exception as exc:
+        _dependency("logger").warning(
+            "source_freshness_update_failed",
+            action="record_source_freshness",
+            collector=source_id,
+            error_type=type(exc).__name__,
+        )
+
+
 def _run_collector_impl(
     source_id: str,
     config: dict | None = None,
@@ -267,12 +337,27 @@ def _run_collector_impl(
             conflict_columns = collector.get_conflict_columns()
             db_write_started = time.monotonic()
             try:
-                write_result = _dependency("upsert_records")(
-                    table_name=table_name,
-                    records=records,
-                    conflict_columns=conflict_columns,
-                    config=config,
-                )
+                if _event_publication_enabled(source_id, config):
+                    write_result = _dependency("publish_collector_records_atomic")(
+                        source_id=source_id,
+                        table_name=table_name,
+                        records=records,
+                        conflict_columns=conflict_columns,
+                        correlation_id=correlation_id,
+                        config=config,
+                    )
+                    collection_metrics.update(
+                        events_inserted=write_result.events_inserted,
+                        events_deduplicated=write_result.events_deduplicated,
+                        outbox_inserted=write_result.outbox_inserted,
+                    )
+                else:
+                    write_result = _dependency("upsert_records")(
+                        table_name=table_name,
+                        records=records,
+                        conflict_columns=conflict_columns,
+                        config=config,
+                    )
             except Exception as exc:
                 raise PersistenceError(f"collector persistence failed: {exc}") from exc
             finally:
@@ -339,6 +424,16 @@ def _run_collector_impl(
             config=config,
             correlation_id=correlation_id,
         )
+    _record_source_freshness(
+        collector=collector,
+        source_id=source_id,
+        config=config,
+        started_at=started_at,
+        completed_at=completed_at,
+        status=status,
+        records_fetched=records_fetched,
+        error_class=error_class,
+    )
 
     result = {
         "collector": source_id,

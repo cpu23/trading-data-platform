@@ -1,0 +1,11 @@
+<section aria-labelledby="source-state-title"{% if live_updates_enabled %}
+         data-live-section="source_health"
+         data-live-event="source_health_changed"
+         data-live-url="/partials/operations/source-health"{% endif %}>
+  <h2 id="source-state-title">Source &amp; scheduler state</h2>
+  {% if not source_state.available %}<p role="status">Unavailable</p>
+  {% elif not source_state.components %}<p>No source or scheduler state yet</p>
+  {% else %}<table><thead><tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Next due</th></tr></thead><tbody>
+    {% for item in source_state.components %}<tr><th scope="row">{{ item.name }}</th><td>{{ item.last_status }}</td><td>{{ item.next_due_at or '—' }}</td></tr>{% endfor %}
+  </tbody></table>{% endif %}
+</section>

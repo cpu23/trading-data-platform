@@ -134,6 +134,11 @@ def make_request(
             else:
                 if response.status_code not in _RETRYABLE_STATUS_CODES:
                     response_size = len(response.content) if response.content else 0
+                    response.extensions["request_metadata"] = {
+                        "attempts": attempt,
+                        "max_attempts": max_retries,
+                        "duration_ms": _duration_ms(clock, started_at),
+                    }
                     logger.info(
                         "http_request_completed",
                         action="http_request",

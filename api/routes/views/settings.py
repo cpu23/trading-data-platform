@@ -6,7 +6,7 @@ from starlette.concurrency import run_in_threadpool
 
 import config as app_config
 from budgets import DEFAULT_DAILY_LLM_USD
-from routes.json.settings import _read_secrets, timezone_context
+from routes.json.settings import _read_secrets, active_model, timezone_context
 from routes.views.dashboard import (
     _data_status,
     _get_dashboard_health,
@@ -40,7 +40,6 @@ async def settings_page(request: Request):
     config = await run_in_threadpool(app_config.load_config)
     secrets = _read_secrets()
     llm = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
-    models = llm.get("models", {}) if isinstance(llm.get("models"), dict) else {}
     budgets = (
         config.get("budgets", {}) if isinstance(config.get("budgets"), dict) else {}
     )
@@ -53,7 +52,7 @@ async def settings_page(request: Request):
             "request": request,
             "active_page": "settings",
             "llm": llm,
-            "models": models,
+            "active_model": active_model(config),
             "daily_budget": budgets.get("daily_llm_usd", DEFAULT_DAILY_LLM_USD),
             "has_openrouter_key": _has_key(secrets, "OPENROUTER_API_KEY"),
             "has_fred_key": _has_key(secrets, "FRED_API_KEY"),

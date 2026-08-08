@@ -1,0 +1,44 @@
+<section aria-labelledby="claim-history-title" class="claim-history-section">
+  <h2 id="claim-history-title">Claim history <span class="section-note">analysis atoms</span></h2>
+  {% if not claim_history.available %}<p role="status">Unavailable</p>
+  {% elif not claim_history.groups %}<p>No published analysis atoms yet</p>
+  {% else %}
+  <div class="claim-history-groups">
+    {% for group in claim_history.groups %}
+    <div class="claim-history-group">
+      <h3 class="claim-history-subject tabular">{{ group.subject_type }} · {{ group.subject_id }}</h3>
+      {% for atom in group.atoms %}
+      <article class="claim-card">
+        <header class="claim-card-head">
+          <span class="story-state claim-status-{{ atom.status }}">{{ atom.status }}</span>
+          <span class="claim-card-type tabular">{{ atom.claim_type }}</span>
+          <span class="claim-card-horizon tabular">{{ atom.time_horizon }}</span>
+        </header>
+        <p class="claim-card-claim">{{ atom.claim }}</p>
+        {% if atom.interpretation_text %}<p class="claim-card-interpretation">{{ atom.interpretation_text }}</p>{% endif %}
+        <div class="claim-card-meta tabular">
+          <span>confidence {{ '%.2f'|format(atom.confidence or 0) }}</span>
+          <span>{{ atom.evidence|length }} evidence</span>
+          {% if atom.expires_at %}<span>expires {{ atom.expires_at[:16] }}</span>{% endif %}
+        </div>
+        {% if atom.history %}
+        <details class="claim-card-history">
+          <summary>History ({{ atom.history|length }})</summary>
+          <ul>
+            {% for entry in atom.history %}
+            <li>
+              <span class="story-state claim-status-{{ entry.status }}">{{ entry.status }}</span>
+              <span class="tabular">{{ entry.updated_at[:16] if entry.updated_at else '—' }}</span>
+              {% if entry.supersedes_atom_id %}<span class="tabular">supersedes {{ entry.supersedes_atom_id[:8] }}</span>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>

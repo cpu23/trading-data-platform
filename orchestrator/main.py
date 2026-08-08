@@ -36,6 +36,8 @@ except ImportError:
         return {}
 
 
+from events.publisher import event_pipeline_summary
+from events.worker import outbox_worker
 from http_client import close_shared_client
 from investment_service import (
     AnalysisInProgress,
@@ -55,6 +57,8 @@ from investment_service import (
 from investment_service import (
     store_document_url as store_investment_document_url,
 )
+from job_worker import job_worker
+from llm_client import model_preflight
 from locks import RunConflict
 from logging_config import get_logger, setup_logging
 from orchestrator import (
@@ -173,6 +177,11 @@ def on_startup():
         running=len(reconciliation.get("running_ids", [])),
         total=reconciliation.get("total", 0),
     )
+    outbox_worker.start(config)
+    try:
+        job_worker.start(config)
+    except Exception:
+        logger.warning("analysis_job_worker_start_failed", error_type="startup")
     start_scheduler(config)
     quote_stream.start(config)
     logger.info("orchestrator_http_started", action="startup")
@@ -180,6 +189,11 @@ def on_startup():
 
 @app.on_event("shutdown")
 def on_shutdown():
+    outbox_worker.stop()
+    try:
+        job_worker.stop()
+    except Exception:
+        logger.warning("analysis_job_worker_stop_failed", error_type="shutdown")
     quote_stream.stop()
     stop_scheduler()
     close_shared_client()
@@ -282,6 +296,88 @@ def health():
 @app.get("/quotes")
 def quotes():
     return quote_stream.snapshot()
+
+
+@app.post(
+    "/model/preflight",
+    dependencies=[Depends(require_internal_basic)],
+)
+def model_preflight_endpoint(body: dict = Body(default={})):
+    """Validate the active (or requested) model slug without paid inference."""
+    config = _get_config()
+    requested = body.get("model") if isinstance(body, dict) else None
+    model = (
+        str(requested).strip()
+        if isinstance(requested, str) and str(requested).strip()
+        else None
+    )
+    return model_preflight(config, model=model)
+
+
+@app.get(
+    "/events/status",
+    dependencies=[Depends(require_internal_basic)],
+)
+def event_pipeline_status():
+    """Return durable backlog, recent event, and worker state."""
+    return {
+        **event_pipeline_summary(_get_config()),
+        "worker": dict(outbox_worker.state),
+    }
+
+
+@app.get(
+    "/jobs/status",
+    dependencies=[Depends(require_internal_basic)],
+)
+def analysis_jobs_status():
+    try:
+        counters = dict(job_worker.state_counters())
+    except Exception:
+        counters = {}
+    try:
+        enabled = bool(job_worker.enabled(_get_config()))
+    except Exception:
+        enabled = False
+    thread = getattr(job_worker, "_thread", None)
+    return {
+        "running": bool(thread is not None and thread.is_alive()),
+        "enabled": enabled,
+        "worker_id": str(getattr(job_worker, "worker_id", "")),
+        "counters": counters,
+    }
+
+
+@app.get(
+    "/sections/{section_key}",
+    dependencies=[Depends(require_internal_basic)],
+)
+def section_snapshot_status(section_key: str):
+    """Return current section data and a bounded version history."""
+    key = section_key.strip()
+    if (
+        not key
+        or len(key) > 80
+        or any(
+            character
+            not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
+            for character in key
+        )
+    ):
+        raise HTTPException(status_code=400, detail="Invalid section key")
+    try:
+        config = _get_config()
+        from section_snapshots import get_current_snapshot, list_snapshot_history
+
+        with get_session(config) as session:
+            current = get_current_snapshot(session, section_key=key, scope_key="global")
+            history = list_snapshot_history(
+                session, section_key=key, scope_key="global", limit=20
+            )
+        return {"section_key": key, "current": current, "history": history}
+    except Exception:
+        logger.warning("section_snapshot_unavailable", section_key=key)
+        return {"section_key": key, "current": None, "history": []}
 
 
 @app.get(

@@ -721,12 +721,125 @@
     });
   }
 
+  /* Server-sent invalidations ------------------------------------------------ */
+  var LIVE_POLL_INTERVAL_MS = 45000;
+  var liveStream = null;
+  var livePollingTimer = null;
+  var liveEventHandlers = Object.create(null);
+  var liveRefreshes = Object.create(null);
+
+  function registeredLiveSections(eventName, sectionKey) {
+    return Array.prototype.filter.call(
+      document.querySelectorAll('[data-live-section][data-live-event][data-live-url]'),
+      function (section) {
+        return (!eventName || section.dataset.liveEvent === eventName)
+          && (!sectionKey || section.dataset.liveSection === sectionKey);
+      }
+    );
+  }
+
+  function refreshLiveSection(section) {
+    if (!window.htmx || !section || !section.isConnected) return;
+    var sectionKey = section.dataset.liveSection;
+    var url = section.dataset.liveUrl;
+    if (!sectionKey || !url || liveRefreshes[sectionKey]) return;
+
+    liveRefreshes[sectionKey] = true;
+    var request;
+    try {
+      request = window.htmx.ajax('GET', url, {
+        target: section,
+        swap: 'outerHTML'
+      });
+    } catch (_error) {
+      delete liveRefreshes[sectionKey];
+      return;
+    }
+    Promise.resolve(request).then(function () {
+      delete liveRefreshes[sectionKey];
+    }, function () {
+      delete liveRefreshes[sectionKey];
+    });
+  }
+
+  function refreshLiveSections(eventName, sectionKey) {
+    registeredLiveSections(eventName, sectionKey).forEach(refreshLiveSection);
+  }
+
+  function stopLivePolling() {
+    if (!livePollingTimer) return;
+    window.clearInterval(livePollingTimer);
+    livePollingTimer = null;
+  }
+
+  function startLivePolling() {
+    if (livePollingTimer || !registeredLiveSections().length) return;
+    livePollingTimer = window.setInterval(function () {
+      refreshLiveSections();
+    }, LIVE_POLL_INTERVAL_MS);
+  }
+
+  function registerLiveEvent(eventName, refreshAll) {
+    if (!liveStream || liveEventHandlers[eventName]) return;
+    liveEventHandlers[eventName] = function (event) {
+      var sectionKey = null;
+      if (!refreshAll && event && event.data) {
+        try {
+          var payload = JSON.parse(event.data);
+          if (payload && typeof payload.section_key === 'string') {
+            sectionKey = payload.section_key;
+          }
+        } catch (_error) {
+          sectionKey = null;
+        }
+      }
+      refreshLiveSections(refreshAll ? null : eventName, sectionKey);
+    };
+    liveStream.addEventListener(eventName, liveEventHandlers[eventName]);
+  }
+
+  function initLiveSections() {
+    var sections = registeredLiveSections();
+    if (!sections.length) return;
+    if (!window.EventSource) {
+      startLivePolling();
+      return;
+    }
+
+    if (!liveStream) {
+      try {
+        liveStream = new window.EventSource('/stream');
+        liveStream.onopen = stopLivePolling;
+        liveStream.onerror = startLivePolling;
+      } catch (_error) {
+        liveStream = null;
+        startLivePolling();
+        return;
+      }
+    }
+    registerLiveEvent('resync_required', true);
+
+    sections.forEach(function (section) {
+      registerLiveEvent(section.dataset.liveEvent);
+    });
+  }
+
   function initDynamicUi(root) {
     initCharts(root);
     initTimezoneControl(root);
+    initLiveSections();
   }
 
   /* Boot --------------------------------------------------------------------- */
+  function initSinceLastView() {
+    var marker = document.querySelector('[data-since-last-view-marker]');
+    if (!marker) return;
+    fetch('/api/dashboard/last-view', {
+      method: 'POST',
+      headers: csrfHeaders({'Content-Type': 'application/json'})
+    }).catch(function () {});
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     initCharts(document);
     initModal();
@@ -739,6 +852,8 @@
     initCycleButton();
     initDataChip();
     initTimezoneControl(document);
+    initLiveSections();
+    initSinceLastView();
   });
 
   ['htmx:afterSwap', 'htmx:afterSettle'].forEach(function (eventName) {

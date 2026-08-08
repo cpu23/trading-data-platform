@@ -1,152 +1,207 @@
-import json
 import os
 import sys
-import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
+from uuid import UUID
 
-os.environ.setdefault("DB_USER", "test")
-os.environ.setdefault("DB_PASSWORD", "test")
-os.environ.setdefault("FRED_API_KEY", "test")
-os.environ.setdefault("OPENROUTER_API_KEY", "test")
-os.environ.setdefault("OPENROUTER_MODEL", "test/model")
-os.environ.setdefault("OANDA_API_KEY", "test")
-os.environ.setdefault("DASHBOARD_USER", "test")
-os.environ.setdefault("DASHBOARD_PASSWORD", "test")
+os.environ.update(
+    {
+        "DB_USER": "test",
+        "DB_PASSWORD": "test",
+        "FRED_API_KEY": "test",
+        "OPENROUTER_API_KEY": "test",
+        "OPENROUTER_MODEL": "test/model",
+        "OANDA_API_KEY": "test",
+        "DASHBOARD_USER": "test",
+        "DASHBOARD_PASSWORD": "test",
+        "SECRETS_FILE": "/nonexistent/test-secrets.env",
+    }
+)
 
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
+os.environ["CONFIG_DIR"] = str(API_ROOT.parent / "config")
+
+AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}
+NOW = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+CLUSTER_ID = UUID("11111111-1111-4111-8111-111111111111")
 
 
-class NewsViewTests(unittest.TestCase):
-    def test_bounded_reader_caps_the_actual_read(self):
-        from routes.views.news import _read_json_bounded
+def story_row(*, evidence_count=8, lane="low_confidence"):
+    return {
+        "id": CLUSTER_ID,
+        "canonical_key": "story:key",
+        "title": "Fed holds rates",
+        "summary": "Canonical summary",
+        "state": "developing",
+        "lane": lane,
+        "first_seen_at": NOW,
+        "last_seen_at": NOW,
+        "last_material_change_at": NOW,
+        "importance": 0.8,
+        "novelty": 0.4,
+        "confidence": 0.5,
+        "entities": [{"canonical_id": "FED", "display_name": "Federal Reserve"}],
+        "markets": [{"canonical_id": "EURUSD", "symbol": "EURUSD"}],
+        "source_count": 1,
+        "version": 1,
+        "change_summary": "Initial report",
+        "evidence": [
+            {
+                "source": "reuters",
+                "source_label": "Reuters",
+                "title": f"Evidence {index}",
+                "summary": "Evidence summary",
+                "url": "https://example.com/story",
+                "published_at": NOW.isoformat(),
+                "similarity_score": 0.9,
+                "contribution_type": "repeated_coverage",
+                "materially_changed": False,
+                "raw_payload": "must-not-escape",
+            }
+            for index in range(evidence_count)
+        ],
+        "market_confirmations": [
+            {
+                "market_symbol": "EURUSD",
+                "headline_at": NOW.isoformat(),
+                "observed_at": NOW.isoformat(),
+                "pre_headline_move": 0.1,
+                "move_5m": 0.4,
+                "move_30m": -0.2,
+                "move_session": None,
+                "flags": ["confirmed_by_market"],
+                "missing_reasons": {"move_session": "not_due"},
+                "provenance": {"private": "must-not-escape"},
+            }
+        ],
+    }
 
-        reader = mock_open(read_data=b"{}")
-        with patch("routes.views.news.open", reader):
-            self.assertEqual(_read_json_bounded(Path("feed.json"), 16), {})
-        reader().read.assert_called_once_with(17)
 
-    def test_loader_rejects_malformed_utf8_and_oversized_feed(self):
-        from routes.views.news import MAX_NEWS_FEED_BYTES, load_news_context
+class NewsStoryQueryTests(unittest.TestCase):
+    def test_query_caps_limit_offset_and_public_timeline(self):
+        from routes.views.news import load_story_context
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "feed.json"
-            path.write_bytes(b"\xff\xfe")
-            self.assertEqual(
-                load_news_context({"news_feed": {"output_path": directory}})["status"],
-                "invalid",
-            )
-            path.write_bytes(b" " * (MAX_NEWS_FEED_BYTES + 1))
-            self.assertEqual(
-                load_news_context({"news_feed": {"output_path": directory}})["status"],
-                "invalid",
-            )
+        with patch("routes.views.news.query_many", return_value=[story_row()]) as query:
+            payload = load_story_context(limit=999, offset=999999)
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(query.call_args.args[1]["limit"], 100)
+        self.assertEqual(query.call_args.args[1]["offset"], 10_000)
+        self.assertIn("LIMIT 5", query.call_args.args[0])
+        self.assertIn("LIMIT 20", query.call_args.args[0])
+        self.assertEqual(len(payload["clusters"]), 1)
+        self.assertEqual(len(payload["clusters"][0]["evidence"]), 5)
+        self.assertNotIn("raw_payload", payload["clusters"][0]["evidence"][0])
+        self.assertNotIn(
+            "provenance", payload["clusters"][0]["market_confirmations"][0]
+        )
 
-    def test_loader_bounds_rendered_fields_and_items(self):
-        from routes.views.news import load_news_context
+    def test_invalid_filters_are_rejected_before_database_access(self):
+        from fastapi import HTTPException
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "feed.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "generated_at": "g" * 500,
-                        "items": [
-                            {
-                                "title": "t" * 500,
-                                "source_label": "s" * 500,
-                                "published": "p" * 500,
-                                "summary": "x" * 500,
-                                "symbols": ["AUDJPY"] * 20,
-                                "tags": ["macro"] * 20,
-                                "url": "javascript:alert(1)",
-                            }
-                            for _ in range(10)
-                        ],
-                    }
-                )
-            )
-            context = load_news_context(
-                {"news_feed": {"output_path": directory}}, limit=5
-            )
-        self.assertEqual(len(context["items"]), 5)
-        self.assertLessEqual(len(context["items"][0]["title"]), 240)
-        self.assertLessEqual(len(context["items"][0]["source"]), 64)
-        self.assertIsNone(context["items"][0]["url"])
-        self.assertLessEqual(len(context["generated_at"]), 64)
+        from routes.views.news import load_story_context
 
-    @patch("config.load_config")
-    def test_json_feed_uses_bounded_sanitized_contract(self, config):
+        with patch("routes.views.news.query_many") as query:
+            with self.assertRaises(HTTPException) as caught:
+                load_story_context(lane="private-payloads")
+        self.assertEqual(caught.exception.status_code, 422)
+        query.assert_not_called()
+
+    def test_database_failure_is_generic_and_fail_soft(self):
+        from routes.views.news import load_story_context
+
+        with patch(
+            "routes.views.news.query_many", side_effect=RuntimeError("secret sql")
+        ):
+            payload = load_story_context()
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertNotIn("secret sql", str(payload))
+
+
+class NewsStoryRouteTests(unittest.TestCase):
+    def test_canonical_cluster_api_requires_auth_and_rejects_bad_filter(self):
         from fastapi.testclient import TestClient
 
         from main import app
 
-        with tempfile.TemporaryDirectory() as directory:
-            config.return_value = {"news_feed": {"output_path": directory}}
-            items = [
-                {"title": "x" * 400, "source": "reuters", "summary": "y" * 800}
-                for _ in range(520)
-            ]
-            (Path(directory) / "feed.json").write_text(
-                json.dumps({"generated_at": "now", "items": items})
-            )
-            response = TestClient(app).get(
-                "/api/news/feed",
-                headers={"Authorization": "Basic dGVzdDp0ZXN0"},
-            )
+        client = TestClient(app)
+        with patch("routes.views.news.query_many", return_value=[story_row()]) as query:
+            self.assertEqual(client.get("/api/news/clusters").status_code, 401)
+            response = client.get("/api/news/clusters", headers=AUTH)
+            invalid = client.get("/api/news/clusters?lane=not-a-lane", headers=AUTH)
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(len(payload["items"]), 500)
-        self.assertEqual(len(payload["items"][0]["title"]), 240)
-        self.assertEqual(len(payload["items"][0]["summary"]), 500)
+        self.assertEqual(len(response.json()["clusters"]), 1)
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(query.call_count, 1)
+        self.assertNotIn("raw_payload", response.text)
 
-    def test_full_page_filters_source_and_symbol(self):
+    def test_news_page_groups_one_cluster_in_low_confidence_lane(self):
         from fastapi import FastAPI
         from fastapi.templating import Jinja2Templates
         from fastapi.testclient import TestClient
 
         from routes.views.news import router
 
+        cluster = story_row(evidence_count=2)
+        context = {
+            "status": "published",
+            "clusters": [cluster],
+            "lanes": {
+                "market_moving": [],
+                "watchlist_related": [],
+                "macro_central_banks": [],
+                "filings_regulators": [],
+                "developing": [],
+                "low_confidence": [cluster],
+            },
+        }
         app = FastAPI()
         app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
         app.include_router(router)
-        payload = {
-            "status": "published",
-            "generated_at": "now",
-            "items": [
-                {
-                    "title": "A",
-                    "source": "Reuters",
-                    "source_id": "reuters",
-                    "published": "now",
-                    "summary": "",
-                    "symbols": ["AUDJPY"],
-                    "tags": ["macro"],
-                    "url": None,
-                },
-                {
-                    "title": "B",
-                    "source": "Kobeissi",
-                    "source_id": "kobeissi",
-                    "published": "now",
-                    "summary": "",
-                    "symbols": ["XAUUSD"],
-                    "tags": ["metals"],
-                    "url": None,
-                },
-            ],
-        }
         with (
             patch("routes.views.news.load_config", return_value={}),
-            patch("routes.views.news.load_news_context", return_value=payload),
+            patch("routes.views.news.load_story_context", return_value=context),
             patch("routes.views.news.load_source_states", return_value=[]),
         ):
-            response = TestClient(app).get("/news?source=reuters&symbol=AUDJPY")
+            response = TestClient(app).get("/news?lane=low_confidence")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("A", response.text)
-        self.assertNotIn(">B<", response.text)
+        self.assertEqual(response.text.count('data-story-id="'), 1)
+        self.assertIn("Low confidence / single source", response.text)
+        self.assertIn("Evidence timeline · 2 shown", response.text)
+        self.assertIn("Market observations are descriptive", response.text)
+        self.assertNotIn("raw_payload", response.text)
+
+    def test_dashboard_partial_has_sse_identity_and_polling_fallback(self):
+        from fastapi import FastAPI
+        from fastapi.templating import Jinja2Templates
+        from fastapi.testclient import TestClient
+
+        from routes.views.dashboard import router
+
+        cluster = story_row()
+        context = {"status": "published", "clusters": [cluster], "lanes": {}}
+        app = FastAPI()
+        app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
+        app.include_router(router)
+        with (
+            patch("routes.views.dashboard.load_story_context", return_value=context),
+            patch(
+                "routes.views.dashboard.app_config.load_config",
+                return_value={"event_pipeline": {"sse": {"enabled": True}}},
+            ),
+        ):
+            live = TestClient(app).get("/partials/dashboard/news")
+        self.assertIn('data-live-section="news_clusters"', live.text)
+        self.assertIn('data-live-event="section_changed"', live.text)
+        with (
+            patch("routes.views.dashboard.load_story_context", return_value=context),
+            patch("routes.views.dashboard.app_config.load_config", return_value={}),
+        ):
+            polling = TestClient(app).get("/partials/dashboard/news")
+        self.assertIn('hx-get="/partials/dashboard/news"', polling.text)
+        self.assertIn('hx-trigger="every 90s"', polling.text)
 
 
 if __name__ == "__main__":

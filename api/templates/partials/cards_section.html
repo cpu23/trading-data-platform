@@ -1,7 +1,10 @@
 <section class="section cards-section" id="cards-section"
          hx-get="/partials/cards"
          hx-trigger="cycleComplete from:body"
-         hx-swap="outerHTML">
+         hx-swap="outerHTML"{% if live_updates_enabled %}
+         data-live-section="watchlist"
+         data-live-event="watchlist_changed"
+         data-live-url="/partials/dashboard/watchlist"{% endif %}>
   <div class="section-heading">
     <span class="label">Watchlist</span>
   </div>

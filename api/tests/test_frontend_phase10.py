@@ -1,7 +1,5 @@
 import asyncio
-import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -128,32 +126,17 @@ class Phase10FrontendContracts(unittest.TestCase):
         health.assert_awaited_once_with(request)
 
     def test_dashboard_news_is_bounded_and_has_truthful_empty_state(self):
-        from routes.views.news import load_news_context
+        from unittest.mock import patch
+
+        from routes.views.news import load_story_context
 
         self.assertIn('id="news-section"', self.news)
-        self.assertIn("not_published", self.news)
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "feed.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "generated_at": "2026-07-16T12:00:00+00:00",
-                        "items": [
-                            {
-                                "title": f"Item {index}",
-                                "source_label": "Demo",
-                                "published": "2026-07-16T12:00:00+00:00",
-                            }
-                            for index in range(7)
-                        ],
-                    }
-                )
-            )
-            context = load_news_context(
-                {"news_feed": {"output_path": directory}}, limit=5
-            )
-        self.assertEqual(context["status"], "published")
-        self.assertEqual(len(context["items"]), 5)
+        self.assertIn('data-live-section="news_clusters"', self.news)
+        self.assertIn("stories.status", self.news)
+        with patch("routes.views.news.query_many", side_effect=RuntimeError("boom")):
+            context = load_story_context()
+        self.assertEqual(context["status"], "unavailable")
+        self.assertEqual(context["clusters"], [])
 
 
 if __name__ == "__main__":

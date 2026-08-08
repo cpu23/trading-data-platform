@@ -8,13 +8,24 @@
     <span class="page-header-meta tabular">{{ current_timezone }}</span>
   </header>
 
-  <section aria-labelledby="source-state-title">
-    <h2 id="source-state-title">Source &amp; scheduler state</h2>
-    {% if not source_state.available %}<p role="status">Unavailable</p>
-    {% elif not source_state.components %}<p>No source or scheduler state yet</p>
-    {% else %}<table><thead><tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Next due</th></tr></thead><tbody>
-      {% for item in source_state.components %}<tr><th scope="row">{{ item.name }}</th><td>{{ item.last_status }}</td><td>{{ item.next_due_at or '—' }}</td></tr>{% endfor %}
-    </tbody></table>{% endif %}
+  {% include "partials/source_health.html" %}
+
+  <section aria-labelledby="event-pipeline-title">
+    <h2 id="event-pipeline-title">Event pipeline</h2>
+    {% if not event_pipeline.available %}<p role="status">Unavailable</p>
+    {% else %}
+      <dl>
+        <dt>Events (24h)</dt><dd>{{ event_pipeline.events_24h }}</dd>
+        <dt>Pending outbox</dt><dd>{{ event_pipeline.pending }}</dd>
+        <dt>Claimed</dt><dd>{{ event_pipeline.claimed }}</dd>
+        <dt>Terminal failures</dt><dd>{{ event_pipeline.failed }}</dd>
+        <dt>Oldest pending</dt><dd>{{ event_pipeline.oldest_pending_display or '—' }}</dd>
+      </dl>
+      {% if not event_pipeline.freshness %}<p>No source freshness state yet</p>
+      {% else %}<table><thead><tr><th scope="col">Source</th><th scope="col">Freshness</th><th scope="col">Last success</th><th scope="col">Next expected</th><th scope="col">Reason</th></tr></thead><tbody>
+        {% for item in event_pipeline.freshness %}<tr><th scope="row">{{ item.source }}</th><td>{{ item.state }}</td><td>{{ item.last_success_display or '—' }}</td><td>{{ item.expected_next_display or '—' }}</td><td>{{ item.reason_code or '—' }}</td></tr>{% endfor %}
+      </tbody></table>{% endif %}
+    {% endif %}
   </section>
 
   <section aria-labelledby="processor-title">
@@ -40,5 +51,7 @@
       {% for item in runs['items'] %}<tr><th scope="row">{{ item.mode }}</th><td>{{ item.component }}</td><td>{{ item.status }}</td><td>{{ item.duration_ms if item.duration_ms is not none else '—' }}{% if item.duration_ms is not none %} ms{% endif %}</td><td>{{ item.time_display or '—' }}</td><td>{{ item.summary }}</td></tr>{% endfor %}
     </tbody></table>{% endif %}
   </section>
+
+  {% include "partials/claim_history.html" %}
 </main>
 {% endblock %}

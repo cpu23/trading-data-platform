@@ -1,20 +1,23 @@
 # Current Architecture and Operations
 
-This document describes the deployed platform as of 29 July 2026. Older phase
-documents remain in the repository as historical design records and should not
-be treated as current operator instructions.
+This document describes the deployed platform as of 8 August 2026. Older phase
+documents remain historical design records and are not current operator
+instructions.
 
 ## Runtime Services
 
 The production Compose project contains:
 
 - `postgres`: PostgreSQL 16 with TimescaleDB.
-- `orchestrator`: collectors, scheduler, regulatory-filing intake, investment
-  analysis, live and cached quality checks, OANDA stream, and analytical
-  processors.
-- `api`: session-authenticated JSON API and server-rendered HTMX interface.
-- `state-init`: one-shot migration of compatible legacy state into the private
-  state volume.
+- `migrate`: checksum-verified, one-shot schema gate.
+- `orchestrator`: collectors, scheduler, outbox delivery, durable analysis jobs,
+  section snapshot publication, reconciliation, filing intake, investment
+  analysis, quality checks, and the OANDA stream.
+- `api`: session-authenticated JSON/SSE API and server-rendered HTMX interface.
+
+The credential-free demo adds `demo-live`, a bounded deterministic publisher
+that inserts fictional price observations and watchlist invalidations. It does
+not call external providers or models.
 
 Configuration and prompts are mounted read-only. Private operator state is
 stored in the `platform_state` volume. The API exposes build identity at
@@ -253,6 +256,43 @@ After activation:
 run. Explicit one-run overrides require a reason and are audited. Data
 collectors can still run when the paid inference budget is exhausted.
 
+## Durable Live Path
+
+Collectors normalize domain changes into the append-only `market_events`
+ledger. The transactionally coupled `event_outbox` is leased by the outbox
+worker, which schedules idempotent `analysis_jobs`. Workers publish immutable
+`section_snapshots`; a changed current snapshot appends a small `ui_events`
+invalidation. `/stream` replays retained invalidations and then streams new
+wakeups. Browsers fetch the named HTMX partial; SSE never transports report,
+price, evidence, or source payloads.
+
+The full cycle remains authoritative reconciliation. It repairs abandoned
+leases, refreshes freshness classifications, backfills reaction windows and
+market confirmations, expires claims, republishes missing snapshots, and
+removes expired UI events. A failed publication leaves the previous valid
+snapshot visible with stale/failure metadata.
+
+## Model Evaluation and Promotion
+
+All production processors inherit one exact slug from `llm.models.default`.
+The offline `benchmark-models` command compares the two pinned candidate slugs
+against versioned core, adversarial, long-context, and regression fixtures.
+Artifacts include exact request bodies, raw responses, deterministic metrics,
+actual usage, a randomized `blind-review.html`, a separate identity key,
+weighted scores, and hard disqualifiers. The initial decision has no
+recommendation. A reviewer scores all eight criteria and supplies rationale for
+every candidate/case, downloads `blind-review-scores.json`, then finalizes it:
+
+```bash
+python cli.py benchmark-score \
+  --artifact ../artifacts/model-benchmarks/<run> \
+  --review /path/to/blind-review-scores.json
+```
+
+Only complete, validated blind review unlocks a recommendation. ADR 0011 still
+requires operator approval of that artifact before `llm.models.default`
+changes.
+
 ## Operator Checks
 
 ```bash
@@ -261,19 +301,20 @@ docker compose ps
 curl http://127.0.0.1:8000/api/meta/build
 
 # Full cycle
-docker compose exec orchestrator python cli.py collect --all
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py collect --all
 
 # Individual source or processor
-docker compose exec orchestrator python cli.py collect ecb
-docker compose exec orchestrator python cli.py process market_intelligence
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py collect ecb
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py process market_intelligence
 
-# Investment read state and filing sources
+# Investment and maintained research read paths
 curl http://127.0.0.1:8000/api/investment/dashboard
 curl http://127.0.0.1:8000/api/investment/filings/status
+curl http://127.0.0.1:8000/api/research/themes
 
-# Collector status and connectivity
-docker compose exec orchestrator python cli.py status
-docker compose exec orchestrator python cli.py health
+# Collector, queue, and connectivity state
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py status
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py health
 
 # Logs
 docker compose logs -f api orchestrator

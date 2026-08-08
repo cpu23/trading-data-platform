@@ -1,33 +1,35 @@
 """Bounded News feed and source-state JSON endpoints."""
 
-from pathlib import Path
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 import config as app_config
-from routes.views.news import load_news_context, load_source_states
+from routes.views.news import (
+    MAX_STORY_CLUSTERS,
+    load_source_states,
+    load_story_context,
+)
 
 router = APIRouter(tags=["news"])
 
 
-@router.get("/news/feed")
-def get_news_feed():
-    """Return the bounded, normalized unified News feed."""
-    config = app_config.load_config()
-    feed_path = (
-        Path(config.get("news_feed", {}).get("output_path", "var/news")) / "feed.json"
+@router.get("/news/clusters")
+def get_news_clusters(
+    lane: str | None = Query(default=None, max_length=40),
+    state: str | None = Query(default=None, max_length=24),
+    limit: int = Query(default=50, ge=1, le=MAX_STORY_CLUSTERS),
+    offset: int = Query(default=0, ge=0, le=10_000),
+):
+    """Return bounded canonical stories with evidence and observations."""
+    payload = load_story_context(
+        lane=lane,
+        state=state,
+        limit=limit,
+        offset=offset,
     )
-    if not feed_path.exists():
+    if payload["status"] == "unavailable":
         return JSONResponse(
-            {"error": "Feed not generated yet. Run `python cli.py news all` first."},
-            status_code=404,
-        )
-
-    payload = load_news_context(config)
-    if payload["status"] != "published":
-        return JSONResponse(
-            {"error": "News feed is temporarily unavailable."},
+            {"error": "Canonical news stories are temporarily unavailable."},
             status_code=503,
         )
     return JSONResponse(payload)

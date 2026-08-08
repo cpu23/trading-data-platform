@@ -1,0 +1,55 @@
+<article class="story-card" data-story-id="{{ story.id }}">
+  <div class="story-card-meta tabular">
+    <span class="story-state story-state-{{ story.state }}">{{ story.state | replace('_', ' ') | title }}</span>
+    <span>{{ story.source_count }} source{% if story.source_count != 1 %}s{% endif %}</span>
+    {% if story.last_seen_at %}<time datetime="{{ story.last_seen_at }}">Updated {{ story.last_seen_at }}</time>{% endif %}
+  </div>
+  <h3>{{ story.title }}</h3>
+  {% if story.summary %}<p class="story-summary">{{ story.summary }}</p>{% endif %}
+  {% if story.change_summary %}<p class="story-change"><strong>What changed:</strong> {{ story.change_summary }}</p>{% endif %}
+  {% if story.sources %}
+    <div class="story-sources" aria-label="Sources">
+      {% for source in story.sources %}<span class="story-source-badge">{{ source }}</span>{% endfor %}
+    </div>
+  {% endif %}
+  {% if story.markets or story.entities %}
+    <div class="story-chips">
+      {% for market in story.markets %}
+        <span>{{ market.display_name or market.canonical_id or market }}</span>
+      {% endfor %}
+      {% for entity in story.entities %}
+        <span>{{ entity.display_name or entity.canonical_id or entity }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+  {% if story.market_confirmations %}
+    <div class="story-confirmations" aria-label="Market observations">
+      {% for observation in story.market_confirmations %}
+        <div class="story-confirmation">
+          <strong>{{ observation.market_symbol }}</strong>
+          {% for flag in observation.flags or [] %}<span class="story-observation-flag">{{ flag | replace('_', ' ') }}</span>{% endfor %}
+          <span class="tabular">
+            {% if observation.move_5m is not none %}5m {{ '%+.2f' | format(observation.move_5m) }}%{% endif %}
+            {% if observation.move_30m is not none %} · 30m {{ '%+.2f' | format(observation.move_30m) }}%{% endif %}
+            {% if observation.move_session is not none %} · session {{ '%+.2f' | format(observation.move_session) }}%{% endif %}
+          </span>
+        </div>
+      {% endfor %}
+      <p class="story-observation-note">Market observations are descriptive, not trading signals.</p>
+    </div>
+  {% endif %}
+  {% if story.evidence %}
+    <details class="story-evidence">
+      <summary>Evidence timeline · {{ story.evidence | length }} shown</summary>
+      <ol>
+        {% for item in story.evidence %}
+          <li>
+            <div class="news-meta tabular">{{ item.source_label }}{% if item.published_at %} · {{ item.published_at }}{% endif %} · {{ item.contribution_type | replace('_', ' ') }}</div>
+            <h4>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h4>
+            {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </details>
+  {% endif %}
+</article>

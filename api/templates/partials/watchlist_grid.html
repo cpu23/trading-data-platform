@@ -1,0 +1,58 @@
+<section class="section watchlist-grid-section" id="watchlist-grid-section"
+         {% if live_updates_enabled %}data-live-section="watchlist_grid"
+         data-live-event="section_changed"
+         data-live-url="/partials/dashboard/watchlist-grid"{% else %}
+         hx-get="/partials/dashboard/watchlist-grid"
+         hx-trigger="every 90s"
+         hx-swap="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <span class="label">Watchlist grid</span>
+    <span class="section-note">Prices · volatility · catalysts</span>
+  </div>
+  {% if grid is not mapping or grid.get('available') != true %}
+    <div class="empty-state">Watchlist data unavailable.</div>
+  {% else %}
+    <div class="watchlist-scroll scroll-affordance" tabindex="0"
+         aria-label="Watchlist grid; scroll horizontally for all columns">
+      <table class="watchlist-grid-table">
+        <caption class="sr-only">Watchlist instruments with last price, five-minute and daily moves, volatility state, current catalyst, interpretation and freshness</caption>
+        <thead>
+          <tr>
+            <th scope="col">Asset</th>
+            <th scope="col" class="numeric">Last</th>
+            <th scope="col" class="numeric">5m</th>
+            <th scope="col" class="numeric">Day</th>
+            <th scope="col">Vol state</th>
+            <th scope="col">Current catalyst</th>
+            <th scope="col">Interpretation</th>
+            <th scope="col" colspan="2">Freshness</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in grid.rows %}
+          <tr>
+            <th scope="row">
+              <button type="button" class="asset-row-link"
+                      hx-get="/partials/dashboard/asset/{{ row.symbol }}"
+                      hx-target="#expansion-panel"
+                      hx-swap="outerHTML">{{ row.symbol }}</button>
+            </th>
+            <td class="numeric tabular">{{ row.last_price_text or '—' }}</td>
+            <td class="numeric tabular{{ ' change-up' if row.chg_5m and row.chg_5m > 0 else ' change-down' if row.chg_5m and row.chg_5m < 0 else '' }}">{{ row.chg_5m_text or '—' }}</td>
+            <td class="numeric tabular{{ ' change-up' if row.chg_day and row.chg_day > 0 else ' change-down' if row.chg_day and row.chg_day < 0 else '' }}">{{ row.chg_day_text or '—' }}</td>
+            <td>{% if row.vol_state %}<span class="vol-state vol-{{ row.vol_state }}">{{ row.vol_state }}</span>{% else %}—{% endif %}</td>
+            <td>{{ row.catalyst_text or '—' }}</td>
+            <td><span class="{{ row.interpretation_class }}">{{ row.interpretation }}</span></td>
+            <td class="numeric tabular" data-freshness-cell="price" title="{{ row.price_iso or '' }}">{{ row.price_age_text or '—' }}</td>
+            <td class="numeric tabular" data-freshness-cell="analysis" title="{{ row.analysis_iso or '' }}">{{ row.analysis_age_text or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="empty-state">No instruments with data in this view.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>

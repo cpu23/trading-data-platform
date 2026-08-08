@@ -10,10 +10,8 @@
   <div class="settings-grid">
     <fieldset class="settings-panel">
       <legend>Models &amp; budget</legend>
-      <label>Default OpenRouter model<input id="settings-model" value="{{ llm.get('default_model', '') }}" autocomplete="off"></label>
-      <label>Macro regime model<input id="settings-model-macro-regime" value="{{ models.get('macro_regime', llm.get('default_model', '')) }}" autocomplete="off"></label>
-      <label>Event-impact model<input id="settings-model-event-impact" value="{{ models.get('event_impact', llm.get('default_model', '')) }}" autocomplete="off"></label>
-      <label>Briefing model<input id="settings-model-briefing" value="{{ models.get('briefing', llm.get('default_model', '')) }}" autocomplete="off"></label>
+      <label>OpenRouter model (all processors)<input id="settings-model" value="{{ active_model }}" autocomplete="off"></label>
+      <p class="settings-intro">One active model serves every analytical processor. Per-processor selectors were deprecated by the live-platform spec; benchmark the candidate offline before promoting a new slug.</p>
       <label>Daily AI budget ($)<input id="settings-budget" type="number" min="0" max="1000" step="0.01" value="{{ daily_budget }}"></label>
     </fieldset>
 
@@ -23,7 +21,7 @@
       <label>FRED key <span class="credential-state">{{ 'Saved' if has_fred_key else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_fred_key else 'FRED API key' }}" autocomplete="new-password"></label>
       <label>OANDA key <span class="credential-state">{{ 'Saved' if has_oanda_key else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_oanda_key else 'OANDA API key' }}" autocomplete="new-password"></label>
       <label>TwitterAPI.io key <span class="credential-state">{{ 'Saved' if has_twitter_key else 'Not added' }}</span><input id="settings-twitter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_twitter_key else 'TwitterAPI.io key' }}" autocomplete="new-password"></label>
-      <div class="settings-actions"><button class="btn" id="test-connection" type="button">Test OpenRouter</button><span id="connection-result" class="control-status" role="status"></span></div>
+      <div class="settings-actions"><button class="btn" id="test-connection" type="button">Test OpenRouter</button><button class="btn" id="test-model" type="button">Test model</button><span id="connection-result" class="control-status" role="status"></span></div>
     </fieldset>
 
     <fieldset class="settings-panel">
@@ -106,11 +104,8 @@ const csrfHeader = () => {
 };
 const settingsPayload = () => ({
   llm: {
-    default_model: document.getElementById('settings-model').value.trim(),
     models: {
-      macro_regime: document.getElementById('settings-model-macro-regime').value.trim(),
-      event_impact: document.getElementById('settings-model-event-impact').value.trim(),
-      briefing: document.getElementById('settings-model-briefing').value.trim()
+      default: document.getElementById('settings-model').value.trim()
     }
   },
   daily_budget_usd: Number(document.getElementById('settings-budget').value),
@@ -128,12 +123,21 @@ document.getElementById('test-connection').addEventListener('click', async () =>
   const data = await response.json().catch(() => ({}));
   status.textContent = response.ok ? 'Connected' : (data.detail || 'Connection failed');
 });
+document.getElementById('test-model').addEventListener('click', async () => {
+  const status = document.getElementById('connection-result');
+  status.textContent = 'Checking model…';
+  const response = await fetch('/api/settings/test-model', {method:'POST', headers:{'Content-Type':'application/json', ...csrfHeader()}, body:JSON.stringify({model:document.getElementById('settings-model').value.trim() || null})});
+  const data = await response.json().catch(() => ({}));
+  status.textContent = response.ok
+    ? (data.listed ? `Listed: ${data.model}` : `${data.model || 'model'}: ${data.error || 'not listed'}`)
+    : (data.detail || 'Model check failed');
+});
 document.getElementById('save-settings').addEventListener('click', async () => {
   const status = document.getElementById('settings-result');
   status.textContent = 'Saving…';
   const response = await fetch('/api/settings/operator', {method:'PUT', headers:{'Content-Type':'application/json', ...csrfHeader()}, body:JSON.stringify(settingsPayload())});
   const data = await response.json().catch(() => ({}));
-  status.textContent = response.ok ? 'Saved — applies to the next run' : (data.detail || 'Could not save settings');
+  status.textContent = response.ok ? `Saved — ${data.model || 'one model'} applies to the next run` : (data.detail || 'Could not save settings');
 });
 </script>
 {% endblock %}

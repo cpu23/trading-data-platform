@@ -116,6 +116,24 @@ printf '%s' "$regime" | grep -q "controlled_expansion" || fail_with_logs "contro
 briefing=$(curl --fail --silent --show-error --user "$AUTH" "$API_URL/api/briefing/latest")
 printf '%s' "$briefing" | grep -q "demo/deterministic" || fail_with_logs "demo/deterministic fixture marker missing"
 
+# Credential-free demo mode must continuously exercise the real live-update path.
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  live_prices=$(compose exec -T postgres psql -U demo -d trading_data -Atc \
+    "SELECT COUNT(*) FROM market_data WHERE source='demo-live'")
+  live_events=$(compose exec -T postgres psql -U demo -d trading_data -Atc \
+    "SELECT COUNT(*) FROM ui_events WHERE event_name='watchlist_changed'")
+  if [[ "$live_prices" -gt 0 && "$live_events" -gt 0 ]]; then
+    break
+  fi
+  sleep "$SLEEP_SECONDS"
+done
+[[ ${live_prices:-0} -gt 0 ]] || fail_with_logs "demo live price publisher produced no rows"
+[[ ${live_events:-0} -gt 0 ]] || fail_with_logs "demo live publisher produced no UI invalidation"
+stream=$(curl --max-time 3 --silent --show-error --user "$AUTH" \
+  "$API_URL/stream?last_event_id=0" || true)
+printf '%s' "$stream" | grep -q "watchlist_changed" ||
+  fail_with_logs "demo SSE stream did not replay the watchlist invalidation"
+
 python3 scripts/test_service_contracts.py \
   --compose-file "$COMPOSE_FILE" \
   --api-url "$API_URL" \

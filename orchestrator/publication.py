@@ -110,6 +110,19 @@ def build_news_feed_unlocked(
         from investment_observations import persist_news_observations
 
         persist_news_observations(config, items)
+        pipeline = config.get("event_pipeline", {})
+        if isinstance(pipeline, dict) and pipeline.get("enabled", False):
+            from events.publisher import publish_news_records
+
+            story_settings = config.get("story_clustering", {})
+            story_settings = story_settings if isinstance(story_settings, dict) else {}
+            try:
+                publish_limit = max(
+                    1, min(1000, int(story_settings.get("publish_limit", 500)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                publish_limit = 500
+            publish_news_records(items[:publish_limit], config=config)
     logger.info("feed_built", count=len(items), path=str(output_dir / "feed.json"))
     return feed
 

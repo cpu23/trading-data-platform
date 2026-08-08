@@ -80,9 +80,12 @@ def main() -> int:
     assert status == 200, f"quality page returned {status}"
     status, sources = request(args.api_url, "/api/news/sources", args.auth)
     assert status == 200 and isinstance(sources, dict) and isinstance(sources.get("sources"), list)
-    status, feed = request(args.api_url, "/api/news/feed", args.auth)
-    assert status in {200, 404}, f"news feed returned {status}"
-    assert isinstance(feed, dict), "news feed contract is not an object"
+    status, clusters = request(args.api_url, "/api/news/clusters", args.auth)
+    assert status in {200, 503}, f"canonical stories returned {status}"
+    assert isinstance(clusters, dict), "canonical story contract is not an object"
+    if status == 200:
+        assert isinstance(clusters.get("clusters"), list)
+        assert isinstance(clusters.get("lanes"), dict)
 
     status, _ = request(
         args.api_url,
