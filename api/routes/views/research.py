@@ -8,13 +8,36 @@ live data.
 from __future__ import annotations
 
 import math
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 
 from config import load_config
-from db import query_many, query_one
+from db import get_session, query_many, query_one
+
+_ORCHESTRATOR_DIR = Path(__file__).resolve().parents[3] / "orchestrator"
+_orchestrator_path = str(_ORCHESTRATOR_DIR)
+_orchestrator_path_added = (
+    _ORCHESTRATOR_DIR.is_dir() and _orchestrator_path not in sys.path
+)
+if _orchestrator_path_added:
+    sys.path.insert(0, _orchestrator_path)
+
+try:
+    from research_intelligence import queries as _research_queries
+    from research_intelligence.benchmarks import list_benchmarks as _list_benchmarks
+
+    _live_case_cohorts = _research_queries.live_case_cohorts
+except ImportError:  # pragma: no cover - deployment wiring
+    _research_queries = None
+    _list_benchmarks = None
+    _live_case_cohorts = None
+finally:
+    if _orchestrator_path_added:
+        sys.path.remove(_orchestrator_path)
 
 router = APIRouter()
 
@@ -820,10 +843,130 @@ def research_page(request: Request):
             "themes": [],
             "funnel": [dict(step) for step in FUNNEL_STEPS],
         }
+    try:
+        if _research_queries is None:
+            raise RuntimeError("research intelligence helpers unavailable")
+        with get_session(config) as session:
+            index["cases"] = _research_queries.list_cases(session, limit=30)
+        index["cases_status"] = "available"
+    except Exception:
+        index["cases"] = []
+        index["cases_status"] = "unavailable"
     return request.app.state.templates.TemplateResponse(
         request,
         "research.html",
         {"request": request, "index": index},
+    )
+
+
+@router.get("/research/evaluation")
+def research_evaluation_page(request: Request):
+    config = load_config()
+    payload = {
+        "status": "available",
+        "benchmarks": [],
+        "replays": [],
+        "cohorts": [],
+        "comparisons": [],
+        "research_status": {},
+    }
+    try:
+        if (
+            _research_queries is None
+            or _list_benchmarks is None
+            or _live_case_cohorts is None
+        ):
+            raise RuntimeError("research evaluation helpers unavailable")
+        payload["benchmarks"] = [
+            {
+                "id": item.episode_id,
+                "version": item.version,
+                "kind": item.episode_kind,
+                "synthetic": item.synthetic,
+                "description": item.description,
+                "replay_dates": item.replay_dates,
+                "evidence_count": len(item.evidence),
+            }
+            for item in _list_benchmarks()
+        ]
+        with get_session(config) as session:
+            replays = _research_queries.list_replay_runs(session, limit=30)
+            for run in replays:
+                stages = run.get("stage_metrics") or []
+                run["latency_ms"] = sum(
+                    int(stage.get("duration_ms") or 0)
+                    for stage in stages
+                    if isinstance(stage, dict)
+                )
+                run["failure_count"] = len(
+                    (run.get("result_summary") or {}).get("errors") or []
+                )
+                identity = run.get("variant_identity") or {}
+                run["variant_models"] = sorted(
+                    {
+                        str(stage.get("model"))
+                        for stage in identity.values()
+                        if isinstance(stage, dict) and stage.get("model")
+                    }
+                )
+                run["variant_short"] = str(
+                    run.get("variant_fingerprint") or ""
+                )[:10]
+            payload["replays"] = replays
+            payload["comparisons"] = _research_queries.list_quality_metrics(
+                session, metric_scope="comparison", limit=10
+            )
+            payload["cohorts"] = _live_case_cohorts(session)
+            payload["research_status"] = _research_queries.research_status(
+                session, limit=5
+            )
+    except Exception:
+        payload["status"] = "unavailable"
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_evaluation.html",
+        {"request": request, "evaluation": payload},
+    )
+
+
+@router.get("/research/cases/{case_id}")
+def research_case_page(request: Request, case_id: str):
+    try:
+        normalized = str(UUID(case_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Research case not found") from exc
+    config = load_config()
+    try:
+        if _research_queries is None:
+            raise RuntimeError("research intelligence helpers unavailable")
+        with get_session(config) as session:
+            payload = _research_queries.get_case(
+                session, normalized, detail_limit=150
+            )
+            history = _research_queries.case_history(
+                session, normalized, limit=20
+            )
+    except Exception:
+        payload, history = {"status": "unavailable", "case": None}, []
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Research case not found")
+    case = payload.get("case") if isinstance(payload, dict) else None
+    snapshot = (
+        case.get("current_snapshot")
+        if isinstance(case, dict) and isinstance(case.get("current_snapshot"), dict)
+        else {}
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_case.html",
+        {
+            "request": request,
+            "research_case": case,
+            "detail": payload,
+            "snapshot": snapshot,
+            "deliverable": snapshot.get("deliverable") or {},
+            "history": history,
+        },
     )
 
 

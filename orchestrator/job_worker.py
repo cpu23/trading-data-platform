@@ -62,6 +62,14 @@ class AnalysisJobWorker:
         worker = settings.get("worker")
         return worker if isinstance(worker, dict) else {}
 
+    @staticmethod
+    def _batch_size(settings: dict[str, Any], worker: dict[str, Any]) -> int:
+        try:
+            configured = int(worker.get("batch_size", settings.get("batch_size", 1)))
+        except (TypeError, ValueError, OverflowError):
+            configured = 1
+        return max(1, min(configured, 25))
+
     def enabled(self, config: dict[str, Any] | None = None) -> bool:
         settings = self._cfg(config)
         return bool(settings.get("enabled", False)) and bool(
@@ -205,6 +213,12 @@ class AnalysisJobWorker:
             "changed",
             "status",
             "id",
+            "case_id",
+            "case_count",
+            "driver_count",
+            "lifecycle_transition_count",
+            "error_count",
+            "cost_usd",
         )
         if isinstance(value, dict):
             candidates = value
@@ -339,7 +353,7 @@ class AnalysisJobWorker:
                 jobs = claim_jobs(
                     session,
                     self.worker_id,
-                    limit=1,
+                    limit=self._batch_size(settings, worker),
                     lease_seconds=max(1.0, lease),
                     job_types=settings.get("job_types")
                     if isinstance(settings.get("job_types"), (list, tuple))

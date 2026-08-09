@@ -24,7 +24,10 @@ class CentralBanksCollector:
         for feed in feeds:
             try:
                 response = make_request(
-                    "GET", feed["url"], correlation_id=correlation_id
+                    "GET",
+                    feed["url"],
+                    headers=feed.get("headers"),
+                    correlation_id=correlation_id,
                 )
                 response.raise_for_status()
                 root = ElementTree.fromstring(response.content)
@@ -113,7 +116,12 @@ class CentralBanksCollector:
                 "latency_ms": 0,
             }
         try:
-            response = make_request("GET", feeds[0]["url"], timeout=15)
+            response = make_request(
+                "GET",
+                feeds[0]["url"],
+                headers=feeds[0].get("headers"),
+                timeout=15,
+            )
             return {
                 "healthy": response.status_code < 400,
                 "state": "success" if response.status_code < 400 else "failed",

@@ -51,6 +51,40 @@ class ComponentIdValidationTests(unittest.TestCase):
         resp = self.client.post("/run_processor/not-real")
         self.assertEqual(resp.status_code, 404)
 
+    def test_research_trigger_rejects_unknown_fields_before_enqueue(self):
+        with patch(
+            "research_intelligence.operations.enqueue_research_job"
+        ) as enqueue:
+            response = self.client.post(
+                "/research/run",
+                json={"force": False, "unbounded": True},
+            )
+        self.assertEqual(response.status_code, 422)
+        enqueue.assert_not_called()
+
+    def test_research_case_trigger_forwards_validated_identity(self):
+        case_id = "11111111-1111-4111-8111-111111111111"
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "research_intelligence.operations.enqueue_research_job",
+                return_value={"job_id": "job-1", "status": "queued"},
+            ) as enqueue,
+        ):
+            response = self.client.post(
+                f"/research/cases/{case_id}/run",
+                json={"force": True},
+            )
+        self.assertEqual(response.status_code, 202)
+        enqueue.assert_called_once_with(
+            {},
+            job_type="research_case_update",
+            case_id=case_id,
+            force=True,
+            triggered_by="api",
+        )
+
+
     def test_run_news_validates_before_durable_acceptance(self):
         with patch("main.accept_run") as accept:
             response = self.client.post("/run_news/not-real")
@@ -1657,6 +1691,10 @@ class RuntimeFeatureTests(unittest.TestCase):
                         section=section, component=component, schedule=schedule
                     ):
                         _build_cron_trigger(schedule)
+        research = config["research_intelligence"]
+        self.assertTrue(research["enabled"])
+        self.assertTrue(research["schedule_enabled"])
+        _build_cron_trigger(research["schedule"])
 
     def test_scheduler_registers_configured_cron_jobs(self):
         config = {
@@ -1665,12 +1703,20 @@ class RuntimeFeatureTests(unittest.TestCase):
                 "briefing": {"enabled": True, "schedule": "0 7 * * *"},
                 "macro_regime": {"enabled": True, "schedule": "after_dependency"},
             },
+            "research_intelligence": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "30 5 * * *",
+            },
         }
 
         start_scheduler(config)
         ids = {job["id"] for job in scheduler_status()["jobs"]}
 
-        self.assertEqual(ids, {"collector:fred", "processor:briefing"})
+        self.assertEqual(
+            ids,
+            {"collector:fred", "processor:briefing", "research:discovery"},
+        )
 
     @patch("scheduler.BackgroundScheduler")
     def test_filings_job_runs_immediately_on_scheduler_start(self, scheduler_factory):

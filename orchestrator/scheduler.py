@@ -3,6 +3,8 @@ from uuid import uuid4
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from analysis_jobs import enqueue_job
+from db import get_session
 from logging_config import get_logger
 from orchestrator import (
     RunAcceptanceConflict,
@@ -314,6 +316,76 @@ def _scheduled_filings(config: dict) -> None:
         )
 
 
+def _scheduled_research(config: dict) -> None:
+    """Enqueue the bounded research workflow on the durable analysis queue."""
+    from research_intelligence.contracts import canonical_fingerprint
+
+    correlation_id = str(uuid4())
+    component = "research_intelligence"
+    accept_run(config, correlation_id, "scheduler", "processor", component)
+    worker_id = f"scheduler:{uuid4()}"
+    if (
+        _start_scheduled_run(
+            config, correlation_id, worker_id, "processor", component
+        )
+        is not True
+    ):
+        return
+    try:
+        today = datetime.now(UTC).date().isoformat()
+        research_config = config.get("research_intelligence", {})
+        input_fingerprint = canonical_fingerprint(
+            {"date": today, "config": research_config}
+        )
+        with get_session(config) as session:
+            enqueued = enqueue_job(
+                session,
+                job_type="research_discovery",
+                dedupe_key=f"research-discovery:{today}",
+                input_fingerprint=input_fingerprint,
+                payload={"force": False},
+                correlation_id=correlation_id,
+                priority=80,
+                max_attempts=3,
+            )
+        result = {
+            "status": "success",
+            "job_id": str(enqueued.job.id) if enqueued.job is not None else None,
+            "inserted": enqueued.inserted,
+        }
+        finalize_run_safely(
+            correlation_id,
+            "success",
+            result,
+            config,
+            None,
+            worker_id=worker_id,
+            run_kind="processor",
+            component=component,
+        )
+        logger.info(
+            "scheduled_research_enqueued",
+            correlation_id=correlation_id,
+            inserted=enqueued.inserted,
+        )
+    except Exception as exc:
+        logger.error(
+            "scheduled_research_failed",
+            correlation_id=correlation_id,
+            error_type=type(exc).__name__,
+        )
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {},
+            config,
+            "research enqueue failed",
+            worker_id=worker_id,
+            run_kind="processor",
+            component=component,
+        )
+
+
 def start_scheduler(config: dict) -> None:
     global _scheduler
     if _scheduler and _scheduler.running:
@@ -351,6 +423,22 @@ def start_scheduler(config: dict) -> None:
                 coalesce=True,
                 max_instances=1,
             )
+    research_config = config.get("research_intelligence", {})
+    research_schedule = research_config.get("schedule")
+    if (
+        research_config.get("enabled", False)
+        and research_config.get("schedule_enabled", False)
+        and research_schedule
+    ):
+        _scheduler.add_job(
+            _scheduled_research,
+            _build_cron_trigger(research_schedule),
+            args=[config],
+            id="research:discovery",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
     if not config.get("demo", {}).get("enabled", False):
         from sources.news_registry import get_news_source_ids
 

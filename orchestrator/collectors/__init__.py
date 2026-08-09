@@ -2,6 +2,7 @@ from collectors.central_banks import CentralBanksCollector
 from collectors.cftc import CftcCollector
 from collectors.forex_factory import ForexFactoryCollector
 from collectors.fred import FredCollector
+from collectors.oanda import OandaCollector
 from collectors.official_macro import (
     BoeCollector,
     EcbCollector,
@@ -20,11 +21,19 @@ COLLECTORS: dict[str, type] = {
     "eia": EiaCollector,
 }
 
+# Standalone snapshot collectors are addressable by the scheduler and CLI but
+# excluded from dependency cycles. OANDA's continuous stream owns live quotes;
+# this collector persists the configured periodic reaction-window snapshot.
+STANDALONE_COLLECTORS: dict[str, type] = {
+    "oanda": OandaCollector,
+}
+
 
 def get_collector(source_id: str):
-    if source_id not in COLLECTORS:
+    collector_type = COLLECTORS.get(source_id) or STANDALONE_COLLECTORS.get(source_id)
+    if collector_type is None:
         raise ValueError(f"Unknown collector: {source_id}")
-    return COLLECTORS[source_id]()
+    return collector_type()
 
 
 def get_all_collectors() -> dict:

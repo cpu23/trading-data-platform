@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Research evaluation — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">{% include "partials/navigation.html" %}</div>
+</header>
+
+<main aria-label="Research replay and evaluation">
+  <p class="rs-page-note" role="note"><a href="/research">Research</a> · point-in-time replay, lifecycle lead time, and deterministic quality metrics</p>
+
+  {% if evaluation.status == 'unavailable' %}
+    <div class="error-block" role="alert">Research evaluation is unavailable.</div>
+  {% else %}
+    <section class="section" aria-labelledby="re-status-title">
+      <div class="section-heading">
+        <span class="label" id="re-status-title">Evaluation status</span>
+        <span class="section-note">Evidence and model outputs after each replay cutoff are excluded.</span>
+      </div>
+      <ul class="rs-theme-list">
+        <li class="rs-theme-row">
+          <span class="rs-theme-link">{{ evaluation.research_status.completed_replays or 0 }} completed replays</span>
+          <span class="rs-theme-meta">{{ evaluation.research_status.current_economic_factors or 0 }} shared macro factors · {{ evaluation.research_status.unresolved_data_requests or 0 }} open data requests</span>
+          <p class="rs-theme-definition">Scorecards separate discovery, lead time, specificity, causal quality, second-order reasoning, value capture, evidence quality, counter-thesis, testable-hypothesis discovery, unknown handling, novelty, and point-in-time integrity.</p>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section" aria-labelledby="re-benchmarks-title">
+      <div class="section-heading">
+        <span class="label" id="re-benchmarks-title">Benchmark episodes</span>
+        <span class="section-note">Answers remain evaluator-only and are never placed in research prompts.</span>
+      </div>
+      {% if not evaluation.benchmarks %}
+        <div class="empty-state">No benchmark episodes are installed.</div>
+      {% else %}
+        <ul class="rs-theme-list">
+          {% for item in evaluation.benchmarks %}
+            <li class="rs-theme-row">
+              <span class="rs-theme-link">{{ item.id }}</span>
+              <span class="rs-theme-meta">{{ item.kind | replace('_', ' ') }} · v{{ item.version }} · {{ item.evidence_count }} evidence · {{ item.replay_dates | length }} dates{% if item.synthetic %} · synthetic{% endif %}</span>
+              <p class="rs-theme-definition">{{ item.description }}</p>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="re-runs-title">
+      <div class="section-heading">
+        <span class="label" id="re-runs-title">Recent replay runs</span>
+        <span class="section-note">Newest replay date first. Open through the JSON API or <code>research inspect-replay</code> for full provenance.</span>
+      </div>
+      {% if not evaluation.replays %}
+        <div class="empty-state">No replay runs have completed.</div>
+      {% else %}
+        <div class="table-wrap">
+          <table class="rs-metric-table">
+            <thead><tr><th>Replay date</th><th>Episode</th><th>Variant</th><th>Status</th><th>Cases</th><th>Discovery</th><th>Lead time</th><th>Integrity</th><th>Human review</th><th>Failures</th><th>Latency</th><th>Cost</th></tr></thead>
+            <tbody>
+              {% for run in evaluation.replays %}
+                {% set review = run.human_annotations or {} %}
+                <tr>
+                  <td>{{ run.replay_as_of }}</td>
+                  <td>{{ run.benchmark_id or run.evidence_source }}</td>
+                  <td><code title="{{ run.variant_fingerprint or '' }}">{{ run.variant_short or 'legacy' }}</code>{% if run.variant_models %}<span class="rs-theme-meta">{{ run.variant_models | join(', ') }}</span>{% endif %}</td>
+                  <td>{{ run.status | replace('_', ' ') }}</td>
+                  <td>{{ (run.result_summary or {}).get('case_count', 0) }}</td>
+                  <td>{{ ((run.dimensions or {}).get('discovery') or {}).get('status', '—') }}</td>
+                  <td>{{ ((run.dimensions or {}).get('lead_time') or {}).get('status', '—') }}</td>
+                  <td>{{ ((run.dimensions or {}).get('point_in_time_integrity') or {}).get('status', '—') }}</td>
+                  <td>{% if review.get('overall_label') %}{{ review.get('overall_label') }} · v{{ run.annotation_version }}{% else %}unreviewed{% endif %}</td>
+                  <td>{{ run.failure_count or 0 }}</td>
+                  <td>{{ '%.2f'|format((run.latency_ms or 0) / 1000) }}s</td>
+                  <td>{{ '%.4f'|format(run.cost_usd or 0) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="re-comparisons-title">
+      <div class="section-heading">
+        <span class="label" id="re-comparisons-title">Variant regression checks</span>
+        <span class="section-note">Only runs with identical deterministic inputs are comparable. Quality dimensions remain separate from resource use.</span>
+      </div>
+      {% if not evaluation.comparisons %}
+        <div class="empty-state">No replay comparisons have been recorded.</div>
+      {% else %}
+        <ul class="rs-theme-list">
+          {% for item in evaluation.comparisons %}
+            {% set result = item.metrics or {} %}
+            {% set variants = result.get('variant_fingerprints') or {} %}
+            {% set changes = result.get('dimension_status_changes') or {} %}
+            {% set resources = result.get('resource_usage') or {} %}
+            {% set delta = resources.get('delta') or {} %}
+            <li class="rs-theme-row">
+              <span class="rs-theme-link"><code>{{ (variants.get('left') or 'legacy')[:10] }}</code> → <code>{{ (variants.get('right') or 'legacy')[:10] }}</code></span>
+              <span class="rs-theme-meta">{{ changes | length }} quality status changes · {{ '%+.4f'|format(delta.get('cost_usd') or 0) }} cost · {{ '%+d'|format(delta.get('latency_ms') or 0) }}ms latency</span>
+              {% if changes %}
+                <p class="rs-theme-definition">{% for name, state in changes.items() %}{{ name | replace('_', ' ') }}: {{ state.get('left') or '—' }} → {{ state.get('right') or '—' }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+              {% else %}
+                <p class="rs-theme-definition">No quality-dimension status changed.</p>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="re-cohorts-title">
+      <div class="section-heading">
+        <span class="label" id="re-cohorts-title">Live case cohorts</span>
+        <span class="section-note">Conversion, survival, and weak-case archival by first-seen month; no case-count quality score.</span>
+      </div>
+      {% if not evaluation.cohorts %}
+        <div class="empty-state">No live research-case cohorts are available.</div>
+      {% else %}
+        <div class="table-wrap">
+          <table class="rs-metric-table">
+            <thead><tr><th>Cohort</th><th>Cases</th><th>Corroborated</th><th>Research-ready</th><th>Mature</th><th>Weak archived</th><th>Median survival</th></tr></thead>
+            <tbody>
+              {% for row in evaluation.cohorts %}
+                <tr>
+                  <td>{{ row.cohort }}</td>
+                  <td>{{ row.case_count }}</td>
+                  <td>{{ row.corroborated_count }}</td>
+                  <td>{{ row.research_ready_count }} ({{ '%.0f%%'|format((row.research_ready_rate or 0) * 100) }})</td>
+                  <td>{{ row.mature_count }}</td>
+                  <td>{{ row.weak_case_archived_count }}</td>
+                  <td>{{ row.median_survival_days }} days</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+</main>
+{% endblock %}

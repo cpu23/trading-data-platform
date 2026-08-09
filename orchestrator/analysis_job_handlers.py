@@ -540,6 +540,82 @@ def publish_research_snapshot(session: Any, job: Any) -> Any:
     )
 
 
+def run_research_discovery_job(session: Any, job: Any) -> dict[str, Any]:
+    """Run hot-market drivers and bounded dynamic case discovery durably."""
+    from research_intelligence.service import run_discovery, run_macro_transmission
+
+    config = dict(_config())
+    payload = _mapping(_job_value(job, "payload", {}))
+    correlation_id = str(_job_value(job, "correlation_id", "") or "") or None
+    force = bool(payload.get("force", False))
+    errors = 0
+    try:
+        macro = run_macro_transmission(
+            session,
+            config,
+            correlation_id=correlation_id,
+            force=force,
+        )
+    except Exception as exc:
+        macro = {"status": "failed", "error": type(exc).__name__, "driver_count": 0}
+        errors += 1
+    discovery = run_discovery(
+        session,
+        config,
+        correlation_id=correlation_id,
+        force=force,
+    )
+    errors += len(discovery.get("errors", []))
+    raw_cases = discovery.get("cases", [])
+    cases = raw_cases if isinstance(raw_cases, list) else []
+    case_count = sum(
+        1
+        for outcome in cases
+        if isinstance(outcome, Mapping) and outcome.get("case_id")
+    )
+    abstention_count = sum(
+        1
+        for outcome in cases
+        if isinstance(outcome, Mapping) and outcome.get("status") == "abstained"
+    )
+    return {
+        "status": "completed" if errors == 0 else "completed_with_errors",
+        "case_count": case_count,
+        "candidate_count": int(discovery.get("candidate_count") or len(cases)),
+        "abstention_count": abstention_count,
+        "driver_count": int(macro.get("driver_count") or 0),
+        "lifecycle_transition_count": len(
+            discovery.get("lifecycle_transitions", [])
+        ),
+        "error_count": errors,
+        "cost_usd": float(discovery.get("model_cost_usd") or 0)
+        + float(macro.get("model_cost_usd") or 0),
+    }
+
+
+def run_research_case_update_job(session: Any, job: Any) -> dict[str, Any]:
+    """Run one evidence-linked research-case update through the durable worker."""
+    from research_intelligence.service import run_case_update
+
+    payload = _mapping(_job_value(job, "payload", {}))
+    case_id = str(payload.get("case_id") or "").strip()
+    if not case_id:
+        raise ValueError("research case update requires a case id")
+    result = run_case_update(
+        session,
+        dict(_config()),
+        case_id,
+        correlation_id=str(_job_value(job, "correlation_id", "") or "") or None,
+        force=bool(payload.get("force", False)),
+    )
+    return {
+        **result,
+        "id": case_id,
+        "case_id": case_id,
+        "cost_usd": float(result.get("model_cost_usd") or 0),
+    }
+
+
 _HANDLERS = {
     "publish_source_health_snapshot": publish_source_health_snapshot,
     "publish_watchlist_snapshot": publish_watchlist_snapshot,
@@ -550,6 +626,8 @@ _HANDLERS = {
     "publish_analysis_atoms_snapshot": publish_analysis_atoms_snapshot,
     "expire_analysis_atoms": expire_analysis_atoms,
     "publish_research_snapshot": publish_research_snapshot,
+    "research_discovery": run_research_discovery_job,
+    "research_case_update": run_research_case_update_job,
 }
 
 
@@ -571,6 +649,8 @@ __all__ = [
     "publish_source_health_snapshot",
     "publish_watchlist_snapshot",
     "publish_story_clusters_snapshot",
+    "run_research_case_update_job",
+    "run_research_discovery_job",
     "route_job",
     "update_macro_release_reactions",
     "update_story_market_confirmation",

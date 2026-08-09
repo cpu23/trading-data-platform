@@ -272,6 +272,10 @@ class LLMStage:
         correlation_id: str | None = None,
         budget_context: BudgetContext | None = None,
         response_schema: dict | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.config = config
@@ -279,8 +283,15 @@ class LLMStage:
         self.correlation_id = correlation_id
         self.budget_context = budget_context or BudgetContext()
         self.response_schema = response_schema
+        self.reasoning_effort = reasoning_effort
         self.clock = clock
-        self.policy = resolve_request_policy(config, processor_id)
+        self.policy = resolve_request_policy(
+            config,
+            processor_id,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+        )
         self._deadline = clock() + self.policy.stage_timeout_seconds
         self.telemetry = LLMAttemptTelemetry(
             model=self.policy.model,
@@ -363,6 +374,7 @@ class LLMStage:
                 timeout=remaining,
                 structured_response=self.policy.structured_response,
                 response_schema=self.response_schema,
+                reasoning_effort=self.reasoning_effort,
                 max_retries=self.policy.request_attempts,
                 _budget_permit=self._budget_permit,
             )

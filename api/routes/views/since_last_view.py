@@ -166,6 +166,65 @@ def load_since_last_view(config: dict) -> dict:
         )
     except Exception:
         counts["sources"] = 0
+    try:
+        drivers = query_many(
+            """SELECT target, driver_label, direction, strength, horizon, valid_from
+               FROM research_market_drivers
+               WHERE superseded_at IS NULL
+                 AND changed_since_prior = TRUE
+                 AND valid_from > :marker
+               ORDER BY valid_from DESC, target
+               LIMIT :limit""",
+            params={"marker": marker, "limit": _SUMMARY_LIMIT},
+            config=config,
+        )
+        add(
+            "market_drivers",
+            "Major-market interpretation changed",
+            [
+                {
+                    "label": f"{row['target']}: {row['driver_label']}",
+                    "detail": (
+                        f"{row['direction']} · {row['strength']} · {row['horizon']}"
+                    ),
+                    "at": _iso(row["valid_from"]),
+                }
+                for row in drivers
+            ],
+        )
+    except Exception:
+        counts["market_drivers"] = 0
+    try:
+        cases = query_many(
+            """SELECT c.id, c.title, c.lifecycle_state,
+                      s.payload->'deliverable'->'what_changed'->>'text' AS what_changed,
+                      c.last_changed_at
+               FROM research_cases c
+               LEFT JOIN research_case_snapshots s
+                 ON s.case_id = c.id AND s.version = c.current_version
+               WHERE c.last_changed_at > :marker
+                 AND c.lifecycle_state IN ('research_ready', 'mature', 'weakening')
+                 AND c.economic_significance = 'high'
+               ORDER BY c.last_changed_at DESC, c.id DESC
+               LIMIT :limit""",
+            params={"marker": marker, "limit": _SUMMARY_LIMIT},
+            config=config,
+        )
+        add(
+            "research_cases",
+            "Material research developments",
+            [
+                {
+                    "label": row["title"],
+                    "detail": row["what_changed"] or row["lifecycle_state"],
+                    "at": _iso(row["last_changed_at"]),
+                    "href": f"/research/cases/{row['id']}",
+                }
+                for row in cases
+            ],
+        )
+    except Exception:
+        counts["research_cases"] = 0
     return {
         "available": True,
         "marker": marker.isoformat(),

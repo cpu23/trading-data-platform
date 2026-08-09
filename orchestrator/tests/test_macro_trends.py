@@ -108,7 +108,7 @@ class MacroTrendTests(unittest.TestCase):
         self.assertAlmostEqual(signal["latest"]["value"], 10.0)
         self.assertEqual(signal["direction"], "higher")
 
-    def test_official_uk_and_energy_series_are_checked(self):
+    def test_official_regional_and_energy_series_are_checked(self):
         signals = analyze_macro_trends(
             {
                 "BOE:BANK_RATE": {
@@ -116,6 +116,11 @@ class MacroTrendTests(unittest.TestCase):
                 },
                 "DCOILBRENTEU": {"history": history([82.0, 79.0, 78.0])},
                 "OECD:CLI_GB": {"history": history([100.2, 100.0, 99.8])},
+                "OECD:CPI_GB_YOY": {"history": history([2.8, 3.0, 3.1])},
+                "OECD:UNEMP_JP": {"history": history([2.5, 2.7, 2.6])},
+                "ECB:HICP_YOY": {"history": history([2.9, 2.7, 2.6])},
+                "IRSTCI01JPM156N": {"history": history([0.48, 0.23, 0.23])},
+                "IRLTLT01JPM156N": {"history": history([1.64, 1.42, 1.39])},
             }
         )
         by_id = {item["series_id"]: item for item in signals}
@@ -123,6 +128,11 @@ class MacroTrendTests(unittest.TestCase):
         self.assertEqual(by_id["BOE:BANK_RATE"]["direction"], "lower")
         self.assertEqual(by_id["DCOILBRENTEU"]["direction"], "higher")
         self.assertEqual(by_id["OECD:CLI_GB"]["direction"], "higher")
+        self.assertEqual(by_id["OECD:CPI_GB_YOY"]["direction"], "lower")
+        self.assertEqual(by_id["OECD:UNEMP_JP"]["direction"], "lower")
+        self.assertEqual(by_id["ECB:HICP_YOY"]["direction"], "higher")
+        self.assertEqual(by_id["IRSTCI01JPM156N"]["direction"], "higher")
+        self.assertEqual(by_id["IRLTLT01JPM156N"]["direction"], "higher")
 
     def test_boe_flow_series_are_not_treated_as_stock_growth(self):
         signals = analyze_macro_trends(
@@ -158,6 +168,15 @@ class MacroTrendTests(unittest.TestCase):
                 signal("DCOILWTICO", "higher"),
                 signal("BOE:BANK_RATE", "lower"),
                 signal("ECB:DEPOSIT_RATE", "higher"),
+                signal("ECB:HICP_YOY", "lower"),
+                signal("ECB:UNEMP", "unchanged"),
+                signal("OECD:CPI_GB_YOY", "lower"),
+                signal("OECD:UNEMP_GB", "higher"),
+                signal("OECD:CLI_JP", "lower"),
+                signal("OECD:CPI_JP_YOY", "higher"),
+                signal("OECD:UNEMP_JP", "lower"),
+                signal("IRSTCI01JPM156N", "higher"),
+                signal("IRLTLT01JPM156N", "higher"),
             ]
         )
 
@@ -165,6 +184,19 @@ class MacroTrendTests(unittest.TestCase):
         self.assertEqual(synthesis["domains"]["us_growth"]["state"], "strengthening")
         self.assertEqual(synthesis["domains"]["energy_prices"]["state"], "rising")
         self.assertEqual(synthesis["domains"]["uk_policy"]["state"], "easing")
+        self.assertEqual(synthesis["domains"]["euro_inflation"]["state"], "cooling")
+        self.assertEqual(synthesis["domains"]["uk_labor"]["state"], "weakening")
+        self.assertEqual(synthesis["domains"]["japan_growth"]["state"], "weakening")
+        self.assertEqual(synthesis["domains"]["japan_inflation"]["state"], "heating")
+        self.assertEqual(
+            synthesis["domains"]["japan_labor"]["state"], "strengthening"
+        )
+        self.assertEqual(
+            synthesis["domains"]["japan_money_market_rate"]["state"], "rising"
+        )
+        self.assertEqual(
+            synthesis["domains"]["japan_market_rates"]["state"], "rising"
+        )
         self.assertTrue(
             any(
                 "Energy-cost channel" in item

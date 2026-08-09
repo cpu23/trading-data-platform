@@ -22,9 +22,6 @@ class FredQualityTests(unittest.TestCase):
             )
 
     @patch("collectors.fred.query_latest")
-    @unittest.skip(
-        "skip: codex/market-intelligence-expansion contract not implemented in master"
-    )
     def test_start_date_overlaps_revision_window(self, query_latest):
         latest = datetime(2026, 6, 1, tzinfo=UTC)
         query_latest.return_value = [{"observed_at": latest}]

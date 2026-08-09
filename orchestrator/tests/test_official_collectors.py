@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
+from collectors.central_banks import CentralBanksCollector
 from collectors.cftc import CftcCollector
 from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
 
@@ -33,6 +34,52 @@ class OfficialCollectorTests(unittest.TestCase):
         for source_id in ("central_banks", "cftc", "oecd", "ecb", "boe", "eia"):
             self.assertTrue(collectors[source_id]["enabled"], source_id)
         self.assertEqual(collectors["eia"]["public_api_key"], "DEMO_KEY")
+        feeds = collectors["central_banks"]["feeds"]
+        institutions = {feed["institution"] for feed in feeds}
+        self.assertTrue({"fed", "ecb", "boe", "boj"}.issubset(institutions))
+        oecd_ids = {series["id"] for series in collectors["oecd"]["series"]}
+        self.assertTrue(
+            {"CPI_GB_YOY", "UNEMP_GB", "CPI_JP_YOY", "UNEMP_JP"}.issubset(oecd_ids)
+        )
+        ecb_ids = {series["id"] for series in collectors["ecb"]["series"]}
+        self.assertTrue({"HICP_YOY", "UNEMP"}.issubset(ecb_ids))
+    @patch("collectors.central_banks.make_request")
+    def test_central_bank_feed_forwards_source_headers(self, request):
+        response = Mock()
+        response.content = b"""
+            <rss><channel><item>
+              <title>Policy update</title>
+              <pubDate>Fri, 07 Aug 2026 12:00:00 +0000</pubDate>
+              <link>https://example.test/update</link>
+              <description>Published source text.</description>
+            </item></channel></rss>
+        """
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        headers = {"User-Agent": "research-client", "Accept": "application/xml"}
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [
+                        {
+                            "institution": "boe",
+                            "url": "https://example.test/feed",
+                            "headers": headers,
+                        }
+                    ]
+                }
+            }
+        }
+
+        records = CentralBanksCollector().collect(config, "corr")
+
+        self.assertEqual(records[0]["institution"], "boe")
+        request.assert_called_once_with(
+            "GET",
+            "https://example.test/feed",
+            headers=headers,
+            correlation_id="corr",
+        )
 
     @patch("collectors.cftc.make_request")
     def test_cftc_normalizes_positioning(self, request):

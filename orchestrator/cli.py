@@ -1,3 +1,5 @@
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -48,12 +50,16 @@ def collect(source_id, run_all):
         for collector_id, collector_result in result["collectors"].items():
             status = collector_result["status"]
             symbol = _status_symbol(status)
-            click.echo(
-                f"  {symbol} {collector_id}: {status} "
-                f"({collector_result['records_fetched']} fetched, "
-                f"{collector_result['records_written']} written, "
-                f"{collector_result['duration_ms']}ms)"
-            )
+            metric_keys = ("records_fetched", "records_written", "duration_ms")
+            if all(key in collector_result for key in metric_keys):
+                detail = (
+                    f"{collector_result['records_fetched']} fetched, "
+                    f"{collector_result['records_written']} written, "
+                    f"{collector_result['duration_ms']}ms"
+                )
+            else:
+                detail = str(collector_result.get("reason") or "no metrics")
+            click.echo(f"  {symbol} {collector_id}: {status} ({detail})")
         if result.get("processors"):
             click.echo("\nRunning enabled processors...")
             for proc_id, proc_result in result["processors"].items():
@@ -730,6 +736,404 @@ def benchmark_score(artifact, review):
     click.echo(f"Blind review complete: {decision['blind_review_complete']}")
     click.echo(f"Recommended: {decision.get('recommended') or 'none eligible'}")
     click.echo(f"Updated: {artifact / 'summary.json'}")
+
+
+def _emit_json(value):
+    click.echo(json.dumps(value, sort_keys=True, indent=2, default=str))
+
+
+@cli.command("research-run")
+@click.option("--force", is_flag=True, help="Re-run model stages instead of cached outputs.")
+def research_run(force):
+    """Queue the bounded macro and dynamic research workflow now."""
+    from research_intelligence.operations import enqueue_research_job
+
+    try:
+        result = enqueue_research_job(
+            load_config(),
+            job_type="research_discovery",
+            force=force,
+            triggered_by="cli",
+        )
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+@cli.command("research-update")
+@click.argument("case_id")
+@click.option("--force", is_flag=True, help="Re-run model stages instead of cached outputs.")
+def research_update(case_id, force):
+    """Queue one research case for bounded incremental update."""
+    from research_intelligence.operations import enqueue_research_job
+
+    try:
+        result = enqueue_research_job(
+            load_config(),
+            job_type="research_case_update",
+            case_id=case_id,
+            force=force,
+            triggered_by="cli",
+        )
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+@cli.command("research-rebuild")
+def research_rebuild():
+    """Queue a bounded cache-bypassing research rebuild."""
+    from research_intelligence.operations import enqueue_research_job
+
+    try:
+        result = enqueue_research_job(
+            load_config(),
+            job_type="research_discovery",
+            force=True,
+            triggered_by="cli",
+        )
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+@cli.command("research-retry")
+@click.argument("job_id")
+def research_retry(job_id):
+    """Retry failed research work without mutating prior job history."""
+    from research_intelligence.operations import retry_research_job
+
+    try:
+        result = retry_research_job(load_config(), job_id)
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+@cli.command("research-status")
+@click.option("--limit", default=20, type=click.IntRange(1, 100), show_default=True)
+def research_status_command(limit):
+    """Inspect research case counts, cold-data requests, costs, and jobs."""
+    from research_intelligence.queries import research_status
+
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            result = research_status(session, limit=limit)
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+@cli.command("research-inspect")
+@click.argument("case_id", required=False)
+@click.option("--limit", default=20, type=click.IntRange(1, 100), show_default=True)
+def research_inspect(case_id, limit):
+    """Inspect one case and history, or a bounded current case list."""
+    from research_intelligence.queries import case_history, get_case, list_cases
+
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            if case_id:
+                detail = get_case(session, case_id, detail_limit=limit)
+                if detail is None:
+                    raise click.ClickException("research case not found")
+                result = {
+                    **detail,
+                    "history": case_history(session, case_id, limit=limit),
+                }
+            else:
+                result = {"cases": list_cases(session, limit=limit)}
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(f"{type(exc).__name__}: {exc}") from exc
+    _emit_json(result)
+
+
+def _research_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise click.BadParameter("expected an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise click.BadParameter("timestamp must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def _research_overrides(values: tuple[str, ...], label: str) -> dict[str, str]:
+    output: dict[str, str] = {}
+    for value in values:
+        stage, separator, setting = value.partition("=")
+        if not separator or not stage.strip() or not setting.strip():
+            raise click.BadParameter(f"{label} must use STAGE=VALUE")
+        if stage.strip() in output:
+            raise click.BadParameter(f"duplicate {label} stage: {stage.strip()}")
+        output[stage.strip()] = setting.strip()
+    return output
+
+
+@cli.group("research")
+def research_evaluation():
+    """Point-in-time research replay and quality evaluation."""
+
+
+@research_evaluation.command("replay")
+@click.option("--as-of", "as_of", required=True, help="Timezone-aware ISO timestamp.")
+@click.option("--model", "models", multiple=True, help="Per-stage STAGE=MODEL override.")
+@click.option("--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override.")
+@click.option("--comparison-group", default=None, type=str)
+@click.option("--force", is_flag=True, help="Bypass reusable model-stage outputs.")
+def research_replay(as_of, models, prompts, comparison_group, force):
+    """Replay source-owned database evidence at one strict cutoff."""
+    from research_intelligence.replay import run_database_replay
+
+    replay_as_of = _research_timestamp(as_of)
+    model_overrides = _research_overrides(models, "model override")
+    prompt_overrides = _research_overrides(prompts, "prompt override")
+    failure: Exception | None = None
+    result: dict[str, object] | None = None
+    with get_session(load_config()) as session:
+        try:
+            run_id, execution, adapter_failures = run_database_replay(
+                session,
+                load_config(),
+                replay_as_of,
+                model_overrides=model_overrides,
+                prompt_overrides=prompt_overrides,
+                comparison_group=comparison_group,
+                force=force,
+            )
+            result = {
+                "run_id": run_id,
+                "replay_as_of": execution.replay_as_of,
+                "case_count": len(execution.cases),
+                "candidate_count": execution.candidate_count,
+                "errors": list(execution.errors),
+                "adapter_failures": dict(adapter_failures),
+            }
+        except Exception as exc:
+            failure = exc
+    if failure is not None:
+        raise click.ClickException(
+            f"{type(failure).__name__}: {str(failure)[:300]}"
+        ) from failure
+    _emit_json(result)
+
+
+@research_evaluation.group("benchmark")
+def research_benchmark():
+    """Run and compare version-controlled benchmark episodes."""
+
+
+@research_benchmark.command("list")
+def research_benchmark_list():
+    """List authored replay episodes and dates."""
+    from research_intelligence.benchmarks import list_benchmarks
+
+    _emit_json(
+        [
+            {
+                "id": item.episode_id,
+                "version": item.version,
+                "kind": item.episode_kind,
+                "synthetic": item.synthetic,
+                "replay_dates": list(item.replay_dates),
+                "evidence_count": len(item.evidence),
+            }
+            for item in list_benchmarks()
+        ]
+    )
+
+
+@research_benchmark.command("run")
+@click.argument("benchmark_id")
+@click.option("--date", "dates", multiple=True, help="Authored ISO replay date; repeatable.")
+@click.option("--model", "models", multiple=True, help="Per-stage STAGE=MODEL override.")
+@click.option("--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override.")
+@click.option("--comparison-group", default=None, type=str)
+@click.option("--force", is_flag=True, help="Bypass reusable model-stage outputs.")
+def research_benchmark_run(
+    benchmark_id, dates, models, prompts, comparison_group, force
+):
+    """Run one benchmark across all authored dates or selected dates."""
+    from research_intelligence.benchmarks import get_benchmark
+    from research_intelligence.replay import run_benchmark_replay_date
+
+    episode = get_benchmark(benchmark_id)
+    requested_dates = tuple(_research_timestamp(value) for value in dates)
+    selected = requested_dates or episode.replay_dates
+    unsupported = [value for value in selected if value not in episode.replay_dates]
+    if unsupported:
+        raise click.BadParameter("date must be one of the benchmark's authored dates")
+    model_overrides = _research_overrides(models, "model override")
+    prompt_overrides = _research_overrides(prompts, "prompt override")
+    results: list[dict[str, object]] = []
+    failures: list[str] = []
+    with get_session(load_config()) as session:
+        for replay_as_of in selected:
+            try:
+                run_id, execution = run_benchmark_replay_date(
+                    session,
+                    load_config(),
+                    episode,
+                    replay_as_of,
+                    model_overrides=model_overrides,
+                    prompt_overrides=prompt_overrides,
+                    comparison_group=comparison_group,
+                    force=force,
+                )
+                results.append(
+                    {
+                        "run_id": run_id,
+                        "replay_as_of": replay_as_of,
+                        "case_count": len(execution.cases),
+                        "candidate_count": execution.candidate_count,
+                        "errors": list(execution.errors),
+                    }
+                )
+            except Exception as exc:
+                failures.append(
+                    f"{replay_as_of.isoformat()} {type(exc).__name__}: {str(exc)[:240]}"
+                )
+    _emit_json(
+        {
+            "benchmark_id": benchmark_id,
+            "runs": results,
+            "failures": failures,
+        }
+    )
+    if failures:
+        raise click.ClickException(f"{len(failures)} benchmark date(s) failed")
+
+
+@research_benchmark.command("compare")
+@click.argument("left_run_id")
+@click.argument("right_run_id")
+def research_benchmark_compare(left_run_id, right_run_id):
+    """Compare two runs only when deterministic inputs are identical."""
+    from research_intelligence.evaluation import compare_replay_runs
+
+    with get_session(load_config()) as session:
+        try:
+            result = compare_replay_runs(session, left_run_id, right_run_id)
+        except Exception as exc:
+            raise click.ClickException(
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+    _emit_json(result)
+
+
+@research_benchmark.command("annotate")
+@click.argument("replay_run_id")
+@click.option(
+    "--overall-label",
+    type=click.Choice(("pass", "partial", "fail", "unclear")),
+    default=None,
+)
+@click.option(
+    "--dimension",
+    "dimensions",
+    multiple=True,
+    help="Human DIMENSION=LABEL review; repeatable.",
+)
+@click.option("--notes", default=None, type=str)
+@click.option("--annotated-by", required=True, type=str)
+@click.option("--expected-version", default=None, type=click.IntRange(min=0))
+def research_benchmark_annotate(
+    replay_run_id,
+    overall_label,
+    dimensions,
+    notes,
+    annotated_by,
+    expected_version,
+):
+    """Append a versioned human review without changing deterministic scores."""
+    from research_intelligence.scorecards import annotate_benchmark_scorecard
+
+    annotations: dict[str, object] = {}
+    if overall_label is not None:
+        annotations["overall_label"] = overall_label
+    if dimensions:
+        annotations["dimension_labels"] = _research_overrides(
+            dimensions, "dimension review"
+        )
+    if notes is not None:
+        annotations["notes"] = notes
+    with get_session(load_config()) as session:
+        try:
+            result = annotate_benchmark_scorecard(
+                session,
+                replay_run_id,
+                annotations,
+                annotated_by=annotated_by,
+                expected_version=expected_version,
+            )
+        except Exception as exc:
+            raise click.ClickException(
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+    _emit_json(result)
+
+
+@research_evaluation.command("metrics")
+@click.option("--scope", default=None, type=str)
+@click.option("--benchmark-id", default=None, type=str)
+@click.option("--limit", default=50, type=click.IntRange(1, 200), show_default=True)
+def research_metrics(scope, benchmark_id, limit):
+    """Inspect persisted deterministic research-quality metrics."""
+    from research_intelligence.queries import list_quality_metrics
+
+    with get_session(load_config()) as session:
+        try:
+            rows = list_quality_metrics(
+                session,
+                metric_scope=scope,
+                benchmark_id=benchmark_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise click.ClickException(
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+    _emit_json(rows)
+
+
+@research_evaluation.command("cohorts")
+@click.option("--since", default=None, help="Timezone-aware ISO timestamp.")
+@click.option("--persist/--no-persist", default=True, show_default=True)
+def research_cohorts(since, persist):
+    """Calculate live case survival and weak-case cohort metrics."""
+    from research_intelligence.evaluation import persist_live_case_cohorts
+    from research_intelligence.queries import live_case_cohorts
+
+    cutoff = _research_timestamp(since) if since else None
+    with get_session(load_config()) as session:
+        rows = live_case_cohorts(session, since=cutoff)
+        inserted = (
+            persist_live_case_cohorts(session, rows) if persist else 0
+        )
+    _emit_json({"cohorts": rows, "persisted": inserted})
+
+
+@research_evaluation.command("inspect-replay")
+@click.argument("replay_run_id")
+@click.option("--limit", default=100, type=click.IntRange(1, 200), show_default=True)
+def research_inspect_replay(replay_run_id, limit):
+    """Inspect one replay, cases, timeline, and persisted metrics."""
+    from research_intelligence.queries import get_replay_run
+
+    with get_session(load_config()) as session:
+        try:
+            result = get_replay_run(session, replay_run_id, detail_limit=limit)
+        except Exception as exc:
+            raise click.ClickException(
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+    if result is None:
+        raise click.ClickException("research replay not found")
+    _emit_json(result)
 
 
 def _status_symbol(status: str) -> str:

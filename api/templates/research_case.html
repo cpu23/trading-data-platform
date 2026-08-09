@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}{{ research_case.title if research_case else 'Research case' }} — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">{% include "partials/navigation.html" %}</div>
+</header>
+
+<main aria-label="Research case workspace">
+  <p class="rs-page-note" role="note"><a class="rs-back-link" href="/research">← Research</a> · evidence-linked investigation · no trade recommendation</p>
+
+  {% if not research_case %}
+    <div class="error-block" role="alert">Research case unavailable</div>
+  {% else %}
+    <section class="section" aria-labelledby="ri-case-title">
+      <div class="section-heading">
+        <span class="label">Research case</span>
+        <span class="section-note">version {{ research_case.current_version }} · last changed {{ research_case.last_changed_at }}</span>
+      </div>
+      <h1 class="rs-theme-name" id="ri-case-title">{{ research_case.title }}</h1>
+      <p class="rs-theme-meta">
+        {{ research_case.lifecycle_state | replace('_', ' ') }}
+        {% if research_case.case_type %} · {{ research_case.case_type | replace('_', ' ') }}{% endif %}
+        {% if research_case.horizon %} · {{ research_case.horizon | replace('_', ' ') }}{% endif %}
+        · {{ research_case.origin }}
+      </p>
+      <p class="rs-theme-definition">{{ research_case.definition }}</p>
+      <dl class="rs-component-list">
+        <dt>Economic significance</dt><dd>{{ research_case.economic_significance or 'unknown' }}</dd>
+        <dt>Market sensitivity</dt><dd>{{ research_case.market_sensitivity or 'unknown' }}</dd>
+        <dt>Persistence</dt><dd>{{ research_case.persistence or 'unknown' }}</dd>
+        <dt>Breadth</dt><dd>{{ research_case.breadth or 'unknown' }}</dd>
+        <dt>Investability</dt><dd>{{ research_case.investability or 'unknown' }}</dd>
+        <dt>Evidence strength</dt><dd>{{ research_case.evidence_strength or 'unknown' }}</dd>
+      </dl>
+    </section>
+
+    <section class="section" aria-labelledby="ri-brief-title">
+      <div class="section-heading">
+        <span class="label" id="ri-brief-title">Current research note</span>
+        <span class="section-note">Scannable conclusion; expand into evidence below.</span>
+      </div>
+      {% if not deliverable %}
+        <div class="empty-state">Insufficient validated evidence for a current deliverable.</div>
+      {% else %}
+        <div class="ri-brief-grid">
+          <div>
+            <h2 class="rs-section-title">What changed</h2>
+            <p>{{ deliverable.what_changed.text }}</p>
+          </div>
+          <div>
+            <h2 class="rs-section-title">Why it matters</h2>
+            <p>{{ deliverable.why_it_matters.text }}</p>
+          </div>
+        </div>
+        <h2 class="rs-section-title">Transmission</h2>
+        <p>{{ deliverable.transmission_text }}</p>
+
+        <h2 class="rs-section-title">Potential economic capture</h2>
+        {% if deliverable.potential_capture %}
+          <ul class="rs-plain-list">
+            {% for item in deliverable.potential_capture %}
+              <li><strong>{{ item.node_name }}</strong> <span class="rs-theme-meta">{{ item.node_type }}</span><br>{{ item.text }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="empty-state">No evidence-supported capture point yet.</p>
+        {% endif %}
+
+        <div class="ri-brief-grid">
+          <div>
+            <h2 class="rs-section-title">Evidence for</h2>
+            <ul class="rs-plain-list">
+              {% for item in deliverable.evidence_for %}<li>{{ item.text }}</li>{% else %}<li>None supplied.</li>{% endfor %}
+            </ul>
+          </div>
+          <div>
+            <h2 class="rs-section-title">Evidence against</h2>
+            <ul class="rs-plain-list">
+              {% for item in deliverable.evidence_against %}<li>{{ item.text }}</li>{% else %}<li>None supplied.</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+        <div class="ri-brief-grid">
+          <div>
+            <h2 class="rs-section-title">Weak links / unknowns</h2>
+            <ul class="rs-plain-list">
+              {% for item in deliverable.weak_links_unknowns %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}
+            </ul>
+          </div>
+          <div>
+            <h2 class="rs-section-title">What to watch</h2>
+            <ul class="rs-plain-list">
+              {% for item in deliverable.what_to_watch %}<li>{{ item }}</li>{% else %}<li>None recorded.</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="ri-chain-title">
+      <div class="section-heading">
+        <span class="label" id="ri-chain-title">Causal chain</span>
+        <span class="section-note">Epistemic state is separate from case lifecycle.</span>
+      </div>
+      {% if not detail.causal_edges %}
+        <div class="empty-state">No defensible causal chain yet.</div>
+      {% else %}
+        <ol class="rs-plain-list ri-chain">
+          {% for edge in detail.causal_edges %}
+            <li>
+              <p><strong>{{ edge.from_name }}</strong> → <code>{{ edge.relationship }}</code> → <strong>{{ edge.to_name }}</strong></p>
+              <p>{{ edge.mechanism }}</p>
+              <p class="rs-theme-meta">{{ edge.epistemic_state }}{% if edge.confidence is not none %} · confidence {{ '%.2f' | format(edge.confidence) }}{% endif %} · depth {{ edge.depth }}</p>
+              {% if edge.missing_evidence %}<p><strong>Missing:</strong> {{ edge.missing_evidence | join(' · ') }}</p>{% endif %}
+              {% if edge.break_conditions %}<p><strong>Break conditions:</strong> {{ edge.break_conditions | join(' · ') }}</p>{% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="ri-capture-title">
+      <div class="section-heading">
+        <span class="label" id="ri-capture-title">Value-capture assessment</span>
+        <span class="section-note">Independent dimensions; unknown is preserved.</span>
+      </div>
+      {% if not detail.value_capture %}
+        <div class="empty-state">No evidence-supported value-capture assessment.</div>
+      {% else %}
+        <div class="table-wrap">
+          <table class="rs-metric-table">
+            <thead><tr><th>Node</th><th>Demand</th><th>Scarcity</th><th>Pricing power</th><th>Margins</th><th>Supply response</th><th>Public-market evidence</th></tr></thead>
+            <tbody>
+              {% for item in detail.value_capture %}
+                <tr>
+                  <td><strong>{{ item.node_name }}</strong><br><span class="rs-theme-meta">{{ item.node_type }}</span></td>
+                  <td>{{ item.demand_impulse or 'unknown' }}</td>
+                  <td>{{ item.scarcity or 'unknown' }}</td>
+                  <td>{{ item.pricing_power or 'unknown' }}</td>
+                  <td>{{ item.margin_sensitivity or 'unknown' }}</td>
+                  <td>{{ item.supply_responsiveness or 'unknown' }}</td>
+                  <td>{{ item.public_market_investability or 'unknown' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="ri-against-title">
+      <div class="section-heading">
+        <span class="label" id="ri-against-title">Adversarial review</span>
+        <span class="section-note">Counterevidence and unsupported hypotheses remain separate.</span>
+      </div>
+      {% if detail.counterevidence %}
+        <ul class="rs-plain-list">
+          {% for item in detail.counterevidence %}
+            <li><strong>{{ item.kind | replace('_', ' ') }}</strong> <span class="rs-theme-meta">{{ item.epistemic_state }}</span><br>{{ item.statement }}{% if item.rationale %}<p>{{ item.rationale }}</p>{% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="empty-state">No evidence-supported counter-thesis recorded.</div>
+      {% endif %}
+
+      <h2 class="rs-section-title">Open research data requests</h2>
+      {% if detail.data_requests %}
+        <ul class="rs-plain-list">
+          {% for item in detail.data_requests %}
+            <li><strong>{{ item.subject }}</strong> <span class="rs-theme-meta">{{ item.priority }} · {{ item.status }} · {{ item.requested_evidence_type }}</span><br>{{ item.reason }}{% if item.desired_frequency %}<p>Desired frequency: {{ item.desired_frequency }}</p>{% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No cold-data request is open.</p>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="ri-evidence-title">
+      <div class="section-heading">
+        <span class="label" id="ri-evidence-title">Evidence and provenance</span>
+        <span class="section-note">Bounded excerpts only; source-owned records remain canonical.</span>
+      </div>
+      {% if detail.evidence %}
+        <ul class="rs-plain-list">
+          {% for item in detail.evidence %}
+            <li>
+              <strong>{{ item.title }}</strong>
+              <span class="rs-theme-meta">{{ item.relationship }} · {{ item.evidence_type }} · {{ item.source_name }} · {{ item.source_timestamp }}</span>
+              {% if item.excerpt %}<p>{{ item.excerpt }}</p>{% endif %}
+              {% if item.source_reference and item.source_reference[:4] == 'http' %}<a href="{{ item.source_reference }}" rel="noopener noreferrer">Source</a>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="empty-state">No evidence linked.</div>
+      {% endif %}
+      <p class="rs-theme-meta">Model {{ research_case.model_slug or 'none' }} · prompt {{ research_case.prompt_version or 'none' }} · input {{ research_case.input_fingerprint }}</p>
+    </section>
+
+    <section class="section" aria-labelledby="ri-history-title">
+      <div class="section-heading">
+        <span class="label" id="ri-history-title">Version history</span>
+        <span class="section-note">Immutable snapshots; newest first.</span>
+      </div>
+      <ol class="rs-plain-list">
+        {% for item in history %}
+          <li><strong>v{{ item.version }}</strong> · {{ item.lifecycle_state }} · {{ item.created_at }}<br>{{ item.change_summary }}</li>
+        {% else %}
+          <li>No snapshots.</li>
+        {% endfor %}
+      </ol>
+    </section>
+  {% endif %}
+</main>
+{% endblock %}

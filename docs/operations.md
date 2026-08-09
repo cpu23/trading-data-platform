@@ -149,9 +149,9 @@ Browser mutations require a signed, expiring CSRF token and same-origin validati
 Reuters is scheduled every two hours and requires no credential. Kobeissi uses TwitterAPI.io, remains on-demand by default, and should not be scheduled until its call budget and polling frequency are explicitly approved.
 
 ```bash
-docker compose exec orchestrator python cli.py news reuters
-docker compose exec orchestrator python cli.py news kobeissi
-docker compose exec orchestrator python cli.py news all
+docker compose exec orchestrator .venv/bin/python cli.py news reuters
+docker compose exec orchestrator .venv/bin/python cli.py news kobeissi
+docker compose exec orchestrator .venv/bin/python cli.py news all
 ```
 
 Publication is atomic: source snapshots and the unified feed are written before cursor advancement. A publication failure leaves the previous feed valid and the cursor unchanged. The dashboard shows a bounded summary; `/news` provides source and symbol/tag filters without a search database.
@@ -182,6 +182,42 @@ Regulator secrets belong in environment or private operator state:
 `COMPANIES_HOUSE_API_KEY`, `EDINET_API_KEY`, and `OPENDART_API_KEY`. Never place
 them in `config/config.yaml`. See
 [Investment Research and Filing Intake](investment-research.md).
+
+## Research-intelligence operations and cost caution
+
+The configured weekday schedule enqueues one deduplicated
+`research_discovery` durable analysis job. It reads bounded stored evidence;
+it does not collect every possible cold dataset. Run and inspect it directly:
+
+```bash
+docker compose exec orchestrator .venv/bin/python cli.py research-run
+docker compose exec orchestrator .venv/bin/python cli.py research-status
+docker compose exec orchestrator .venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec orchestrator .venv/bin/python cli.py research-update <case-uuid> --force
+docker compose exec orchestrator .venv/bin/python cli.py research-rebuild
+docker compose exec orchestrator .venv/bin/python cli.py research-retry <job-uuid>
+```
+
+`research-run`, `research-update`, and `research-rebuild` enqueue work; they do
+not run model calls in the request process. Normal refreshes coalesce by input
+identity. Forced rebuilds and retries get a new durable-job identity so a prior
+completed job cannot suppress requested work. The worker owns leases,
+heartbeats, attempts, and transactions. A failed adapter or candidate is
+recorded and isolated. `research-status` reports bounded case/job/cost
+aggregates; case detail/history expose persisted model, prompt, and input
+provenance, while `generation_attempts` retains validation issues, latency,
+tokens, and cost. The model gets one repair attempt after semantic validation
+failure, then that stage fails closed.
+
+The subsystem has `research_intelligence.model_budget_usd_per_run` in addition
+to `budgets.daily_llm_usd`. An ordinary `force` request bypasses reusable
+fingerprint output where explicitly supported; it does not bypass either
+budget. Research discovery is independent of portfolio holdings.
+
+Open `research_data_requests` identify evidence the platform does not yet have.
+Satisfy one by adding or extending a source-owned collector plus a normalized
+evidence adapter; do not paste fabricated evidence into case tables. See
+[Research Intelligence](research-intelligence.md).
 
 ## Logging, redaction, and retention
 

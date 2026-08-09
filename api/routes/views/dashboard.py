@@ -493,6 +493,50 @@ def _live_updates_enabled(config: dict) -> bool:
     return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
+def _load_research_intelligence(config: dict) -> dict:
+    """Load only bounded, material morning-bearing research context."""
+    try:
+        drivers = query_many(
+            """
+            SELECT target, driver_key, driver_label, direction, strength, horizon,
+                   mechanism, changed_since_prior, confidence, confidence_rationale,
+                   invalidation_conditions, valid_from
+            FROM research_market_drivers
+            WHERE superseded_at IS NULL
+            ORDER BY changed_since_prior DESC,
+                     CASE strength
+                         WHEN 'high' THEN 0 WHEN 'moderate' THEN 1
+                         WHEN 'low' THEN 2 ELSE 3
+                     END,
+                     target, valid_from DESC
+            LIMIT 8
+            """,
+            config=config,
+        )
+    except Exception:
+        drivers = []
+    try:
+        cases = query_many(
+            """
+            SELECT c.id, c.title, c.lifecycle_state, c.case_type, c.horizon,
+                   s.payload->'deliverable'->'what_changed'->>'text' AS what_changed,
+                   c.economic_significance, c.evidence_strength, c.last_changed_at
+            FROM research_cases c
+            LEFT JOIN research_case_snapshots s
+              ON s.case_id = c.id AND s.version = c.current_version
+            WHERE c.lifecycle_state IN ('research_ready', 'mature', 'weakening')
+              AND c.economic_significance = 'high'
+              AND c.last_changed_at >= NOW() - INTERVAL '7 days'
+            ORDER BY c.last_changed_at DESC, c.id DESC
+            LIMIT 4
+            """,
+            config=config,
+        )
+    except Exception:
+        cases = []
+    return {"drivers": drivers, "cases": cases}
+
+
 router = APIRouter()
 
 
@@ -515,6 +559,7 @@ async def dashboard(request: Request):
         news,
         top_strip_result,
         since_last_view_result,
+        research_intelligence_result,
     ) = await asyncio.gather(
         run_in_threadpool(get_regime_current),
         run_in_threadpool(get_briefing_latest),
@@ -529,6 +574,7 @@ async def dashboard(request: Request):
         run_in_threadpool(load_story_context, limit=12),
         run_in_threadpool(load_top_strip, config),
         run_in_threadpool(load_since_last_view, config),
+        run_in_threadpool(_load_research_intelligence, config),
         return_exceptions=True,
     )
 
@@ -639,6 +685,11 @@ async def dashboard(request: Request):
             {"available": False, "marker": None, "sections": [], "counts": {}}
             if isinstance(since_last_view_result, Exception)
             else since_last_view_result
+        ),
+        "research_intelligence": (
+            {"drivers": [], "cases": []}
+            if isinstance(research_intelligence_result, Exception)
+            else research_intelligence_result
         ),
         **tz_context,
         **event_context,

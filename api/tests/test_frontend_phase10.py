@@ -2,6 +2,9 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
@@ -11,6 +14,10 @@ class Phase10FrontendContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_js = (API_ROOT / "static/app.js").read_text()
+        cls.env = Environment(
+            loader=FileSystemLoader(API_ROOT / "templates"),
+            autoescape=select_autoescape(("html",)),
+        )
         cls.css = (API_ROOT / "static/style.css").read_text()
         cls.base = (API_ROOT / "templates/base.html").read_text()
         cls.header = (API_ROOT / "templates/partials/header.html").read_text()
@@ -76,9 +83,9 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertNotIn('id="run-cycle-btn"', self.header)
         self.assertNotIn('id="force-cycle-btn"', self.header)
         self.assertNotIn("cycle-mode-select", self.header)
-        # Navigation is present and trimmed to the three market pages.
+        # Navigation stays focused on primary market and research workspaces.
         self.assertIn("partials/navigation.html", self.header)
-        for label in ("Dashboard", "News", "Settings"):
+        for label in ("Dashboard", "News", "Investments", "Research", "Settings"):
             self.assertIn(label, self.navigation)
         for label in ("Logs", "Quality", "Operations"):
             self.assertNotIn(f"'{label}'", self.navigation)
@@ -137,6 +144,177 @@ class Phase10FrontendContracts(unittest.TestCase):
             context = load_story_context()
         self.assertEqual(context["status"], "unavailable")
         self.assertEqual(context["clusters"], [])
+
+
+class ResearchIntelligenceRenderingContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.env = Environment(
+            loader=FileSystemLoader(API_ROOT / "templates"),
+            autoescape=select_autoescape(("html",)),
+        )
+        cls.request = SimpleNamespace(
+            state=SimpleNamespace(csrf_token="token"),
+            url=SimpleNamespace(path="/research/cases/case-1"),
+        )
+
+    def test_case_workspace_renders_chain_capture_counterevidence_and_provenance(self):
+        rendered = self.env.get_template("research_case.html").render(
+            request=self.request,
+            app_asset_version="test",
+            research_case={
+                "title": "Grid equipment constraint",
+                "current_version": 3,
+                "last_changed_at": "2026-08-08T10:00:00Z",
+                "lifecycle_state": "research_ready",
+                "case_type": "structural",
+                "horizon": "months",
+                "origin": "discovered",
+                "definition": "Equipment capacity is tightening.",
+                "economic_significance": "high",
+                "market_sensitivity": "moderate",
+                "persistence": "high",
+                "breadth": "moderate",
+                "investability": None,
+                "evidence_strength": "high",
+                "model_slug": "model",
+                "prompt_version": "research_deliverable_v1",
+                "input_fingerprint": "fingerprint",
+            },
+            deliverable={
+                "what_changed": {"text": "Backlogs increased."},
+                "why_it_matters": {"text": "Capacity can constrain supply."},
+                "transmission_text": "Demand → capacity → pricing.",
+                "potential_capture": [
+                    {
+                        "node_name": "Transformer equipment",
+                        "node_type": "technology",
+                        "text": "Pricing may accrue if supply remains constrained.",
+                    }
+                ],
+                "evidence_for": [{"text": "Backlog evidence"}],
+                "evidence_against": [{"text": "Capacity additions"}],
+                "weak_links_unknowns": ["Company margin attribution"],
+                "what_to_watch": ["Lead times"],
+            },
+            detail={
+                "causal_edges": [
+                    {
+                        "from_name": "AI demand",
+                        "relationship": "raises_demand_for",
+                        "to_name": "Grid equipment",
+                        "mechanism": "Construction requires power equipment.",
+                        "epistemic_state": "hypothesis",
+                        "confidence": 0.7,
+                        "depth": 2,
+                        "missing_evidence": ["Unit orders"],
+                        "break_conditions": ["Capacity expands"],
+                    }
+                ],
+                "value_capture": [
+                    {
+                        "node_name": "Grid equipment",
+                        "node_type": "technology",
+                        "demand_impulse": "high",
+                        "scarcity": "high",
+                        "pricing_power": "moderate",
+                        "margin_sensitivity": None,
+                        "supply_responsiveness": "low",
+                        "public_market_investability": None,
+                    }
+                ],
+                "counterevidence": [
+                    {
+                        "kind": "alternative_explanation",
+                        "epistemic_state": "hypothesis",
+                        "statement": "Orders may be double counted.",
+                        "rationale": "Customer overlap is unresolved.",
+                    }
+                ],
+                "data_requests": [
+                    {
+                        "subject": "Transformer lead times",
+                        "priority": "high",
+                        "status": "unresolved",
+                        "requested_evidence_type": "industry_capacity",
+                        "reason": "Weakest edge",
+                        "desired_frequency": "monthly",
+                    }
+                ],
+                "evidence": [
+                    {
+                        "title": "Backlog update",
+                        "relationship": "supporting",
+                        "evidence_type": "filing_delta",
+                        "source_name": "company filing",
+                        "source_timestamp": "2026-08-08T09:00:00Z",
+                        "excerpt": "Backlog rose.",
+                        "source_reference": "https://example.test/filing",
+                    }
+                ],
+            },
+            history=[
+                {
+                    "version": 3,
+                    "lifecycle_state": "research_ready",
+                    "created_at": "2026-08-08T10:00:00Z",
+                    "change_summary": "Evidence strengthened",
+                }
+            ],
+        )
+
+        for text in (
+            "Grid equipment constraint",
+            "What changed",
+            "Potential economic capture",
+            "AI demand",
+            "hypothesis",
+            "Value-capture assessment",
+            "unknown",
+            "Orders may be double counted.",
+            "Transformer lead times",
+            "Evidence and provenance",
+            "research_deliverable_v1",
+            "Version history",
+        ):
+            self.assertIn(text, rendered)
+        self.assertNotIn("BUY", rendered)
+        self.assertNotIn("SELL", rendered)
+
+    def test_dashboard_intelligence_partial_renders_only_supplied_material_context(self):
+        template = self.env.get_template("partials/research_intelligence.html")
+        empty = template.render(research_intelligence={"drivers": [], "cases": []})
+        self.assertEqual(empty.strip(), "")
+
+        rendered = template.render(
+            research_intelligence={
+                "drivers": [
+                    {
+                        "target": "USD",
+                        "direction": "supportive",
+                        "driver_label": "Relative policy expectations",
+                        "mechanism": "Expected rate differential widened.",
+                        "strength": "moderate",
+                        "horizon": "weeks",
+                        "changed_since_prior": True,
+                    }
+                ],
+                "cases": [
+                    {
+                        "id": "case-1",
+                        "title": "Grid equipment constraint",
+                        "what_changed": "Independent evidence strengthened.",
+                        "lifecycle_state": "research_ready",
+                        "evidence_strength": "high",
+                    }
+                ],
+            }
+        )
+        self.assertIn("Major-market drivers", rendered)
+        self.assertIn("Relative policy expectations", rendered)
+        self.assertIn("supportive · moderate · weeks · changed", rendered)
+        self.assertIn("/research/cases/case-1", rendered)
+        self.assertIn("no trading signal", rendered)
 
 
 if __name__ == "__main__":

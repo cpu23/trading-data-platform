@@ -1,0 +1,222 @@
+{
+  "name": "food inflation and beef supply chain",
+  "evidence": [
+    {
+      "evidence_type": "macro_observation",
+      "evidence_id": "food-inflation",
+      "source_name": "official statistics",
+      "source_timestamp": "2026-07-01T12:00:00Z",
+      "title": "Food inflation remains elevated",
+      "bounded_excerpt": "Food inflation remains elevated and retail beef prices are firm.",
+      "entities": [
+        {"entity_type": "concept", "name": "Food inflation"},
+        {"entity_type": "product", "name": "Beef"},
+        {"entity_type": "industry", "name": "Retailers"}
+      ],
+      "structured_fields": {"industry": "Food supply chain"}
+    },
+    {
+      "evidence_type": "filing_delta",
+      "evidence_id": "packer-margin",
+      "source_name": "company filing",
+      "source_timestamp": "2026-07-08T12:00:00Z",
+      "title": "Processor input-cost pressure",
+      "bounded_excerpt": "Meat processors report that cattle input costs are compressing processor margins despite firm beef demand.",
+      "entities": [
+        {"entity_type": "industry", "name": "Meat processors"},
+        {"entity_type": "industry", "name": "Cattle producers"},
+        {"entity_type": "product", "name": "Beef"}
+      ],
+      "structured_fields": {"industry": "Food supply chain"}
+    },
+    {
+      "evidence_type": "story_cluster",
+      "evidence_id": "herd-rebuild",
+      "source_name": "wire service",
+      "source_timestamp": "2026-07-15T12:00:00Z",
+      "title": "Herd rebuilding remains slow",
+      "bounded_excerpt": "Cattle producers are rebuilding herds slowly because feed costs and biological capacity limit supply response.",
+      "entities": [
+        {"entity_type": "industry", "name": "Cattle producers"},
+        {"entity_type": "product", "name": "Feed"},
+        {"entity_type": "product", "name": "Beef"}
+      ],
+      "structured_fields": {"industry": "Food supply chain"}
+    },
+    {
+      "evidence_type": "investment_observation",
+      "evidence_id": "distribution",
+      "source_name": "industry report",
+      "source_timestamp": "2026-07-22T12:00:00Z",
+      "title": "Beef distribution remains tight",
+      "bounded_excerpt": "Distributors report firm retailer orders for beef while processor supply remains constrained.",
+      "entities": [
+        {"entity_type": "industry", "name": "Distributors"},
+        {"entity_type": "industry", "name": "Retailers"},
+        {"entity_type": "industry", "name": "Meat processors"},
+        {"entity_type": "product", "name": "Beef"}
+      ],
+      "structured_fields": {"industry": "Food supply chain"}
+    }
+  ],
+  "pattern": {
+    "label": "Beef supply constraint",
+    "definition": "Slow cattle supply response is transmitting feed and livestock scarcity through processors and distributors into firm retail beef economics.",
+    "case_type": "cyclical",
+    "horizon": "months",
+    "what_changed": "Independent evidence now links slow herd rebuilding with processor input pressure and firm downstream orders.",
+    "supporting_evidence_ids": [
+      "macro_observation:food-inflation",
+      "filing_delta:packer-margin",
+      "story_cluster:herd-rebuild",
+      "investment_observation:distribution"
+    ],
+    "contradicting_evidence_ids": [],
+    "context_evidence_ids": [],
+    "entities": [
+      {"entity_type": "concept", "name": "Food inflation"},
+      {"entity_type": "industry", "name": "Retailers"},
+      {"entity_type": "industry", "name": "Distributors"},
+      {"entity_type": "industry", "name": "Meat processors"},
+      {"entity_type": "industry", "name": "Cattle producers"},
+      {"entity_type": "product", "name": "Feed"},
+      {"entity_type": "product", "name": "Beef"}
+    ],
+    "industries": ["Food supply chain"],
+    "macro_drivers": ["food inflation", "agricultural supply"],
+    "missing_information": ["Current cattle inventory", "Distributor contract structure"],
+    "aliases": ["Cattle supply constraint"],
+    "importance": {
+      "economic_significance": "high",
+      "market_sensitivity": "moderate",
+      "persistence": "moderate",
+      "breadth": "moderate",
+      "investability": "moderate",
+      "evidence_strength": "high",
+      "time_sensitivity": "moderate"
+    }
+  },
+  "edges": [
+    {
+      "from_entity": {"entity_type": "product", "name": "Feed"},
+      "relationship": "raises_cost_for",
+      "to_entity": {"entity_type": "industry", "name": "Cattle producers"},
+      "mechanism": "Feed costs raise the cost of rebuilding cattle supply.",
+      "epistemic_state": "supported",
+      "evidence_ids": ["story_cluster:herd-rebuild"],
+      "missing_evidence": ["Current feed-cost series"],
+      "break_conditions": ["Feed costs ease while herd rebuilding accelerates"],
+      "depth": 1
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Cattle producers"},
+      "relationship": "supplies",
+      "to_entity": {"entity_type": "industry", "name": "Meat processors"},
+      "mechanism": "Cattle supply is the principal livestock input for meat processors.",
+      "epistemic_state": "observed",
+      "evidence_ids": ["filing_delta:packer-margin"],
+      "missing_evidence": [],
+      "break_conditions": ["Processors substitute away from cattle input"],
+      "depth": 2
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Meat processors"},
+      "relationship": "supplies",
+      "to_entity": {"entity_type": "industry", "name": "Distributors"},
+      "mechanism": "Processors may pass constrained beef volume into distribution channels.",
+      "epistemic_state": "hypothesis",
+      "evidence_ids": ["investment_observation:distribution"],
+      "missing_evidence": ["Distributor purchase contracts"],
+      "break_conditions": ["Distributor inventories offset processor constraints"],
+      "depth": 3
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Distributors"},
+      "relationship": "supplies",
+      "to_entity": {"entity_type": "industry", "name": "Retailers"},
+      "mechanism": "Distributor availability may shape retailer beef supply and pricing.",
+      "epistemic_state": "hypothesis",
+      "evidence_ids": [],
+      "missing_evidence": ["Retail shipment and inventory data"],
+      "break_conditions": ["Retailers source sufficient beef through other channels"],
+      "depth": 4
+    }
+  ],
+  "capture": [
+    {
+      "node": {"entity_type": "industry", "name": "Meat processors"},
+      "dimensions": {
+        "demand_impulse": "high",
+        "revenue_exposure": "high",
+        "supply_responsiveness": "low",
+        "scarcity": "high",
+        "pricing_power": "moderate",
+        "margin_sensitivity": "high",
+        "capacity_lead_time": "moderate",
+        "evidence_strength": "moderate"
+      },
+      "rationale": {
+        "demand_impulse": "Firm beef demand is reported.",
+        "revenue_exposure": "Processors derive revenue from beef volume.",
+        "supply_responsiveness": "Cattle supply rebuilds slowly.",
+        "scarcity": "Processor supply remains constrained.",
+        "pricing_power": "Firm demand may permit some cost pass-through.",
+        "margin_sensitivity": "The filing evidence reports input-cost margin pressure.",
+        "capacity_lead_time": "Biological production limits make supply response slow.",
+        "evidence_strength": "Several independent sources support the chain, but distributor economics remain incomplete."
+      },
+      "evidence_ids": ["filing_delta:packer-margin", "story_cluster:herd-rebuild", "investment_observation:distribution"],
+      "unknowns": ["Cost pass-through by processor", "Public-company revenue exposure"]
+    }
+  ],
+  "adversarial": {
+    "counterevidence": [
+      {
+        "kind": "alternative_explanation",
+        "statement": "Firm retail pricing may reflect downstream markups rather than producer scarcity alone.",
+        "epistemic_state": "hypothesis",
+        "evidence_ids": [],
+        "edge_index": null,
+        "rationale": "The available evidence does not decompose margins across each intermediary."
+      },
+      {
+        "kind": "contradicting_evidence",
+        "statement": "High cattle input costs can compress processor margins even when retail beef prices are firm.",
+        "epistemic_state": "supported",
+        "evidence_ids": ["filing_delta:packer-margin"],
+        "edge_index": 1,
+        "rationale": "Scarcity need not accrue to processors."
+      }
+    ],
+    "data_requests": [
+      {
+        "subject": "Distributor beef purchase contracts",
+        "requested_evidence_type": "industry_contracts",
+        "reason": "This is the weakest unsupported edge between processors and retailers.",
+        "desired_frequency": "quarterly",
+        "priority": "high",
+        "candidate_source_class": "industry"
+      }
+    ],
+    "invalidation_conditions": ["Cattle supply expands while retail beef pricing weakens"],
+    "strengthening_observations": ["Processor backlogs remain firm while herd rebuilding stays slow"],
+    "weakest_edge_index": 2
+  },
+  "deliverable": {
+    "what_changed": {"text": "Independent evidence now links slow herd rebuilding with processor input pressure and firm distributor orders.", "evidence_ids": ["story_cluster:herd-rebuild", "filing_delta:packer-margin", "investment_observation:distribution"]},
+    "why_it_matters": {"text": "A persistent cattle constraint can transmit uneven economics across producers, processors, distributors and retailers.", "evidence_ids": ["story_cluster:herd-rebuild", "filing_delta:packer-margin"]},
+    "transmission_text": "Feed costs constrain cattle supply; cattle scarcity pressures processors; downstream transmission remains partly hypothetical.",
+    "transmission_edge_indexes": [0, 1, 2, 3],
+    "potential_capture": [
+      {"node_type": "industry", "node_key": "meat-processors", "node_name": "Meat processors", "text": "Firm demand supports revenue, but cattle input pressure makes margin capture uncertain.", "evidence_ids": ["filing_delta:packer-margin", "investment_observation:distribution"]}
+    ],
+    "evidence_for": [
+      {"text": "Herd rebuilding remains slow because feed costs and biological capacity constrain supply.", "evidence_ids": ["story_cluster:herd-rebuild"]}
+    ],
+    "evidence_against": [
+      {"text": "Processor margins are being compressed by cattle input costs.", "evidence_ids": ["filing_delta:packer-margin"]}
+    ],
+    "weak_links_unknowns": ["Distributor contracts are not observed", "Public-company exposure is not established"],
+    "what_to_watch": ["Cattle inventory", "Feed costs", "Processor margins", "Retail beef pricing"]
+  }
+}

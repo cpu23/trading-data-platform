@@ -273,6 +273,26 @@ SIGNAL_SPECS = (
         tolerance=0.02,
     ),
     SignalSpec(
+        "IRSTCI01JPM156N",
+        "Japan call money/interbank rate",
+        "percent",
+        "basis_points",
+        "rose",
+        "fell",
+        "was unchanged",
+        tolerance=0.02,
+    ),
+    SignalSpec(
+        "IRLTLT01JPM156N",
+        "Japan 10-year government bond yield",
+        "percent",
+        "basis_points",
+        "rose",
+        "fell",
+        "was unchanged",
+        tolerance=0.02,
+    ),
+    SignalSpec(
         "OECD:CLI_US",
         "US composite leading indicator",
         "index_points",
@@ -307,6 +327,66 @@ SIGNAL_SPECS = (
         "Japan composite leading indicator",
         "index_points",
         "index_points",
+        "rose",
+        "fell",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "OECD:CPI_GB_YOY",
+        "UK consumer-price inflation",
+        "percent_yoy",
+        "percentage_points",
+        "accelerated",
+        "slowed",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "OECD:UNEMP_GB",
+        "UK unemployment rate",
+        "percent",
+        "percentage_points",
+        "rose",
+        "fell",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "OECD:CPI_JP_YOY",
+        "Japan consumer-price inflation",
+        "percent_yoy",
+        "percentage_points",
+        "accelerated",
+        "slowed",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "OECD:UNEMP_JP",
+        "Japan unemployment rate",
+        "percent",
+        "percentage_points",
+        "rose",
+        "fell",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "ECB:HICP_YOY",
+        "Euro-area consumer-price inflation",
+        "percent_yoy",
+        "percentage_points",
+        "accelerated",
+        "slowed",
+        "was unchanged",
+        tolerance=0.05,
+    ),
+    SignalSpec(
+        "ECB:UNEMP",
+        "Euro-area unemployment rate",
+        "percent",
+        "percentage_points",
         "rose",
         "fell",
         "was unchanged",
@@ -519,7 +599,19 @@ def build_macro_synthesis(signals: list[dict]) -> dict:
         "euro_credit": _single_domain(
             by_id, "ECB:CREDIT_NFC", "expanding", "contracting"
         ),
+        "euro_inflation": _single_domain(
+            by_id, "ECB:HICP_YOY", "heating", "cooling"
+        ),
+        "euro_labor": _single_domain(
+            by_id, "ECB:UNEMP", "weakening", "strengthening"
+        ),
         "uk_growth": _single_domain(by_id, "OECD:CLI_GB", "strengthening", "weakening"),
+        "uk_inflation": _single_domain(
+            by_id, "OECD:CPI_GB_YOY", "heating", "cooling"
+        ),
+        "uk_labor": _single_domain(
+            by_id, "OECD:UNEMP_GB", "weakening", "strengthening"
+        ),
         "uk_policy": _single_domain(by_id, "BOE:BANK_RATE", "tightening", "easing"),
         "uk_market_rates": _single_domain(
             by_id, "IRLTLT01GBM156N", "rising", "falling"
@@ -530,6 +622,24 @@ def build_macro_synthesis(signals: list[dict]) -> dict:
             ("BOE:TOTAL_LENDING_INDIVIDUALS", "BOE:MORTGAGE_APPROVALS"),
             "expanding",
             "contracting",
+        ),
+        "japan_growth": _single_domain(
+            by_id, "OECD:CLI_JP", "strengthening", "weakening"
+        ),
+        "japan_inflation": _single_domain(
+            by_id, "OECD:CPI_JP_YOY", "heating", "cooling"
+        ),
+        "japan_labor": _single_domain(
+            by_id, "OECD:UNEMP_JP", "weakening", "strengthening"
+        ),
+        "japan_money_market_rate": _single_domain(
+            by_id, "IRSTCI01JPM156N", "rising", "falling"
+        ),
+        "japan_market_rates": _consensus_domain(
+            by_id,
+            ("IRSTCI01JPM156N", "IRLTLT01JPM156N"),
+            "rising",
+            "falling",
         ),
         "energy_prices": _consensus_domain(
             by_id,

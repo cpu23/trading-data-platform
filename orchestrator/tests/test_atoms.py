@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -145,6 +146,13 @@ class AtomValidationTests(unittest.TestCase):
         insert_sql = session.calls[1][0]
         self.assertIn("ON CONFLICT DO NOTHING RETURNING *", insert_sql)
         session.commit.assert_not_called()
+        insert_params = session.calls[1][1]
+        self.assertEqual(json.loads(insert_params["affected_assets"]), ["EURUSD"])
+        self.assertEqual(
+            json.loads(insert_params["confidence_components"]),
+            {"data_quality": 0.9},
+        )
+        self.assertEqual(json.loads(insert_params["invalidation_conditions"]), [])
 
     def test_duplicate_fingerprint_is_a_noop_without_new_atom(self):
         session = Session([Result(first={"source_timestamp": NOW}), Result(first=None)])

@@ -1,0 +1,39 @@
+{% if research_intelligence.drivers or research_intelligence.cases %}
+<section class="cockpit-shell ri-dashboard" aria-labelledby="ri-dashboard-title">
+  <div class="section-heading">
+    <h2 id="ri-dashboard-title">Research intelligence</h2>
+    <span class="section-note">current context · no trading signal</span>
+  </div>
+  <div class="ri-dashboard-grid">
+    {% if research_intelligence.drivers %}
+    <div>
+      <h3>Major-market drivers</h3>
+      <ul class="ri-driver-list">
+        {% for driver in research_intelligence.drivers %}
+        <li>
+          <span class="ri-driver-target">{{ driver.target }}</span>
+          <span class="ri-driver-direction">{% if driver.direction == 'supportive' %}+{% elif driver.direction == 'headwind' %}−{% elif driver.direction == 'neutral' %}·{% else %}?{% endif %}</span>
+          <span><strong>{{ driver.driver_label }}</strong> — {{ driver.mechanism }}</span>
+          <span class="section-note">{{ driver.direction }} · {{ driver.strength }} · {{ driver.horizon }}{% if driver.changed_since_prior %} · changed{% endif %}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if research_intelligence.cases %}
+    <div>
+      <h3>Material research developments</h3>
+      <ul class="ri-research-list">
+        {% for case in research_intelligence.cases %}
+        <li>
+          <a href="/research/cases/{{ case.id }}"><strong>{{ case.title }}</strong></a>
+          {% if case.what_changed %}<p>{{ case.what_changed }}</p>{% endif %}
+          <span class="section-note">{{ case.lifecycle_state | replace('_', ' ') }} · {{ case.evidence_strength }} evidence</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

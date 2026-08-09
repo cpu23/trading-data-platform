@@ -6,7 +6,43 @@
 </header>
 
 <main aria-label="Long-horizon research workspace">
-  <p class="rs-page-note" role="note">Long-horizon research - updated on save, not live</p>
+  <p class="rs-page-note" role="note">Long-horizon research - updated on save, not live · <a href="/research/evaluation">Replay &amp; quality evaluation</a></p>
+
+  <section class="section" aria-labelledby="ri-cases-title">
+    <div class="section-heading">
+      <span class="label" id="ri-cases-title">Research cases</span>
+      <span class="section-note">Dynamically discovered developments, evidence first. No trade recommendations.</span>
+    </div>
+    {% if index.cases_status == 'unavailable' %}
+      <div class="error-block" role="alert">Unavailable</div>
+    {% elif not index.cases %}
+      <div class="empty-state">No coherent research cases have passed the evidence gate.</div>
+    {% else %}
+      <ul class="rs-theme-list">
+        {% for case in index.cases %}
+          <li class="rs-theme-row">
+            <a class="rs-theme-link" href="/research/cases/{{ case.id }}">{{ case.title }}</a>
+            <span class="rs-theme-meta">
+              {{ case.lifecycle_state | replace('_', ' ') }}
+              {% if case.case_type %} · {{ case.case_type | replace('_', ' ') }}{% endif %}
+              {% if case.horizon %} · {{ case.horizon | replace('_', ' ') }}{% endif %}
+            </span>
+            {% if case.what_changed %}
+              <p class="rs-theme-definition"><strong>Changed:</strong> {{ case.what_changed }}</p>
+            {% elif case.definition %}
+              <p class="rs-theme-definition">{{ case.definition }}</p>
+            {% endif %}
+            <p class="rs-theme-counts">
+              <span>{{ case.evidence_count }} evidence</span>
+              <span>{{ case.counterevidence_count }} against</span>
+              <span>{{ case.open_request_count }} open data requests</span>
+              <span>version {{ case.current_version }}</span>
+            </p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
 
   <section class="section" aria-labelledby="rs-funnel-title">
     <div class="section-heading">

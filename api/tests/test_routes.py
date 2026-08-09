@@ -1546,3 +1546,247 @@ class TestCalendarDisplayTimezone(unittest.TestCase):
         self.assertEqual(event["day_key"], "2026-01-02")
         self.assertEqual(event["day_label_short"], "Fri")
         self.assertEqual(event["display_timezone"], "Asia/Tokyo")
+
+
+
+class TestResearchIntelligenceRoutes(unittest.TestCase):
+    CASE_ID = "11111111-1111-1111-1111-111111111111"
+
+    def test_research_reads_and_triggers_require_authentication(self):
+        self.assertEqual(
+            client.get("/api/research/cases").status_code,
+            401,
+        )
+        self.assertEqual(
+            client.post("/api/research/run", json={}).status_code,
+            401,
+        )
+        self.assertEqual(
+            client.post(
+                f"/api/research/replays/{self.CASE_ID}/annotations",
+                json={"overall_label": "pass"},
+            ).status_code,
+            401,
+        )
+
+
+    def test_case_list_is_bounded_and_serializes_research_state(self):
+        helpers = MagicMock()
+        helpers.list_cases.return_value = [
+            {
+                "id": self.CASE_ID,
+                "title": "Grid equipment constraint",
+                "lifecycle_state": "research_ready",
+                "changed_since_prior": True,
+                "last_evidence_at": datetime(2026, 8, 8, 10, 0, tzinfo=UTC),
+                "evidence_count": 7,
+                "counterevidence_count": 2,
+                "data_request_count": 1,
+            }
+        ]
+        with (
+            patch("routes.json.research._research_queries", helpers),
+            patch("routes.json.research.get_session") as get_session,
+        ):
+            response = client.get(
+                "/api/research/cases?limit=7&offset=2&changed_only=true",
+                headers=AUTH,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["limit"], 7)
+        self.assertEqual(payload["offset"], 2)
+        self.assertEqual(payload["cases"][0]["evidence_count"], 7)
+        self.assertEqual(payload["cases"][0]["counterevidence_count"], 2)
+        self.assertEqual(
+            payload["cases"][0]["last_evidence_at"], "2026-08-08T10:00:00+00:00"
+        )
+        helpers.list_cases.assert_called_once_with(
+            get_session.return_value.__enter__.return_value,
+            limit=7,
+            offset=2,
+            lifecycle_state=None,
+            changed_only=True,
+        )
+
+    def test_case_detail_404_and_query_bounds_are_explicit(self):
+        helpers = MagicMock()
+        helpers.get_case.return_value = None
+        with (
+            patch("routes.json.research._research_queries", helpers),
+            patch("routes.json.research.get_session"),
+        ):
+            missing = client.get(
+                f"/api/research/cases/{self.CASE_ID}", headers=AUTH
+            )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["detail"], "Research case not found")
+
+        for path in (
+            "/api/research/cases?limit=0",
+            "/api/research/cases?limit=101",
+            "/api/research/cases?offset=1001",
+            f"/api/research/cases/{self.CASE_ID}?detail_limit=201",
+            f"/api/research/cases/{self.CASE_ID}/history?limit=101",
+            "/api/research/drivers?limit=101",
+            "/api/research/status?limit=101",
+        ):
+            with self.subTest(path=path):
+                response = client.get(path, headers=AUTH)
+                self.assertEqual(response.status_code, 422)
+
+    def test_case_history_is_bounded_and_serializes_versions(self):
+        helpers = MagicMock()
+        helpers.case_history.return_value = [
+            {
+                "version": 2,
+                "lifecycle_state": "corroborated",
+                "created_at": datetime(2026, 8, 8, 11, 0, tzinfo=UTC),
+            }
+        ]
+        with (
+            patch("routes.json.research._research_queries", helpers),
+            patch("routes.json.research.get_session") as get_session,
+        ):
+            response = client.get(
+                f"/api/research/cases/{self.CASE_ID}/history?limit=7",
+                headers=AUTH,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["history"][0]["version"], 2)
+        helpers.case_history.assert_called_once_with(
+            get_session.return_value.__enter__.return_value,
+            self.CASE_ID,
+            limit=7,
+        )
+
+    def test_replay_annotation_is_strict_versioned_and_authenticated(self):
+        annotate = MagicMock(
+            return_value={
+                "replay_run_id": self.CASE_ID,
+                "annotation_version": 2,
+                "annotations": {"overall_label": "partial"},
+                "annotated_by": "authenticated_operator",
+            }
+        )
+        with (
+            patch(
+                "routes.json.research._annotate_benchmark_scorecard", annotate
+            ),
+            patch("routes.json.research.get_session") as get_session,
+        ):
+            response = client.post(
+                f"/api/research/replays/{self.CASE_ID}/annotations",
+                json={"overall_label": "partial", "expected_version": 1},
+                headers=AUTH,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["annotation_version"], 2)
+        annotate.assert_called_once_with(
+            get_session.return_value.__enter__.return_value,
+            self.CASE_ID,
+            {"overall_label": "partial"},
+            annotated_by="authenticated_operator",
+            expected_version=1,
+        )
+
+        annotate.reset_mock()
+        with patch(
+            "routes.json.research._annotate_benchmark_scorecard", annotate
+        ):
+            invalid = client.post(
+                f"/api/research/replays/{self.CASE_ID}/annotations",
+                json={"overall_label": "pass", "unsupported": True},
+                headers=AUTH,
+            )
+        self.assertEqual(invalid.status_code, 422)
+        annotate.assert_not_called()
+
+    def test_run_trigger_is_strict_budgeted_and_forwards_force(self):
+        upstream = AsyncMock(
+            return_value={
+                "job_id": "22222222-2222-4222-8222-222222222222",
+                "status": "queued",
+            }
+        )
+        with (
+            patch("routes.json.research._enforce_api_budget") as budget,
+            patch("routes.json.research._research_orchestrator_post", upstream),
+        ):
+            response = client.post(
+                "/api/research/run",
+                json={"force": True},
+                headers=AUTH,
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "queued")
+        budget.assert_called_once_with(None)
+        self.assertEqual(upstream.await_args.args[1], "/research/run")
+        self.assertEqual(upstream.await_args.args[2], {"force": True})
+
+        with (
+            patch("routes.json.research._enforce_api_budget") as budget,
+            patch(
+                "routes.json.research._research_orchestrator_post",
+                new_callable=AsyncMock,
+            ) as upstream,
+        ):
+            invalid = client.post(
+                "/api/research/run",
+                json={"force": False, "unbounded": True},
+                headers=AUTH,
+            )
+        self.assertEqual(invalid.status_code, 422)
+        budget.assert_not_called()
+        upstream.assert_not_awaited()
+
+    def test_case_trigger_checks_identity_and_retry_validates_job_id(self):
+        helpers = MagicMock()
+        helpers.get_case.return_value = {"id": self.CASE_ID}
+        upstream = AsyncMock(
+            return_value={
+                "job_id": "22222222-2222-4222-8222-222222222222",
+                "status": "queued",
+            }
+        )
+        with (
+            patch("routes.json.research._research_queries", helpers),
+            patch("routes.json.research.get_session"),
+            patch("routes.json.research._enforce_api_budget"),
+            patch("routes.json.research._research_orchestrator_post", upstream),
+        ):
+            response = client.post(
+                f"/api/research/cases/{self.CASE_ID}/run",
+                json={"force": False},
+                headers=AUTH,
+            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            upstream.await_args.args[1],
+            f"/research/cases/{self.CASE_ID}/run",
+        )
+
+        helpers.get_case.return_value = None
+        with (
+            patch("routes.json.research._research_queries", helpers),
+            patch("routes.json.research.get_session"),
+            patch(
+                "routes.json.research._research_orchestrator_post",
+                new_callable=AsyncMock,
+            ) as missing_upstream,
+        ):
+            missing = client.post(
+                f"/api/research/cases/{self.CASE_ID}/run",
+                headers=AUTH,
+            )
+        self.assertEqual(missing.status_code, 404)
+        missing_upstream.assert_not_awaited()
+
+        invalid_retry = client.post(
+            "/api/research/jobs/not-a-uuid/retry",
+            headers=AUTH,
+        )
+        self.assertEqual(invalid_retry.status_code, 422)

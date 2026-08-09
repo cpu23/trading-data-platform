@@ -390,6 +390,25 @@ class DataQualityTests(unittest.TestCase):
         )
 
     @patch("data_quality.get_session")
+    def test_oanda_friday_close_is_fresh_during_weekend(self, get_session):
+        """A closed FX market must not degrade health solely because hours elapsed."""
+        from data_quality import DATA_QUALITY_CHECKS
+
+        friday_close = datetime(2026, 8, 7, 20, 59, tzinfo=UTC)
+        session = self._make_session(fetchone=(friday_close,))
+        get_session.return_value.__enter__.return_value = session
+        sunday = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = sunday
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = DATA_QUALITY_CHECKS["oanda_freshness"]({})
+
+        self.assertTrue(result["healthy"], result)
+        self.assertEqual(result["detail"], "fresh")
+        self.assertEqual(result["age_hours"], 0.0)
+
+    @patch("data_quality.get_session")
     def test_monthly_freshness_uses_monthly_threshold(self, get_session):
         """Monthly series freshness uses a monthly threshold (45 days), not generic hours."""
         from data_quality import check_freshness
@@ -556,6 +575,93 @@ class DataQualityTests(unittest.TestCase):
             f"Weekend gaps should be excluded for daily frequency; got {result}",
         )
         self.assertEqual(len(result.get("gaps", [])), 0)
+
+    @patch("data_quality.get_session")
+    def test_monthly_gap_check_uses_month_periods_not_calendar_days(
+        self, get_session
+    ):
+        from data_quality import check_gaps
+
+        now = datetime(2026, 8, 9, 12, tzinfo=UTC)
+        session = self._make_session(
+            fetchall=[("2026-06-01",), ("2026-05-01",), ("2026-04-01",)]
+        )
+        get_session.return_value.__enter__.return_value = session
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = check_gaps(
+                source_id="fred",
+                table="macro_series",
+                date_column="observed_at",
+                expected_interval="1 month",
+                config={},
+                frequency="monthly",
+                series_id="CPIAUCSL",
+            )
+
+        self.assertTrue(result["healthy"], result)
+        self.assertEqual(result["gaps"], [])
+
+    @patch("data_quality.get_session")
+    def test_monthly_gap_check_finds_only_missing_internal_month(
+        self, get_session
+    ):
+        from data_quality import check_gaps
+
+        now = datetime(2026, 8, 9, 12, tzinfo=UTC)
+        session = self._make_session(fetchall=[("2026-06-01",), ("2026-04-01",)])
+        get_session.return_value.__enter__.return_value = session
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = check_gaps(
+                source_id="fred",
+                table="macro_series",
+                date_column="observed_at",
+                expected_interval="1 month",
+                config={},
+                frequency="monthly",
+                series_id="CPIAUCSL",
+            )
+
+        self.assertFalse(result["healthy"], result)
+        self.assertEqual(result["gaps"], ["2026-05"])
+
+    @patch("data_quality.get_session")
+    def test_weekly_gap_check_uses_week_periods_without_trailing_false_gap(
+        self, get_session
+    ):
+        from data_quality import check_gaps
+
+        now = datetime(2026, 8, 9, 12, tzinfo=UTC)
+        session = self._make_session(
+            fetchall=[
+                ("2026-07-30",),
+                ("2026-07-23",),
+                ("2026-07-16",),
+                ("2026-07-09",),
+            ]
+        )
+        get_session.return_value.__enter__.return_value = session
+
+        with patch("data_quality.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = check_gaps(
+                source_id="fred",
+                table="macro_series",
+                date_column="observed_at",
+                expected_interval="1 week",
+                config={},
+                frequency="weekly",
+                series_id="ICSA",
+            )
+
+        self.assertTrue(result["healthy"], result)
+        self.assertEqual(result["gaps"], [])
 
     # ------------------------------------------------------------------
     # Frequency-aware gaps — per-series filtering

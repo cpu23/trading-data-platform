@@ -1,0 +1,113 @@
+id: metaverse_marketing_noise
+version: 1
+synthetic: true
+episode_kind: noise
+description: >-
+  Synthetic false-positive corpus containing repeated metaverse marketing language
+  without corroborated demand, capacity, revenue, pricing, or operating evidence.
+replay_dates:
+  - 2021-11-30T23:59:59Z
+  - 2022-02-28T23:59:59Z
+  - 2022-06-30T23:59:59Z
+evidence:
+  - evidence_type: story_cluster
+    evidence_id: metaverse-product-launch
+    source_name: Synthetic consumer technology wire
+    source_timestamp: 2021-11-02T10:00:00Z
+    available_at: 2021-11-02T10:00:00Z
+    title: Consumer brand announces metaverse product launch
+    bounded_excerpt: A consumer brand uses metaverse language for a limited promotional product launch but provides no demand, revenue, capacity, or repeat-purchase evidence.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+      - {entity_type: industry, name: Consumer brands}
+    structured_fields:
+      source_count: 1
+      research_data_types: [marketing_announcement]
+  - evidence_type: story_cluster
+    evidence_id: metaverse-event
+    source_name: Synthetic entertainment wire
+    source_timestamp: 2021-12-09T11:00:00Z
+    available_at: 2021-12-09T11:00:00Z
+    title: Entertainment company hosts one-off metaverse event
+    bounded_excerpt: An entertainment company hosts a one-off virtual event using metaverse branding and discloses no recurring users, monetization, or capital commitment.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+      - {entity_type: industry, name: Entertainment}
+    structured_fields:
+      source_count: 1
+      research_data_types: [marketing_announcement]
+  - evidence_type: filing_delta
+    evidence_id: metaverse-risk-language
+    source_name: Synthetic consumer filing
+    source_timestamp: 2022-01-25T12:00:00Z
+    available_at: 2022-01-25T12:00:00Z
+    title: Filing adds generic metaverse risk language
+    bounded_excerpt: The filing adds generic metaverse terminology to a risk section without reporting investment, sales, customer adoption, or a changed operating segment.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+      - {entity_type: industry, name: Consumer brands}
+    structured_fields:
+      industry: Consumer
+      research_data_types: [risk_disclosure]
+  - evidence_type: investment_observation
+    evidence_id: metaverse-survey-no-spend
+    source_name: Synthetic advertising industry survey
+    source_timestamp: 2022-03-18T09:00:00Z
+    available_at: 2022-03-18T09:00:00Z
+    title: Metaverse mentions rise without durable budget commitments
+    bounded_excerpt: Survey respondents mention metaverse experiments, but most report no durable budget, deployment schedule, revenue target, or operating dependency.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+      - {entity_type: industry, name: Advertising}
+    structured_fields:
+      research_data_types: [budgets, adoption]
+  - evidence_type: market_confirmation
+    evidence_id: no-market-confirmation
+    source_name: Synthetic deterministic market reaction
+    source_timestamp: 2022-04-08T20:00:00Z
+    available_at: 2022-04-08T20:00:00Z
+    title: No persistent market confirmation follows metaverse announcements
+    bounded_excerpt: Bounded reaction windows show no persistent common response across the announcing companies; this is non-confirmation, not proof of no future opportunity.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+    structured_fields:
+      observed_at: 2022-04-08T20:00:00Z
+      target_at: 2022-04-08T20:00:00Z
+      reaction_state: mixed
+      research_data_types: [market_confirmation]
+  - evidence_type: investment_observation
+    evidence_id: experiments-remain-fragmented
+    source_name: Synthetic technology industry survey
+    source_timestamp: 2022-05-24T09:00:00Z
+    available_at: 2022-05-24T09:00:00Z
+    title: Metaverse experiments remain fragmented and non-recurring
+    bounded_excerpt: Industry evidence remains fragmented across unrelated promotional experiments with no common bottleneck, recurring demand, or measurable value-capture mechanism.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+      - {entity_type: industry, name: Advertising}
+      - {entity_type: industry, name: Entertainment}
+    structured_fields:
+      research_data_types: [adoption, recurring_demand]
+  - evidence_type: investment_analysis
+    evidence_id: future-project-cancellations
+    source_name: Synthetic hindsight research note
+    source_timestamp: 2023-02-10T12:00:00Z
+    available_at: 2023-02-10T12:00:00Z
+    title: Later evidence records project cancellations
+    bounded_excerpt: Later project cancellations were not available during the replay and cannot be used to justify earlier restraint.
+    entities:
+      - {entity_type: concept, name: Metaverse marketing}
+    structured_fields:
+      research_data_types: [project_cancellations]
+expected_developments: []
+plausible_second_order_areas: []
+expected_unknowns:
+  - whether experiments develop recurring users
+  - whether companies commit durable capital or operating budgets
+  - whether any shared bottleneck or pricing mechanism emerges
+forbidden_hindsight:
+  - description: Later project cancellations and abandonment decisions
+    available_after: 2023-02-10T12:00:00Z
+manual_milestones:
+  evidence_begins: 2021-11-02T10:00:00Z
+  noise_should_remain_unpromoted: 2022-06-30T23:59:59Z

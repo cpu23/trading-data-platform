@@ -107,7 +107,7 @@ PROHIBITED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?:buy|sell|go(?:ing)?\s+(?:long|short))\b|"
             r"\b(?:buy|sell)\s+(?:(?-i:[A-Z]{6})|"
             r"(?:(?:eur|usd|gbp|jpy|aud|cad|nzd|chf){2})|"
-            r"gold|silver|oil|equities|stocks|bonds)\b|"
+            r"gold|silver|oil|equities|stocks|shares|securities|bonds)\b|"
             r"\b(?:enter|exit)\s+(?:the|this|at|near|above|below|on|after|before|when|if)\b|"
             r"\b(?:go|be|stay)\s+(?:long|short)\b|"
             r"\b(?:open|close|add to|reduce)\s+(?:a\s+|the\s+)?position\b|"

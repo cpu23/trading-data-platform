@@ -347,6 +347,122 @@ def analysis_jobs_status():
         "counters": counters,
     }
 
+@app.get(
+    "/research/status",
+    dependencies=[Depends(require_internal_basic)],
+)
+def research_intelligence_status():
+    """Return bounded case, request, model-cost, and durable-job status."""
+    try:
+        from research_intelligence.queries import research_status
+
+        config = _get_config()
+        with get_session(config) as session:
+            return research_status(session)
+    except Exception as exc:
+        logger.warning(
+            "research_status_unavailable", error_type=type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=503, detail="Research status unavailable"
+        ) from exc
+
+def _research_force(body: dict | None) -> bool:
+    if body is None:
+        return False
+    if not isinstance(body, dict) or set(body) - {"force"}:
+        raise HTTPException(status_code=422, detail="body may contain only force")
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        raise HTTPException(status_code=422, detail="force must be boolean")
+    return force
+
+
+
+@app.post(
+    "/research/run",
+    status_code=202,
+    dependencies=[Depends(require_internal_basic)],
+)
+def trigger_research_discovery(body: dict | None = Body(default=None)):
+    """Queue bounded discovery and macro-driver research immediately."""
+    force = _research_force(body)
+    try:
+        from research_intelligence.operations import enqueue_research_job
+
+        return enqueue_research_job(
+            _get_config(),
+            job_type="research_discovery",
+            force=force,
+            triggered_by="api",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "research_discovery_enqueue_failed", error_type=type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=503, detail="Research run could not be queued"
+        ) from exc
+
+
+@app.post(
+    "/research/cases/{case_id}/run",
+    status_code=202,
+    dependencies=[Depends(require_internal_basic)],
+)
+def trigger_research_case_update(
+    case_id: UUID, body: dict | None = Body(default=None)
+):
+    """Queue one bounded research-case update."""
+    force = _research_force(body)
+    try:
+        from research_intelligence.operations import enqueue_research_job
+
+        return enqueue_research_job(
+            _get_config(),
+            job_type="research_case_update",
+            case_id=str(case_id),
+            force=force,
+            triggered_by="api",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "research_case_enqueue_failed",
+            case_id=str(case_id),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Research case update could not be queued"
+        ) from exc
+
+
+@app.post(
+    "/research/jobs/{job_id}/retry",
+    status_code=202,
+    dependencies=[Depends(require_internal_basic)],
+)
+def retry_research_analysis_job(job_id: UUID):
+    """Retry failed research work without mutating prior job history."""
+    try:
+        from research_intelligence.operations import retry_research_job
+
+        return retry_research_job(_get_config(), str(job_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "research_job_retry_failed",
+            job_id=str(job_id),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Research job could not be retried"
+        ) from exc
+
 
 @app.get(
     "/sections/{section_key}",

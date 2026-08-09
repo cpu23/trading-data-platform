@@ -158,6 +158,58 @@ Contracts enforced in code include:
 The currently selected production profile is documented in
 `docs/intelligence_model_benchmark.md`.
 
+## Research Intelligence
+
+The research-intelligence subsystem is separate from the four-role daily market
+briefing above. It normalizes existing macro, release-card, market-state,
+reaction, story, filing, investment-analysis, and observation records through
+source adapters; no second generic raw-data store is introduced.
+
+The configured hot spine covers US, euro-area, UK, and Japan growth,
+inflation, labour, policy/rate, financial-condition, and market evidence where
+an official series is available. FRED, OECD, ECB, Bank of England, EIA, and
+CFTC collectors retain deterministic values in their source-owned tables.
+Fed, ECB, Bank of England, and Bank of Japan feeds add source communications;
+they enter research only through the existing normalized evidence adapters.
+Absent regional dimensions remain unknown rather than being inferred.
+
+Deterministic gates block bounded, source-diverse candidate groups before model
+work. Seven strict stages extract atomic source claims where useful, discover a
+coherent pattern, build an allowlisted and depth-bounded causal graph, assess
+independent value-capture dimensions, conduct an adversarial review, emit cold
+research-data requests, and create a concise evidence-linked deliverable.
+Major-market drivers run through the same evidence boundary but retain a
+separate target/direction/horizon contract.
+
+Cases have immutable version snapshots and deterministic lifecycle transitions:
+`candidate`, `forming`, `corroborated`, `research_ready`, `mature`,
+`weakening`, and `archived`. Epistemic edge state (`observed`, `supported`,
+`hypothesis`, or `rejected`) never controls or aliases that lifecycle. A
+research-ready case can extend an existing manual theme or promote to one new
+maintained theme; exact and semantic matching prevent duplicates.
+
+The configured weekday schedule enqueues a deduplicated `research_discovery`
+analysis job. Model attempts, prompt versions, input fingerprints, usage, cost,
+validation failures, and one bounded repair attempt remain inspectable. Adapter,
+macro-stage, and per-candidate failures are isolated. Dashboard reads never
+invoke the model.
+
+Point-in-time replay reuses the same adapters and validators under a strict
+availability cutoff and never mutates live research state. Four
+version-controlled benchmark episodes exercise full claim extraction,
+discovery, causal, value-capture, adversarial, deliverable, lifecycle, and
+abstention paths. Benchmark answers remain evaluator-only. Replay rows persist
+separate deterministic-input and resolved model/prompt variant identities;
+longitudinal history cannot cross variants, and regression comparisons require
+identical deterministic inputs. `/research/evaluation`, the bounded JSON API,
+and the `research` CLI group expose deterministic score dimensions
+(including testable-hypothesis discovery), stage failures, tokens, latency,
+cost, immutable human-review history, and comparisons.
+
+See [Research Intelligence](research-intelligence.md) for the adapter contract,
+schema, relationship grammar, lifecycle, value-capture dimensions, prompt
+stages, APIs, operational controls, and source-extension guide.
+
 ## Investment Research and Filing Intake
 
 The Investments view is backed by a separate report lifecycle:
@@ -307,10 +359,21 @@ docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py colle
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py collect ecb
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py process market_intelligence
 
-# Investment and maintained research read paths
+# Investment and research-intelligence read paths
 curl http://127.0.0.1:8000/api/investment/dashboard
 curl http://127.0.0.1:8000/api/investment/filings/status
 curl http://127.0.0.1:8000/api/research/themes
+curl http://127.0.0.1:8000/api/research/cases
+curl http://127.0.0.1:8000/api/research/drivers?changed_only=true
+curl http://127.0.0.1:8000/api/research/status
+
+# Research durable controls
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-run
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-status
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-update <case-uuid> --force
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-rebuild
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-retry <job-uuid>
 
 # Collector, queue, and connectivity state
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py status

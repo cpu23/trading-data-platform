@@ -40,6 +40,8 @@ entries, or position-sizing instructions.
 flowchart LR
     subgraph Sources["External Data Sources"]
         FRED["FRED macro data"]
+        Official["OECD, ECB, BoE, EIA<br/>and CFTC official data"]
+        CentralBanks["Fed, ECB, BoE and BoJ<br/>communications"]
         Calendar["Economic calendar"]
         OANDA["OANDA price snapshots"]
         News["Reuters and Kobeissi"]
@@ -53,6 +55,7 @@ flowchart LR
         FilingIntake["Scheduled filing intake"]
         Investment["Investment fact extraction<br/>and deterministic engine"]
         Intelligence["Regime, event, and<br/>briefing processors"]
+        ResearchEngine["Evidence adapters, dynamic cases,<br/>causal graph and market drivers"]
         Quality["Data-quality checks<br/>30-second health snapshot"]
     end
 
@@ -60,6 +63,7 @@ flowchart LR
         Raw["Raw time-series and events"]
         Reports["Report documents and analyses"]
         Derived["Derived market intelligence"]
+        Cases["Versioned research cases,<br/>edges, evidence and requests"]
         Operations["Run history, logs, costs"]
     end
 
@@ -68,6 +72,7 @@ flowchart LR
         Fanout["Concurrent dashboard loader"]
         Dashboard["HTMX dashboard"]
         Investments["Investment research view"]
+        Research["Research case workspace"]
         Health["Health, live quality, and logs"]
     end
 
@@ -86,15 +91,20 @@ flowchart LR
     Reports --> Investment
     News --> Investment
     LLM --> Investment --> Reports
+    Raw --> ResearchEngine
+    Reports --> ResearchEngine
+    LLM --> ResearchEngine --> Cases
     Cycle --> Operations
     FilingIntake --> Operations
 
     Raw --> API
     Reports --> API
     Derived --> API
+    Cases --> API
     Operations --> API
     API --> Fanout --> Dashboard
     API --> Investments
+    API --> Research
     API --> Health
 ```
 
@@ -104,9 +114,10 @@ derived outputs inspectable without mixing raw source data with analysis.
 
 ## Engineering Highlights
 
-- **Configuration-driven collectors:** FRED macro series, economic-calendar
-  events, OANDA price snapshots, and their intended schedules are defined in
-  YAML rather than hard-coded.
+- **Configuration-driven collectors:** FRED and OECD macro series, ECB and
+  Bank of England data, EIA energy balances, CFTC positioning, central-bank
+  communications, economic-calendar events, OANDA price snapshots, and their
+  intended schedules are defined in YAML rather than hard-coded.
 - **Dependency-aware processing:** processors run only after their required
   collectors or upstream processors succeed.
 - **Traceable LLM usage:** processing logs capture model, prompt version, token
@@ -130,6 +141,12 @@ derived outputs inspectable without mixing raw source data with analysis.
   theses, evidence history, company dossiers, optional read-only portfolio
   context, and automated SEC/Companies House intake. See
   [docs/investment-research.md](docs/investment-research.md).
+- **Research intelligence:** normalized source adapters, atomic claims, dynamic
+  case discovery, deterministic lifecycle, bounded causal graphs,
+  multidimensional value-capture review, counterevidence, cold-data requests,
+  evidence-linked major-market drivers, and point-in-time replay with
+  version-controlled benchmark episodes and model/prompt variant comparison.
+  See [docs/research-intelligence.md](docs/research-intelligence.md).
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
@@ -155,8 +172,13 @@ signal engine. It includes:
 - Asset evidence drawer, cross-asset context, catalysts, and briefing delta
 - Staged macro-release cards and canonical evolving news stories
 - Source/processor freshness and historical regime/indicator context
+- Changed major-market drivers and genuinely material dynamic research cases,
+  linked to evidence-rich case workspaces without displacing Since last view
 - A separate Research workspace for maintained themes, versioned theses,
   company dossiers, filing deltas, and read-only portfolio context
+- A separate replay-evaluation workspace for benchmark score dimensions,
+  lifecycle lead time, model/prompt variants, failures, latency, cost, and
+  regression comparisons
 - Refresh, analyze, and explicit force-full cycle controls with durable status
 - Authenticated Dashboard, Research, Investments, Settings, Logs, Quality,
   News, and Operations views
@@ -204,6 +226,8 @@ FastAPI exposes JSON endpoints for:
 - Read-only Reuters and Kobeissi feed and source-state views
 - Investment documents, report URLs, analyses, dashboard aggregates, filing
   source status, and durable filing-collection triggers
+- Bounded dynamic research cases, case history, current major-market drivers,
+  operational/model-cost status, and durable run/retry controls
 
 Reuters and Kobeissi collection can be invoked through the orchestrator CLI or
 the authenticated durable API trigger. Reuters is scheduled every two hours;
@@ -219,8 +243,8 @@ The database keeps responsibilities explicit:
 | Layer | Tables | Purpose |
 | --- | --- | --- |
 | Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache`, `investment_documents` | Normalised source observations, report evidence, and cached upstream payloads |
-| Derived | `regime_classifications`, `structured_opinions`, `daily_briefings`, `investment_analyses` | Versioned market and company analytical outputs |
-| Operations | `collection_log`, `processing_log`, `cycle_runs` | Status, lineage, errors, duration, token usage, and cost |
+| Derived | `regime_classifications`, `structured_opinions`, `daily_briefings`, `investment_analyses`, `research_cases`, `research_causal_edges`, `research_market_drivers` | Versioned market, company, causal, and research-case analytical outputs |
+| Operations | `collection_log`, `processing_log`, `cycle_runs`, `analysis_jobs`, `generation_attempts` | Durable work state, lineage, validation failures, duration, model usage, and cost |
 
 ## Quick Start
 
@@ -276,26 +300,26 @@ The dashboard is exposed at `http://127.0.0.1:8000` by default.
 ### Run And Inspect Collectors
 
 ```bash
-docker compose exec orchestrator python cli.py collect --all
-docker compose exec orchestrator python cli.py status
-docker compose exec orchestrator python cli.py health
+docker compose exec orchestrator .venv/bin/python cli.py collect --all
+docker compose exec orchestrator .venv/bin/python cli.py status
+docker compose exec orchestrator .venv/bin/python cli.py health
 docker compose logs orchestrator
 ```
 
 Additional collector commands:
 
 ```bash
-docker compose exec orchestrator python cli.py collect fred
-docker compose exec orchestrator python cli.py collect oanda
-docker compose exec orchestrator python cli.py db-check
+docker compose exec orchestrator .venv/bin/python cli.py collect fred
+docker compose exec orchestrator .venv/bin/python cli.py collect oanda
+docker compose exec orchestrator .venv/bin/python cli.py db-check
 ```
 
 On-demand news collection also runs through the orchestrator CLI:
 
 ```bash
-docker compose exec orchestrator python cli.py news reuters
-docker compose exec orchestrator python cli.py news kobeissi
-docker compose exec orchestrator python cli.py news all
+docker compose exec orchestrator .venv/bin/python cli.py news reuters
+docker compose exec orchestrator .venv/bin/python cli.py news kobeissi
+docker compose exec orchestrator .venv/bin/python cli.py news all
 ```
 
 Kobeissi collection requires `TWITTERAPI_KEY`; Reuters and the read-only news
@@ -333,14 +357,15 @@ and pull request.
 ├── config/                 # Collectors, processors, models, schedules, dashboard
 ├── db/
 │   ├── init/               # Initial TimescaleDB and PostgreSQL schema
-│   └── migrations/         # Incremental schema and investment tables
-├── docs/                   # Architecture, operations, performance, investment
+│   └── migrations/         # Incremental schema, investment, and research intelligence
+├── docs/                   # Architecture, operations, research, performance
 ├── orchestrator/
 │   ├── collectors/         # FRED, economic-calendar, and OANDA collectors
 │   ├── processors/         # Regime, event-impact, and briefing processors
 │   ├── investment_filings.py  # Regulatory discovery and ingestion
 │   ├── investment_service.py  # Document extraction and analysis lifecycle
 │   ├── investment_engine.py   # Deterministic scoring and valuation
+│   ├── research_intelligence/ # Evidence adapters and bounded research engines
 │   ├── tests/              # Focused service and processor unit tests
 │   ├── cli.py              # Operator commands
 │   └── orchestrator.py     # Dependency-aware cycle execution

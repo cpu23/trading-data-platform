@@ -8,6 +8,7 @@ caller's transaction and bounded allowlisted queries.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta
@@ -82,6 +83,10 @@ def _finite(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError, OverflowError):
         return default
     return result if math.isfinite(result) else default
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _bounded_text(value: Any, maximum: int) -> str | None:
@@ -269,23 +274,29 @@ def publish_atom(
                     for item in (atom.get("unknowns") or [])[:20]
                     if str(item).strip()
                 ],
-                "affected_assets": [
-                    str(item).strip()[:32]
-                    for item in (atom.get("affected_assets") or [])[:50]
-                    if str(item).strip()
-                ],
+                "affected_assets": _json_text(
+                    [
+                        str(item).strip()[:32]
+                        for item in (atom.get("affected_assets") or [])[:50]
+                        if str(item).strip()
+                    ]
+                ),
                 "time_horizon": _bounded_text(atom.get("time_horizon"), 40)
                 or "unspecified",
                 "confidence": confidence,
-                "confidence_components": dict(atom.get("confidence_components") or {}),
+                "confidence_components": _json_text(
+                    dict(atom.get("confidence_components") or {})
+                ),
                 "valid_from": valid_from,
                 "expires_at": expires_at,
                 "carry_forward": bool(atom.get("carry_forward", False)),
-                "invalidation_conditions": [
-                    str(item).strip()[:500]
-                    for item in (atom.get("invalidation_conditions") or [])[:20]
-                    if str(item).strip()
-                ],
+                "invalidation_conditions": _json_text(
+                    [
+                        str(item).strip()[:500]
+                        for item in (atom.get("invalidation_conditions") or [])[:20]
+                        if str(item).strip()
+                    ]
+                ),
                 "status": status,
                 "supersedes_atom_id": str(prior["id"]) if prior else None,
                 "source_event_id": atom.get("source_event_id"),

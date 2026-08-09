@@ -9,6 +9,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from analysis_job_handlers import route_job
 from analysis_jobs import (
     AnalysisJob,
     enqueue_job,
@@ -18,6 +19,10 @@ from analysis_jobs import (
     terminal_fail_job,
 )
 from job_worker import AnalysisJobWorker
+from research_intelligence.operations import (
+    enqueue_research_job,
+    retry_research_job,
+)
 
 
 class Result:
@@ -147,6 +152,31 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         self.assertEqual(counters["poll_errors"], 1)
         self.assertNotIn("database unavailable", str(counters))
 
+    def test_poll_claims_configured_bounded_batch(self):
+        @contextmanager
+        def sessions(*args):
+            yield SimpleNamespace()
+
+        worker = AnalysisJobWorker(
+            {
+                "event_pipeline": {
+                    "jobs": {
+                        "enabled": True,
+                        "worker": {"batch_size": 99},
+                    }
+                }
+            },
+            worker_id="worker-a",
+            session_factory=sessions,
+        )
+        with (
+            patch("job_worker.reconcile_jobs", return_value=0),
+            patch("job_worker.claim_jobs", return_value=[]) as claim,
+        ):
+            worker.poll_once()
+
+        self.assertEqual(claim.call_args.kwargs["limit"], 25)
+
     def test_heartbeat_renews_the_running_job_lease(self):
         sessions = []
 
@@ -226,6 +256,239 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         self.assertEqual(counters["handler_errors"], 1)
         self.assertEqual(len(calls), 4)
 
+
+
+class ResearchOperationsTests(unittest.TestCase):
+    CONFIG = {"research_intelligence": {"enabled": True}}
+
+    @staticmethod
+    @contextmanager
+    def _session(*args):
+        yield object()
+
+    def test_normal_refreshes_coalesce_but_forced_rebuilds_have_unique_identity(self):
+        def enqueue(session, **kwargs):
+            return SimpleNamespace(
+                inserted=True,
+                job=SimpleNamespace(
+                    id=uuid4(),
+                    correlation_id=kwargs["correlation_id"],
+                ),
+            )
+
+        accepted = datetime(2026, 8, 8, 12, tzinfo=UTC)
+        with (
+            patch(
+                "research_intelligence.operations.accept_run",
+                return_value=accepted,
+            ),
+            patch("research_intelligence.operations.start_run", return_value=True),
+            patch(
+                "research_intelligence.operations.get_session",
+                side_effect=self._session,
+            ),
+            patch(
+                "research_intelligence.operations.enqueue_job",
+                side_effect=enqueue,
+            ) as enqueue_call,
+            patch(
+                "research_intelligence.operations.finalize_run_safely",
+                return_value=True,
+            ),
+        ):
+            enqueue_research_job(
+                self.CONFIG,
+                job_type="research_discovery",
+            )
+            enqueue_research_job(
+                self.CONFIG,
+                job_type="research_discovery",
+            )
+            enqueue_research_job(
+                self.CONFIG,
+                job_type="research_discovery",
+                force=True,
+            )
+            enqueue_research_job(
+                self.CONFIG,
+                job_type="research_discovery",
+                force=True,
+            )
+
+        fingerprints = [
+            call.kwargs["input_fingerprint"]
+            for call in enqueue_call.call_args_list
+        ]
+        self.assertEqual(fingerprints[0], fingerprints[1])
+        self.assertNotEqual(fingerprints[1], fingerprints[2])
+        self.assertNotEqual(fingerprints[2], fingerprints[3])
+
+    def test_start_failure_finalizes_accepted_run_without_enqueuing(self):
+        accepted = datetime(2026, 8, 8, 12, tzinfo=UTC)
+        with (
+            patch(
+                "research_intelligence.operations.accept_run",
+                return_value=accepted,
+            ),
+            patch(
+                "research_intelligence.operations.start_run",
+                side_effect=RuntimeError("database unavailable"),
+            ),
+            patch(
+                "research_intelligence.operations.enqueue_job"
+            ) as enqueue_call,
+            patch(
+                "research_intelligence.operations.finalize_run_safely",
+                return_value=True,
+            ) as finalize,
+        ):
+            with self.assertRaises(RuntimeError):
+                enqueue_research_job(
+                    self.CONFIG,
+                    job_type="research_discovery",
+                )
+
+        enqueue_call.assert_not_called()
+        self.assertEqual(finalize.call_args.args[1], "failed")
+        self.assertEqual(finalize.call_args.kwargs["run_kind"], "research")
+        self.assertNotIn("database unavailable", str(finalize.call_args))
+
+    def test_terminal_retry_enqueues_new_identity_without_mutating_prior_job(self):
+        job_id = str(uuid4())
+        case_id = str(uuid4())
+        session = SimpleNamespace()
+        session.execute = unittest.mock.Mock(
+            return_value=Result(
+                first={
+                    "id": job_id,
+                    "job_type": "research_case_update",
+                    "state": "terminal_failed",
+                    "payload": {"case_id": case_id, "force": False},
+                    "correlation_id": uuid4(),
+                }
+            )
+        )
+
+        @contextmanager
+        def sessions(*args):
+            yield session
+
+        with (
+            patch(
+                "research_intelligence.operations.get_session",
+                side_effect=sessions,
+            ),
+            patch(
+                "research_intelligence.operations.enqueue_research_job",
+                return_value={"status": "queued"},
+            ) as enqueue,
+        ):
+            result = retry_research_job(self.CONFIG, job_id)
+
+        self.assertEqual(result, {"status": "queued"})
+        self.assertEqual(session.execute.call_count, 1)
+        kwargs = enqueue.call_args.kwargs
+        self.assertEqual(kwargs["case_id"], case_id)
+        self.assertEqual(kwargs["triggered_by"], "retry")
+        self.assertIn(job_id, kwargs["request_nonce"])
+
+
+class ResearchIntelligenceJobTests(unittest.TestCase):
+    def test_discovery_job_runs_macro_and_case_stages_and_returns_observable_counts(self):
+        session = object()
+        job = SimpleNamespace(
+            job_type="research_discovery",
+            payload={"force": True},
+            correlation_id="correlation",
+        )
+        with (
+            patch("analysis_job_handlers._config", return_value={"research_intelligence": {}}),
+            patch(
+                "research_intelligence.service.run_macro_transmission",
+                return_value={"driver_count": 3, "model_cost_usd": 0.25},
+            ) as macro,
+            patch(
+                "research_intelligence.service.run_discovery",
+                return_value={
+                    "cases": [
+                        {"case_id": "case-1", "status": "created"},
+                        {"case_id": "case-2", "status": "updated"},
+                    ],
+                    "candidate_count": 3,
+                    "errors": [],
+                    "model_cost_usd": 0.5,
+                },
+            ) as discovery,
+        ):
+            result = route_job(session, job)
+
+        self.assertEqual(
+            result,
+            {
+                "status": "completed",
+                "case_count": 2,
+                "candidate_count": 3,
+                "abstention_count": 0,
+                "driver_count": 3,
+                "lifecycle_transition_count": 0,
+                "error_count": 0,
+                "cost_usd": 0.75,
+            },
+        )
+        macro.assert_called_once_with(
+            session,
+            {"research_intelligence": {}},
+            correlation_id="correlation",
+            force=True,
+        )
+        discovery.assert_called_once_with(
+            session,
+            {"research_intelligence": {}},
+            correlation_id="correlation",
+            force=True,
+        )
+
+    def test_one_macro_stage_failure_is_inspectable_without_losing_case_work(self):
+        session = object()
+        job = SimpleNamespace(
+            job_type="research_discovery", payload={}, correlation_id=None
+        )
+        with (
+            patch("analysis_job_handlers._config", return_value={}),
+            patch(
+                "research_intelligence.service.run_macro_transmission",
+                side_effect=RuntimeError("unavailable"),
+            ),
+            patch(
+                "research_intelligence.service.run_discovery",
+                return_value={
+                    "cases": [
+                        {"case_id": "case-1", "status": "updated"},
+                        {"case_id": None, "status": "abstained"},
+                    ],
+                    "candidate_count": 2,
+                    "errors": [{"stage": "value_capture"}],
+                    "model_cost_usd": 0.1,
+                },
+            ),
+        ):
+            result = route_job(session, job)
+
+        self.assertEqual(result["status"], "completed_with_errors")
+        self.assertEqual(result["case_count"], 1)
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["abstention_count"], 1)
+        self.assertEqual(result["driver_count"], 0)
+        self.assertEqual(result["error_count"], 2)
+        self.assertEqual(result["cost_usd"], 0.1)
+
+    def test_case_update_job_rejects_missing_case_identity(self):
+        job = SimpleNamespace(
+            job_type="research_case_update", payload={}, correlation_id=None
+        )
+        with patch("analysis_job_handlers._config", return_value={}):
+            with self.assertRaisesRegex(ValueError, "requires a case id"):
+                route_job(object(), job)
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,8 @@ import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 os.environ.update(
@@ -671,6 +672,24 @@ class ResearchRouteTests(unittest.TestCase):
 
         return TestClient(self._app())
 
+    def test_research_evaluation_helpers_survive_api_budget_import(self):
+        import budgets  # noqa: F401
+        from routes.json import research as json_research
+        from routes.views import research as view_research
+
+        self.assertIsNotNone(json_research._research_queries)
+        self.assertIsNotNone(json_research._list_benchmarks)
+        self.assertIsNotNone(json_research._live_case_cohorts)
+        self.assertIsNotNone(view_research._research_queries)
+        self.assertIsNotNone(view_research._list_benchmarks)
+        self.assertIsNotNone(view_research._live_case_cohorts)
+        previous = json_research._annotate_benchmark_scorecard
+        try:
+            json_research._annotate_benchmark_scorecard = None
+            self.assertTrue(callable(json_research._annotation_helper()))
+        finally:
+            json_research._annotate_benchmark_scorecard = previous
+
     def test_pages_require_auth(self):
         from fastapi.testclient import TestClient
 
@@ -698,6 +717,81 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("Energy transition", text)
         self.assertNotIn("data-live-section", text)
+
+    def test_evaluation_page_shows_variants_regressions_and_resource_use(self):
+        client = self._client()
+        variant_a = "a" * 64
+        variant_b = "b" * 64
+        queries = MagicMock()
+        queries.list_replay_runs.return_value = [
+            {
+                "replay_as_of": NOW,
+                "benchmark_id": "episode",
+                "evidence_source": "synthetic_benchmark",
+                "status": "completed",
+                "variant_fingerprint": variant_b,
+                "variant_identity": {
+                    "pattern_discovery": {"model": "provider/model-b"}
+                },
+                "stage_metrics": [{"duration_ms": 1250}],
+                "result_summary": {"case_count": 1, "errors": []},
+                "dimensions": {
+                    "discovery": {"status": "pass"},
+                    "lead_time": {"status": "pass"},
+                    "point_in_time_integrity": {"status": "pass"},
+                },
+                "cost_usd": 0.0123,
+                "human_annotations": {"overall_label": "partial"},
+                "annotation_version": 2,
+            }
+        ]
+        queries.list_quality_metrics.return_value = [
+            {
+                "metrics": {
+                    "variant_fingerprints": {
+                        "left": variant_a,
+                        "right": variant_b,
+                    },
+                    "dimension_status_changes": {
+                        "specificity": {"left": "pass", "right": "fail"}
+                    },
+                    "resource_usage": {
+                        "delta": {"cost_usd": 0.002, "latency_ms": 150}
+                    },
+                }
+            }
+        ]
+        queries.research_status.return_value = {}
+        session_scope = MagicMock()
+        session_scope.__enter__.return_value = object()
+        benchmark = SimpleNamespace(
+            episode_id="episode",
+            version=1,
+            episode_kind="development",
+            synthetic=True,
+            description="Bounded episode.",
+            replay_dates=(NOW,),
+            evidence=(object(),),
+        )
+        with (
+            patch("routes.views.research.load_config", return_value={}),
+            patch("routes.views.research.get_session", return_value=session_scope),
+            patch("routes.views.research._research_queries", queries),
+            patch(
+                "routes.views.research._list_benchmarks",
+                return_value=(benchmark,),
+            ),
+            patch("routes.views.research._live_case_cohorts", return_value=[]),
+        ):
+            response = client.get("/research/evaluation")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Variant regression checks", response.text)
+        self.assertIn("provider/model-b", response.text)
+        self.assertIn(variant_b[:10], response.text)
+        self.assertIn("specificity: pass", response.text)
+        self.assertIn("1.25s", response.text)
+        self.assertIn("partial · v2", response.text)
+        self.assertIn("testable-hypothesis discovery", response.text)
 
     def test_index_database_failure_is_fail_soft(self):
         client = self._client()

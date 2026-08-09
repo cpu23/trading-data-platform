@@ -15,6 +15,21 @@ It is decision support. It does not produce trade recommendations, entries,
 exits, stops, targets, position sizes, or allocations. Report evidence remains
 distinct from related news context and deterministic derived values.
 
+### Relationship to dynamic research intelligence
+
+This report lifecycle remains source-owned and deterministic for filing facts,
+deltas, fundamentals, and valuation. The dynamic research engine consumes
+bounded filing deltas, investment observations, and evidence-linked analyses
+through normalized adapters; it does not duplicate report documents or recast
+model prose as structured financial facts.
+
+Dynamic `research_cases` discover cross-company or cross-industry economic
+developments, maintain causal chains, value-capture dimensions,
+counterevidence, and missing-data requests, then may extend a maintained theme.
+The existing theme/thesis and company-dossier workspace remains the durable
+human-maintained research layer. See
+[Research Intelligence](research-intelligence.md).
+
 ## Architecture
 
 ```mermaid

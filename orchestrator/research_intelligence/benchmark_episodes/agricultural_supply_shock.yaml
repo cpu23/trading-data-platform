@@ -1,0 +1,139 @@
+id: agricultural_supply_shock
+version: 1
+synthetic: true
+episode_kind: development
+description: >-
+  Synthetic point-in-time corpus testing whether food inflation is decomposed into a
+  constrained livestock supply chain and differentiated producer, processor, and retailer economics.
+replay_dates:
+  - 2022-04-30T23:59:59Z
+  - 2022-07-31T23:59:59Z
+  - 2022-11-30T23:59:59Z
+evidence:
+  - evidence_type: macro_observation
+    evidence_id: food-category-inflation
+    source_name: Synthetic official statistics agency
+    source_timestamp: 2022-04-12T08:30:00Z
+    available_at: 2022-04-12T08:30:00Z
+    title: Meat category inflation rises faster than headline food prices
+    bounded_excerpt: The published category index shows meat prices rising faster than the broader food basket, without identifying which supply-chain layer retains the increase.
+    entities:
+      - {entity_type: concept, name: Food inflation}
+      - {entity_type: product, name: Meat}
+    structured_fields:
+      series_id: SYNTH_MEAT_CPI
+      research_data_types: [category_prices]
+  - evidence_type: official_document
+    evidence_id: feed-input-shock
+    source_name: Synthetic agriculture ministry bulletin
+    source_timestamp: 2022-05-20T09:00:00Z
+    available_at: 2022-05-20T09:00:00Z
+    title: Feed and fertilizer costs pressure livestock producers
+    bounded_excerpt: The ministry reports elevated feed and fertilizer inputs and warns that biological production lags limit an immediate livestock supply response.
+    entities:
+      - {entity_type: product, name: Feed}
+      - {entity_type: product, name: Fertilizer}
+      - {entity_type: industry, name: Livestock producers}
+    structured_fields:
+      research_data_types: [input_costs, biological_capacity]
+  - evidence_type: story_cluster
+    evidence_id: herd-liquidation
+    source_name: Synthetic agriculture wire
+    source_timestamp: 2022-06-16T10:00:00Z
+    available_at: 2022-06-16T10:00:00Z
+    title: Drought accelerates cattle herd liquidation
+    bounded_excerpt: Producers reduce breeding herds as drought raises feed costs, supporting near-term slaughter supply but reducing the future calf crop.
+    entities:
+      - {entity_type: industry, name: Cattle producers}
+      - {entity_type: product, name: Beef}
+      - {entity_type: concept, name: Drought}
+    structured_fields:
+      source_count: 3
+      research_data_types: [herd_size, supply]
+  - evidence_type: filing_delta
+    evidence_id: processor-margin-pressure
+    source_name: Synthetic meat processor filing
+    source_timestamp: 2022-07-22T12:00:00Z
+    available_at: 2022-07-22T12:00:00Z
+    title: Cattle costs compress processor margins
+    bounded_excerpt: A processor reports that rising cattle acquisition costs outpace realized product pricing and compress margins despite firm end demand.
+    entities:
+      - {entity_type: industry, name: Meat processors}
+      - {entity_type: industry, name: Cattle producers}
+      - {entity_type: product, name: Beef}
+    structured_fields:
+      industry: Consumer
+      research_data_types: [input_costs, realized_pricing, margins]
+  - evidence_type: investment_observation
+    evidence_id: retailer-pass-through
+    source_name: Synthetic grocery industry survey
+    source_timestamp: 2022-08-25T10:00:00Z
+    available_at: 2022-08-25T10:00:00Z
+    title: Retailers pass through part of meat inflation
+    bounded_excerpt: Retailers report partial price pass-through while customers substitute among proteins, leaving the persistence of retailer margins uncertain.
+    entities:
+      - {entity_type: industry, name: Retailers}
+      - {entity_type: product, name: Beef}
+      - {entity_type: product, name: Alternative proteins}
+    structured_fields:
+      industry: Consumer
+      research_data_types: [pricing, substitution, margins]
+  - evidence_type: investment_observation
+    evidence_id: breeding-inventory-lag
+    source_name: Synthetic livestock industry survey
+    source_timestamp: 2022-09-29T14:00:00Z
+    available_at: 2022-09-29T14:00:00Z
+    title: Breeding inventory decline extends future supply constraint
+    bounded_excerpt: Independent herd estimates show fewer breeding animals, implying that rebuilding supply requires multiple production periods even if feed conditions improve.
+    entities:
+      - {entity_type: industry, name: Cattle producers}
+      - {entity_type: product, name: Beef}
+    structured_fields:
+      research_data_types: [inventory, capacity_lead_time]
+  - evidence_type: market_confirmation
+    evidence_id: protein-substitution
+    source_name: Synthetic retail scanner confirmation
+    source_timestamp: 2022-10-20T16:00:00Z
+    available_at: 2022-10-20T16:00:00Z
+    title: Relative prices shift demand toward other proteins
+    bounded_excerpt: Deterministic category volumes show some substitution away from beef, weakening the assumption that all input inflation can be passed through unchanged.
+    entities:
+      - {entity_type: product, name: Beef}
+      - {entity_type: product, name: Alternative proteins}
+      - {entity_type: industry, name: Retailers}
+    structured_fields:
+      observed_at: 2022-10-20T16:00:00Z
+      target_at: 2022-10-20T16:00:00Z
+      research_data_types: [volumes, substitution]
+  - evidence_type: official_document
+    evidence_id: future-herd-recovery
+    source_name: Synthetic hindsight agriculture report
+    source_timestamp: 2023-05-10T09:00:00Z
+    available_at: 2023-05-10T09:00:00Z
+    title: Later survey measures herd rebuilding pace
+    bounded_excerpt: The later survey establishes the realized rebuilding pace, which was not observable during the 2022 replay dates.
+    entities:
+      - {entity_type: industry, name: Cattle producers}
+    structured_fields:
+      research_data_types: [capacity_additions, inventory]
+expected_developments:
+  - meat inflation reflects constrained livestock supply and elevated inputs
+  - herd liquidation can tighten future supply despite near-term slaughter
+  - processor margins face pressure when livestock costs outpace pricing
+plausible_second_order_areas:
+  - livestock producers
+  - meat processors
+  - food distributors
+  - grocery retailers
+  - substitute proteins
+expected_unknowns:
+  - speed of herd rebuilding
+  - realized processor and retailer pricing power
+  - magnitude of consumer substitution
+forbidden_hindsight:
+  - description: Realized herd rebuilding pace from the later survey
+    available_after: 2023-05-10T09:00:00Z
+manual_milestones:
+  evidence_begins: 2022-04-12T08:30:00Z
+  competent_analyst_detection: 2022-06-16T10:00:00Z
+  downstream_margin_visibility: 2022-07-22T12:00:00Z

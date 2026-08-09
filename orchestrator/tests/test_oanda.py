@@ -4,14 +4,15 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from collectors import get_all_collectors
+from collectors import get_all_collectors, get_collector
 from collectors.oanda import OandaCollector
 from price_stream import QuoteStream
 
 
 class OandaCollectorTests(unittest.TestCase):
-    def test_oanda_snapshot_collector_is_not_registered_for_cycles(self):
+    def test_oanda_snapshot_collector_is_standalone(self):
         self.assertNotIn("oanda", get_all_collectors())
+        self.assertIsInstance(get_collector("oanda"), OandaCollector)
 
     def test_production_without_stream_does_not_simulate_prices(self):
         stream = QuoteStream()

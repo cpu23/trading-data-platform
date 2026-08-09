@@ -1,0 +1,246 @@
+{
+  "name": "artificial-intelligence infrastructure chain",
+  "evidence": [
+    {
+      "evidence_type": "filing_delta",
+      "evidence_id": "hyperscaler-capex",
+      "source_name": "company filing",
+      "source_timestamp": "2026-07-03T12:00:00Z",
+      "title": "Hyperscaler capital spending accelerates",
+      "bounded_excerpt": "Hyperscaler capital spending is accelerating for artificial intelligence data-centre construction.",
+      "entities": [
+        {"entity_type": "concept", "name": "AI demand"},
+        {"entity_type": "concept", "name": "Hyperscaler capex"},
+        {"entity_type": "industry", "name": "Data-centre construction"},
+        {"entity_type": "technology", "name": "Transformer equipment"}
+      ],
+      "structured_fields": {"industry": "Digital infrastructure"}
+    },
+    {
+      "evidence_type": "story_cluster",
+      "evidence_id": "power-queues",
+      "source_name": "wire service",
+      "source_timestamp": "2026-07-10T12:00:00Z",
+      "title": "Power queues constrain data-centre projects",
+      "bounded_excerpt": "Power availability and grid connection queues constrain new data-centre projects while transformer equipment remains capacity constrained.",
+      "entities": [
+        {"entity_type": "industry", "name": "Data-centre construction"},
+        {"entity_type": "industry", "name": "Electricity infrastructure"},
+        {"entity_type": "technology", "name": "Transformer equipment"}
+      ],
+      "structured_fields": {"industry": "Digital infrastructure"}
+    },
+    {
+      "evidence_type": "investment_observation",
+      "evidence_id": "equipment-backlog",
+      "source_name": "industry survey",
+      "source_timestamp": "2026-07-17T12:00:00Z",
+      "title": "Transformer equipment backlogs remain firm",
+      "bounded_excerpt": "Transformer equipment suppliers report firm backlogs and extended lead times while announced capacity additions are progressing.",
+      "entities": [
+        {"entity_type": "technology", "name": "Transformer equipment"},
+        {"entity_type": "industry", "name": "Electricity infrastructure"}
+      ],
+      "structured_fields": {"industry": "Digital infrastructure"}
+    },
+    {
+      "evidence_type": "investment_analysis",
+      "evidence_id": "component-demand",
+      "source_name": "maintained research",
+      "source_timestamp": "2026-07-24T12:00:00Z",
+      "title": "Data-centre component demand broadens",
+      "bounded_excerpt": "Compute, network and storage equipment demand is broadening alongside data-centre construction and electricity infrastructure requirements.",
+      "entities": [
+        {"entity_type": "technology", "name": "Compute equipment"},
+        {"entity_type": "technology", "name": "Network equipment"},
+        {"entity_type": "technology", "name": "Storage equipment"},
+        {"entity_type": "industry", "name": "Data-centre construction"},
+        {"entity_type": "technology", "name": "Transformer equipment"}
+      ],
+      "structured_fields": {"industry": "Digital infrastructure"}
+    }
+  ],
+  "pattern": {
+    "label": "Data-centre power infrastructure constraint",
+    "definition": "Accelerating artificial-intelligence infrastructure demand is meeting constrained power availability and transformer-equipment capacity.",
+    "case_type": "structural",
+    "horizon": "multi_year",
+    "what_changed": "Company, industry and news evidence now independently connect hyperscaler capital spending with power and transformer constraints.",
+    "supporting_evidence_ids": [
+      "filing_delta:hyperscaler-capex",
+      "story_cluster:power-queues",
+      "investment_observation:equipment-backlog",
+      "investment_analysis:component-demand"
+    ],
+    "contradicting_evidence_ids": [],
+    "context_evidence_ids": [],
+    "entities": [
+      {"entity_type": "concept", "name": "AI demand"},
+      {"entity_type": "concept", "name": "Hyperscaler capex"},
+      {"entity_type": "industry", "name": "Data-centre construction"},
+      {"entity_type": "industry", "name": "Electricity infrastructure"},
+      {"entity_type": "technology", "name": "Transformer equipment"},
+      {"entity_type": "technology", "name": "Compute equipment"},
+      {"entity_type": "technology", "name": "Network equipment"},
+      {"entity_type": "technology", "name": "Storage equipment"}
+    ],
+    "industries": ["Digital infrastructure"],
+    "macro_drivers": ["capital spending", "power capacity"],
+    "missing_information": ["Actual transformer lead times", "Realized equipment pricing", "Project cancellation rates"],
+    "aliases": ["Power constraint for data centres"],
+    "importance": {
+      "economic_significance": "high",
+      "market_sensitivity": "high",
+      "persistence": "high",
+      "breadth": "high",
+      "investability": "moderate",
+      "evidence_strength": "high",
+      "time_sensitivity": "moderate"
+    }
+  },
+  "edges": [
+    {
+      "from_entity": {"entity_type": "concept", "name": "AI demand"},
+      "relationship": "raises_demand_for",
+      "to_entity": {"entity_type": "concept", "name": "Hyperscaler capex"},
+      "mechanism": "Artificial-intelligence demand raises hyperscaler capital-spending requirements.",
+      "epistemic_state": "observed",
+      "evidence_ids": ["filing_delta:hyperscaler-capex"],
+      "missing_evidence": [],
+      "break_conditions": ["Hyperscalers reduce artificial-intelligence infrastructure plans"],
+      "depth": 1
+    },
+    {
+      "from_entity": {"entity_type": "concept", "name": "Hyperscaler capex"},
+      "relationship": "increases_capex_for",
+      "to_entity": {"entity_type": "industry", "name": "Data-centre construction"},
+      "mechanism": "Hyperscaler capital spending funds data-centre construction.",
+      "epistemic_state": "observed",
+      "evidence_ids": ["filing_delta:hyperscaler-capex"],
+      "missing_evidence": [],
+      "break_conditions": ["Capital spending shifts away from new data-centre capacity"],
+      "depth": 2
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Data-centre construction"},
+      "relationship": "raises_demand_for",
+      "to_entity": {"entity_type": "industry", "name": "Electricity infrastructure"},
+      "mechanism": "New data-centre projects require grid connections and electricity infrastructure.",
+      "epistemic_state": "supported",
+      "evidence_ids": ["story_cluster:power-queues", "investment_analysis:component-demand"],
+      "missing_evidence": ["Project-level power requirements"],
+      "break_conditions": ["Data-centre construction becomes materially less power intensive"],
+      "depth": 3
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Electricity infrastructure"},
+      "relationship": "raises_demand_for",
+      "to_entity": {"entity_type": "technology", "name": "Transformer equipment"},
+      "mechanism": "Grid expansion and connection work raises demand for transformer equipment.",
+      "epistemic_state": "supported",
+      "evidence_ids": ["story_cluster:power-queues", "investment_observation:equipment-backlog"],
+      "missing_evidence": ["Shipment volume by equipment class"],
+      "break_conditions": ["Alternative grid technology substitutes for transformer equipment"],
+      "depth": 4
+    },
+    {
+      "from_entity": {"entity_type": "industry", "name": "Data-centre construction"},
+      "relationship": "raises_demand_for",
+      "to_entity": {"entity_type": "technology", "name": "Storage equipment"},
+      "mechanism": "Data-centre construction may raise demand for storage equipment alongside compute and network equipment.",
+      "epistemic_state": "hypothesis",
+      "evidence_ids": ["investment_analysis:component-demand"],
+      "missing_evidence": ["Storage equipment orders linked to new projects"],
+      "break_conditions": ["Data-centre designs reduce storage equipment intensity"],
+      "depth": 3
+    }
+  ],
+  "capture": [
+    {
+      "node": {"entity_type": "technology", "name": "Transformer equipment"},
+      "dimensions": {
+        "demand_impulse": "high",
+        "revenue_exposure": "high",
+        "volume_sensitivity": "moderate",
+        "supply_responsiveness": "low",
+        "scarcity": "high",
+        "pricing_power": "high",
+        "margin_sensitivity": "high",
+        "capital_intensity": "moderate",
+        "barriers_to_entry": "moderate",
+        "capacity_lead_time": "high",
+        "substitution_risk": "low",
+        "public_market_investability": "moderate",
+        "evidence_strength": "high"
+      },
+      "rationale": {
+        "demand_impulse": "Grid and connection work raises equipment demand.",
+        "revenue_exposure": "Equipment suppliers derive revenue from transformer shipments.",
+        "volume_sensitivity": "Revenue depends on shipment volume as well as pricing.",
+        "supply_responsiveness": "Extended lead times indicate slow supply response.",
+        "scarcity": "Backlogs and capacity constraints indicate scarce equipment availability.",
+        "pricing_power": "Scarcity and firm backlogs can support supplier pricing power.",
+        "margin_sensitivity": "Pricing and factory utilization can affect supplier margins.",
+        "capital_intensity": "Expanding manufacturing capacity requires capital spending.",
+        "barriers_to_entry": "Qualified grid equipment requires manufacturing capability and customer acceptance.",
+        "capacity_lead_time": "Industry evidence reports extended lead times.",
+        "substitution_risk": "The evidence identifies no near-term substitute.",
+        "public_market_investability": "Public-company exposure may exist but is not mapped in the supplied evidence.",
+        "evidence_strength": "Independent evidence supports demand and scarcity, while realized financial capture remains incomplete."
+      },
+      "evidence_ids": ["story_cluster:power-queues", "investment_observation:equipment-backlog", "investment_analysis:component-demand"],
+      "unknowns": ["Realized price increases", "Incremental margins", "Company-specific transformer revenue"]
+    }
+  ],
+  "adversarial": {
+    "counterevidence": [
+      {
+        "kind": "alternative_explanation",
+        "statement": "Announced manufacturing capacity additions could ease transformer scarcity before current demand plans are completed.",
+        "epistemic_state": "supported",
+        "evidence_ids": ["investment_observation:equipment-backlog"],
+        "edge_index": 3,
+        "rationale": "The same evidence that reports backlogs also reports progressing capacity additions."
+      },
+      {
+        "kind": "assumption",
+        "statement": "Planned hyperscaler capital spending may not translate into completed projects if power access remains unavailable.",
+        "epistemic_state": "hypothesis",
+        "evidence_ids": [],
+        "edge_index": 1,
+        "rationale": "Capital plans and completed construction are different states."
+      }
+    ],
+    "data_requests": [
+      {
+        "subject": "Transformer equipment lead times",
+        "requested_evidence_type": "industry_capacity",
+        "reason": "Lead-time history would test the persistence of the weakest scarcity assumption.",
+        "desired_frequency": "monthly",
+        "priority": "high",
+        "candidate_source_class": "industry"
+      }
+    ],
+    "invalidation_conditions": ["Transformer lead times normalize while announced factory capacity becomes available"],
+    "strengthening_observations": ["Backlogs remain firm while grid connection queues lengthen"],
+    "weakest_edge_index": 3
+  },
+  "deliverable": {
+    "what_changed": {"text": "Independent sources now connect accelerating hyperscaler capital spending to data-centre power and transformer constraints.", "evidence_ids": ["filing_delta:hyperscaler-capex", "story_cluster:power-queues", "investment_observation:equipment-backlog"]},
+    "why_it_matters": {"text": "Power availability and grid equipment can become gating inputs even when compute demand and construction plans remain strong.", "evidence_ids": ["story_cluster:power-queues", "investment_analysis:component-demand"]},
+    "transmission_text": "Artificial-intelligence demand raises hyperscaler capital spending, which expands data-centre construction and demand for electricity infrastructure, transformer equipment and storage equipment.",
+    "transmission_edge_indexes": [0, 1, 2, 3, 4],
+    "potential_capture": [
+      {"node_type": "technology", "node_key": "transformer-equipment", "node_name": "Transformer equipment", "text": "Firm backlogs and slow supply response may support equipment pricing, while company-level margin evidence is still missing.", "evidence_ids": ["investment_observation:equipment-backlog", "story_cluster:power-queues"]}
+    ],
+    "evidence_for": [
+      {"text": "Grid connection queues and transformer capacity constrain new data-centre projects.", "evidence_ids": ["story_cluster:power-queues"]},
+      {"text": "Transformer suppliers report firm backlogs and extended lead times.", "evidence_ids": ["investment_observation:equipment-backlog"]}
+    ],
+    "evidence_against": [
+      {"text": "Announced transformer manufacturing capacity additions are progressing.", "evidence_ids": ["investment_observation:equipment-backlog"]}
+    ],
+    "weak_links_unknowns": ["Actual lead-time history is missing", "Realized price and margin capture is not established", "Company-specific exposure is not mapped"],
+    "what_to_watch": ["Transformer lead times", "Equipment backlogs", "Grid connection queues", "Announced manufacturing capacity"]
+  }
+}

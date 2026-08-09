@@ -25,6 +25,7 @@ sys.path.insert(0, str(API_ROOT))
 os.environ["CONFIG_DIR"] = str(API_ROOT.parent / "config")
 
 from auth import mint_csrf_token  # noqa: E402
+from main import app  # noqa: E402
 
 AUTH = {
     "Authorization": "Basic dGVzdDp0ZXN0",
@@ -81,11 +82,34 @@ def source_rows():
     ]
 
 
+def driver_rows():
+    return [
+        {
+            "target": "USD",
+            "driver_label": "Relative policy expectations",
+            "direction": "supportive",
+            "strength": "moderate",
+            "horizon": "weeks",
+            "valid_from": NOW - timedelta(minutes=4),
+        }
+    ]
+
+
+def research_case_rows():
+    return [
+        {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "title": "Grid equipment constraint",
+            "lifecycle_state": "research_ready",
+            "what_changed": "Independent evidence strengthened.",
+            "last_changed_at": NOW - timedelta(minutes=3),
+        }
+    ]
+
+
 class SinceLastViewTests(unittest.TestCase):
     def _client(self):
         from fastapi.testclient import TestClient
-
-        from main import app
 
         return TestClient(app)
 
@@ -124,6 +148,8 @@ class SinceLastViewTests(unittest.TestCase):
                         cluster_rows(),
                         atom_rows(),
                         source_rows(),
+                        driver_rows(),
+                        research_case_rows(),
                     ],
                 ),
             ):
@@ -135,6 +161,12 @@ class SinceLastViewTests(unittest.TestCase):
         self.assertIn("Fed path repricing", response.text)
         self.assertIn("Regime shifted to disinflation.", response.text)
         self.assertIn("Material events", response.text)
+        self.assertIn("Relative policy expectations", response.text)
+        self.assertIn("Grid equipment constraint", response.text)
+        self.assertIn(
+            "/research/cases/11111111-1111-4111-8111-111111111111",
+            response.text,
+        )
 
     def test_database_failure_is_fail_soft(self):
         with tempfile.TemporaryDirectory() as directory:

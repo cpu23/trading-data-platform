@@ -10,17 +10,52 @@ as 503 without leaking details.
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from config import load_config
 from db import get_session
+from routes.json.triggers import (
+    ORCHESTRATOR_URL,
+    _enforce_api_budget,
+    _internal_basic_auth,
+    _post_to_orchestrator,
+)
+
+_ORCHESTRATOR_DIR = Path(__file__).resolve().parents[3] / "orchestrator"
+_orchestrator_path = str(_ORCHESTRATOR_DIR)
+_orchestrator_path_added = (
+    _ORCHESTRATOR_DIR.is_dir() and _orchestrator_path not in sys.path
+)
+if _orchestrator_path_added:
+    sys.path.insert(0, _orchestrator_path)
+
+try:
+    from research_intelligence import queries as _research_queries
+    from research_intelligence.benchmarks import list_benchmarks as _list_benchmarks
+
+    _live_case_cohorts = _research_queries.live_case_cohorts
+except ImportError:  # pragma: no cover - deployment wiring
+    _research_queries = None
+    _list_benchmarks = None
+    _live_case_cohorts = None
+
+try:
+    from research_intelligence.scorecards import (
+        annotate_benchmark_scorecard as _annotate_benchmark_scorecard,
+    )
+except ImportError:  # pragma: no cover - deployment wiring
+    _annotate_benchmark_scorecard = None
+
 
 try:  # orchestrator directory on PYTHONPATH (deployment wiring)
     import research as _research
@@ -47,6 +82,9 @@ except ImportError:  # pragma: no cover - api-only environment
         _research = None
         ENTITY_TYPES = EVIDENCE_TYPES = RELATIONSHIPS = ()
         CATALYST_STATES = RISK_KINDS = RISK_SEVERITIES = HOLDING_SOURCES = ()
+finally:
+    if _orchestrator_path_added:
+        sys.path.remove(_orchestrator_path)
 
 
 def _helpers() -> Any:
@@ -54,6 +92,20 @@ def _helpers() -> Any:
     if _research is None:
         raise RuntimeError("research helpers unavailable")
     return _research
+
+
+def _annotation_helper() -> Any:
+    """Resolve the optional write helper after API imports have settled."""
+    global _annotate_benchmark_scorecard
+    if _annotate_benchmark_scorecard is None:
+        try:
+            from research_intelligence.scorecards import (
+                annotate_benchmark_scorecard,
+            )
+        except ImportError as exc:  # pragma: no cover - api-only environment
+            raise RuntimeError("research annotation helper unavailable") from exc
+        _annotate_benchmark_scorecard = annotate_benchmark_scorecard
+    return _annotate_benchmark_scorecard
 
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -550,3 +602,343 @@ def upsert_holdings(body: dict = Body(...)):
     except Exception:
         return JSONResponse(status_code=503, content={"status": "unavailable"})
     return {"holdings": count}
+
+
+def _intelligence_helpers():
+    if _research_queries is None:
+        raise RuntimeError("research intelligence helpers unavailable")
+    return _research_queries
+
+
+def _run_body(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, Mapping) or set(value) - {"force"}:
+        raise ValueError("body may contain only force")
+    force = value.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force must be boolean")
+    return force
+
+
+async def _research_orchestrator_post(
+    request: Request, path: str, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    try:
+        response = await _post_to_orchestrator(
+            request,
+            f"{ORCHESTRATOR_URL}{path}",
+            json=payload or {},
+            timeout=10.0,
+            auth=_internal_basic_auth(),
+        )
+    except (httpx.TransportError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
+    if response.status_code != 202:
+        status = response.status_code if response.status_code in {404, 409, 422, 429, 503} else 502
+        raise HTTPException(
+            status_code=status,
+            detail="Research job could not be queued",
+        )
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned invalid response"
+        ) from exc
+    if not isinstance(body, dict) or not body.get("job_id"):
+        raise HTTPException(
+            status_code=502, detail="Orchestrator returned invalid response"
+        )
+    return _jsonable(body)
+
+
+@router.get("/cases")
+def list_intelligence_cases(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1000),
+    lifecycle_state: str | None = Query(default=None),
+    changed_only: bool = Query(default=False),
+):
+    try:
+        helpers = _intelligence_helpers()
+        with get_session(load_config()) as session:
+            rows = helpers.list_cases(
+                session,
+                limit=limit,
+                offset=offset,
+                lifecycle_state=lifecycle_state,
+                changed_only=changed_only,
+            )
+        return {"cases": _jsonable(rows), "limit": limit, "offset": offset}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/cases/{case_id}")
+def intelligence_case_detail(
+    case_id: str,
+    detail_limit: int = Query(default=100, ge=1, le=200),
+):
+    try:
+        helpers = _intelligence_helpers()
+        parsed = _uuid(case_id, "case_id")
+        with get_session(load_config()) as session:
+            result = helpers.get_case(session, parsed, detail_limit=detail_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    if result is None:
+        raise HTTPException(status_code=404, detail="Research case not found")
+    return _jsonable(result)
+
+
+@router.get("/cases/{case_id}/history")
+def intelligence_case_history(
+    case_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    try:
+        helpers = _intelligence_helpers()
+        parsed = _uuid(case_id, "case_id")
+        with get_session(load_config()) as session:
+            rows = helpers.case_history(session, parsed, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return {"case_id": parsed, "history": _jsonable(rows), "limit": limit}
+
+
+@router.get("/drivers")
+def intelligence_market_drivers(
+    changed_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    try:
+        helpers = _intelligence_helpers()
+        with get_session(load_config()) as session:
+            rows = helpers.current_market_drivers(
+                session, changed_only=changed_only, limit=limit
+            )
+        return {"drivers": _jsonable(rows), "limit": limit}
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/benchmarks")
+def intelligence_benchmarks():
+    if _list_benchmarks is None:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    try:
+        episodes = _list_benchmarks()
+        return {
+            "benchmarks": [
+                {
+                    "id": item.episode_id,
+                    "version": item.version,
+                    "synthetic": item.synthetic,
+                    "episode_kind": item.episode_kind,
+                    "description": item.description,
+                    "replay_dates": [
+                        value.isoformat() for value in item.replay_dates
+                    ],
+                    "evidence_count": len(item.evidence),
+                }
+                for item in episodes
+            ]
+        }
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/replays")
+def intelligence_replays(
+    benchmark_id: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1000),
+):
+    try:
+        helpers = _intelligence_helpers()
+        with get_session(load_config()) as session:
+            rows = helpers.list_replay_runs(
+                session,
+                benchmark_id=benchmark_id,
+                limit=limit,
+                offset=offset,
+            )
+        return {"replays": _jsonable(rows), "limit": limit, "offset": offset}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/replays/{replay_run_id}")
+def intelligence_replay_detail(
+    replay_run_id: str,
+    detail_limit: int = Query(default=100, ge=1, le=200),
+):
+    try:
+        helpers = _intelligence_helpers()
+        parsed = _uuid(replay_run_id, "replay_run_id")
+        with get_session(load_config()) as session:
+            result = helpers.get_replay_run(
+                session, parsed, detail_limit=detail_limit
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    if result is None:
+        raise HTTPException(status_code=404, detail="Research replay not found")
+    return _jsonable(result)
+
+
+@router.post("/replays/{replay_run_id}/annotations")
+def annotate_intelligence_replay(
+    replay_run_id: str,
+    body: dict = Body(...),
+):
+    try:
+        annotator = _annotation_helper()
+    except RuntimeError:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    unknown = set(body) - {
+        "overall_label",
+        "dimension_labels",
+        "notes",
+        "expected_version",
+    }
+    if unknown:
+        raise HTTPException(
+            status_code=422, detail="body contains unknown annotation fields"
+        )
+    annotations = {
+        key: body[key]
+        for key in ("overall_label", "dimension_labels", "notes")
+        if key in body
+    }
+    expected_version = body.get("expected_version")
+    try:
+        with get_session(load_config()) as session:
+            return _jsonable(
+                annotator(
+                    session,
+                    replay_run_id,
+                    annotations,
+                    annotated_by="authenticated_operator",
+                    expected_version=expected_version,
+                )
+            )
+    except ValueError as exc:
+        detail = str(exc)
+        if detail == "benchmark scorecard not found":
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if detail == "human annotation version conflict":
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+
+
+@router.get("/metrics")
+def intelligence_quality_metrics(
+    metric_scope: str | None = Query(default=None),
+    benchmark_id: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    try:
+        helpers = _intelligence_helpers()
+        with get_session(load_config()) as session:
+            rows = helpers.list_quality_metrics(
+                session,
+                metric_scope=metric_scope,
+                benchmark_id=benchmark_id,
+                limit=limit,
+            )
+        return {"metrics": _jsonable(rows), "limit": limit}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/cohorts")
+def intelligence_case_cohorts(
+    since: datetime | None = Query(default=None),
+):
+    if _live_case_cohorts is None:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    try:
+        with get_session(load_config()) as session:
+            rows = _live_case_cohorts(session, since=since)
+        return {"cohorts": _jsonable(rows)}
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.get("/status")
+def intelligence_status(limit: int = Query(default=20, ge=1, le=100)):
+    try:
+        helpers = _intelligence_helpers()
+        with get_session(load_config()) as session:
+            return _jsonable(helpers.research_status(session, limit=limit))
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+
+
+@router.post("/run", status_code=202)
+async def run_intelligence(
+    request: Request, body: dict | None = Body(default=None)
+):
+    try:
+        force = _run_body(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _enforce_api_budget(None)
+    return await _research_orchestrator_post(
+        request, "/research/run", {"force": force}
+    )
+
+
+@router.post("/cases/{case_id}/run", status_code=202)
+async def run_intelligence_case(
+    case_id: str,
+    request: Request,
+    body: dict | None = Body(default=None),
+):
+    try:
+        helpers = _intelligence_helpers()
+        parsed = _uuid(case_id, "case_id")
+        force = _run_body(body)
+        with get_session(load_config()) as session:
+            if helpers.get_case(session, parsed, detail_limit=1) is None:
+                raise HTTPException(status_code=404, detail="Research case not found")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    _enforce_api_budget(None)
+    return await _research_orchestrator_post(
+        request, f"/research/cases/{parsed}/run", {"force": force}
+    )
+
+
+@router.post("/jobs/{job_id}/retry", status_code=202)
+async def retry_intelligence_job(job_id: str, request: Request):
+    try:
+        parsed = _uuid(job_id, "job_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _enforce_api_budget(None)
+    return await _research_orchestrator_post(
+        request, f"/research/jobs/{parsed}/retry"
+    )

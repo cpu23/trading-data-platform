@@ -25,6 +25,14 @@ BACKFILL_YEARS = {
     "annual": 10,
 }
 
+REVISION_WINDOW_DAYS = {
+    "daily": 14,
+    "weekly": 90,
+    "monthly": 365,
+    "quarterly": 730,
+    "annual": 730,
+}
+
 
 def _failure_class(code: str) -> str:
     if code in {"metadata_request_failed", "request_failed"}:
@@ -407,7 +415,17 @@ class FredCollector:
                     last_observed = datetime.fromisoformat(
                         last_observed.replace("Z", "+00:00")
                     )
-                return last_observed + timedelta(days=1)
+                fred_config = config.get("collectors", {}).get("fred", {})
+                configured_windows = fred_config.get("revision_window_days", {})
+                try:
+                    overlap_days = int(
+                        configured_windows.get(
+                            frequency, REVISION_WINDOW_DAYS.get(frequency, 30)
+                        )
+                    )
+                except (TypeError, ValueError):
+                    overlap_days = REVISION_WINDOW_DAYS.get(frequency, 30)
+                return last_observed - timedelta(days=max(0, overlap_days))
         except Exception as exc:
             logger.warning(
                 "latest_query_failed",

@@ -1,0 +1,143 @@
+id: monetary_policy_regime_change
+version: 1
+synthetic: true
+episode_kind: macro_regime
+description: >-
+  Synthetic point-in-time corpus testing whether broadening inflation, firm labour data,
+  and changing central-bank guidance are connected through rates into FX, equities, and gold.
+replay_dates:
+  - 2021-09-30T23:59:59Z
+  - 2022-03-31T23:59:59Z
+  - 2022-06-30T23:59:59Z
+evidence:
+  - evidence_type: macro_observation
+    evidence_id: broad-inflation-pressure
+    source_name: Synthetic official price statistics
+    source_timestamp: 2021-09-14T08:30:00Z
+    available_at: 2021-09-14T08:30:00Z
+    title: Inflation pressure broadens beyond reopening categories
+    bounded_excerpt: The official release shows price pressure broadening across categories, while persistence and policy response remain uncertain.
+    entities:
+      - {entity_type: concept, name: US inflation}
+      - {entity_type: macro_region, name: US}
+    structured_fields:
+      series_id: SYNTH_US_INFLATION_BREADTH
+      research_data_types: [inflation_breadth]
+  - evidence_type: macro_release
+    evidence_id: firm-labour-release
+    source_name: Synthetic official labour release
+    source_timestamp: 2021-10-08T08:30:00Z
+    available_at: 2021-10-08T08:30:00Z
+    title: Labour demand remains firm as unemployment declines
+    bounded_excerpt: The release reports firm labour demand and declining unemployment, reducing evidence of spare capacity but not determining the policy path alone.
+    entities:
+      - {entity_type: concept, name: US labour market}
+      - {entity_type: macro_region, name: US}
+    structured_fields:
+      release_identity: SYNTH_US_LABOUR
+      stage: final
+      research_data_types: [labour]
+  - evidence_type: official_document
+    evidence_id: guidance-shifts
+    source_name: Synthetic central bank statement
+    source_timestamp: 2021-12-15T14:00:00Z
+    available_at: 2021-12-15T14:00:00Z
+    title: Policy guidance shifts toward earlier normalization
+    bounded_excerpt: The committee indicates that persistent inflation and labour progress warrant earlier normalization while emphasizing dependence on incoming data.
+    entities:
+      - {entity_type: concept, name: US policy-rate expectations}
+      - {entity_type: macro_region, name: US}
+    structured_fields:
+      institution: synthetic_central_bank
+      research_data_types: [policy_guidance]
+  - evidence_type: market_state
+    evidence_id: two-year-yield-rises
+    source_name: Synthetic deterministic market state
+    source_timestamp: 2022-01-31T21:00:00Z
+    available_at: 2022-01-31T21:00:00Z
+    title: Two-year sovereign yield rises with policy repricing
+    bounded_excerpt: Deterministic market state records a sustained rise in the two-year yield as the expected policy path reprices.
+    entities:
+      - {entity_type: market, name: DGS2}
+      - {entity_type: concept, name: US policy-rate expectations}
+    structured_fields:
+      symbol: DGS2
+      research_data_types: [yields, policy_expectations]
+  - evidence_type: market_confirmation
+    evidence_id: dollar-rate-confirmation
+    source_name: Synthetic deterministic FX reaction
+    source_timestamp: 2022-03-17T16:00:00Z
+    available_at: 2022-03-17T16:00:00Z
+    title: Dollar strengthens as relative rate expectations rise
+    bounded_excerpt: The bounded reaction window shows dollar strength alongside higher relative rate expectations, providing confirmation rather than a trading signal.
+    entities:
+      - {entity_type: market, name: DXY}
+      - {entity_type: market, name: EURUSD}
+      - {entity_type: concept, name: Relative policy-rate expectations}
+    structured_fields:
+      observed_at: 2022-03-17T16:00:00Z
+      target_at: 2022-03-17T16:00:00Z
+      reaction_state: persistence
+      research_data_types: [fx_reaction]
+  - evidence_type: market_confirmation
+    evidence_id: duration-asset-pressure
+    source_name: Synthetic deterministic cross-asset reaction
+    source_timestamp: 2022-05-05T20:00:00Z
+    available_at: 2022-05-05T20:00:00Z
+    title: Higher real yields pressure duration-sensitive equities and gold
+    bounded_excerpt: Bounded cross-asset windows show pressure in duration-sensitive equities and gold as real yields rise, with other risk factors still present.
+    entities:
+      - {entity_type: market, name: SP500}
+      - {entity_type: market, name: XAUUSD}
+      - {entity_type: concept, name: Real yields}
+    structured_fields:
+      observed_at: 2022-05-05T20:00:00Z
+      target_at: 2022-05-05T20:00:00Z
+      reaction_state: persistence
+      research_data_types: [equity_reaction, gold_reaction]
+  - evidence_type: macro_observation
+    evidence_id: growth-momentum-softens
+    source_name: Synthetic official activity statistics
+    source_timestamp: 2022-06-15T08:30:00Z
+    available_at: 2022-06-15T08:30:00Z
+    title: Growth momentum softens while inflation remains elevated
+    bounded_excerpt: Activity indicators soften while inflation remains elevated, creating a push-pull between tighter policy expectations and weaker growth.
+    entities:
+      - {entity_type: concept, name: US growth}
+      - {entity_type: concept, name: US inflation}
+      - {entity_type: macro_region, name: US}
+    structured_fields:
+      series_id: SYNTH_US_GROWTH_MOMENTUM
+      research_data_types: [growth]
+  - evidence_type: official_document
+    evidence_id: future-policy-path
+    source_name: Synthetic hindsight central bank minutes
+    source_timestamp: 2022-09-01T14:00:00Z
+    available_at: 2022-09-01T14:00:00Z
+    title: Later minutes reveal the realized policy path
+    bounded_excerpt: Later minutes describe decisions and inflation persistence unavailable at the June replay cutoff.
+    entities:
+      - {entity_type: concept, name: US policy-rate expectations}
+    structured_fields:
+      research_data_types: [policy_guidance]
+expected_developments:
+  - broadening inflation and firm labour data shift policy expectations
+  - short sovereign yields rise as the expected policy path reprices
+  - relative rates support the dollar and weigh on duration-sensitive assets
+plausible_second_order_areas:
+  - sovereign yield curves
+  - foreign exchange
+  - duration-sensitive equities
+  - gold through real yields
+  - credit and financial conditions
+expected_unknowns:
+  - persistence of inflation
+  - size and timing of policy moves
+  - whether growth weakness overtakes inflation pressure
+forbidden_hindsight:
+  - description: Realized later policy decisions and persistence evidence
+    available_after: 2022-09-01T14:00:00Z
+manual_milestones:
+  evidence_begins: 2021-09-14T08:30:00Z
+  competent_analyst_detection: 2021-12-15T14:00:00Z
+  market_confirmation: 2022-03-17T16:00:00Z

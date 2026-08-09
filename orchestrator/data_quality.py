@@ -234,11 +234,12 @@ def check_gaps(
     frequency: str | None = None,
     series_id: str | None = None,
 ) -> dict:
-    """Detect missing days in a time-series.
+    """Detect missing periods without treating lower-frequency data as daily.
 
-    When *frequency* is ``"daily"`` weekends are excluded from the expected
-    date set.  When *series_id* is provided the query is scoped to a single
-    series.
+    Daily series are checked through the current business day. Weekly, monthly,
+    and quarterly series are checked for internal holes between the first and
+    last observed period in a bounded history window; trailing publication lag
+    remains the responsibility of :func:`check_freshness`.
     """
     logger.info(
         "check_gaps_running",
@@ -248,7 +249,13 @@ def check_gaps(
         series_id=series_id,
     )
     now = datetime.now(UTC).date()
-    cutoff = now - timedelta(days=14)
+    lookback_days = {
+        "daily": 14,
+        "weekly": 7 * 16,
+        "monthly": 31 * 16,
+        "quarterly": 93 * 16,
+    }.get(frequency, 14)
+    cutoff = now - timedelta(days=lookback_days)
 
     where = "WHERE source = :source_id"
     params: dict = {"source_id": source_id, "cutoff": cutoff}
@@ -266,46 +273,83 @@ def check_gaps(
         result = session.execute(sql, params)
         rows = result.fetchall()
 
-    # Build a set of dates that have data.
     present_dates: set[date] = set()
     for row in rows:
-        d = row[0]
-        if isinstance(d, str):
-            d = datetime.fromisoformat(d).date()
-        elif isinstance(d, datetime):
-            d = d.date()
-        present_dates.add(d)
+        observed = row[0]
+        if isinstance(observed, str):
+            observed = datetime.fromisoformat(observed).date()
+        elif isinstance(observed, datetime):
+            observed = observed.date()
+        present_dates.add(observed)
 
-    # Build the expected set — skip weekends for daily frequency
-    expected: set[date] = set()
-    for i in range(15):  # inclusive of today
-        d = now - timedelta(days=i)
-        if frequency == "daily" and not _is_business_day(d):
-            continue
-        expected.add(d)
+    if not present_dates:
+        return {
+            "healthy": True,
+            "detail": "no data in bounded gap window",
+            "gaps": [],
+        }
 
-    missing = sorted(expected - present_dates)
-    # Group consecutive missing days into gap descriptions.
-    gaps = []
-    if missing:
-        start = missing[0]
-        prev = missing[0]
-        for d in missing[1:]:
-            if (prev - d).days == 1:
-                prev = d
+    gaps: list[str]
+    if frequency == "daily":
+        expected = {
+            now - timedelta(days=index)
+            for index in range(15)
+            if _is_business_day(now - timedelta(days=index))
+        }
+        gaps = [missing.isoformat() for missing in sorted(expected - present_dates)]
+    elif frequency == "weekly":
+        present_periods = {
+            observed - timedelta(days=observed.weekday())
+            for observed in present_dates
+        }
+        cursor = min(present_periods)
+        end = max(present_periods)
+        expected_periods: set[date] = set()
+        while cursor <= end:
+            expected_periods.add(cursor)
+            cursor += timedelta(days=7)
+        gaps = [
+            f"week of {missing.isoformat()}"
+            for missing in sorted(expected_periods - present_periods)
+        ]
+    elif frequency == "monthly":
+        present_periods = {(observed.year, observed.month) for observed in present_dates}
+        cursor_year, cursor_month = min(present_periods)
+        end = max(present_periods)
+        expected_periods: set[tuple[int, int]] = set()
+        while (cursor_year, cursor_month) <= end:
+            expected_periods.add((cursor_year, cursor_month))
+            if cursor_month == 12:
+                cursor_year += 1
+                cursor_month = 1
             else:
-                days = (start - prev).days + 1
-                gaps.append(
-                    f"{start.isoformat()} → {prev.isoformat()} "
-                    f"({days} day" + ("s" if days != 1 else "") + ")"
-                )
-                start = d
-                prev = d
-        days = (start - prev).days + 1
-        gaps.append(
-            f"{start.isoformat()} → {prev.isoformat()} "
-            f"({days} day" + ("s" if days != 1 else "") + ")"
-        )
+                cursor_month += 1
+        gaps = [
+            f"{year:04d}-{month:02d}"
+            for year, month in sorted(expected_periods - present_periods)
+        ]
+    elif frequency == "quarterly":
+        present_periods = {
+            (observed.year, ((observed.month - 1) // 3) + 1)
+            for observed in present_dates
+        }
+        cursor_year, cursor_quarter = min(present_periods)
+        end = max(present_periods)
+        expected_periods: set[tuple[int, int]] = set()
+        while (cursor_year, cursor_quarter) <= end:
+            expected_periods.add((cursor_year, cursor_quarter))
+            if cursor_quarter == 4:
+                cursor_year += 1
+                cursor_quarter = 1
+            else:
+                cursor_quarter += 1
+        gaps = [
+            f"{year:04d}-Q{quarter}"
+            for year, quarter in sorted(expected_periods - present_periods)
+        ]
+    else:
+        expected = {now - timedelta(days=index) for index in range(15)}
+        gaps = [missing.isoformat() for missing in sorted(expected - present_dates)]
 
     if gaps:
         logger.warning(
@@ -527,6 +571,7 @@ DATA_QUALITY_CHECKS = {
         timestamp_column="timestamp",
         max_age_hours=12,
         config=config or {},
+        frequency="daily",
     ),
 }
 

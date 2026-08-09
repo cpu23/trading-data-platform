@@ -1,0 +1,140 @@
+id: ai_infrastructure_expansion
+version: 1
+synthetic: true
+episode_kind: development
+description: >-
+  Synthetic point-in-time corpus testing whether rising AI compute demand is connected to
+  hyperscaler capital spending and progressively broader data-centre infrastructure needs.
+replay_dates:
+  - 2023-03-31T23:59:59Z
+  - 2023-06-30T23:59:59Z
+  - 2023-09-30T23:59:59Z
+evidence:
+  - evidence_type: filing_delta
+    evidence_id: ai-accelerator-guidance
+    source_name: Synthetic semiconductor filing
+    source_timestamp: 2023-03-22T12:00:00Z
+    available_at: 2023-03-22T12:00:00Z
+    title: Accelerator orders rise with generative AI deployments
+    bounded_excerpt: Management reports rising accelerator orders tied to generative AI deployments, while the duration and customer breadth remain uncertain.
+    entities:
+      - {entity_type: technology, name: AI accelerators}
+      - {entity_type: concept, name: Generative AI demand}
+    structured_fields:
+      industry: Semiconductors & Compute
+      research_data_types: [company_guidance, orders]
+  - evidence_type: investment_observation
+    evidence_id: hyperscaler-capex-priority
+    source_name: Synthetic cloud industry survey
+    source_timestamp: 2023-04-25T14:00:00Z
+    available_at: 2023-04-25T14:00:00Z
+    title: Hyperscalers prioritize AI infrastructure capital spending
+    bounded_excerpt: Multiple cloud operators prioritize capital spending for accelerated compute and new data-centre capacity while reducing lower-priority projects.
+    entities:
+      - {entity_type: industry, name: Hyperscalers}
+      - {entity_type: concept, name: Data-centre capex}
+      - {entity_type: technology, name: Accelerated compute}
+    structured_fields:
+      industry: Software, Cloud & Communications
+      research_data_types: [capital_spending, demand]
+  - evidence_type: story_cluster
+    evidence_id: network-demand-broadens
+    source_name: Synthetic technology wire
+    source_timestamp: 2023-05-17T09:30:00Z
+    available_at: 2023-05-17T09:30:00Z
+    title: AI cluster buildouts broaden networking demand
+    bounded_excerpt: Independent suppliers report that accelerated-compute clusters require additional high-speed networking, though shipment timing remains uncertain.
+    entities:
+      - {entity_type: technology, name: AI accelerators}
+      - {entity_type: technology, name: Data-centre networking}
+      - {entity_type: industry, name: Data centres}
+    structured_fields:
+      industry: Software, Cloud & Communications
+      source_count: 2
+      research_data_types: [supplier_demand]
+  - evidence_type: official_document
+    evidence_id: grid-connection-requests
+    source_name: Synthetic regional grid operator
+    source_timestamp: 2023-06-12T08:00:00Z
+    available_at: 2023-06-12T08:00:00Z
+    title: Large data-centre connection requests increase
+    bounded_excerpt: The grid operator records an increase in large data-centre connection requests and warns that connection studies and substation work take time.
+    entities:
+      - {entity_type: industry, name: Electricity infrastructure}
+      - {entity_type: industry, name: Data centres}
+      - {entity_type: technology, name: Substations}
+    structured_fields:
+      research_data_types: [grid_connections, capacity]
+  - evidence_type: investment_observation
+    evidence_id: memory-bandwidth-demand
+    source_name: Synthetic memory industry survey
+    source_timestamp: 2023-07-19T11:00:00Z
+    available_at: 2023-07-19T11:00:00Z
+    title: AI servers increase high-bandwidth memory requirements
+    bounded_excerpt: Server suppliers report that AI systems use materially more high-bandwidth memory than conventional servers, while near-term qualified supply is limited.
+    entities:
+      - {entity_type: technology, name: High-bandwidth memory}
+      - {entity_type: technology, name: AI servers}
+    structured_fields:
+      industry: Semiconductors & Compute
+      research_data_types: [capacity, supply_demand]
+  - evidence_type: filing_delta
+    evidence_id: cooling-backlog
+    source_name: Synthetic cooling supplier filing
+    source_timestamp: 2023-08-21T13:00:00Z
+    available_at: 2023-08-21T13:00:00Z
+    title: Data-centre cooling backlog expands
+    bounded_excerpt: A cooling-equipment supplier reports expanding data-centre backlog and longer project schedules, but does not establish industry-wide pricing power.
+    entities:
+      - {entity_type: technology, name: Data-centre cooling}
+      - {entity_type: industry, name: Data centres}
+    structured_fields:
+      industry: Industrials & Materials
+      research_data_types: [backlog, lead_times, pricing]
+  - evidence_type: investment_observation
+    evidence_id: transformer-lead-times
+    source_name: Synthetic electrical equipment survey
+    source_timestamp: 2023-09-14T10:00:00Z
+    available_at: 2023-09-14T10:00:00Z
+    title: Transformer lead times constrain data-centre energization
+    bounded_excerpt: Electrical contractors report extended transformer lead times delaying some data-centre energization schedules; announced capacity additions are not yet complete.
+    entities:
+      - {entity_type: technology, name: Transformers}
+      - {entity_type: industry, name: Electricity infrastructure}
+      - {entity_type: industry, name: Data centres}
+    structured_fields:
+      industry: Industrials & Materials
+      research_data_types: [lead_times, capacity_additions, realized_pricing]
+  - evidence_type: investment_analysis
+    evidence_id: future-ai-shortage-duration
+    source_name: Synthetic hindsight research note
+    source_timestamp: 2023-12-15T12:00:00Z
+    available_at: 2023-12-15T12:00:00Z
+    title: Full-year evidence establishes the duration of AI shortages
+    bounded_excerpt: Later full-year evidence quantifies shortage duration and realized supplier pricing that were not knowable at the September replay date.
+    entities:
+      - {entity_type: technology, name: AI accelerators}
+      - {entity_type: technology, name: Transformers}
+    structured_fields:
+      research_data_types: [realized_pricing, shortage_duration]
+expected_developments:
+  - AI accelerator demand is increasing
+  - hyperscaler capital spending is prioritizing AI infrastructure
+  - data-centre infrastructure requirements are broadening
+plausible_second_order_areas:
+  - data-centre networking
+  - high-bandwidth memory
+  - electricity infrastructure
+  - cooling equipment
+  - transformers and substations
+expected_unknowns:
+  - duration of accelerator and component shortages
+  - persistence of supplier pricing power
+  - pace of announced capacity additions
+forbidden_hindsight:
+  - description: Full-year shortage duration and realized pricing
+    available_after: 2023-12-15T12:00:00Z
+manual_milestones:
+  evidence_begins: 2023-03-22T12:00:00Z
+  competent_analyst_detection: 2023-05-17T09:30:00Z
+  second_order_visibility: 2023-06-12T08:00:00Z
