@@ -1,6 +1,6 @@
 # Research Intelligence
 
-**Status:** implemented as of 2026-08-08  
+**Status:** implemented, deployed, and CI-verified as of 2026-08-09  
 **Scope:** bounded macro/market context and dynamic investment-research cases  
 **Safety boundary:** decision support only; no trade instruction, entry, exit, target, sizing, allocation, or execution output
 
@@ -40,7 +40,11 @@ The tiers describe processing intent, not duplicate storage:
 - **Warm:** broad recurring company and industry evidence already held by the platform: Reuters and classified-news stories, canonical story clusters, investment observations, SEC/Companies House filing deltas, investment analyses, and financial facts referenced by those analyses.
 - **Cold:** narrow evidence needed to test a weak causal edge or capture claim. The system records a `research_data_requests` row instead of pretending the evidence exists or creating an unbounded collector catalogue.
 
-A cold request records subject, requested evidence type, reason, desired frequency, priority, status, candidate source class, and—when satisfied—the linked evidence identity. Status is one of `unresolved`, `in_progress`, `satisfied`, `unavailable`, or `cancelled`.
+A cold request records subject, requested evidence type, reason, desired
+frequency, priority, status, candidate source class, support/weakening criteria,
+minimum independent sources, and—when satisfied—the linked evidence identities.
+Status is one of `unresolved`, `in_progress`, `partially_satisfied`,
+`satisfied`, `unavailable`, `cancelled`, or `obsolete`.
 
 Highest-value remaining source gaps are explicit rather than silently inferred:
 official fiscal/budget state across all four regions, a licensed or otherwise
@@ -388,3 +392,19 @@ research views without paid or live network calls. Versioned replay episodes
 also exercise full research execution at historical cutoffs, leakage guards,
 cache identity, lifecycle lead time, scorecards, comparison, and noise
 abstention.
+
+The deployed release at commit `09ecc02` passed GitHub Actions CI run 31:
+
+- 793 orchestrator tests passed, with 26 explicit skips;
+- 226 API tests passed;
+- 24 repository and CI-contract tests passed;
+- Python compilation, Ruff, type checks, migration inventory and behavior,
+  deterministic fixtures, production/demo Compose validation, clean-migration
+  smoke, process-supervision smoke, failure drills, and image scanning passed;
+- the final image reported zero HIGH or CRITICAL vulnerabilities.
+
+Runtime smoke verification also exercised the authenticated case and replay
+read paths, optimistic annotation conflicts, immutable annotation readback, and
+the rendered `/research/evaluation` workspace. Synthetic benchmark success
+validates deterministic contracts and failure semantics; it is not evidence of
+investment profitability.

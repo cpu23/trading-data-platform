@@ -73,6 +73,7 @@ flowchart LR
         Dashboard["HTMX dashboard"]
         Investments["Investment research view"]
         Research["Research case workspace"]
+        Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
     end
 
@@ -105,6 +106,7 @@ flowchart LR
     API --> Fanout --> Dashboard
     API --> Investments
     API --> Research
+    API --> Evaluation
     API --> Health
 ```
 
@@ -325,6 +327,26 @@ docker compose exec orchestrator .venv/bin/python cli.py news all
 Kobeissi collection requires `TWITTERAPI_KEY`; Reuters and the read-only news
 API do not. Leaving `TWITTERAPI_KEY` empty keeps optional Kobeissi collection
 unconfigured until it is invoked with a credential.
+
+### Run And Inspect Research Intelligence
+
+Research discovery is a budgeted durable job. Read commands do not invoke the
+model:
+
+```bash
+docker compose exec orchestrator .venv/bin/python cli.py research-run
+docker compose exec orchestrator .venv/bin/python cli.py research-status
+docker compose exec orchestrator .venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec orchestrator .venv/bin/python cli.py research benchmark list
+docker compose exec orchestrator .venv/bin/python cli.py research inspect-replay <replay-run-uuid>
+docker compose exec orchestrator .venv/bin/python cli.py research metrics --scope comparison
+```
+
+Open `http://127.0.0.1:8000/research` for dynamic cases and
+`http://127.0.0.1:8000/research/evaluation` for point-in-time replay,
+scorecards, model/prompt variants, failures, cost, and immutable human-review
+history. See [Research Intelligence](docs/research-intelligence.md) for replay
+commands, API bounds, lifecycle semantics, and source-adapter extension rules.
 
 ## Local Verification
 

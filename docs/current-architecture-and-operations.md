@@ -366,6 +366,9 @@ curl http://127.0.0.1:8000/api/research/themes
 curl http://127.0.0.1:8000/api/research/cases
 curl http://127.0.0.1:8000/api/research/drivers?changed_only=true
 curl http://127.0.0.1:8000/api/research/status
+curl http://127.0.0.1:8000/api/research/benchmarks
+curl http://127.0.0.1:8000/api/research/replays?limit=20
+curl http://127.0.0.1:8000/api/research/metrics?limit=20
 
 # Research durable controls
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-run
@@ -374,6 +377,9 @@ docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py resea
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-update <case-uuid> --force
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-rebuild
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-retry <job-uuid>
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research benchmark list
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research inspect-replay <replay-run-uuid>
+docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research metrics --scope comparison
 
 # Collector, queue, and connectivity state
 docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py status

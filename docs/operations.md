@@ -198,6 +198,24 @@ docker compose exec orchestrator .venv/bin/python cli.py research-rebuild
 docker compose exec orchestrator .venv/bin/python cli.py research-retry <job-uuid>
 ```
 
+Point-in-time evaluation is read-isolated from live research state:
+
+```bash
+docker compose exec orchestrator .venv/bin/python cli.py research replay --as-of 2026-06-30T23:59:00+00:00
+docker compose exec orchestrator .venv/bin/python cli.py research benchmark list
+docker compose exec orchestrator .venv/bin/python cli.py research benchmark run <episode-id> --comparison-group baseline
+docker compose exec orchestrator .venv/bin/python cli.py research benchmark compare <left-run-uuid> <right-run-uuid>
+docker compose exec orchestrator .venv/bin/python cli.py research inspect-replay <run-uuid>
+docker compose exec orchestrator .venv/bin/python cli.py research metrics --scope comparison
+docker compose exec orchestrator .venv/bin/python cli.py research cohorts --no-persist
+```
+
+Use `/research` for live cases and `/research/evaluation` for replay variants,
+scorecards, stage failures, resource use, lifecycle cohorts, and human-review
+state. Human annotations are separate from deterministic scores. API writers
+should send `expected_version`; a stale review returns HTTP 409 and does not
+alter the current projection or immutable annotation history.
+
 `research-run`, `research-update`, and `research-rebuild` enqueue work; they do
 not run model calls in the request process. Normal refreshes coalesce by input
 identity. Forced rebuilds and retries get a new durable-job identity so a prior
