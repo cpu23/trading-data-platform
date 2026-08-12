@@ -623,13 +623,21 @@
               : (data.stages || []).filter(function (s) { return !['pending', 'running'].includes(s.status); }).length;
             var pct = Math.min(95, Math.round((completed / total) * 100));
 
-            if (['success', 'partial', 'completed'].includes(data.status)) {
+            var successfulTerminal = ['success', 'partial', 'completed'];
+            var failedTerminal = [
+              'failed',
+              'validation_failed',
+              'budget_denied',
+              'budget_blocked',
+              'budget_unavailable'
+            ];
+            if (successfulTerminal.includes(data.status)) {
               showProgress('Cycle finished: ' + data.status, 100);
               setTimeout(function () { showResult('Cycle completed: ' + data.status, false); }, 600);
               setButtons(false);
               dispatchCycleRefresh();
-            } else if (data.status === 'failed') {
-              showResult('Cycle failed — check logs', true);
+            } else if (failedTerminal.includes(data.status)) {
+              showResult('Cycle ' + data.status.replaceAll('_', ' ') + ' — check logs', true);
               setButtons(false);
               dispatchCycleRefresh();
             } else {

@@ -123,6 +123,17 @@ def classify_error(exc: BaseException) -> ErrorPolicy:
     if OutputPolicyError is not None and isinstance(exc, OutputPolicyError):
         return ErrorPolicy("validation_failed", ERROR_CLASS_INVALID_SOURCE_DATA, False)
 
+    # LLM stage failures carry bounded, raise-site-chosen messages (never
+    # provider/model payload), so they are safe to surface; a model response
+    # that failed validation cannot succeed on a retry of the same prompt, so
+    # the outcome is a permanent failed processor run, typed as invalid data.
+    try:
+        from llm_client import LLMStageFailure
+    except ImportError:  # pragma: no cover - llm_client always present in practice
+        LLMStageFailure = None  # type: ignore[assignment,misc]
+    if LLMStageFailure is not None and isinstance(exc, LLMStageFailure):
+        return ErrorPolicy("failed", ERROR_CLASS_INVALID_SOURCE_DATA, False)
+
     # Collector state errors are expected, non-retryable collection outcomes.
     from collectors.base import (
         CollectorNoData,

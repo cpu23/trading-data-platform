@@ -102,8 +102,17 @@ done
 [[ ${migrate_exit:-unset} == "0" ]] || fail_with_logs "migration did not complete"
 
 wait_for_healthy orchestrator
+wait_for_healthy scheduler
+wait_for_healthy worker
+wait_for_healthy outbox
+wait_for_healthy quotes
 wait_for_healthy api
 wait_for_api
+
+unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$API_URL/api/system/health")
+[[ "$unauthenticated_status" == "401" ]] ||
+  fail_with_logs "protected API returned $unauthenticated_status without authentication"
 
 orchestrator_health=$(compose exec -T orchestrator /app/orchestrator/.venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read().decode())")
 printf '%s' "$orchestrator_health" | grep -q '"readiness":"ready"\|"readiness": "ready"' || fail_with_logs "orchestrator readiness contract failed"

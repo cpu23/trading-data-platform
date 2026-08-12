@@ -398,6 +398,52 @@ def reconcile_analysis_atoms():
     click.echo(json_mod.dumps(summary, indent=2))
 
 
+@cli.command("recompute-reaction-windows")
+@click.option(
+    "--limit",
+    default=100,
+    show_default=True,
+    type=click.IntRange(1, 500),
+    help="Maximum windows to recompute in this run.",
+)
+@click.option(
+    "--event-id",
+    "event_id",
+    default=None,
+    help="Optional event UUID to scope recompute to one event.",
+)
+@click.option(
+    "--legacy-only",
+    is_flag=True,
+    help="Only re-derive pre-044 rows (volatility_version NULL or < current).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report what would change without updating any rows.",
+)
+def recompute_reaction_windows(
+    limit: int, event_id: str | None, legacy_only: bool, dry_run: bool
+):
+    """Re-derive reaction windows with current selection and calendar rules."""
+    import json as json_mod
+
+    from reaction_windows import recompute_reaction_windows as recompute
+
+    config = load_config()
+    setup_logging(level=config.get("logging", {}).get("level", "INFO"))
+    with get_session(config) as session:
+        summary = recompute(
+            session,
+            config,
+            limit=limit,
+            event_id=event_id,
+            legacy_only=legacy_only,
+            dry_run=dry_run,
+        )
+    click.echo(json_mod.dumps(summary, indent=2))
+
+
 @cli.command("filing-delta")
 @click.argument("document_id")
 def filing_delta(document_id: str):
@@ -1134,6 +1180,35 @@ def research_inspect_replay(replay_run_id, limit):
     if result is None:
         raise click.ClickException("research replay not found")
     _emit_json(result)
+
+
+@cli.group("roles")
+def roles_group():
+    """Run or check orchestrator process roles."""
+
+
+@roles_group.command("run")
+@click.argument("role", type=click.Choice(["api", "scheduler", "worker", "outbox", "quotes"]))
+def roles_run(role):
+    """Run one role process in the foreground (blocks until signal)."""
+    import roles
+
+    raise SystemExit(roles._ROLE_RUNNERS[role]())
+
+
+@roles_group.command("check")
+@click.argument("role", type=click.Choice(["api", "scheduler", "worker", "outbox", "quotes"]))
+@click.option(
+    "--stale-after",
+    type=float,
+    default=None,
+    help="Staleness window in seconds (default ROLE_HEARTBEAT_TIMEOUT_SECONDS or 90).",
+)
+def roles_check(role, stale_after):
+    """One-shot durable liveness check; exit code is the health signal."""
+    import roles
+
+    raise SystemExit(roles.check_role(role, stale_after))
 
 
 def _status_symbol(status: str) -> str:

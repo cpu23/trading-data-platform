@@ -426,26 +426,10 @@ class NewsTests(unittest.TestCase):
           </url>
         </urlset>"""
 
-        class Response:
-            def __init__(self, payload):
-                self.payload = payload
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return self.payload
-
-        def urlopen(request, timeout=30):
-            payload = (
-                b"<urlset><url>"
-                if request.full_url == "https://example.test/malformed.xml"
-                else valid_xml
-            )
-            return Response(payload)
+        def fetch_bytes(url, **kwargs):
+            if url == "https://www.reuters.com/malformed.xml":
+                return b"<urlset><url>"
+            return valid_xml
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = {
@@ -459,11 +443,11 @@ class NewsTests(unittest.TestCase):
                 patch(
                     "sources.reuters._fetch_sitemap_index",
                     return_value=[
-                        "https://example.test/malformed.xml",
-                        "https://example.test/valid.xml",
+                        "https://www.reuters.com/malformed.xml",
+                        "https://www.reuters.com/valid.xml",
                     ],
                 ),
-                patch("urllib.request.urlopen", side_effect=urlopen),
+                patch("sources.reuters._fetch_bytes", side_effect=fetch_bytes),
             ):
                 result = run_reuters(cfg, max_pages=2)
 
@@ -492,20 +476,10 @@ class NewsTests(unittest.TestCase):
           </url>
         </urlset>"""
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return valid_xml
-
-        def urlopen(request, timeout=30):
-            if request.full_url == "https://example.test/failed.xml":
+        def fetch_bytes(url, **kwargs):
+            if url == "https://www.reuters.com/failed.xml":
                 raise TimeoutError("private upstream detail")
-            return Response()
+            return valid_xml
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = {
@@ -518,11 +492,11 @@ class NewsTests(unittest.TestCase):
                 patch(
                     "sources.reuters._fetch_sitemap_index",
                     return_value=[
-                        "https://example.test/valid.xml",
-                        "https://example.test/failed.xml",
+                        "https://www.reuters.com/valid.xml",
+                        "https://www.reuters.com/failed.xml",
                     ],
                 ),
-                patch("urllib.request.urlopen", side_effect=urlopen),
+                patch("sources.reuters._fetch_bytes", side_effect=fetch_bytes),
             ):
                 result = run_reuters(cfg, max_pages=2)
             state = json.loads(Path(tmp, "reuters/state.json").read_text())
@@ -547,10 +521,10 @@ class NewsTests(unittest.TestCase):
             with (
                 patch(
                     "sources.reuters._fetch_sitemap_index",
-                    return_value=["https://example.test/failed.xml?token=private"],
+                    return_value=["https://www.reuters.com/failed.xml?token=private"],
                 ),
                 patch(
-                    "urllib.request.urlopen",
+                    "sources.reuters._fetch_bytes",
                     side_effect=ConnectionError("credential=private"),
                 ),
             ):
@@ -567,16 +541,6 @@ class NewsTests(unittest.TestCase):
     def test_reuters_index_rejects_well_formed_non_sitemap_xml(self):
         from sources.reuters import run_reuters
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return b"<html><body>RAW_CONTENT_SENTINEL</body></html>"
-
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "reuters/state.json")
             cfg = {
@@ -586,7 +550,10 @@ class NewsTests(unittest.TestCase):
                 }
             }
             with (
-                patch("urllib.request.urlopen", return_value=Response()),
+                patch(
+                    "sources.reuters._fetch_bytes",
+                    return_value=b"<html><body>RAW_CONTENT_SENTINEL</body></html>",
+                ),
                 patch("sources.reuters.logger") as mocked_logger,
             ):
                 result = run_reuters(cfg)
@@ -608,20 +575,10 @@ class NewsTests(unittest.TestCase):
             b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" />',
             b"<challenge>RAW_CONTENT_SENTINEL</challenge>",
         )
-        page_url = "https://example.test/not-a-urlset.xml?token=QUERY_SENTINEL#FRAGMENT_SENTINEL"
+        page_url = "https://www.reuters.com/not-a-urlset.xml?token=QUERY_SENTINEL#FRAGMENT_SENTINEL"
 
         for payload in wrong_roots:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
-
-                class Response:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def read(self):
-                        return payload
 
                 state_path = Path(tmp, "reuters/state.json")
                 cfg = {
@@ -634,7 +591,7 @@ class NewsTests(unittest.TestCase):
                     patch(
                         "sources.reuters._fetch_sitemap_index", return_value=[page_url]
                     ),
-                    patch("urllib.request.urlopen", return_value=Response()),
+                    patch("sources.reuters._fetch_bytes", return_value=payload),
                     patch("sources.reuters.logger") as mocked_logger,
                 ):
                     result = run_reuters(cfg)
@@ -642,7 +599,7 @@ class NewsTests(unittest.TestCase):
 
                 self.assertEqual(result.items, [])
                 self.assertEqual(result.status, "error")
-                self.assertIn("https://example.test/not-a-urlset.xml", result.error)
+                self.assertIn("https://www.reuters.com/not-a-urlset.xml", result.error)
                 self.assertIn("SitemapSchemaError", result.error)
                 exposed = f"{result.error} {state_text} {mocked_logger.method_calls}"
                 self.assertNotIn("QUERY_SENTINEL", exposed)
@@ -654,16 +611,6 @@ class NewsTests(unittest.TestCase):
         from sources.reuters import run_reuters
 
         empty_xml = b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" />'
-
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return empty_xml
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = {
@@ -678,9 +625,9 @@ class NewsTests(unittest.TestCase):
             with (
                 patch(
                     "sources.reuters._fetch_sitemap_index",
-                    return_value=["https://example.test/empty.xml"],
+                    return_value=["https://www.reuters.com/empty.xml"],
                 ),
-                patch("urllib.request.urlopen", return_value=Response()),
+                patch("sources.reuters._fetch_bytes", return_value=empty_xml),
             ):
                 result = collect_and_publish(
                     "reuters", cfg, lambda: run_reuters(cfg, max_pages=1)
@@ -714,16 +661,6 @@ class NewsTests(unittest.TestCase):
                 ]
             },
         }
-
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -764,7 +701,10 @@ class NewsTests(unittest.TestCase):
                 return run_kobeissi(cfg, count=20)
 
             with (
-                patch("urllib.request.urlopen", return_value=Response()),
+                patch(
+                    "sources.kobeissi._fetch_bytes",
+                    return_value=json.dumps(payload).encode(),
+                ),
                 patch(
                     "sources.news_feed._build_feed_unlocked",
                     side_effect=ValueError("RAW_SECRET"),
@@ -778,7 +718,10 @@ class NewsTests(unittest.TestCase):
             self.assertIsInstance(json.loads(snapshot_path.read_text()), list)
             self.assertEqual(json.loads(feed_path.read_text())["generated_at"], "prior")
 
-            with patch("urllib.request.urlopen", return_value=Response()):
+            with patch(
+                "sources.kobeissi._fetch_bytes",
+                return_value=json.dumps(payload).encode(),
+            ):
                 retried = collect_and_publish("kobeissi", cfg, collector)
 
             self.assertEqual([entry["id"] for entry in retried.items], ["kobeissi:10"])
@@ -805,16 +748,6 @@ class NewsTests(unittest.TestCase):
             },
         }
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
-
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp, "kobeissi/state.json")
             state.parent.mkdir(parents=True)
@@ -829,7 +762,10 @@ class NewsTests(unittest.TestCase):
                     "output_path": f"{tmp}/kobeissi",
                 },
             }
-            with patch("urllib.request.urlopen", return_value=Response()):
+            with patch(
+                "sources.kobeissi._fetch_bytes",
+                return_value=json.dumps(payload).encode(),
+            ):
                 first = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
                 second = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
             self.assertEqual([x["id"] for x in first.items], ["kobeissi:10"])
@@ -934,7 +870,7 @@ class NewsTests(unittest.TestCase):
             }
             with (
                 patch(
-                    "urllib.request.urlopen",
+                    "sources.kobeissi._fetch_bytes",
                     side_effect=ConnectionError("token=private"),
                 ),
                 patch("sources.kobeissi.logger") as mocked_logger,
@@ -961,16 +897,6 @@ class NewsTests(unittest.TestCase):
             "data": {"tweets": [None, "RAW_PAYLOAD_SENTINEL"]},
         }
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
-
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             state_path.parent.mkdir(parents=True)
@@ -992,7 +918,10 @@ class NewsTests(unittest.TestCase):
                 }
             }
             with (
-                patch("urllib.request.urlopen", return_value=Response()),
+                patch(
+                    "sources.kobeissi._fetch_bytes",
+                    return_value=json.dumps(payload).encode(),
+                ),
                 patch("sources.kobeissi.logger") as mocked_logger,
             ):
                 result = run_kobeissi(cfg)
@@ -1025,16 +954,6 @@ class NewsTests(unittest.TestCase):
             "data": {"tweets": [{"id": "43", "text": ["RAW_PAYLOAD_SENTINEL"]}]},
         }
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
-
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             cfg = {
@@ -1045,7 +964,10 @@ class NewsTests(unittest.TestCase):
                 }
             }
             with (
-                patch("urllib.request.urlopen", return_value=Response()),
+                patch(
+                    "sources.kobeissi._fetch_bytes",
+                    return_value=json.dumps(payload).encode(),
+                ),
                 patch("sources.kobeissi.logger") as mocked_logger,
             ):
                 result = run_kobeissi(cfg)
@@ -1080,16 +1002,6 @@ class NewsTests(unittest.TestCase):
         for payload in malformed_payloads:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
 
-                class Response:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *args):
-                        return None
-
-                    def read(self):
-                        return json.dumps(payload).encode()
-
                 state_path = Path(tmp, "kobeissi/state.json")
                 state_path.parent.mkdir(parents=True)
                 state_path.write_text(
@@ -1110,7 +1022,10 @@ class NewsTests(unittest.TestCase):
                     }
                 }
                 with (
-                    patch("urllib.request.urlopen", return_value=Response()),
+                    patch(
+                        "sources.kobeissi._fetch_bytes",
+                        return_value=json.dumps(payload).encode(),
+                    ),
                     patch("sources.kobeissi.logger") as mocked_logger,
                 ):
                     result = run_kobeissi(cfg)
@@ -1140,16 +1055,6 @@ class NewsTests(unittest.TestCase):
 
         payload = {"status": "success", "data": {"tweets": []}}
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
-
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             cfg = {
@@ -1162,7 +1067,10 @@ class NewsTests(unittest.TestCase):
                     "output_path": f"{tmp}/kobeissi",
                 },
             }
-            with patch("urllib.request.urlopen", return_value=Response()):
+            with patch(
+                "sources.kobeissi._fetch_bytes",
+                return_value=json.dumps(payload).encode(),
+            ):
                 result = collect_and_publish("kobeissi", cfg, lambda: run_kobeissi(cfg))
             state = json.loads(state_path.read_text())
 
@@ -1177,16 +1085,6 @@ class NewsTests(unittest.TestCase):
 
         payload = {"status": "error", "msg": "api_key=secret"}
 
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-            def read(self):
-                return json.dumps(payload).encode()
-
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp, "kobeissi/state.json")
             cfg = {
@@ -1196,7 +1094,10 @@ class NewsTests(unittest.TestCase):
                     "output_path": f"{tmp}/kobeissi",
                 }
             }
-            with patch("urllib.request.urlopen", return_value=Response()):
+            with patch(
+                "sources.kobeissi._fetch_bytes",
+                return_value=json.dumps(payload).encode(),
+            ):
                 result = run_kobeissi(cfg)
             state_text = state_path.read_text()
 

@@ -1,3 +1,4 @@
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +10,16 @@ from collectors.base import CollectorNoData, CollectorSetupRequired
 from collectors.central_banks import CentralBanksCollector
 from collectors.cftc import CftcCollector
 from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
+
+
+def _public_dns(host, port, *args, **kwargs):
+    """Reserved test hosts (example.test) must resolve publicly for the
+    configured-origin validation used by the collectors under test."""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+
+def _public_dns_patch():
+    return patch("socket.getaddrinfo", side_effect=_public_dns)
 
 
 class OfficialCollectorTests(unittest.TestCase):
@@ -44,7 +55,8 @@ class OfficialCollectorTests(unittest.TestCase):
         ecb_ids = {series["id"] for series in collectors["ecb"]["series"]}
         self.assertTrue({"HICP_YOY", "UNEMP"}.issubset(ecb_ids))
     @patch("collectors.central_banks.make_request")
-    def test_central_bank_feed_forwards_source_headers(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_central_bank_feed_forwards_source_headers(self, _dns, request):
         response = Mock()
         response.content = b"""
             <rss><channel><item>
@@ -82,7 +94,8 @@ class OfficialCollectorTests(unittest.TestCase):
         )
 
     @patch("collectors.cftc.make_request")
-    def test_cftc_normalizes_positioning(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_normalizes_positioning(self, _dns, request):
         response = Mock()
         response.json.return_value = [
             {
@@ -127,7 +140,8 @@ class OfficialCollectorTests(unittest.TestCase):
         )
 
     @patch("collectors.cftc.make_request")
-    def test_cftc_ignores_unmapped_contracts(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_ignores_unmapped_contracts(self, _dns, request):
         response = Mock()
         response.json.return_value = [
             {
@@ -231,7 +245,8 @@ class OfficialCollectorTests(unittest.TestCase):
             EiaCollector().collect(config, "corr")
 
     @patch("collectors.official_macro.make_request")
-    def test_eia_uses_public_fallback_key(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_eia_uses_public_fallback_key(self, _dns, request):
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
@@ -264,7 +279,8 @@ class OfficialCollectorTests(unittest.TestCase):
         self.assertEqual(request.call_args.kwargs["params"]["api_key"], "DEMO_KEY")
 
     @patch("collectors.official_macro.make_request")
-    def test_health_check_sends_configured_headers(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_health_check_sends_configured_headers(self, _dns, request):
         response = Mock(status_code=200)
         request.return_value = response
         config = {
@@ -284,7 +300,8 @@ class OfficialCollectorTests(unittest.TestCase):
         )
 
     @patch("collectors.official_macro.make_request")
-    def test_official_collector_reports_partial_series_failure(self, request):
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_official_collector_reports_partial_series_failure(self, _dns, request):
         good = Mock()
         good.raise_for_status.return_value = None
         good.json.return_value = {"rows": [{"date": "2026-05", "value": "101.2"}]}

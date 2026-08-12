@@ -446,14 +446,16 @@ LEFT JOIN LATERAL (
 
 _CATALYST_SQL = """
 SELECT DISTINCT ON (w.instrument_symbol)
-       w.instrument_symbol, w.horizon, w.reaction_state, w.target_at, w.event_at,
+       w.instrument_symbol, w.timeframe, w.horizon, w.reaction_state,
+       w.target_at, w.event_at,
        e.event_type, e.payload ->> 'title' AS event_title
 FROM event_reaction_windows w
 LEFT JOIN market_events e ON e.id = w.event_id
 WHERE w.instrument_symbol = ANY(CAST(:symbols AS TEXT[]))
+  AND w.timeframe = 'PRICE'
   AND w.horizon IN ('5m', '15m', '30m')
   AND w.reaction_state IN ('pending', 'persistence', 'reversal', 'mixed')
-ORDER BY w.instrument_symbol, w.target_at DESC, w.id DESC
+ORDER BY w.instrument_symbol, w.timeframe, w.target_at DESC, w.id DESC
 """
 
 _OPINION_SQL = """
@@ -702,6 +704,7 @@ def _build_grid_row(
         "samples": market.get("samples"),
         "vol_state": vol_state,
         "catalyst_text": catalyst_text,
+        "catalyst_timeframe": catalyst.get("timeframe") if catalyst else None,
         "interpretation": label,
         "interpretation_class": _interpretation_class(label),
         "price_age_minutes": price_age,

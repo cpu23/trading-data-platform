@@ -21,6 +21,7 @@ os.environ.update(
         "STATE_DIR": "/tmp/trading-data-research-test-state",
         "DASHBOARD_USER": "test",
         "DASHBOARD_PASSWORD": "test",
+        "DEPLOYMENT_MODE": "test",
         "LEGACY_BASIC_AUTH": "1",
         "CONFIG_DIR": str(ORCH_ROOT.parent / "config"),
         "DB_USER": "test",
@@ -835,16 +836,19 @@ class ResearchApiApiTests(unittest.TestCase):
                 pass
             os.chdir(cls._previous_cwd)
         cls.app = app
+        cls.csrf_token = mint_csrf_token()
         cls.auth = {
             "Authorization": "Basic dGVzdDp0ZXN0",
             "Origin": "http://testserver",
-            "X-CSRF-Token": mint_csrf_token(),
+            "X-CSRF-Token": cls.csrf_token,
         }
 
     def _client(self):
         from fastapi.testclient import TestClient
 
-        return TestClient(self.app)
+        client = TestClient(self.app)
+        client.cookies.set("csrf-token", self.csrf_token)
+        return client
 
     def test_requires_auth_without_headers(self):
         client = self._client()

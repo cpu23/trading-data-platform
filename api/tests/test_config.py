@@ -12,9 +12,14 @@ class ConfigLoadingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.yaml"
             config_path.write_text(
-                "required: ${REQUIRED_VALUE}\n"
-                "defaulted: ${ABSENT_VALUE:-fallback}\n"
-                "explicit_empty: ${EMPTY_VALUE:-fallback}\n"
+                "database:\n"
+                "  host: localhost\n"
+                "  port: 5432\n"
+                "  name: trading_data\n"
+                "  user: ${REQUIRED_VALUE}\n"
+                "  password: ${ABSENT_VALUE:-correct-horse-battery-staple}\n"
+                "kobeissi:\n"
+                "  api_key: ${EMPTY_VALUE:-fallback}\n"
             )
             with patch.dict(
                 os.environ,
@@ -23,9 +28,11 @@ class ConfigLoadingTests(unittest.TestCase):
             ):
                 config = _load_config(str(config_path))
 
-        self.assertEqual(config["required"], "configured")
-        self.assertEqual(config["defaulted"], "fallback")
-        self.assertEqual(config["explicit_empty"], "")
+        self.assertEqual(config["database"]["user"], "configured")
+        self.assertEqual(
+            config["database"]["password"], "correct-horse-battery-staple"
+        )
+        self.assertEqual(config["kobeissi"]["api_key"], "")
 
     def test_env_substitution_names_absent_required_variable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,14 +54,14 @@ class ConfigLoadingTests(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         env = {
             "DB_USER": "trading",
-            "DB_PASSWORD": "password",
+            "DB_PASSWORD": "correct-horse-battery-staple",
             "FRED_API_KEY": "configured-fred",
             "OPENROUTER_API_KEY": "configured-openrouter",
             "OPENROUTER_MODEL": "provider/model",
             "OANDA_API_KEY": "configured-oanda",
             "TWITTERAPI_KEY": "",
             "DASHBOARD_USER": "admin",
-            "DASHBOARD_PASSWORD": "password",
+            "DASHBOARD_PASSWORD": "correct-horse-battery-staple",
         }
         with patch.dict(os.environ, env, clear=True):
             config = _load_config(str(config_path))
@@ -67,20 +74,20 @@ class ConfigLoadingTests(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         env = {
             "DB_USER": "trading",
-            "DB_PASSWORD": "password",
+            "DB_PASSWORD": "correct-horse-battery-staple",
             "FRED_API_KEY": "configured-fred",
             "OPENROUTER_API_KEY": "configured-openrouter",
             "OPENROUTER_MODEL": "provider/model",
             "OANDA_API_KEY": "configured-oanda",
             "TWITTERAPI_KEY": "",
             "DASHBOARD_USER": "admin",
-            "DASHBOARD_PASSWORD": "password",
+            "DASHBOARD_PASSWORD": "correct-horse-battery-staple",
         }
         with patch.dict(os.environ, env, clear=True):
             default_config = _load_config(str(config_path))
         self.assertEqual(default_config["logging"]["level"], "INFO")
         self.assertEqual(default_config["logging"]["output"], ["stdout"])
-        self.assertNotIn("rotate", default_config["logging"])
+        self.assertIsNone(default_config["logging"]["rotate"])
 
         # A distinct path bypasses the production config cache and remains
         # isolated from the module-level load_config patches in route tests.

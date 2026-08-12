@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 
+from config import orchestrator_url
 from logging_config import get_logger
 
 router = APIRouter()
@@ -20,7 +21,7 @@ async def quality_page(request: Request):
 
     try:
         resp = await request.app.state.orchestrator_client.get(
-            "http://orchestrator:8000/quality",
+            f"{orchestrator_url()}/quality",
             timeout=5.0,
         )
         if resp.is_success:

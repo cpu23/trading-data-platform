@@ -1,10 +1,11 @@
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
 from config_loader import AppConfig
@@ -36,7 +37,19 @@ _engine: Engine | None = None
 _SessionFactory: sessionmaker[Session] | None = None
 
 
-def get_engine(config: AppConfig | None = None) -> Engine:
+def _database_url(db_config: Mapping[str, Any]) -> URL:
+    """Build a SQLAlchemy URL with proper credential escaping."""
+    return URL.create(
+        "postgresql+psycopg2",
+        username=db_config["user"],
+        password=db_config.get("password", ""),
+        host=db_config["host"],
+        port=db_config.get("port", 5432),
+        database=db_config["name"],
+    )
+
+
+def get_engine(config: AppConfig | Mapping[str, Any] | None = None) -> Engine:
     global _engine
     if _engine is not None:
         return _engine
@@ -47,11 +60,13 @@ def get_engine(config: AppConfig | None = None) -> Engine:
         config = load_config()
 
     db_config = config["database"]
-    url = (
-        f"postgresql://{db_config['user']}:{db_config['password']}"
-        f"@{db_config['host']}:{db_config['port']}/{db_config['name']}"
+    _engine = create_engine(
+        _database_url(db_config),
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        connect_args={"connect_timeout": 3},
     )
-    _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
     return _engine
 
 
@@ -169,7 +184,11 @@ def check_connection(config: AppConfig | None = None) -> bool:
             session.execute(text("SELECT 1"))
         return True
     except Exception as exc:
-        logger.error("db_connection_failed", action="db_check", error=str(exc))
+        logger.error(
+            "db_connection_failed",
+            action="db_check",
+            error_type=type(exc).__name__,
+        )
         return False
 
 

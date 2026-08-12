@@ -67,6 +67,25 @@ class EventRoutingTests(unittest.TestCase):
         update.assert_called_once()
         self.assertEqual(result["market_state"]["symbol"], "EURUSD")
         self.assertNotIn("llm", result)
+    def test_disabled_market_state_does_not_update_price_features(self):
+        from events.routing import initial_handler
+
+        source = event(
+            "price_tick",
+            symbol="EURUSD",
+            timestamp=datetime.now(UTC),
+            close=1.1,
+        )
+        disabled = {**CONFIG, "market_state": {"enabled": False}}
+        with (
+            patch("events.freshness.record_event_observation", return_value={}),
+            patch("events.routing._config", return_value=disabled),
+            patch("market_state.update_price_features") as update,
+        ):
+            result = initial_handler(MagicMock(), source)
+        update.assert_not_called()
+        self.assertNotIn("market_state", result)
+
 
     def test_material_macro_release_gets_t0_and_bounded_stage_jobs(self):
         from events.routing import initial_handler

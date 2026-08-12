@@ -8,6 +8,7 @@ mock ``config`` dict.
 
 import re
 import statistics
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import text
@@ -600,56 +601,183 @@ def _run_quality_check(check_id: str, check_fn, **metadata) -> dict:
     return {**result, **metadata}
 
 
+def _source_enabled(config: dict, source_id: str) -> bool:
+    """A source counts as enabled unless its collector explicitly says no."""
+    collectors = config.get("collectors", {}) if isinstance(config, Mapping) else {}
+    source_cfg = (
+        collectors.get(source_id, {}) if isinstance(collectors, Mapping) else {}
+    )
+    if isinstance(source_cfg, Mapping):
+        return bool(source_cfg.get("enabled", True))
+    return True
+
+
+def required_quality_checks(config: dict) -> set[str]:
+    """Check ids that MUST be present for quality to be considered healthy.
+
+    Checks for disabled sources are optional; FRED freshness/gaps/anomalies
+    are required per configured series (falling back to the fixed FRED checks
+    when no series are configured).  A missing required check degrades the
+    overall quality verdict — empty/missing required checks are never healthy.
+    """
+    required: set[str] = set()
+    collectors = config.get("collectors", {}) if isinstance(config, Mapping) else {}
+    fred_series: list = []
+    if isinstance(collectors, Mapping):
+        fred_cfg = collectors.get("fred", {})
+        if isinstance(fred_cfg, Mapping):
+            fred_series = fred_cfg.get("series", []) or []
+
+    for check_id in DATA_QUALITY_CHECKS:
+        source_id = check_id.rsplit("_", 1)[0]
+        if source_id == "fred":
+            continue  # replaced by per-series checks below
+        if _source_enabled(config, source_id):
+            required.add(check_id)
+
+    if _source_enabled(config, "fred"):
+        if fred_series:
+            for series in fred_series:
+                if not isinstance(series, Mapping) or not series.get("id"):
+                    continue
+                series_id = str(series["id"])
+                required.update(
+                    {
+                        f"fred_{series_id}_freshness",
+                        f"fred_{series_id}_gaps",
+                        f"fred_{series_id}_anomalies",
+                    }
+                )
+        else:
+            required.update({"fred_freshness", "fred_gaps", "fred_anomalies"})
+    return required
+
+
+def evaluate_quality(results: dict[str, dict], required: set[str]) -> str:
+    """Map quality results to an overall verdict.
+
+    ``"healthy"`` only when every required check is present and reports
+    ``healthy is True`` exactly.  A required check that is missing or
+    malformed (no boolean ``healthy`` key) yields ``"unknown"``; a required
+    check that explicitly reports ``healthy is False`` yields
+    ``"degraded"``.  With no required checks the verdict is ``"unknown"``
+    when nothing was measured, otherwise ``"degraded"`` (optional failures
+    are visible but never healthy).
+    """
+    if not required:
+        return "unknown" if not results else "degraded"
+    missing = required - set(results)
+    if missing:
+        return "unknown"
+    verdicts: list[bool | None] = []
+    for check_id in required:
+        result = results.get(check_id)
+        verdicts.append(result.get("healthy") if isinstance(result, dict) else None)
+    if any(healthy is False for healthy in verdicts):
+        return "degraded"
+    if any(healthy is not True for healthy in verdicts):
+        return "unknown"
+    return "healthy"
+
+
+def readiness_critical_checks(config: dict, required: set[str]) -> set[str]:
+    """Checks that gate process readiness when failing.
+
+    Only checks explicitly listed under ``readiness.data_quality_checks``
+    (exact check ids, or a source id such as ``fred`` matching every check of
+    that source) are readiness-critical; everything else is visible in the
+    verdict but never blocks readiness, so a fresh install does not deadlock
+    on a not-yet-run schedule.
+    """
+    readiness = config.get("readiness", {}) if isinstance(config, Mapping) else {}
+    configured = readiness.get("data_quality_checks", []) if isinstance(readiness, Mapping) else []
+    if not configured:
+        return set()
+    return {
+        check_id
+        for check_id in required
+        if any(check_id == entry or check_id.startswith(f"{entry}_") for entry in configured)
+    }
+
+
+def normalize_quality_results(results: dict[str, dict]) -> dict[str, dict]:
+    """Contract-valid check payloads; malformed entries become explicit failures.
+
+    A malformed result (missing or non-boolean ``healthy``) must never reach
+    the ``QualityCheck`` response contract — it is normalized to
+    ``healthy: false, status: unknown`` while the overall verdict (computed
+    from the raw results) stays ``unknown``.
+    """
+    normalized: dict[str, dict] = {}
+    for check_id, result in results.items():
+        if isinstance(result, dict) and result.get("healthy") in (True, False):
+            normalized[check_id] = result
+        else:
+            normalized[check_id] = {
+                "healthy": False,
+                "status": "unhealthy",
+                "detail": "malformed result",
+            }
+    return normalized
+
+
 def run_quality_checks(config: dict) -> dict[str, dict]:
-    """Run production checks, isolating failures and expanding FRED per series."""
+    """Run production checks, isolating failures and expanding FRED per series.
+
+    Checks whose source is disabled in the configuration are skipped so a
+    deliberately disabled source never degrades overall quality.
+    """
     results: dict[str, dict] = {}
     series_config = config.get("collectors", {}).get("fred", {}).get("series", [])
-    for series in series_config:
-        series_id = series["id"]
-        frequency = series.get("frequency")
-        checks = {
-            "freshness": lambda series_id=series_id,
-            frequency=frequency: check_freshness(
-                source_id="fred",
-                table="macro_series",
-                timestamp_column="observed_at",
-                max_age_hours=30,
-                config=config,
-                series_id=series_id,
-                frequency=frequency,
-            ),
-            "gaps": lambda series_id=series_id, frequency=frequency: check_gaps(
-                source_id="fred",
-                table="macro_series",
-                date_column="observed_at",
-                expected_interval="1 day",
-                config=config,
-                series_id=series_id,
-                frequency=frequency,
-            ),
-            "anomalies": lambda series_id=series_id: check_anomalies(
-                source_id="fred",
-                table="macro_series",
-                value_column="value",
-                timestamp_column="observed_at",
-                config=config,
-                series_id=series_id,
-            ),
-        }
-        for check_name, check_fn in checks.items():
-            check_id = f"fred_{series_id}_{check_name}"
-            results[check_id] = _run_quality_check(
-                check_id,
-                check_fn,
-                source_id="fred",
-                series_id=series_id,
-                frequency=frequency,
-            )
+    if _source_enabled(config, "fred"):
+        for series in series_config:
+            series_id = series["id"]
+            frequency = series.get("frequency")
+            checks = {
+                "freshness": lambda series_id=series_id,
+                frequency=frequency: check_freshness(
+                    source_id="fred",
+                    table="macro_series",
+                    timestamp_column="observed_at",
+                    max_age_hours=30,
+                    config=config,
+                    series_id=series_id,
+                    frequency=frequency,
+                ),
+                "gaps": lambda series_id=series_id, frequency=frequency: check_gaps(
+                    source_id="fred",
+                    table="macro_series",
+                    date_column="observed_at",
+                    expected_interval="1 day",
+                    config=config,
+                    series_id=series_id,
+                    frequency=frequency,
+                ),
+                "anomalies": lambda series_id=series_id: check_anomalies(
+                    source_id="fred",
+                    table="macro_series",
+                    value_column="value",
+                    timestamp_column="observed_at",
+                    config=config,
+                    series_id=series_id,
+                ),
+            }
+            for check_name, check_fn in checks.items():
+                check_id = f"fred_{series_id}_{check_name}"
+                results[check_id] = _run_quality_check(
+                    check_id,
+                    check_fn,
+                    source_id="fred",
+                    series_id=series_id,
+                    frequency=frequency,
+                )
 
     for check_id, check_fn in DATA_QUALITY_CHECKS.items():
         if check_id.startswith("fred_"):
             continue
         source_id = check_id.rsplit("_", 1)[0]
+        if not _source_enabled(config, source_id):
+            continue
         results[check_id] = _run_quality_check(
             check_id,
             lambda check_fn=check_fn: check_fn(config),

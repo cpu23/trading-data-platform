@@ -63,6 +63,7 @@ def market_row(
 def catalyst_row(symbol, *, title="CPI print", horizon="15m", state="pending"):
     return {
         "instrument_symbol": symbol,
+        "timeframe": "PRICE",
         "horizon": horizon,
         "reaction_state": state,
         "target_at": NOW + timedelta(minutes=10),
@@ -193,6 +194,7 @@ class WatchlistGridQueryTests(unittest.TestCase):
         self.assertEqual(xau["vol_state"], "quiet")  # 10 / 20
         # catalyst from reaction windows
         self.assertEqual(eurusd["catalyst_text"], "CPI print · 15m")
+        self.assertEqual(eurusd["catalyst_timeframe"], "PRICE")
         # freshness cells: ages are vs wall-clock now, so assert the
         # deterministic relationship (analysis opinion is 178m older than the
         # 2m-old price tick) rather than absolute values.

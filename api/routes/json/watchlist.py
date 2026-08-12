@@ -6,10 +6,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from auth import mint_sse_token, verify_sse_token
-from config import load_config
+from config import load_config, orchestrator_url
 
 router = APIRouter()
-ORCHESTRATOR_URL = "http://orchestrator:8000"
 
 
 @router.get("/watchlist")
@@ -22,7 +21,7 @@ def get_watchlist():
 @router.get("/quotes")
 async def get_quotes(request: Request):
     response = await request.app.state.orchestrator_client.get(
-        f"{ORCHESTRATOR_URL}/quotes",
+        f"{orchestrator_url()}/quotes",
         timeout=5.0,
     )
     response.raise_for_status()
@@ -33,7 +32,7 @@ async def _quote_events(request: Request, sleep=asyncio.sleep):
     while not await request.is_disconnected():
         try:
             response = await request.app.state.orchestrator_client.get(
-                f"{ORCHESTRATOR_URL}/quotes",
+                f"{orchestrator_url()}/quotes",
                 timeout=5.0,
             )
             response.raise_for_status()

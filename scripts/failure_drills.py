@@ -12,7 +12,7 @@ DRILLS = [
     ("LLM timeout safe telemetry", "orchestrator", "tests/test_llm_policy.py", "LLMStageDeadlineAndTelemetryTests.test_provider_error_completed_at_deadline_is_typed_timeout"),
     ("partial DB write retains spend", "orchestrator", "tests/test_llm_persistence.py", "ProcessorLLMPersistenceTests.test_partial_opinion_write_retains_exact_cumulative_llm_usage_once"),
     ("restart prerequisite", ".", "tests/test_process_supervision.py", "ProcessSupervisionTests.test_smoke_kills_each_service_and_asserts_restart_recovery"),
-    ("concurrent cycle conflict", "orchestrator", "tests/test_runtime_features.py", "DurableRunLifecycleTests.test_background_lock_conflict_finalizes_stable_failed_result"),
+    ("concurrent cycle conflict", "orchestrator", "tests/test_runtime_features.py", "RuntimeFeatureTests.test_worker_lock_conflict_poisons_job_and_finalizes_run_failed"),
     ("news cursor unchanged", "orchestrator", "tests/test_news.py", "NewsTests.test_reuters_publication_failure_does_not_advance_cursor_and_retry_republishes"),
     ("migration checksum abort", "orchestrator", "tests/test_migrations.py", "MigrationInventoryTests.test_applied_checksum_mismatch_fails_before_pending_apply"),
 ]

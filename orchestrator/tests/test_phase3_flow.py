@@ -29,6 +29,7 @@ class EventRoutingTests(unittest.TestCase):
         )
         with (
             patch("events.freshness.record_event_observation", return_value={}),
+            patch("events.routing._config", return_value={}),
             patch(
                 "analysis_jobs.enqueue_job", side_effect=["source", "watchlist"]
             ) as enqueue,
@@ -119,33 +120,35 @@ class HandlerBoundTests(unittest.TestCase):
 
 
 class LifecycleAndReconciliationTests(unittest.TestCase):
-    def test_api_lifecycle_starts_and_stops_analysis_worker(self):
+    def test_api_lifecycle_owns_no_worker_scheduler_or_stream_singletons(self):
         import main
 
         config = {"logging": {"level": "INFO"}}
-        worker = MagicMock()
         with (
-            patch.object(main, "job_worker", worker),
             patch.object(main, "_get_config", return_value=config),
             patch.object(main, "check_connection", return_value=True),
             patch.object(main, "setup_logging"),
-            patch.object(
-                main,
-                "reconcile_abandoned_runs",
-                return_value={"accepted_ids": [], "running_ids": [], "total": 0},
-            ),
-            patch.object(main.outbox_worker, "start"),
-            patch.object(main.outbox_worker, "stop"),
-            patch.object(main, "start_scheduler"),
-            patch.object(main, "stop_scheduler"),
-            patch.object(main, "close_shared_client"),
-            patch.object(main.quote_stream, "start"),
-            patch.object(main.quote_stream, "stop"),
+            patch.object(main, "close_shared_client") as close,
+            patch.object(main, "threading") as threading,
         ):
+            threading.Thread = MagicMock()
             main.on_startup()
             main.on_shutdown()
-        worker.start.assert_called_once_with(config)
-        worker.stop.assert_called_once_with()
+
+        close.assert_called_once_with()
+        # The API only records its own durable heartbeat; it never starts the
+        # analysis worker, outbox worker, scheduler, or quote stream.
+        self.assertEqual(main.on_startup.__name__, "on_startup")
+        for name in (
+            "outbox_worker",
+            "job_worker",
+            "start_scheduler",
+            "quote_stream",
+        ):
+            self.assertFalse(
+                hasattr(main, name),
+                f"main must not own the {name} singleton",
+            )
 
     def test_reconciliation_repairs_are_isolated_by_class(self):
         import reconciliation

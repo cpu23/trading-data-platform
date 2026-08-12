@@ -16,6 +16,7 @@ os.environ.update(
         "OANDA_API_KEY": "test",
         "DASHBOARD_USER": "test",
         "DASHBOARD_PASSWORD": "test",
+        "DEPLOYMENT_MODE": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
 )
@@ -111,7 +112,9 @@ class SinceLastViewTests(unittest.TestCase):
     def _client(self):
         from fastapi.testclient import TestClient
 
-        return TestClient(app)
+        client = TestClient(app)
+        client.cookies.set("csrf-token", AUTH["X-CSRF-Token"])
+        return client
 
     def _marker_env(self, directory):
         state = Path(directory)

@@ -74,7 +74,9 @@ def main() -> int:
 
     health = wait_for_api(args.api_url, args.auth)
     assert health.get("liveness") == "ok"
-    assert health.get("data_health") in {"healthy", "degraded"}
+    assert health.get("data_health") == "unknown", (
+        "offline demo with no required collectors must report unknown data health"
+    )
 
     status, _ = request(args.api_url, "/quality", args.auth)
     assert status == 200, f"quality page returned {status}"
