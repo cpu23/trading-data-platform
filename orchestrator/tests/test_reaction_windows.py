@@ -2283,6 +2283,10 @@ class ReactionWindowMigrationIntegrationTests(unittest.TestCase):
         import psycopg2
 
         with self.connection.cursor() as cursor:
+            # Earlier PostgreSQL integration modules provision the full schema.
+            # Replace their tables transactionally so this legacy-migration
+            # scenario remains isolated regardless of discovery order.
+            cursor.execute("DROP TABLE IF EXISTS market_events CASCADE")
             cursor.execute("CREATE TABLE market_events (id UUID PRIMARY KEY)")
             migration_031 = (
                 self.MIGRATIONS_DIR / "031_event_reaction_windows.sql"
