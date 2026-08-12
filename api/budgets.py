@@ -1,8 +1,12 @@
 """UTC-day LLM budget display adapter.
 
-A non-positive cap retains the documented unlimited semantics. Positive caps
-are exceeded at ``recorded spend >= cap``. This is a recorded-spend check, not a
-projected-cost reservation for concurrent requests.
+A zero cap denies all paid calls (fail closed; there is no unlimited mode);
+negative or malformed caps fail closed as unavailable. Positive caps are
+exceeded at committed spend (per-correlation reconciled ``processing_log``
+cost minus settled reservation actuals, plus active reservation estimates plus
+settled reservation actuals anchored to their day) reaching the cap — the same
+admission semantics the orchestrator worker enforces, so the UI never reports
+a paid call as allowed when the worker would deny it.
 """
 
 import json
@@ -18,6 +22,7 @@ from logging_config import get_logger
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
 DEFAULT_WARN_AT_PCT = 80
+BUDGET_OVERRIDE_TTL_SECONDS = 600
 
 
 def _finite_number(value, name: str) -> float:
@@ -49,6 +54,10 @@ def get_budget_config(config: dict | None = None) -> tuple[float, float]:
         configured.get("daily_llm_usd", DEFAULT_DAILY_LLM_USD),
         "budgets.daily_llm_usd",
     )
+    # Negative and zero caps are both fail-closed; zero is a valid policy that
+    # intentionally denies every paid call.
+    if cap < 0:
+        raise ValueError("budgets.daily_llm_usd must be non-negative")
     warn_at = _finite_number(
         configured.get("warn_at_pct", DEFAULT_WARN_AT_PCT), "budgets.warn_at_pct"
     )
@@ -84,24 +93,34 @@ def budget_status(
     warn_at = _finite_number(warn_at_pct, "budgets.warn_at_pct")
     if not 0 <= warn_at <= 100:
         raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    unlimited = daily_cap <= 0
-    if unlimited:
-        usage_pct, warning, exceeded = 0.0, False, False
-        remaining_usd = None
-    else:
-        usage_pct = round((cost / daily_cap) * 100, 2)
-        exceeded = cost >= daily_cap
-        warning = not exceeded and usage_pct >= warn_at
-        remaining_usd = round(max(daily_cap - cost, 0.0), 6)
+    if daily_cap < 0:
+        raise ValueError("budgets.daily_llm_usd must be non-negative")
+    # A zero cap denies all paid calls (fail closed); no unlimited mode.
+    if daily_cap == 0:
+        return {
+            "budget_cap_usd": daily_cap,
+            "unlimited": False,
+            "warn_at_pct": warn_at,
+            "usage_pct": 0.0,
+            "warning": False,
+            "exceeded": True,
+            "hard_limit_reached": True,
+            "paid_calls_allowed": False,
+            "remaining_usd": 0.0,
+        }
+    usage_pct = round((cost / daily_cap) * 100, 2)
+    exceeded = cost >= daily_cap
+    warning = not exceeded and usage_pct >= warn_at
+    remaining_usd = round(max(daily_cap - cost, 0.0), 6)
     return {
         "budget_cap_usd": daily_cap,
-        "unlimited": unlimited,
+        "unlimited": False,
         "warn_at_pct": warn_at,
         "usage_pct": usage_pct,
         "warning": warning,
         "exceeded": exceeded,
         "hard_limit_reached": exceeded,
-        "paid_calls_allowed": unlimited or not exceeded,
+        "paid_calls_allowed": not exceeded,
         "remaining_usd": remaining_usd,
     }
 
@@ -133,7 +152,51 @@ def get_budget_status(config: dict | None = None) -> dict:
         return _unavailable("invalid_config")
     try:
         today_cost, today_tokens = get_today_spend(config)
-        status = budget_status(today_cost, daily_cap, warn_at)
+        day_start, day_end = utc_day_bounds()
+        row = query_one(
+            "SELECT "
+            "(SELECT COALESCE(SUM(unreserved), 0) FROM ( "
+            "  SELECT GREATEST( "
+            "    COALESCE(p.total_cost, 0) - COALESCE(r.total_settled, 0), 0) "
+            "    AS unreserved "
+            "  FROM ( "
+            "    SELECT correlation_id, processor, "
+            "           SUM(COALESCE(cost_usd, 0)) AS total_cost "
+            "    FROM processing_log "
+            "    WHERE started_at >= :day_start AND started_at < :day_end "
+            "    GROUP BY correlation_id, processor "
+            "  ) p "
+            "  LEFT JOIN ( "
+            "    SELECT correlation_id, processor, "
+            "           SUM(COALESCE(settled_usd, estimated_usd)) AS total_settled "
+            "    FROM budget_reservations "
+            "    WHERE status = 'settled' AND settled_at IS NOT NULL "
+            "    GROUP BY correlation_id, processor "
+            "  ) r ON p.correlation_id IS NOT DISTINCT FROM r.correlation_id "
+            "     AND p.processor = r.processor "
+            ") pairs) AS spent_usd, "
+            "( "
+            "  (SELECT COALESCE(SUM(estimated_usd), 0) FROM budget_reservations "
+            "   WHERE budget_day = :day AND status = 'active' "
+            "     AND expires_at > :now) "
+            "  + "
+            "  (SELECT COALESCE(SUM(COALESCE(settled_usd, estimated_usd)), 0) "
+            "   FROM budget_reservations "
+            "   WHERE budget_day = :day AND status = 'settled' "
+            "     AND settled_at IS NOT NULL) "
+            ") AS reserved_usd",
+            params={
+                "day_start": day_start,
+                "day_end": day_end,
+                "day": day_start.date(),
+                "now": datetime.now(UTC),
+            },
+            config=config,
+        )
+        spent_usd = float(row.get("spent_usd") or 0) if row else 0.0
+        reserved_usd = float(row.get("reserved_usd") or 0) if row else 0.0
+        committed = spent_usd + reserved_usd
+        status = budget_status(committed, daily_cap, warn_at)
     except Exception:
         logger.warning(
             "budget_status_unavailable", blocked_code="daily_llm_budget_unavailable"
@@ -142,6 +205,9 @@ def get_budget_status(config: dict | None = None) -> dict:
     result = {
         "today_cost_usd": round(today_cost, 6),
         "today_tokens": today_tokens,
+        "unreserved_spend_usd": round(spent_usd, 6),
+        "reserved_usd": round(reserved_usd, 6),
+        "committed_usd": round(committed, 6),
         **status,
         "available": True,
         "status": "unlimited"
@@ -155,6 +221,7 @@ def get_budget_status(config: dict | None = None) -> dict:
     logger.debug(
         "budget_status",
         today_cost_usd=result["today_cost_usd"],
+        reserved_usd=result["reserved_usd"],
         usage_pct=result["usage_pct"],
         warning=result["warning"],
         exceeded=result["exceeded"],
@@ -175,11 +242,15 @@ def register_manual_override(
     if config is None:
         config = load_config()
 
+    requested_at = datetime.now(UTC)
     override = {
         "requested": True,
         "reason": reason,
         "requested_by": requested_by,
-        "requested_at": datetime.now(UTC).isoformat(),
+        "requested_at": requested_at.isoformat(),
+        "expires_at": (
+            requested_at + timedelta(seconds=BUDGET_OVERRIDE_TTL_SECONDS)
+        ).isoformat(),
         "scope": "one_run",
         "run_kind": run_kind,
         "requested_component": requested_component,

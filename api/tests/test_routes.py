@@ -18,6 +18,7 @@ import httpx
 # ── Environment (auth) ──────────────────────────────────────────────────────
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
+os.environ["DEPLOYMENT_MODE"] = "test"
 
 from auth import mint_csrf_token
 
@@ -56,28 +57,66 @@ MOCK_CONFIG = {
     "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
 }
 
-# ── Patch config.load_config BEFORE importing main (and the whole tree) ────
-_config_patcher = patch("config.load_config", return_value=MOCK_CONFIG)
-_config_patcher.start()
-
+# ── Patch config.load_config only while importing the module-level app. ────
 from fastapi.testclient import TestClient  # noqa: E402
 
-from main import app  # noqa: E402
+with patch("config.load_config", return_value=MOCK_CONFIG):
+    from main import app  # noqa: E402
 
 client = TestClient(app)
 client.__enter__()
 
+_runtime_config_patcher = None
+_runtime_env_patcher = None
+
+
+def setUpModule():
+    global CSRF_TOKEN, _runtime_config_patcher, _runtime_env_patcher
+    _runtime_env_patcher = patch.dict(
+        os.environ,
+        {
+            "DEPLOYMENT_MODE": "test",
+            "DASHBOARD_USER": "test",
+            "DASHBOARD_PASSWORD": "test",
+            "EXTERNAL_ORIGIN": "http://testserver",
+            "COOKIE_SECURE": "0",
+            "CSRF_SIGNING_KEY": "test-csrf-signing-key-0123456789abcdef",
+            "SESSION_SIGNING_KEY": "test-session-signing-key-0123456789abcdef",
+            "SSE_SIGNING_KEY": "test-sse-signing-key-0123456789abcdef",
+        },
+        clear=False,
+    )
+    _runtime_env_patcher.start()
+    CSRF_TOKEN = mint_csrf_token()
+    AUTH["X-CSRF-Token"] = CSRF_TOKEN
+    client.cookies.clear()
+    client.cookies.set("csrf-token", CSRF_TOKEN)
+    _runtime_config_patcher = patch("config.load_config", return_value=MOCK_CONFIG)
+    _runtime_config_patcher.start()
+
 
 def tearDownModule():
     client.__exit__(None, None, None)
-
+    if _runtime_config_patcher is not None:
+        _runtime_config_patcher.stop()
+    if _runtime_env_patcher is not None:
+        _runtime_env_patcher.stop()
 
 # ── Auth helpers ────────────────────────────────────────────────────────────
+CSRF_TOKEN = mint_csrf_token()
 AUTH = {
     "Authorization": "Basic dGVzdDp0ZXN0",  # test:test
     "Origin": "http://testserver",
-    "X-CSRF-Token": mint_csrf_token(),
+    "X-CSRF-Token": CSRF_TOKEN,
 }
+# Coherent double submit: the header token must match the csrf-token cookie.
+client.cookies.set("csrf-token", CSRF_TOKEN)
+
+
+def _reset_client_cookies() -> None:
+    """Remove per-test cookies while preserving the shared CSRF double submit."""
+    client.cookies.clear()
+    client.cookies.set("csrf-token", CSRF_TOKEN)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -255,7 +294,12 @@ class TestSystemRoutes(unittest.TestCase):
             "components": [],
             "scheduler": {"jobs": []},
             "stream": {"status": "connected", "last_heartbeat": "2026-01-01T00:00:00Z"},
-            "quality": {"overall": "healthy", "checks": {}},
+            "quality": {
+                "overall": "healthy",
+                "checks": {
+                    "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
+                },
+            },
         }
         mock_httpx_get.return_value = mock_health_resp
 
@@ -272,6 +316,68 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(data["readiness"], "ready")
         self.assertEqual(data["data_health"], "healthy")
         mock_httpx_get.assert_awaited_once()
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    def test_disabled_optional_quote_stream_does_not_fail_readiness(
+        self, mock_get, _query
+    ):
+        health = MagicMock()
+        health.json.return_value = {
+            "liveness": "ok",
+            "readiness": "ready",
+            "data_health": "healthy",
+            "components": [],
+            "scheduler": {"jobs": []},
+            "stream": {"status": "disabled"},
+            "quality": {
+                "overall": "healthy",
+                "checks": {"fred": {"healthy": True}},
+            },
+        }
+        mock_get.return_value = health
+
+        response = client.get("/api/system/health", headers=AUTH)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["readiness"], "ready")
+        self.assertEqual(response.json()["data_health"], "healthy")
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    def test_disabled_required_quote_stream_fails_readiness(
+        self, mock_get, _query
+    ):
+        health = MagicMock()
+        health.json.return_value = {
+            "liveness": "ok",
+            "readiness": "ready",
+            "data_health": "healthy",
+            "components": [],
+            "scheduler": {"jobs": []},
+            "stream": {"status": "disabled"},
+            "quality": {
+                "overall": "healthy",
+                "checks": {"fred": {"healthy": True}},
+            },
+        }
+        mock_get.return_value = health
+        config = {
+            **MOCK_CONFIG,
+            "collectors": {
+                "oanda": {"enabled": True, "stream_enabled": True}
+            },
+        }
+
+        with patch(
+            "routes.json.system.app_config.load_config", return_value=config
+        ):
+            response = client.get("/api/system/health", headers=AUTH)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["readiness"], "unready")
+        self.assertEqual(response.json()["data_health"], "degraded")
+
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
@@ -308,6 +414,55 @@ class TestSystemRoutes(unittest.TestCase):
         mock_get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    def test_empty_quality_checks_are_unknown(
+        self, mock_get, _query
+    ):
+        """An empty check result is unknown, never silently healthy."""
+        health = MagicMock()
+        health.json.return_value = {
+            "liveness": "ok",
+            "readiness": "ready",
+            "data_health": "healthy",
+            "status": "healthy",
+            "components": [],
+            "scheduler": {"jobs": []},
+            "stream": {"status": "connected"},
+            "quality": {"overall": "healthy", "checks": {}},
+        }
+        mock_get.return_value = health
+
+        resp = client.get("/api/system/health", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["data_health"], "unknown")
+        self.assertEqual(data["quality"]["overall"], "unknown")
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    def test_quality_unknown_remains_unknown(self, mock_get, _query):
+        """Unknown quality remains distinct from known degradation."""
+        health = MagicMock()
+        health.json.return_value = {
+            "liveness": "ok",
+            "readiness": "ready",
+            "data_health": "unknown",
+            "status": "unknown",
+            "components": [],
+            "scheduler": {"jobs": []},
+            "stream": {"status": "connected"},
+            "quality": {"overall": "unknown", "checks": {}},
+        }
+        mock_get.return_value = health
+
+        resp = client.get("/api/system/health", headers=AUTH)
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["data_health"], "unknown")
+
+    @patch("routes.json.system.query_many", return_value=[])
     @patch.object(
         app.state.orchestrator_client,
         "get",
@@ -321,10 +476,12 @@ class TestSystemRoutes(unittest.TestCase):
         data = resp.json()
         self.assertEqual(data["liveness"], "ok")
         self.assertEqual(data["readiness"], "unready")
-        self.assertEqual(data["data_health"], "degraded")
+        self.assertEqual(data["data_health"], "unknown")
         component = next(c for c in data["components"] if c["name"] == "orchestrator")
-        self.assertEqual(component["last_status"], "error")
-        self.assertIn("connection refused", component["error_message"])
+        self.assertEqual(
+            component["error_message"], "orchestrator dependency unavailable"
+        )
+        self.assertNotIn("connection refused", resp.text)
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
@@ -429,7 +586,7 @@ class TestSystemRoutes(unittest.TestCase):
                 data = resp.json()
                 self.assertEqual(data["liveness"], "ok")
                 self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "degraded")
+                self.assertEqual(data["data_health"], "unknown")
                 component = next(
                     item
                     for item in data["components"]
@@ -478,7 +635,7 @@ class TestSystemRoutes(unittest.TestCase):
                 data = resp.json()
                 self.assertEqual(data["liveness"], "ok")
                 self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "degraded")
+                self.assertEqual(data["data_health"], "unknown")
                 self.assertIn(
                     "invalid orchestrator health contract",
                     data["components"][0]["error_message"],
@@ -538,7 +695,7 @@ class TestSystemRoutes(unittest.TestCase):
                 data = resp.json()
                 self.assertEqual(data["liveness"], "ok")
                 self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "degraded")
+                self.assertEqual(data["data_health"], "unknown")
                 self.assertIn(
                     "invalid orchestrator health contract",
                     data["components"][0]["error_message"],
@@ -593,7 +750,7 @@ class TestSystemRoutes(unittest.TestCase):
                     if item["name"] == "orchestrator"
                 )
                 self.assertIn(
-                    "invalid orchestrator quality contract", component["error_message"]
+                    "invalid orchestrator health contract", component["error_message"]
                 )
 
     def test_health_requires_auth(self):
@@ -710,7 +867,7 @@ class TestBoundedDashboardInputs(unittest.TestCase):
         try:
             response = client.get("/api/calendar/events", headers=AUTH)
         finally:
-            client.cookies.clear()
+            _reset_client_cookies()
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["events"][0]["display_time"].endswith("+09:00"))
 
@@ -739,7 +896,7 @@ class TestBoundedDashboardInputs(unittest.TestCase):
 
 class TestTimezoneSettings(unittest.TestCase):
     def tearDown(self):
-        client.cookies.clear()
+        _reset_client_cookies()
 
     @patch("routes.json.settings.load_config", return_value=MOCK_CONFIG)
     def test_get_uses_configured_default_and_returns_strict_choices(self, _config):
@@ -1222,7 +1379,7 @@ class TestOperationsOverview(unittest.TestCase):
         try:
             response = client.get("/operations", headers=AUTH)
         finally:
-            client.cookies.clear()
+            _reset_client_cookies()
         self.assertEqual(response.status_code, 200)
         for label in (
             "Source &amp; scheduler state",
@@ -1447,7 +1604,12 @@ class TestHealthContract(unittest.TestCase):
             "components": [],
             "scheduler": {"jobs": []},
             "stream": {"status": "connected"},
-            "quality": {"overall": "healthy", "checks": {}},
+            "quality": {
+                "overall": "healthy",
+                "checks": {
+                    "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
+                },
+            },
         }
         mock_get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)

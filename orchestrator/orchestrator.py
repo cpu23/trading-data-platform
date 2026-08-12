@@ -50,9 +50,9 @@ from llm_client import resolve_model
 from locks import advisory_lock
 from logging_config import get_logger
 from processor_execution import (
+    _authorize_claimed_run_budget,
     _consume_budget_override,
     _find_reusable_processor_output,
-    _get_budget_status,
     _resolve_and_run_processors,
     _run_processor_impl,
     build_processor_fingerprint,
@@ -116,6 +116,13 @@ def run_full_cycle(
             if not start_run(config, correlation_id, claim_worker_id):
                 return None
             worker_id = claim_worker_id
+            if budget_context is None:
+                budget_context = _authorize_claimed_run_budget(
+                    config,
+                    correlation_id,
+                    run_kind="cycle",
+                    component=None,
+                )
         heartbeat = (
             maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
@@ -242,8 +249,8 @@ __all__ = [
     "_find_reusable_processor_output",
     "_resolve_and_run_processors",
     "_run_processor_impl",
-    "_get_budget_status",
     "_consume_budget_override",
+    "_authorize_claimed_run_budget",
     "_write_collection_log",
     "_write_processing_log",
     "_persist_processor_result",

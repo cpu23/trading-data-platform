@@ -278,11 +278,12 @@ def claim_jobs(
 
 
 def start_job(session: Any, job_id: Any, worker_id: str) -> bool:
+    now = _utcnow()
     result = session.execute(
         text(
-            "UPDATE analysis_jobs SET state = 'running', started_at = COALESCE(started_at, :now) WHERE id = :id AND state = 'leased' AND claimed_by = :worker_id"
+            "UPDATE analysis_jobs SET state = 'running', started_at = COALESCE(started_at, :now) WHERE id = :id AND state = 'leased' AND claimed_by = :worker_id AND lease_expires_at > :now"
         ),
-        {"id": job_id, "worker_id": worker_id, "now": _utcnow()},
+        {"id": job_id, "worker_id": worker_id, "now": now},
     )
     return bool(getattr(result, "rowcount", 0))
 
@@ -355,15 +356,18 @@ def terminal_fail_job(
 def renew_job_lease(
     session: Any, job_id: Any, worker_id: str, lease_seconds: float = 120
 ) -> bool:
+    now = _utcnow()
     result = session.execute(
         text(
             "UPDATE analysis_jobs SET lease_expires_at = :lease_until "
-            "WHERE id = :id AND claimed_by = :worker_id AND state IN ('leased','running')"
+            "WHERE id = :id AND claimed_by = :worker_id AND state IN ('leased','running') "
+            "AND lease_expires_at > :now"
         ),
         {
             "id": job_id,
             "worker_id": worker_id,
-            "lease_until": _utcnow()
+            "now": now,
+            "lease_until": now
             + timedelta(seconds=max(1.0, float(lease_seconds))),
         },
     )

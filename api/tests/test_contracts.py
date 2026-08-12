@@ -1,6 +1,9 @@
+import os
 import unittest
 
 from pydantic import ValidationError
+
+os.environ["DEPLOYMENT_MODE"] = "test"
 
 from contracts import (
     OrchestratorHealthResponse,
@@ -25,6 +28,7 @@ class SharedContractTests(unittest.TestCase):
                 "stream",
                 "collectors",
                 "quality",
+                "config_version",
             },
         )
         self.assertEqual(schema["type"], "object")

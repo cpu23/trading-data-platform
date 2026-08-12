@@ -8,9 +8,11 @@ patch targets remain effective during the facade cutover.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import traceback
+from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +22,7 @@ from collectors import get_collector
 from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, upsert_records
 from errors import (
+    ERROR_CLASS_UNKNOWN,
     InvalidSourceData,
     PersistenceError,
     TransientSourceError,
@@ -87,7 +90,7 @@ def _resolved_config(config: dict | None) -> dict:
 def collector_worker_limit(config: dict, enabled_count: int) -> int:
     """Return a safe collector pool size, capped by the available work."""
     orchestration = config.get("orchestration", {})
-    if not isinstance(orchestration, dict):
+    if not isinstance(orchestration, Mapping):
         orchestration = {}
     try:
         configured = int(
@@ -148,8 +151,15 @@ def _estimate_api_calls(source_id: str, records_fetched: int, config: dict) -> i
 
 def _policy_metadata(exc: BaseException) -> dict[str, Any]:
     policy = classify_error(exc)
+    error_class = policy.error_class
+    if error_class == ERROR_CLASS_UNKNOWN:
+        # The internal taxonomy keeps unrecognized exceptions as "unknown";
+        # the operator-facing collector contract reports them as the safe
+        # "error" class. Raw exception text is never surfaced, so operators
+        # see a bounded category instead of provider/DB diagnostic detail.
+        error_class = "error"
     return {
-        "error_class": policy.error_class,
+        "error_class": error_class,
         "retryable": policy.retryable,
         "status": policy.status,
     }
@@ -191,7 +201,7 @@ def _structured_collection_policy(errors: list[dict]) -> dict[str, Any]:
 
 def _event_pipeline_settings(config: dict) -> dict:
     settings = config.get("event_pipeline", {})
-    return settings if isinstance(settings, dict) else {}
+    return settings if isinstance(settings, Mapping) else {}
 
 
 def _event_publication_enabled(source_id: str, config: dict) -> bool:
@@ -359,7 +369,7 @@ def _run_collector_impl(
                         config=config,
                     )
             except Exception as exc:
-                raise PersistenceError(f"collector persistence failed: {exc}") from exc
+                raise PersistenceError("collector persistence failed") from exc
             finally:
                 collection_metrics["db_write_duration_ms"] = elapsed_ms(
                     db_write_started
@@ -394,17 +404,29 @@ def _run_collector_impl(
         status = policy["status"]
         error_class = policy["error_class"]
         retryable = policy["retryable"]
-        error_message = str(exc)
-        error_traceback = traceback.format_exc()
+        # Never persist or log arbitrary exception text: provider/DB errors
+        # can embed bearer tokens or response secrets.  Only the bounded
+        # taxonomy class is stored; a full traceback is opt-in local debug
+        # (env-gated), never the database.
+        error_message = error_class
+        error_traceback = None
         _dependency("logger").error(
             "collector_failed",
             action="run_collector",
             collector=source_id,
-            error=str(exc),
+            error_type=type(exc).__name__,
             error_class=error_class,
             retryable=retryable,
             correlation_id=correlation_id,
         )
+        if os.environ.get("COLLECTOR_DEBUG_TRACEBACK") == "1":
+            _dependency("logger").debug(
+                "collector_failed_traceback",
+                action="run_collector",
+                collector=source_id,
+                error_type=type(exc).__name__,
+                traceback=traceback.format_exc(),
+            )
 
     completed_at = datetime.now(UTC)
     duration_ms = int(time.monotonic() * 1000 - start_ms)
@@ -706,7 +728,9 @@ def get_last_collection_runs(config: dict | None = None) -> list[dict]:
             return [dict(row._mapping) for row in result]
     except Exception as exc:
         _dependency("logger").error(
-            "last_runs_query_failed", action="get_last_runs", error=str(exc)
+            "last_runs_query_failed",
+            action="get_last_runs",
+            error_type=type(exc).__name__,
         )
         return []
 

@@ -1,25 +1,26 @@
 import json
 import os
 import secrets
+import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import text
 
-from budgets import (
-    BudgetBlock,
-    BudgetContext,
-    BudgetExceeded,
-    mint_trusted_manual_authorization,
-    trusted_manual_budget_context,
-)
-from config_loader import load_config
+from analysis_jobs import sanitize_error
+from budgets import BudgetBlock, BudgetExceeded
+from config_loader import config_version, load_config
 from contracts import (
     CycleStatusResponse,
+    InvestmentUrlIngestRequest,
     OrchestratorHealthResponse,
     QualityResponse,
     RunAcceptedResponse,
@@ -28,19 +29,40 @@ from db import check_connection
 from db import get_session as get_session
 
 try:
-    from data_quality import DATA_QUALITY_CHECKS, run_quality_checks
+    from data_quality import (
+        DATA_QUALITY_CHECKS,
+        evaluate_quality,
+        normalize_quality_results,
+        readiness_critical_checks,
+        required_quality_checks,
+        run_quality_checks,
+    )
 except ImportError:
     DATA_QUALITY_CHECKS = {}
 
     def run_quality_checks(config):
         return {}
 
+    def normalize_quality_results(results):
+        return results
+
+    def required_quality_checks(config):
+        return set()
+
+    def readiness_critical_checks(config, required):
+        return set()
+
+    def evaluate_quality(results, required):
+        return "unknown"
+
 
 from events.publisher import event_pipeline_summary
-from events.worker import outbox_worker
+from events.repository import operations_summary
 from http_client import close_shared_client
 from investment_service import (
+    MAX_DOCUMENT_BYTES,
     AnalysisInProgress,
+    enqueue_investment_analysis,
 )
 from investment_service import (
     analyze_document as analyze_investment_document,
@@ -52,41 +74,76 @@ from investment_service import (
     get_dashboard as get_investment_dashboard,
 )
 from investment_service import (
-    store_document as store_investment_document,
+    store_document_path as store_investment_document_path,
 )
 from investment_service import (
     store_document_url as store_investment_document_url,
 )
-from job_worker import job_worker
 from llm_client import model_preflight
-from locks import RunConflict
 from logging_config import get_logger, setup_logging
+from operation_jobs import (
+    accept_and_enqueue_operation,
+    latest_cycle_status,
+    operation_queue_summary,
+)
 from orchestrator import (
-    DEFAULT_ACCEPTED_TIMEOUT,
-    DEFAULT_HEARTBEAT_TIMEOUT,
     RunAcceptanceConflict,
-    accept_run,
-    finalize_run_safely,
     get_last_collection_runs,
     get_run_for_retry,
-    maintain_run_heartbeat,
-    reconcile_abandoned_runs,
-    run_collector,
-    run_full_cycle,
-    run_news_source,
-    run_processor,
-    start_run,
 )
-from price_stream import quote_stream
-from scheduler import scheduler_status, start_scheduler, stop_scheduler
+from price_stream import db_snapshot
+from role_heartbeat import (
+    fresh_role_heartbeats,
+    update_role_heartbeat,
+)
 
 app = FastAPI(title="Trading Data Orchestrator")
 logger = get_logger("orchestrator.api")
 optional_basic = HTTPBasic(auto_error=False)
 VALID_CYCLE_MODES = frozenset({"refresh", "analyze", "force_full"})
 
-# Status compatibility only; PostgreSQL advisory locks provide coordination.
-_cycle_correlation_id: str | None = None
+
+class _StrictRequest(BaseModel):
+    """Strict durable-acceptance bodies: no coercion, no unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("idempotency_key", check_fields=False)
+    @classmethod
+    def _idempotency_key_nonblank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("idempotency_key must be a nonblank string")
+        return value
+
+
+class CycleRequest(_StrictRequest):
+    correlation_id: UUID | None = None
+    idempotency_key: Annotated[
+        str | None, Field(min_length=1, max_length=128, strict=True)
+    ] = None
+    mode: Literal["refresh", "analyze", "force_full"] = "refresh"
+    budget_confirmed: Annotated[bool, Field(strict=True)] = False
+
+
+class RunRequest(_StrictRequest):
+    correlation_id: UUID | None = None
+    idempotency_key: Annotated[
+        str | None, Field(min_length=1, max_length=128, strict=True)
+    ] = None
+
+
+class FilingsRequest(_StrictRequest):
+    correlation_id: UUID | None = None
+    idempotency_key: Annotated[
+        str | None, Field(min_length=1, max_length=128, strict=True)
+    ] = None
+    auto_analyze: Annotated[bool, Field(strict=True)] = False
+
+# The API role owns no worker/scheduler/stream singletons; it only records its
+# own durable liveness so Compose and /health can observe the role.  Cadence
+# stays coherent with role_heartbeat.DEFAULT_HEARTBEAT_TIMEOUT (12s).
+_API_HEARTBEAT_INTERVAL_SECONDS = 5.0
+_api_heartbeat_stop = threading.Event()
 
 
 def require_internal_basic(
@@ -141,18 +198,42 @@ def _health_quality_snapshot(config: dict) -> dict[str, dict]:
         return results
 
 
-def _job_timeout(config: dict, key: str, default: timedelta) -> timedelta:
-    jobs = config.get("jobs", {})
-    if not isinstance(jobs, dict):
-        return default
-    value = jobs.get(key)
-    if value is None:
-        return default
-    try:
-        timeout = timedelta(minutes=float(value))
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return timeout if timeout.total_seconds() >= 0 else default
+def _api_heartbeat_loop(config: dict) -> None:
+    import os
+
+    captured_version = config_version()
+    while not _api_heartbeat_stop.wait(_API_HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            load_config()
+        except Exception:
+            # A rejected reload retains the prior snapshot; keep serving it
+            # until the operator repairs or restarts.
+            pass
+        if config_version() != captured_version:
+            # Committed configuration changed: this process still runs the
+            # previous snapshot (scheduler/workers capture config at
+            # startup).  Exit cleanly so Compose restarts the role with the
+            # new config — never dispatch stale credentials indefinitely.
+            logger.info(
+                "config_version_changed_restarting",
+                previous=captured_version,
+                current=config_version(),
+            )
+            os._exit(0)
+        try:
+            update_role_heartbeat(
+                config,
+                "api",
+                "running",
+                {
+                    "pid": os.getpid(),
+                    "host": os.environ.get("HOSTNAME", ""),
+                    "config_version": config_version(),
+                },
+            )
+        except Exception:
+            # A heartbeat write failure must not affect request handling.
+            continue
 
 
 @app.on_event("startup")
@@ -162,54 +243,364 @@ def on_startup():
 
     if not check_connection(config):
         raise RuntimeError("Database connection failed")
-    reconciliation = reconcile_abandoned_runs(
-        config,
-        accepted_timeout=_job_timeout(
-            config, "accepted_timeout_minutes", DEFAULT_ACCEPTED_TIMEOUT
-        ),
-        heartbeat_timeout=_job_timeout(
-            config, "heartbeat_timeout_minutes", DEFAULT_HEARTBEAT_TIMEOUT
-        ),
-    )
-    logger.info(
-        "abandoned_runs_reconciled",
-        accepted=len(reconciliation.get("accepted_ids", [])),
-        running=len(reconciliation.get("running_ids", [])),
-        total=reconciliation.get("total", 0),
-    )
-    outbox_worker.start(config)
-    try:
-        job_worker.start(config)
-    except Exception:
-        logger.warning("analysis_job_worker_start_failed", error_type="startup")
-    start_scheduler(config)
-    quote_stream.start(config)
+    _api_heartbeat_stop.clear()
+    threading.Thread(
+        target=_api_heartbeat_loop,
+        args=(config,),
+        name="api-role-heartbeat",
+        daemon=True,
+    ).start()
     logger.info("orchestrator_http_started", action="startup")
 
 
 @app.on_event("shutdown")
 def on_shutdown():
-    outbox_worker.stop()
+    _api_heartbeat_stop.set()
     try:
-        job_worker.stop()
+        update_role_heartbeat(
+            _get_config(),
+            "api",
+            "stopped",
+            {"started_at": datetime.now(UTC).isoformat()},
+        )
     except Exception:
-        logger.warning("analysis_job_worker_stop_failed", error_type="shutdown")
-    quote_stream.stop()
-    stop_scheduler()
+        # Shutdown must never fail because the DB is already unreachable.
+        pass
     close_shared_client()
+
+
+def _durable_scheduler_snapshot(config: dict) -> dict:
+    """Durable scheduler status: a fresh running leader plus job ids."""
+    try:
+        leader_instances = [
+            heartbeat
+            for heartbeat in fresh_role_heartbeats(config, "scheduler")
+            if heartbeat.get("status") == "running"
+        ]
+    except Exception as exc:
+        # Health must stay answerable while the database is unavailable:
+        # without durable heartbeats no leader can be verified running, so
+        # report the scheduler as stopped instead of failing the whole probe.
+        logger.warning(
+            "health_scheduler_snapshot_unavailable",
+            error_type=type(exc).__name__,
+        )
+        leader_instances = []
+    jobs = []
+    try:
+        for source_id, source_config in config.get("collectors", {}).items():
+            schedule = source_config.get("schedule")
+            if (
+                source_config.get("enabled", True)
+                and schedule
+                and schedule != "after_dependency"
+            ):
+                jobs.append({"id": f"collector:{source_id}", "next_due_at": None})
+        for processor_id, processor_config in config.get("processors", {}).items():
+            schedule = processor_config.get("schedule")
+            if (
+                processor_config.get("enabled", False)
+                and schedule
+                and schedule != "after_dependency"
+            ):
+                jobs.append({"id": f"processor:{processor_id}", "next_due_at": None})
+        research_config = config.get("research_intelligence", {})
+        if (
+            research_config.get("enabled", False)
+            and research_config.get("schedule_enabled", False)
+            and research_config.get("schedule")
+        ):
+            jobs.append({"id": "research:discovery", "next_due_at": None})
+        if not config.get("demo", {}).get("enabled", False):
+            from sources.news_registry import get_news_source_ids
+
+            for source_id in get_news_source_ids():
+                source_config = config.get(source_id, {})
+                if (
+                    source_config.get("enabled", False)
+                    and source_config.get("schedule_enabled", False)
+                    and source_config.get("schedule")
+                ):
+                    jobs.append({"id": f"news:{source_id}", "next_due_at": None})
+        filings_config = config.get("investment_filings", {})
+        if filings_config.get("enabled", False) and filings_config.get("schedule"):
+            jobs.append({"id": "filings:investment_filings", "next_due_at": None})
+    except Exception:
+        jobs = []
+    return {
+        "status": "running" if leader_instances else "stopped",
+        "jobs": jobs,
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _durable_stream_snapshot(config: dict) -> dict:
+    """Durable quote-stream status from the freshest quotes instance."""
+    try:
+        fresh = fresh_role_heartbeats(config, "quotes")
+    except Exception as exc:
+        # The database (or its configuration) is unavailable; without durable
+        # heartbeats the stream status cannot be observed, so report stopped
+        # rather than failing the health probe.
+        logger.warning(
+            "health_stream_snapshot_unavailable",
+            error_type=type(exc).__name__,
+        )
+        fresh = []
+    if not fresh:
+        return {"status": "stopped", "last_heartbeat": None, "error": None}
+    heartbeat = fresh[0]
+    last = heartbeat.get("last_heartbeat_at")
+    return {
+        "status": heartbeat.get("status", "stopped"),
+        "last_heartbeat": last.isoformat() if hasattr(last, "isoformat") else last,
+        "error": (heartbeat.get("detail") or {}).get("error"),
+    }
+
+
+#: Statuses that count as healthy per role; freshness alone is not sufficient.
+_ROLE_HEALTHY_STATUS: dict[str, frozenset[str]] = {
+    "api": frozenset({"running"}),
+    "scheduler": frozenset({"running"}),
+    "worker": frozenset({"running"}),
+    "outbox": frozenset({"running"}),
+    "quotes": frozenset({"connected", "simulated"}),
+}
+_ROLE_ORDER = ("api", "scheduler", "worker", "outbox", "quotes")
+
+
+def _has_scheduled_jobs(config: dict) -> bool:
+    """True when the configuration schedules at least one job."""
+    for _source_id, source_config in config.get("collectors", {}).items():
+        schedule = source_config.get("schedule")
+        if (
+            source_config.get("enabled", True)
+            and schedule
+            and schedule != "after_dependency"
+        ):
+            return True
+    for _processor_id, processor_config in config.get("processors", {}).items():
+        schedule = processor_config.get("schedule")
+        if (
+            processor_config.get("enabled", False)
+            and schedule
+            and schedule != "after_dependency"
+        ):
+            return True
+    research = config.get("research_intelligence", {})
+    if (
+        research.get("enabled", False)
+        and research.get("schedule_enabled", False)
+        and research.get("schedule")
+    ):
+        return True
+    if not config.get("demo", {}).get("enabled", False):
+        try:
+            from sources.news_registry import get_news_source_ids
+
+            for source_id in get_news_source_ids():
+                source_config = config.get(source_id, {})
+                if (
+                    source_config.get("enabled", False)
+                    and source_config.get("schedule_enabled", False)
+                    and source_config.get("schedule")
+                ):
+                    return True
+        except Exception:
+            pass
+    filings = config.get("investment_filings", {})
+    return bool(filings.get("enabled", False) and filings.get("schedule"))
+
+
+def _required_role_dependencies(config: dict) -> dict[str, bool]:
+    """Map each runtime role to whether it is required for readiness.
+
+    Mirrors the durable-role predicates: a role is required only when the
+    configuration expects it to be live (schedule exists, worker/outbox
+    enabled, live quotes stream expected).  Optional roles never fail
+    readiness.
+    """
+    required: dict[str, bool] = {"api": True}
+    required["scheduler"] = _has_scheduled_jobs(config)
+    pipeline = config.get("event_pipeline", {})
+    pipeline = pipeline if isinstance(pipeline, Mapping) else {}
+    jobs_cfg = pipeline.get("jobs", {})
+    jobs_cfg = jobs_cfg if isinstance(jobs_cfg, Mapping) else {}
+    required["worker"] = bool(jobs_cfg.get("enabled", True))
+    required["outbox"] = bool(
+        pipeline.get("enabled", True) and pipeline.get("outbox_worker_enabled", True)
+    )
+    oanda = config.get("collectors", {}).get("oanda", {})
+    oanda = oanda if isinstance(oanda, Mapping) else {}
+    demo_enabled = bool(config.get("demo", {}).get("enabled", False))
+    required["quotes"] = demo_enabled or bool(
+        oanda.get("enabled", True) and oanda.get("stream_enabled", True)
+    )
+    return required
+
+
+def _role_unhealthy_reason(heartbeat: dict | None) -> str:
+    if heartbeat is None:
+        return "no heartbeat"
+    return f"unhealthy status {heartbeat.get('status', 'unknown')}"
+
+
+def _role_readiness(config: dict) -> tuple[list[dict], bool]:
+    """Evaluate required role heartbeats; returns (components, ready).
+
+    A required role with a missing, stale, or unhealthy-status heartbeat
+    makes the service unready.  Optional roles appear only when they have a
+    heartbeat (informational) and never block readiness.
+    """
+    required = _required_role_dependencies(config)
+    components: list[dict] = []
+    ready = True
+    active_version = config_version()
+    for role in _ROLE_ORDER:
+        is_required = required.get(role, False)
+        try:
+            heartbeats = fresh_role_heartbeats(config, role)
+            heartbeat = heartbeats[0] if heartbeats else None
+        except Exception as exc:
+            logger.warning(
+                "role_heartbeat_read_failed", role=role, error_type=type(exc).__name__
+            )
+            heartbeat = None
+        healthy_status = (
+            heartbeat is not None
+            and str(heartbeat.get("status", "")).strip()
+            in _ROLE_HEALTHY_STATUS.get(role, frozenset())
+        )
+        role_version = (
+            (heartbeat.get("detail") or {}).get("config_version")
+            if heartbeat is not None
+            else None
+        )
+        version_mismatch = bool(
+            role_version is not None
+            and active_version is not None
+            and role_version != active_version
+        )
+        # fresh_role_heartbeats() returns only fresh (non-stale, non-future)
+        # rows, so freshness is guaranteed by the contract.
+        healthy = healthy_status and not version_mismatch
+        component: dict = {
+            "name": f"role:{role}",
+            "kind": "service",
+            "status": "available" if healthy else "degraded",
+            "reason": None if healthy else _role_unhealthy_reason(heartbeat),
+        }
+        if role_version is not None:
+            component["config_version"] = role_version
+        if version_mismatch:
+            component["restart_required"] = True
+            component["reason"] = (
+                f"config version mismatch: role runs {role_version}, "
+                f"active {active_version}; restart required"
+            )
+        if not is_required:
+            if heartbeat is None:
+                continue
+            component["critical"] = False
+            components.append(component)
+            continue
+        if not healthy:
+            ready = False
+        component["critical"] = True
+        component["status"] = "available" if healthy else "unavailable"
+        components.append(component)
+    return components, ready
+
+
+@app.get("/live")
+def live():
+    """Process liveness: always 200 while the process can serve requests."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
+    """Dependency-aware readiness: 503 until required dependencies answer.
+
+    Required dependencies are the database, every runtime role the
+    configuration expects to be live (scheduler/worker/outbox/quotes/api),
+    and — when quality checks are configured required — a healthy quality
+    verdict.  A required role that is missing, stale, unhealthy, or running a
+    different config version than this process means unready; the bounded
+    quality snapshot cache is reused so readiness never triggers a fresh
+    quality sweep per call.
+    """
+    config = _get_config()
+    dependencies: dict[str, Any] = {"database": "unavailable"}
+    if check_connection(config):
+        dependencies["database"] = "ok"
+        role_components, roles_ready = _role_readiness(config)
+        dependencies["roles"] = {
+            "required": sorted(
+                component["name"].split(":", 1)[-1]
+                for component in role_components
+                if component.get("critical")
+            ),
+            "unhealthy": sorted(
+                component["name"].split(":", 1)[-1]
+                for component in role_components
+                if component["status"] != "available"
+            ),
+            "version_mismatch": any(
+                component.get("restart_required") for component in role_components
+            ),
+        }
+        required = required_quality_checks(config)
+        critical = readiness_critical_checks(config, required)
+        try:
+            quality_results = _health_quality_snapshot(config)
+            quality_overall = evaluate_quality(quality_results, required)
+            critical_failing = {
+                check_id
+                for check_id in critical
+                if check_id not in quality_results
+                or quality_results[check_id].get("healthy") is not True
+            }
+        except Exception as exc:
+            logger.warning(
+                "ready_quality_unavailable",
+                error_type=type(exc).__name__,
+            )
+            quality_overall = "unknown"
+            critical_failing = set(critical)
+        dependencies["quality"] = {
+            "overall": quality_overall,
+            "required": bool(required),
+            "readiness_critical": sorted(critical),
+        }
+        quality_ready = not critical_failing
+        if roles_ready and quality_ready:
+            return {
+                "status": "ready",
+                "dependencies": dependencies,
+                "config_version": config_version(),
+            }
+    return JSONResponse(
+        status_code=503,
+        content={
+            "status": "unready",
+            "dependencies": dependencies,
+            "config_version": config_version(),
+        },
+    )
 
 
 @app.get("/health", response_model=OrchestratorHealthResponse)
 def health():
     config = _get_config()
-    scheduler = scheduler_status()
-    stream = quote_stream.state
+    scheduler = _durable_scheduler_snapshot(config)
+    stream = _durable_stream_snapshot(config)
     if not check_connection(config):
         payload = {
             "liveness": "ok",
             "readiness": "unready",
             "data_health": "degraded",
-            "status": "unhealthy",
+            "status": "degraded",
             "components": [
                 {
                     "name": "database",
@@ -238,8 +629,33 @@ def health():
             else None,
             "records_fetched": run.get("records_fetched"),
             "records_written": run.get("records_written"),
-            "error_message": run.get("error_message"),
+            # Persisted error text may embed secrets; expose only a bounded
+            # error class (exception type or generic "Error").
+            "error_message": sanitize_error(run.get("error_message")),
         }
+
+    role_components, roles_ready = _role_readiness(config)
+    if not roles_ready:
+        payload = {
+            "liveness": "ok",
+            "readiness": "unready",
+            "data_health": "degraded",
+            "status": "degraded",
+            "components": [
+                {
+                    "name": "database",
+                    "kind": "service",
+                    "critical": True,
+                    "status": "available",
+                    "reason": None,
+                },
+                *role_components,
+            ],
+            "scheduler": scheduler,
+            "stream": stream,
+            "collectors": {},
+        }
+        return JSONResponse(status_code=503, content=payload)
 
     components = [
         {
@@ -248,54 +664,106 @@ def health():
             "critical": True,
             "status": "available",
             "reason": None,
-        }
+        },
+        *role_components,
     ]
     try:
         quality_results = _health_quality_snapshot(config)
     except Exception as exc:
-        logger.error("health_quality_checks_failed", error=str(exc))
-        quality_results = {"quality_runner": {"healthy": False, "detail": str(exc)}}
+        logger.error(
+            "health_quality_checks_failed", error_type=type(exc).__name__
+        )
+        quality_results = {
+            "quality_runner": {
+                "healthy": False,
+                "detail": type(exc).__name__,
+            }
+        }
+    required = required_quality_checks(config)
+    critical = readiness_critical_checks(config, required)
+    quality_overall = evaluate_quality(quality_results, required)
+    missing = required - set(quality_results)
+    malformed = {
+        check_id
+        for check_id in required
+        if check_id in quality_results
+        and quality_results[check_id].get("healthy") is not True
+        and quality_results[check_id].get("healthy") is not False
+    }
     unhealthy = {
         check_id: result
         for check_id, result in quality_results.items()
-        if not result.get("healthy", True)
+        if result.get("healthy") is False
     }
-    if unhealthy:
+    if unhealthy or missing or malformed:
+        reasons = [
+            f"{check_id}: {result.get('detail', 'unhealthy')}"
+            for check_id, result in unhealthy.items()
+        ]
+        reasons.extend(
+            f"{check_id}: required check missing" for check_id in sorted(missing)
+        )
+        reasons.extend(
+            f"{check_id}: malformed result" for check_id in sorted(malformed)
+        )
         components.append(
             {
                 "name": "data_quality",
                 "kind": "data",
-                "critical": False,
-                "status": "degraded",
-                "reason": "; ".join(
-                    f"{check_id}: {result.get('detail', 'unhealthy')}"
-                    for check_id, result in unhealthy.items()
+                "critical": bool(critical),
+                "status": (
+                    "unavailable"
+                    if (missing or malformed or quality_overall == "unknown")
+                    else "degraded"
                 ),
+                "reason": "; ".join(reasons) or "quality cannot be assessed",
             }
         )
 
     quality_payload = {
-        "overall": "degraded" if unhealthy else "healthy",
-        "checks": quality_results,
+        "overall": quality_overall,
+        "checks": normalize_quality_results(quality_results),
     }
 
-    data_health = quality_payload["overall"]
+    critical_failing = {
+        check_id
+        for check_id in critical
+        if check_id not in quality_results
+        or quality_results[check_id].get("healthy") is not True
+    }
+    if critical_failing:
+        payload = {
+            "liveness": "ok",
+            "readiness": "unready",
+            "data_health": quality_overall,
+            "status": quality_overall,
+            "components": components,
+            "scheduler": scheduler,
+            "stream": stream,
+            "collectors": collectors_status,
+            "quality": quality_payload,
+            "config_version": config_version(),
+        }
+        return JSONResponse(status_code=503, content=payload)
+
+    data_health = quality_overall
     return {
         "liveness": "ok",
         "readiness": "ready",
         "data_health": data_health,
-        "status": data_health,
+        "status": quality_overall,
         "components": components,
         "scheduler": scheduler,
         "stream": stream,
         "collectors": collectors_status,
         "quality": quality_payload,
+        "config_version": config_version(),
     }
 
 
 @app.get("/quotes")
 def quotes():
-    return quote_stream.snapshot()
+    return db_snapshot(_get_config())
 
 
 @app.post(
@@ -320,10 +788,45 @@ def model_preflight_endpoint(body: dict = Body(default={})):
 )
 def event_pipeline_status():
     """Return durable backlog, recent event, and worker state."""
+    config = _get_config()
+    worker_state = {"running": False, "worker_id": None}
+    try:
+        fresh = fresh_role_heartbeats(config, "outbox")
+        running_instances = [
+            heartbeat for heartbeat in fresh if heartbeat.get("status") == "running"
+        ]
+        if running_instances:
+            detail = running_instances[0].get("detail") or {}
+            worker_state = {
+                "running": True,
+                "worker_id": detail.get("worker_id"),
+                "instances": len(running_instances),
+                "last_poll_at": _iso(running_instances[0].get("last_heartbeat_at")),
+                "last_success_at": _iso(
+                    running_instances[0].get("last_heartbeat_at")
+                ),
+                "last_error": detail.get("last_error"),
+            }
+        with get_session(config) as session:
+            ops = operations_summary(session)
+        worker_state.update(
+            {
+                "claimed": ops.get("claimed", 0),
+                "completed": ops.get("completed", 0),
+                "retried": ops.get("retried", 0),
+                "failed": ops.get("failed", 0),
+            }
+        )
+    except Exception:
+        worker_state = {"running": False, "worker_id": None}
     return {
-        **event_pipeline_summary(_get_config()),
-        "worker": dict(outbox_worker.state),
+        **event_pipeline_summary(config),
+        "worker": worker_state,
     }
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else value
 
 
 @app.get(
@@ -331,19 +834,45 @@ def event_pipeline_status():
     dependencies=[Depends(require_internal_basic)],
 )
 def analysis_jobs_status():
+    """Return durable queue state; process-global counters are gone."""
+    config = _get_config()
+    fresh = fresh_role_heartbeats(config, "worker")
+    running_instances = [
+        heartbeat for heartbeat in fresh if heartbeat.get("status") == "running"
+    ]
+    running = bool(running_instances)
+    detail = (running_instances[0] if running_instances else {}).get("detail") or {}
+    settings = (config.get("event_pipeline") or {}).get("jobs") or {}
+    enabled = bool(settings.get("enabled", False))
+    counts: dict[str, int] = {}
     try:
-        counters = dict(job_worker.state_counters())
+        summary = operation_queue_summary(config)
+        for state, count in summary.get("counts", {}).items():
+            counts[state] = counts.get(state, 0) + int(count)
+        with get_session(config) as session:
+            rows = session.execute(
+                text("SELECT state, COUNT(*) AS count FROM analysis_jobs GROUP BY state")
+            ).mappings()
+            for row in rows:
+                counts[str(row["state"])] = (
+                    counts.get(str(row["state"]), 0) + int(row["count"])
+                )
     except Exception:
-        counters = {}
-    try:
-        enabled = bool(job_worker.enabled(_get_config()))
-    except Exception:
-        enabled = False
-    thread = getattr(job_worker, "_thread", None)
+        counts = {}
+    counters = {
+        "claimed": counts.get("leased", 0) + counts.get("running", 0),
+        "succeeded": counts.get("succeeded", 0),
+        "retried": counts.get("failed_retryable", 0),
+        "failed": counts.get("failed_terminal", 0),
+        "suppressed": counts.get("suppressed_duplicate", 0),
+        "poll_errors": 0,
+        "handler_errors": 0,
+        "reconciled": 0,
+    }
     return {
-        "running": bool(thread is not None and thread.is_alive()),
+        "running": running,
         "enabled": enabled,
-        "worker_id": str(getattr(job_worker, "worker_id", "")),
+        "worker_id": str(detail.get("worker_id", "") or ""),
         "counters": counters,
     }
 
@@ -522,25 +1051,71 @@ def investment_analysis(analysis_id: UUID):
 )
 async def ingest_investment_document(request: Request):
     metadata = dict(request.query_params)
-    content = await request.body()
+    fd, spool_path = tempfile.mkstemp(prefix="investment-ingest-", suffix=".bin")
     try:
-        return store_investment_document(
-            _get_config(),
-            metadata,
-            content,
-            request.headers.get("content-type"),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.error(
-            "investment_document_ingest_failed",
-            error_type=type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Investment document storage unavailable",
-        ) from exc
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                _reject_declared_oversize(request, MAX_DOCUMENT_BYTES)
+                total = 0
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > MAX_DOCUMENT_BYTES:
+                        raise ValueError(
+                            f"document exceeds {MAX_DOCUMENT_BYTES // 1_000_000} MB"
+                        )
+                    handle.write(chunk)
+                handle.flush()
+        except ValueError as exc:
+            if str(exc).startswith("document exceeds"):
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            result = store_investment_document_path(
+                _get_config(),
+                metadata,
+                spool_path,
+                request.headers.get("content-type"),
+                extract=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.error(
+                "investment_document_ingest_failed",
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Investment document storage unavailable",
+            ) from exc
+    finally:
+        try:
+            os.unlink(spool_path)
+        except FileNotFoundError:
+            pass
+    if _wants_analysis(metadata):
+        # Work was requested: the ingest only succeeds once the durable
+        # handoff is queued, so a failure is observable instead of silently
+        # storing a document that will never be analyzed.
+        try:
+            result = {
+                **result,
+                "analysis": enqueue_investment_analysis(
+                    _get_config(),
+                    str(result["document_id"]),
+                ),
+            }
+        except Exception as exc:
+            logger.error(
+                "investment_analysis_enqueue_failed",
+                document_id=str(result.get("document_id") or ""),
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Investment analysis could not be scheduled",
+            ) from exc
+    return result
 
 
 @app.post(
@@ -548,9 +1123,10 @@ async def ingest_investment_document(request: Request):
     status_code=201,
     dependencies=[Depends(require_internal_basic)],
 )
-def ingest_investment_url(body: dict = Body(...)):
+def ingest_investment_url(body: InvestmentUrlIngestRequest = Body(...)):
+    payload = body.model_dump(exclude_none=True)
     try:
-        return store_investment_document_url(_get_config(), body)
+        result = store_investment_document_url(_get_config(), payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -562,6 +1138,47 @@ def ingest_investment_url(body: dict = Body(...)):
             status_code=502,
             detail="Investment document could not be fetched",
         ) from exc
+    if _wants_analysis(payload):
+        try:
+            result = {
+                **result,
+                "analysis": enqueue_investment_analysis(
+                    _get_config(),
+                    str(result["document_id"]),
+                ),
+            }
+        except Exception as exc:
+            logger.error(
+                "investment_analysis_enqueue_failed",
+                document_id=str(result.get("document_id") or ""),
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Investment analysis could not be scheduled",
+            ) from exc
+    return result
+
+
+def _reject_declared_oversize(request: Request, max_bytes: int) -> None:
+    declared = request.headers.get("content-length")
+    if not declared:
+        return
+    try:
+        declared_size = int(declared)
+    except ValueError:
+        raise ValueError("invalid Content-Length") from None
+    if declared_size > max_bytes:
+        raise ValueError(f"document exceeds {max_bytes // 1_000_000} MB")
+
+
+def _wants_analysis(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    value = metadata.get("analyze")
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
 
 
 @app.post(
@@ -618,132 +1235,59 @@ def investment_filings_status():
     dependencies=[Depends(require_internal_basic)],
 )
 def trigger_filing_collection(
-    background_tasks: BackgroundTasks,
-    body: dict | None = Body(default=None),
+    body: FilingsRequest | None = Body(default=None),
 ):
-    correlation_id = _correlation_id_from_body(body)
-    auto_analyze = bool(body.get("auto_analyze")) if isinstance(body, dict) else False
-    accepted_at = _accept_http_run(
-        correlation_id, "filings", "investment_filings", body
+    request = FilingsRequest.model_validate(body) if body is not None else FilingsRequest()
+    correlation_id = (
+        str(request.correlation_id) if request.correlation_id else str(uuid4())
     )
-    background_tasks.add_task(_run_filings_task, correlation_id, auto_analyze)
-    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
-
-
-def _run_filings_task(correlation_id: str, auto_analyze: bool):
-    from investment_filings import run_filing_collection
-
-    config = _get_config()
-    worker_id = f"api:{uuid4()}"
-    started = _start_http_run(
-        config, correlation_id, worker_id, "filings", "investment_filings"
+    accepted_at, _ = _accept_and_enqueue(
+        correlation_id,
+        "filings",
+        "investment_filings",
+        idempotency_key=request.idempotency_key,
+        request_summary={"auto_analyze": request.auto_analyze},
+        payload={"auto_analyze": request.auto_analyze},
+        max_attempts=3,
     )
-    if started is not True:
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_filing_collection(
-                config, correlation_id=correlation_id, auto_analyze=auto_analyze
-            )
-            finalized = finalize_run_safely(
-                correlation_id,
-                result.get("status", "completed"),
-                result,
-                config,
-                worker_id=worker_id,
-                run_kind="filings",
-                component="investment_filings",
-            )
-            if finalized:
-                logger.info("filings_trigger_completed", correlation_id=correlation_id)
-    except Exception as exc:
-        logger.error(
-            "filings_trigger_failed", correlation_id=correlation_id, error=str(exc)
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {},
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="filings",
-            component="investment_filings",
-        )
+    job_id = correlation_id
+    return {"job_id": job_id, "accepted_at": accepted_at.isoformat()}
 
 
-def _correlation_id_from_body(body: dict | None) -> str:
-    if isinstance(body, dict) and body.get("correlation_id"):
-        try:
-            return str(UUID(str(body["correlation_id"])))
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail="correlation_id must be a valid UUID",
-            ) from exc
-    return str(uuid4())
-
-
-def _idempotency_key_from_body(body: dict | None) -> str | None:
-    if not isinstance(body, dict):
-        return None
-    value = body.get("idempotency_key")
-    return str(value) if value else None
-
-
-def _failed_run_summary(exc: Exception) -> dict:
-    summary = {"status": "failed", "reason": str(exc)}
-    if isinstance(exc, RunConflict):
-        summary["conflict"] = exc.lock_name
-    return summary
-
-
-def _start_http_run(
-    config: dict,
-    correlation_id: str,
-    worker_id: str,
-    run_kind: str,
-    component: str | None = None,
-) -> bool | None:
-    """Claim an accepted run, finalizing it safely when the claim errors."""
-    try:
-        return start_run(config, correlation_id, worker_id)
-    except Exception:
-        reason = "run start unavailable"
-        logger.error(
-            "run_start_failed",
-            correlation_id=correlation_id,
-            run_kind=run_kind,
-            component=component,
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {"status": "failed", "reason": reason},
-            config,
-            reason,
-            run_kind=run_kind,
-            component=component,
-        )
-        return None
-
-
-def _accept_http_run(
+def _accept_and_enqueue(
     correlation_id: str,
     run_kind: str,
     requested_component: str | None,
-    body: dict | None,
+    *,
+    idempotency_key: str | None = None,
     request_summary: dict | None = None,
-) -> datetime:
+    payload: dict | None = None,
+    dedupe_key: str | None = None,
+    input_fingerprint: str | None = None,
+    priority: int = 100,
+    max_attempts: int = 3,
+    triggered_by: str = "api",
+):
+    """Accept a durable run and enqueue its operation job atomically.
+
+    A duplicate logical identity suppresses the enqueue (the accepted row is
+    finalized as already_queued inside the same transaction); the response
+    still reports the run as accepted for API compatibility.
+    """
     try:
-        return accept_run(
+        return accept_and_enqueue_operation(
             _get_config(),
-            correlation_id,
-            "api",
-            run_kind,
-            requested_component,
-            _idempotency_key_from_body(body),
+            correlation_id=correlation_id,
+            triggered_by=triggered_by,
+            run_kind=run_kind,
+            requested_component=requested_component,
+            idempotency_key=idempotency_key,
             request_summary=request_summary,
+            dedupe_key=dedupe_key,
+            input_fingerprint=input_fingerprint,
+            payload=payload,
+            priority=priority,
+            max_attempts=max_attempts,
         )
     except RunAcceptanceConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -767,7 +1311,6 @@ def _accept_http_run(
 )
 def retry_abandoned_run(
     correlation_id: UUID,
-    background_tasks: BackgroundTasks,
 ):
     config = _get_config()
     correlation_id_str = str(correlation_id)
@@ -819,6 +1362,7 @@ def retry_abandoned_run(
     new_correlation_id = str(uuid4())
     cycle_mode = "refresh"
     retry_summary = None
+    retry_payload = None
     if run_kind == "cycle":
         prior_summary = previous.get("summary")
         if isinstance(prior_summary, str):
@@ -835,100 +1379,28 @@ def retry_abandoned_run(
             "budget_confirmed": False,
             "retry": True,
         }
-    try:
-        accepted_at = accept_run(
-            config,
-            new_correlation_id,
-            "retry",
-            run_kind,
-            component,
-            request_summary=retry_summary,
-        )
-    except RunAcceptanceConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.error(
-            "run_retry_acceptance_failed",
-            prior_correlation_id=correlation_id_str,
-            correlation_id=new_correlation_id,
-            error=str(exc),
-        )
-        raise HTTPException(
-            status_code=503, detail="Run acceptance unavailable"
-        ) from exc
-
-    if run_kind == "cycle":
-        background_tasks.add_task(_run_cycle_task, new_correlation_id, cycle_mode, None)
+        retry_payload = {"mode": cycle_mode, "budget_confirmed": False}
     elif run_kind == "collector":
-        background_tasks.add_task(
-            _run_collector_task, str(component), new_correlation_id
-        )
-    elif run_kind == "processor":
-        background_tasks.add_task(
-            _run_processor_task, str(component), new_correlation_id
-        )
+        retry_payload = {"run_dependents": False}
     else:
-        background_tasks.add_task(_run_news_task, str(component), new_correlation_id)
+        retry_payload = {}
+
+    accepted_at, _ = _accept_and_enqueue(
+        new_correlation_id,
+        run_kind,
+        str(component) if component else None,
+        request_summary=retry_summary,
+        payload=retry_payload,
+        max_attempts=3,
+        triggered_by="retry",
+    )
+    job_id = new_correlation_id
 
     return {
-        "job_id": new_correlation_id,
+        "job_id": job_id,
         "prior_job_id": correlation_id_str,
         "accepted_at": accepted_at.isoformat(),
     }
-
-
-def _run_cycle_task(
-    correlation_id: str,
-    mode: str = "refresh",
-    budget_context: BudgetContext | None = None,
-):
-    global _cycle_correlation_id
-    config = _get_config()
-    worker_id = f"api:{uuid4()}"
-    started = _start_http_run(config, correlation_id, worker_id, "cycle")
-    if started is not True:
-        if started is False:
-            logger.info("cycle_start_lost", correlation_id=correlation_id)
-        if _cycle_correlation_id == correlation_id:
-            _cycle_correlation_id = None
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_full_cycle(
-                config=config,
-                correlation_id=correlation_id,
-                manage_lifecycle=False,
-                mode=mode,
-                budget_context=budget_context,
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                worker_id=worker_id,
-                run_kind="cycle",
-            )
-            if finalized:
-                logger.info(
-                    "cycle_completed", correlation_id=correlation_id, result=result
-                )
-    except Exception as exc:
-        logger.error("cycle_failed", correlation_id=correlation_id, error=str(exc))
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            _failed_run_summary(exc),
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="cycle",
-        )
-    finally:
-        if _cycle_correlation_id == correlation_id:
-            _cycle_correlation_id = None
 
 
 @app.post(
@@ -938,26 +1410,14 @@ def _run_cycle_task(
     dependencies=[Depends(require_internal_basic)],
 )
 def trigger_cycle(
-    background_tasks: BackgroundTasks,
-    body: dict | None = Body(default=None),
+    body: CycleRequest | None = Body(default=None),
     credentials: HTTPBasicCredentials | None = Depends(optional_basic),
 ):
-    global _cycle_correlation_id
+    request = (
+        CycleRequest.model_validate(body) if body is not None else CycleRequest()
+    )
+    mode = request.mode
 
-    if body is None:
-        body = {}
-    elif not isinstance(body, dict):
-        raise HTTPException(status_code=422, detail="Cycle body must be an object")
-
-    mode = body.get("mode", "refresh")
-    if not isinstance(mode, str) or mode not in VALID_CYCLE_MODES:
-        raise HTTPException(status_code=422, detail="Invalid cycle mode")
-    if "budget_confirmed" in body and type(body["budget_confirmed"]) is not bool:
-        raise HTTPException(
-            status_code=422, detail="budget_confirmed must be a boolean"
-        )
-
-    budget_context = None
     if mode == "force_full":
         username = os.environ.get("DASHBOARD_USER", "")
         password = os.environ.get("DASHBOARD_PASSWORD", "")
@@ -977,99 +1437,36 @@ def trigger_cycle(
                 detail="Authentication required",
                 headers={"WWW-Authenticate": "Basic"},
             )
-        if body.get("budget_confirmed") is not True:
+        if request.budget_confirmed is not True:
             raise HTTPException(
                 status_code=422,
                 detail="force_full requires explicit budget confirmation",
             )
-        budget_context = trusted_manual_budget_context(
-            force=True,
-            manual_authorized=True,
-            authorization=mint_trusted_manual_authorization(),
-        )
 
     request_summary = {
         "mode": mode,
         "budget_confirmed": mode == "force_full",
     }
-    correlation_id = _correlation_id_from_body(body)
-    accepted_at = _accept_http_run(
+    correlation_id = (
+        str(request.correlation_id) if request.correlation_id else str(uuid4())
+    )
+    accepted_at, _ = _accept_and_enqueue(
         correlation_id,
         "cycle",
         None,
-        body,
+        idempotency_key=request.idempotency_key,
         request_summary=request_summary,
+        payload={"mode": mode},
+        max_attempts=2,
     )
-    _cycle_correlation_id = correlation_id
-    background_tasks.add_task(_run_cycle_task, correlation_id, mode, budget_context)
+    job_id = correlation_id
 
-    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
+    return {"job_id": job_id, "accepted_at": accepted_at.isoformat()}
 
 
 @app.get("/cycle_status", response_model=CycleStatusResponse)
 def get_cycle_status():
-    return {
-        "running": _cycle_correlation_id is not None,
-        "correlation_id": _cycle_correlation_id,
-    }
-
-
-def _run_collector_task(source_id: str, correlation_id: str):
-    config = _get_config()
-    worker_id = f"api:{uuid4()}"
-    started = _start_http_run(config, correlation_id, worker_id, "collector", source_id)
-    if started is not True:
-        if started is False:
-            logger.info(
-                "collector_start_lost",
-                source_id=source_id,
-                correlation_id=correlation_id,
-            )
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_collector(
-                source_id,
-                config=config,
-                correlation_id=correlation_id,
-                manage_lifecycle=False,
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-                worker_id=worker_id,
-                run_kind="collector",
-                component=source_id,
-            )
-            if finalized:
-                logger.info(
-                    "collector_trigger_completed",
-                    source_id=source_id,
-                    correlation_id=correlation_id,
-                    result=result,
-                )
-    except Exception as exc:
-        logger.error(
-            "collector_trigger_failed",
-            source_id=source_id,
-            correlation_id=correlation_id,
-            error=str(exc),
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            _failed_run_summary(exc),
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="collector",
-            component=source_id,
-        )
+    return latest_cycle_status(_get_config())
 
 
 @app.post(
@@ -1080,95 +1477,27 @@ def _run_collector_task(source_id: str, correlation_id: str):
 )
 def trigger_collector(
     source_id: str,
-    background_tasks: BackgroundTasks,
-    body: dict | None = Body(default=None),
+    body: RunRequest | None = Body(default=None),
 ):
     from collectors import get_all_collectors
 
     if source_id not in get_all_collectors():
         raise HTTPException(status_code=404, detail=f"Unknown collector: {source_id}")
-
-    correlation_id = _correlation_id_from_body(body)
-    accepted_at = _accept_http_run(correlation_id, "collector", source_id, body)
-    background_tasks.add_task(_run_collector_task, source_id, correlation_id)
-    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
-
-
-def _news_failure_summary(exc: Exception, correlation_id: str) -> dict:
-    if isinstance(exc, RunConflict):
-        return {
-            "status": "failed",
-            "state": "conflict",
-            "error": str(exc),
-            "code": "news_run_conflict",
-            "feed_published": False,
-            "new_item_count": 0,
-            "duration_ms": 0,
-            "correlation_id": correlation_id,
-        }
-    return {
-        "status": "failed",
-        "state": "failed",
-        "error": "news run failed",
-        "code": "news_run_failed",
-        "feed_published": False,
-        "new_item_count": 0,
-        "duration_ms": 0,
-        "correlation_id": correlation_id,
-    }
-
-
-def _run_news_task(source_id: str, correlation_id: str):
-    config = _get_config()
-    worker_id = f"api:{uuid4()}"
-    started = _start_http_run(config, correlation_id, worker_id, "news", source_id)
-    if started is not True:
-        if started is False:
-            logger.info(
-                "news_start_lost", source_id=source_id, correlation_id=correlation_id
-            )
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_news_source(
-                source_id, correlation_id, config, manage_lifecycle=False
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-                worker_id=worker_id,
-                run_kind="news",
-                component=source_id,
-            )
-            if finalized:
-                logger.info(
-                    "news_trigger_completed",
-                    source_id=source_id,
-                    correlation_id=correlation_id,
-                )
-    except Exception as exc:
-        summary = _news_failure_summary(exc, correlation_id)
-        logger.error(
-            "news_trigger_failed",
-            source_id=source_id,
-            correlation_id=correlation_id,
-            code=summary["code"],
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            summary,
-            config,
-            summary["error"],
-            worker_id=worker_id,
-            run_kind="news",
-            component=source_id,
-        )
+    request = RunRequest.model_validate(body) if body is not None else RunRequest()
+    correlation_id = (
+        str(request.correlation_id) if request.correlation_id else str(uuid4())
+    )
+    accepted_at, _ = _accept_and_enqueue(
+        correlation_id,
+        "collector",
+        source_id,
+        idempotency_key=request.idempotency_key,
+        request_summary={"mode": "refresh", "run_dependents": False},
+        payload={"mode": "refresh", "run_dependents": False},
+        max_attempts=3,
+    )
+    job_id = correlation_id
+    return {"job_id": job_id, "accepted_at": accepted_at.isoformat()}
 
 
 @app.post(
@@ -1179,77 +1508,27 @@ def _run_news_task(source_id: str, correlation_id: str):
 )
 def trigger_news(
     source_id: str,
-    background_tasks: BackgroundTasks,
-    body: dict | None = Body(default=None),
+    body: RunRequest | None = Body(default=None),
 ):
     from sources.news_registry import get_news_source_ids
 
     if source_id not in get_news_source_ids():
         raise HTTPException(status_code=404, detail=f"Unknown news source: {source_id}")
-    correlation_id = _correlation_id_from_body(body)
-    accepted_at = _accept_http_run(correlation_id, "news", source_id, body)
-    background_tasks.add_task(_run_news_task, source_id, correlation_id)
-    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
-
-
-def _run_processor_task(processor_id: str, correlation_id: str):
-    config = _get_config()
-    worker_id = f"api:{uuid4()}"
-    started = _start_http_run(
-        config, correlation_id, worker_id, "processor", processor_id
+    request = RunRequest.model_validate(body) if body is not None else RunRequest()
+    correlation_id = (
+        str(request.correlation_id) if request.correlation_id else str(uuid4())
     )
-    if started is not True:
-        if started is False:
-            logger.info(
-                "processor_start_lost",
-                processor_id=processor_id,
-                correlation_id=correlation_id,
-            )
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_processor(
-                processor_id,
-                config=config,
-                correlation_id=correlation_id,
-                manage_lifecycle=False,
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-                worker_id=worker_id,
-                run_kind="processor",
-                component=processor_id,
-            )
-            if finalized:
-                logger.info(
-                    "processor_trigger_completed",
-                    processor_id=processor_id,
-                    correlation_id=correlation_id,
-                    result=result,
-                )
-    except Exception as exc:
-        logger.error(
-            "processor_trigger_failed",
-            processor_id=processor_id,
-            correlation_id=correlation_id,
-            error=str(exc),
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            _failed_run_summary(exc),
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="processor",
-            component=processor_id,
-        )
+    accepted_at, _ = _accept_and_enqueue(
+        correlation_id,
+        "news",
+        source_id,
+        idempotency_key=request.idempotency_key,
+        request_summary={"mode": "refresh"},
+        payload={"mode": "refresh"},
+        max_attempts=3,
+    )
+    job_id = correlation_id
+    return {"job_id": job_id, "accepted_at": accepted_at.isoformat()}
 
 
 @app.post(
@@ -1260,8 +1539,7 @@ def _run_processor_task(processor_id: str, correlation_id: str):
 )
 def trigger_processor(
     processor_id: str,
-    background_tasks: BackgroundTasks,
-    body: dict | None = Body(default=None),
+    body: RunRequest | None = Body(default=None),
 ):
     from processors import get_all_processors
 
@@ -1269,11 +1547,21 @@ def trigger_processor(
         raise HTTPException(
             status_code=404, detail=f"Unknown processor: {processor_id}"
         )
-
-    correlation_id = _correlation_id_from_body(body)
-    accepted_at = _accept_http_run(correlation_id, "processor", processor_id, body)
-    background_tasks.add_task(_run_processor_task, processor_id, correlation_id)
-    return {"job_id": correlation_id, "accepted_at": accepted_at.isoformat()}
+    request = RunRequest.model_validate(body) if body is not None else RunRequest()
+    correlation_id = (
+        str(request.correlation_id) if request.correlation_id else str(uuid4())
+    )
+    accepted_at, _ = _accept_and_enqueue(
+        correlation_id,
+        "processor",
+        processor_id,
+        idempotency_key=request.idempotency_key,
+        request_summary={"mode": "refresh"},
+        payload={"mode": "refresh"},
+        max_attempts=3,
+    )
+    job_id = correlation_id
+    return {"job_id": job_id, "accepted_at": accepted_at.isoformat()}
 
 
 @app.get("/quality", response_model=QualityResponse)
@@ -1281,7 +1569,6 @@ def quality():
     config = _get_config()
     logger.info("quality_endpoint_called")
     results = run_quality_checks(config)
-    any_unhealthy = any(not r.get("healthy", True) for r in results.values())
-    overall = "degraded" if any_unhealthy else "healthy"
+    overall = evaluate_quality(results, required_quality_checks(config))
     logger.info("quality_check_complete", overall=overall, check_count=len(results))
-    return {"overall": overall, "checks": results}
+    return {"overall": overall, "checks": normalize_quality_results(results)}

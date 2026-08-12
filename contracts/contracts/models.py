@@ -26,6 +26,7 @@ class ReadinessStatus(StrEnum):
 class DataHealthStatus(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
+    UNKNOWN = "unknown"
 
 
 class ComponentStatus(StrEnum):
@@ -64,6 +65,7 @@ class QualityOverall(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNHEALTHY = "unhealthy"
+    UNKNOWN = "unknown"
 
 
 class QualityStatus(StrEnum):
@@ -113,6 +115,8 @@ class HealthComponent(ContractModel):
     critical: StrictBool | None = None
     status: ComponentStatus
     reason: str | None = None
+    config_version: str | None = None
+    restart_required: StrictBool | None = None
 
 
 class SchedulerJob(ContractModel):
@@ -156,6 +160,7 @@ class OrchestratorHealthResponse(ContractModel):
     stream: StreamSnapshot | None = None
     collectors: dict[str, Any] = Field(default_factory=dict)
     quality: QualitySnapshot | None = None
+    config_version: str | None = None
 
 
 class SystemHealthComponent(ContractModel):
@@ -178,6 +183,33 @@ class SystemHealthResponse(ContractModel):
     today_llm_cost_usd: float
     today_token_count: int
     quality: QualitySnapshot
+    config_version: str | None = None
+
+
+class InvestmentUrlIngestRequest(ContractModel):
+    """Strict, bounded shape for the investment URL-ingest boundary.
+
+    Shared by the API and orchestrator routes so unknown metadata fields,
+    unbounded strings, and coerced booleans are rejected identically at both
+    boundaries (extra fields forbidden). Semantic validation (region set,
+    document_type set, report_date format) stays in the orchestrator's
+    ``normalize_metadata``, which remains the single source of truth.
+    """
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    url: NonBlankText = Field(max_length=2048)
+    company: NonBlankText = Field(max_length=160)
+    symbol: str | None = Field(default=None, max_length=24)
+    region: str | None = Field(default=None, max_length=16)
+    industry: str | None = Field(default=None, max_length=160)
+    document_type: str | None = Field(default=None, max_length=40)
+    report_date: str | None = Field(default=None, max_length=10)
+    filename: str | None = Field(default=None, max_length=240)
+    source_url: str | None = Field(default=None, max_length=2048)
+    filing_source: str | None = Field(default=None, max_length=40)
+    filing_id: str | None = Field(default=None, max_length=160)
+    analyze: StrictBool = False
 
 
 class RunAcceptanceRequest(ContractModel):

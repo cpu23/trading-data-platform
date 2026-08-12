@@ -22,10 +22,9 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from config import load_config
+from config import load_config, orchestrator_url
 from db import get_session
 from routes.json.triggers import (
-    ORCHESTRATOR_URL,
     _enforce_api_budget,
     _internal_basic_auth,
     _post_to_orchestrator,
@@ -627,7 +626,7 @@ async def _research_orchestrator_post(
     try:
         response = await _post_to_orchestrator(
             request,
-            f"{ORCHESTRATOR_URL}{path}",
+            f"{orchestrator_url()}{path}",
             json=payload or {},
             timeout=10.0,
             auth=_internal_basic_auth(),

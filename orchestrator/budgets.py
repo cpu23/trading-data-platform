@@ -1,9 +1,16 @@
 """UTC-day LLM spending policy and orchestrator enforcement.
 
-The guard uses recorded ``processing_log`` spend only. It does not reserve a
-projected request cost, so concurrent requests can pass while recorded spend is
-below the cap. Once recorded spend is greater than or equal to the cap, later
-automatic stages are blocked.
+Admission is transactional: each distinct paid call reserves an estimated cost
+immediately before it is dispatched, so ``committed spend + active
+reservations + estimate`` must fit under the daily cap. Committed spend is
+reconciled per (correlation, processor): the pair's ``processing_log`` total
+minus its settled reservation actuals (floored at zero), plus all settled
+reservation actuals anchored to their reservation day — every dollar is
+counted exactly once on the day it was admitted, whether the run was purely
+reserved, purely legacy, or mixed. A reservation settling after its TTL
+expired still records its real actual. A zero cap denies all paid calls (fail
+closed, no unlimited mode); a missing or malformed budget result always fails
+closed into ``BudgetUnavailable``.
 """
 
 import math
@@ -18,6 +25,15 @@ from logging_config import get_logger
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
 DEFAULT_WARN_AT_PCT = 80
+DEFAULT_RESERVATION_ESTIMATE_USD = 0.05
+DEFAULT_RESERVATION_TTL_SECONDS = 600.0
+# Mirrors llm_client.DEFAULT_STAGE_TIMEOUT_SECONDS without importing it
+# (llm_client imports this module). The reservation must outlive the single
+# make_request deadline: stage_timeout + 30s slack (paid calls are
+# single-attempt; validation retries are separately-budgeted calls).
+_DEFAULT_STAGE_TIMEOUT_SECONDS = 90.0
+_REQUEST_DEADLINE_SLACK_SECONDS = 30.0
+BUDGET_OVERRIDE_TTL_SECONDS = 600
 _TRUSTED_MANUAL_AUTHORIZATION = object()
 _BUDGET_PERMIT = object()
 
@@ -32,6 +48,168 @@ def _finite_number(value, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"{name} must be a finite number")
     return number
+
+
+def _reservation_policy(config: dict, processor: str) -> tuple[float, float]:
+    """Return (estimate_usd, ttl_seconds) for a paid call; invalid -> ValueError."""
+    from collections.abc import Mapping
+
+    budget_cfg = config.get("budgets", {})
+    if not isinstance(budget_cfg, Mapping):
+        raise ValueError("budgets must be an object")
+    estimate = None
+    estimates = budget_cfg.get("estimates")
+    if isinstance(estimates, Mapping):
+        candidate = estimates.get(processor)
+        if candidate is not None:
+            estimate = candidate
+    if estimate is None:
+        estimate = budget_cfg.get(
+            "reservation_estimate_usd", DEFAULT_RESERVATION_ESTIMATE_USD
+        )
+    estimate = _finite_number(estimate, "budgets.reservation_estimate_usd")
+    if estimate <= 0:
+        raise ValueError("budgets.reservation_estimate_usd must be positive")
+    ttl = _finite_number(
+        budget_cfg.get("reservation_ttl_seconds", DEFAULT_RESERVATION_TTL_SECONDS),
+        "budgets.reservation_ttl_seconds",
+    )
+    if ttl <= 0:
+        raise ValueError("budgets.reservation_ttl_seconds must be positive")
+    # Cross-field gate: an in-flight call must never have its admission
+    # released before it completes. Paid OpenRouter calls are single-attempt,
+    # so the TTL must cover llm.stage_timeout_seconds + 30s (the make_request
+    # deadline). Validation retries are separately-budgeted calls.
+    llm_cfg = config.get("llm", {})
+    if isinstance(llm_cfg, Mapping):
+        try:
+            stage_timeout = float(
+                llm_cfg.get("stage_timeout_seconds", _DEFAULT_STAGE_TIMEOUT_SECONDS)
+            )
+        except (TypeError, ValueError, OverflowError):
+            stage_timeout = _DEFAULT_STAGE_TIMEOUT_SECONDS
+        min_ttl = max(stage_timeout, 0.0) + _REQUEST_DEADLINE_SLACK_SECONDS
+        if ttl < min_ttl:
+            raise ValueError(
+                "budgets.reservation_ttl_seconds must be at least "
+                f"{min_ttl:g}s to cover the LLM request deadline"
+            )
+    return estimate, ttl
+
+
+def _reserve_budget_quota(
+    config: dict,
+    processor: str,
+    cap: float,
+    estimate_usd: float,
+    ttl_seconds: float,
+    *,
+    correlation_id: str | None = None,
+    run_kind: str | None = None,
+    component: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Transactionally admit one paid call under the daily cap.
+
+    A transaction-level advisory lock keyed by the UTC budget day serializes
+    admission across every connection, so concurrent workers can never push
+    ``spent + active reservations + estimate`` over the cap. Raises
+    ``BudgetExceeded`` when the quota is exhausted; any unreadable budget state
+    propagates as an exception the caller maps to ``BudgetUnavailable``.
+    """
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    day_start, day_end = utc_day_bounds(current)
+    budget_day = day_start.date()
+    lock_key = f"budget_day:{budget_day.isoformat()}"
+    expires_at = current + timedelta(seconds=ttl_seconds)
+
+    with get_session(config) as session:
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": lock_key},
+        )
+        session.execute(
+            text(
+                "UPDATE budget_reservations SET status = 'expired' "
+                "WHERE status = 'active' AND expires_at <= :now"
+            ),
+            {"now": current},
+        )
+        row = session.execute(
+            text(
+                "SELECT "
+                "(SELECT COALESCE(SUM(unreserved), 0) FROM ( "
+                "  SELECT GREATEST( "
+                "    COALESCE(p.total_cost, 0) - COALESCE(r.total_settled, 0), 0) "
+                "    AS unreserved "
+                "  FROM ( "
+                "    SELECT correlation_id, processor, "
+                "           SUM(COALESCE(cost_usd, 0)) AS total_cost "
+                "    FROM processing_log "
+                "    WHERE started_at >= :day_start AND started_at < :day_end "
+                "    GROUP BY correlation_id, processor "
+                "  ) p "
+                "  LEFT JOIN ( "
+                "    /* The reservation day owns the paid call: subtract the "
+                "       pair's settled actuals regardless of their budget_day, "
+                "       so a run started before midnight whose call was admitted "
+                "       after midnight is not double-counted as legacy spend. */ "
+                "    SELECT correlation_id, processor, "
+                "           SUM(COALESCE(settled_usd, estimated_usd)) AS total_settled "
+                "    FROM budget_reservations "
+                "    WHERE status = 'settled' AND settled_at IS NOT NULL "
+                "    GROUP BY correlation_id, processor "
+                "  ) r ON p.correlation_id IS NOT DISTINCT FROM r.correlation_id "
+                "     AND p.processor = r.processor "
+                ") pairs) AS spent_usd, "
+                "( "
+                "  (SELECT COALESCE(SUM(estimated_usd), 0) FROM budget_reservations "
+                "   WHERE budget_day = :day AND status = 'active' "
+                "     AND expires_at > :now) "
+                "  + "
+                "  (SELECT COALESCE(SUM(COALESCE(settled_usd, estimated_usd)), 0) "
+                "   FROM budget_reservations "
+                "   WHERE budget_day = :day AND status = 'settled' "
+                "     AND settled_at IS NOT NULL) "
+                ") AS reserved_usd"
+            ),
+            {
+                "day_start": day_start,
+                "day_end": day_end,
+                "day": budget_day,
+                "now": current,
+            },
+        ).fetchone()
+        spent = _finite_number(row._mapping.get("spent_usd"), "budget spent")
+        reserved = _finite_number(row._mapping.get("reserved_usd"), "budget reserved")
+        if spent + reserved + estimate_usd > cap:
+            raise BudgetExceeded(spent + reserved, cap, processor=processor)
+        inserted = session.execute(
+            text(
+                "INSERT INTO budget_reservations "
+                "(budget_day, correlation_id, run_kind, component, processor, "
+                "requested_by, reason, estimated_usd, expires_at, reserved_at) "
+                "VALUES (:day, :cid, :run_kind, :component, :processor, "
+                ":requested_by, :reason, :estimate, :expires_at, :reserved_at) "
+                "RETURNING id"
+            ),
+            {
+                "day": budget_day,
+                "cid": correlation_id,
+                "run_kind": run_kind,
+                "component": component,
+                "processor": processor,
+                "requested_by": None,
+                "reason": None,
+                "estimate": estimate_usd,
+                "expires_at": expires_at,
+                "reserved_at": current,
+            },
+        ).fetchone()
+        return str(inserted[0])
 
 
 def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -49,6 +227,10 @@ def get_budget_config(config: dict) -> tuple[float, float]:
         configured.get("daily_llm_usd", DEFAULT_DAILY_LLM_USD),
         "budgets.daily_llm_usd",
     )
+    # A negative cap is malformed, never unlimited; a zero cap denies all
+    # paid calls (fail closed, no unlimited mode).
+    if cap < 0:
+        raise ValueError("budgets.daily_llm_usd must be non-negative")
     warn_at = _finite_number(
         configured.get("warn_at_pct", DEFAULT_WARN_AT_PCT), "budgets.warn_at_pct"
     )
@@ -86,16 +268,25 @@ def budget_status(
     warn_at = _finite_number(warn_at_pct, "budgets.warn_at_pct")
     if not 0 <= warn_at <= 100:
         raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    unlimited = daily_cap <= 0
-    if unlimited:
-        usage_pct, warning, exceeded = 0.0, False, False
-    else:
-        usage_pct = round((cost / daily_cap) * 100, 2)
-        exceeded = cost >= daily_cap
-        warning = not exceeded and usage_pct >= warn_at
+    if daily_cap < 0:
+        raise ValueError("budgets.daily_llm_usd must be non-negative")
+    # A zero cap denies all paid calls (fail closed); there is no unlimited
+    # mode unless one is explicitly configured in the future.
+    if daily_cap == 0:
+        return {
+            "budget_cap_usd": daily_cap,
+            "unlimited": False,
+            "warn_at_pct": warn_at,
+            "usage_pct": 0.0,
+            "warning": False,
+            "exceeded": True,
+        }
+    usage_pct = round((cost / daily_cap) * 100, 2)
+    exceeded = cost >= daily_cap
+    warning = not exceeded and usage_pct >= warn_at
     return {
         "budget_cap_usd": daily_cap,
-        "unlimited": unlimited,
+        "unlimited": False,
         "warn_at_pct": warn_at,
         "usage_pct": usage_pct,
         "warning": warning,
@@ -188,21 +379,33 @@ def trusted_manual_budget_context(
 @dataclass(frozen=True)
 class BudgetPermit:
     _token: object | None = field(default=None, repr=False, compare=False)
+    reservation_id: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def valid(self) -> bool:
         return self._token is _BUDGET_PERMIT
 
 
-def _mint_budget_permit() -> BudgetPermit:
-    return BudgetPermit(_BUDGET_PERMIT)
+def _mint_budget_permit(reservation_id: str | None = None) -> BudgetPermit:
+    return BudgetPermit(_BUDGET_PERMIT, reservation_id)
 
 
 def enforce_budget(
     config: dict,
     processor: str,
     context: BudgetContext | None = None,
+    *,
+    correlation_id: str | None = None,
+    run_kind: str | None = None,
+    component: str | None = None,
+    now: datetime | None = None,
 ) -> BudgetPermit:
+    """Admit one paid call under the daily cap, reserving its estimated cost.
+
+    A trusted manual override short-circuits before any budget state is read;
+    every other path fails closed: an unreadable or malformed budget result
+    raises ``BudgetUnavailable`` and no HTTP request is attempted.
+    """
     context = context or BudgetContext()
     if context.trusted_manual_force:
         logger.info(
@@ -212,7 +415,7 @@ def enforce_budget(
         )
         return _mint_budget_permit()
     try:
-        cap, warn_at = get_budget_config(config)
+        cap, _warn_at = get_budget_config(config)
     except ValueError:
         logger.warning(
             "llm_budget_invalid",
@@ -220,25 +423,182 @@ def enforce_budget(
             blocked_code="daily_llm_budget_unavailable",
         )
         raise BudgetUnavailable(processor=processor) from None
-    if cap <= 0:
-        return _mint_budget_permit()
-    try:
-        today_cost, _ = get_today_spend(config)
-        status = budget_status(today_cost, cap, warn_at)
-    except Exception:
+    if cap == 0:
         logger.warning(
-            "llm_budget_lookup_failed",
+            "llm_budget_denied_zero_cap",
             processor=processor,
-            blocked_code="daily_llm_budget_unavailable",
-        )
-        raise BudgetUnavailable(processor=processor) from None
-    if status["exceeded"]:
-        logger.warning(
-            "llm_budget_blocked",
-            processor=processor,
-            today_cost_usd=round(today_cost, 6),
             budget_cap_usd=cap,
             blocked_code=BudgetExceeded.code,
         )
-        raise BudgetExceeded(today_cost, cap, processor=processor)
-    return _mint_budget_permit()
+        raise BudgetExceeded(0.0, cap, processor=processor)
+    try:
+        estimate_usd, ttl_seconds = _reservation_policy(config, processor)
+        reservation_id = _reserve_budget_quota(
+            config,
+            processor,
+            cap,
+            estimate_usd,
+            ttl_seconds,
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+            now=now,
+        )
+    except BudgetBlock:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "llm_budget_reservation_failed",
+            processor=processor,
+            blocked_code="daily_llm_budget_unavailable",
+            error_type=type(exc).__name__,
+        )
+        raise BudgetUnavailable(processor=processor) from None
+    return _mint_budget_permit(reservation_id=reservation_id)
+
+
+def settle_budget_reservation(
+    reservation_id: str | None,
+    actual_usd: float,
+    config: dict,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Record actual spend against a reservation, anchoring it to its day.
+
+    The paid call already happened, so the actual is recorded even if the
+    reservation expired mid-call (TTL shorter than the call): the spend is
+    real and must not vanish. Idempotent and never raises on database trouble
+    (``processing_log`` remains authoritative). A malformed actual value is
+    rejected, never silently accepted.
+    """
+    if not isinstance(reservation_id, str) or not reservation_id:
+        return True
+    actual = _finite_number(actual_usd, "settled_usd")
+    if actual < 0:
+        raise ValueError("settled_usd must be non-negative")
+    try:
+        with get_session(config) as session:
+            result = session.execute(
+                text(
+                    "UPDATE budget_reservations SET status = 'settled', "
+                    "settled_usd = :actual, settled_at = :now "
+                    "WHERE id = :rid AND status IN ('active', 'expired')"
+                ),
+                {
+                    "rid": reservation_id,
+                    "actual": actual,
+                    "now": now or datetime.now(UTC),
+                },
+            )
+            return result.rowcount == 1
+    except Exception as exc:
+        logger.warning(
+            "budget_reservation_settle_failed",
+            reservation_id=reservation_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+
+
+def release_budget_reservation(
+    reservation_id: str | None,
+    config: dict,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Release an active reservation that definitively incurred no cost.
+
+    Only callers that know no charge happened (transport or HTTP-status
+    failure before a 2xx body) may release. Ambiguous failures — a 2xx
+    response whose payload was unusable — must use
+    :func:`retain_budget_reservation` instead so paid-but-unparseable calls
+    still hold their estimate.
+    """
+    if not isinstance(reservation_id, str) or not reservation_id:
+        return True
+    try:
+        with get_session(config) as session:
+            result = session.execute(
+                text(
+                    "UPDATE budget_reservations SET status = 'released', "
+                    "settled_usd = 0, settled_at = :now "
+                    "WHERE id = :rid AND status = 'active'"
+                ),
+                {
+                    "rid": reservation_id,
+                    "now": now or datetime.now(UTC),
+                },
+            )
+            return result.rowcount == 1
+    except Exception as exc:
+        logger.warning(
+            "budget_reservation_release_failed",
+            reservation_id=reservation_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+
+
+def retain_budget_reservation(
+    reservation_id: str | None,
+    config: dict,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Settle an ambiguous call at its estimate: the provider may have charged.
+
+    Keeps the reserved amount counted as a settled actual instead of releasing
+    it, so a paid-but-unparseable 2xx response can never undercount the cap.
+    Works even when the reservation expired mid-call.
+    """
+    if not isinstance(reservation_id, str) or not reservation_id:
+        return True
+    try:
+        with get_session(config) as session:
+            result = session.execute(
+                text(
+                    "UPDATE budget_reservations SET status = 'settled', "
+                    "settled_usd = estimated_usd, settled_at = :now "
+                    "WHERE id = :rid AND status IN ('active', 'expired')"
+                ),
+                {
+                    "rid": reservation_id,
+                    "now": now or datetime.now(UTC),
+                },
+            )
+            return result.rowcount == 1
+    except Exception as exc:
+        logger.warning(
+            "budget_reservation_retain_failed",
+            reservation_id=reservation_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+
+
+def expire_abandoned_reservations(
+    config: dict, *, now: datetime | None = None
+) -> int:
+    """Sweep reservations whose TTL lapsed while still active.
+
+    Expired reservations are already excluded from admission by the active-sum
+    query, so this is bookkeeping that releases their estimates explicitly and
+    retains the expired provenance. Never raises: failures are logged.
+    """
+    try:
+        with get_session(config) as session:
+            result = session.execute(
+                text(
+                    "UPDATE budget_reservations SET status = 'expired' "
+                    "WHERE status = 'active' AND expires_at <= :now"
+                ),
+                {"now": now or datetime.now(UTC)},
+            )
+            return result.rowcount
+    except Exception as exc:
+        logger.warning(
+            "budget_reservation_expiry_failed",
+            error_type=type(exc).__name__,
+        )
+        return 0

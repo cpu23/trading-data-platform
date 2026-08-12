@@ -28,9 +28,8 @@ def llm_config(processor_id: str) -> dict:
             "structured_response": {processor_id: True},
             "stage_timeout_seconds": 90,
             "validation_retries": 1,
-            "max_retries": 1,
         },
-        "budgets": {"daily_llm_usd": 0},
+        "budgets": {"daily_llm_usd": 2.0},
         "watchlist": {"trading": []},
     }
 
@@ -46,6 +45,19 @@ def response(content: str, tokens_input: int, tokens_output: int, cost: float) -
 
 
 class ProcessorLLMPersistenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Budget reservations need a live DB; stub the quota reservation so
+        # the LLM stage admits calls under the positive test cap without one.
+        cls._budget_patch = patch(
+            "budgets._reserve_budget_quota", return_value="reservation-1"
+        )
+        cls._budget_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._budget_patch.stop()
+
     def _successful_processor_result(self, *, processing_log=None, extra_records=None):
         return {
             "opinion": {"opinion_id": "11111111-1111-1111-1111-111111111111"},

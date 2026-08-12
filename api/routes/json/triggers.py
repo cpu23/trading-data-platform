@@ -10,19 +10,23 @@ from budgets import (
     mark_override_dispatch_failed,
     register_manual_override,
 )
+from config import orchestrator_url
 from contracts import RunAcceptanceRequest, RunAcceptedResponse
+from contracts.runtime_config import (
+    KNOWN_COLLECTORS,
+    KNOWN_NEWS_SOURCES,
+    KNOWN_PROCESSORS,
+)
 from logging_config import get_logger
 
 router = APIRouter()
 logger = get_logger("api.triggers")
 
-ORCHESTRATOR_URL = "http://orchestrator:8000"
-
-# Component ID registries — keep in sync with orchestrator/collectors/__init__.py
-# and orchestrator/processors/__init__.py
-_VALID_COLLECTORS = frozenset({"fred", "forex_factory", "oanda"})
-_VALID_PROCESSORS = frozenset({"macro_regime", "event_impact", "briefing"})
-_VALID_NEWS_SOURCES = frozenset({"reuters", "kobeissi"})
+# Executable component registries — single source of truth shared with the
+# configuration models (contracts.runtime_config).
+_VALID_COLLECTORS = KNOWN_COLLECTORS
+_VALID_PROCESSORS = KNOWN_PROCESSORS
+_VALID_NEWS_SOURCES = KNOWN_NEWS_SOURCES
 
 
 def _internal_basic_auth() -> httpx.BasicAuth:
@@ -46,19 +50,58 @@ def _orchestrator_job_payload(
     return accepted.model_dump(mode="json", exclude_none=True)
 
 
+def _definitively_unspent_error(exc: BaseException) -> bool:
+    """True only when the orchestrator provably never accepted the dispatch.
+
+    Connect failures (pre-send) are definitive; read/write/protocol/deadline
+    errors can occur after the orchestrator durably accepted the run, so they
+    must not revoke a registered override — the worker will consume it (or it
+    expires) and the operator can recover via the returned correlation id.
+    """
+    if isinstance(exc, httpx.ConnectError):
+        return True
+    return isinstance(exc, httpx.ConnectTimeout)
+
+
+_DEFINITIVE_REJECTION_STATUSES = frozenset({400, 404, 409, 422})
+
+
+def _definitively_rejected_status(status_code: int) -> bool:
+    """Validated client-error statuses whose endpoint contract guarantees no enqueue.
+
+    A 4xx the orchestrator validates BEFORE durable acceptance (unknown
+    component, malformed body, duplicate/conflicting correlation) proves the
+    override was never consumed, so revoking it is safe. 5xx responses and
+    502 response-contract failures can follow a committed acceptance, so they
+    must leave the override active for worker consumption.
+    """
+    return status_code in _DEFINITIVE_REJECTION_STATUSES
+
+
 def _manual_override(
     body: dict | RunAcceptanceRequest | None, request: Request
 ) -> dict | None:
     if hasattr(body, "model_dump"):
         body = body.model_dump()
-    if not isinstance(body, dict) or body.get("budget_override") is not True:
+    if not isinstance(body, dict) or "budget_override" not in body:
+        return None
+    if not isinstance(body["budget_override"], bool):
+        raise HTTPException(
+            status_code=422, detail="budget_override must be a boolean"
+        )
+    if body["budget_override"] is not True:
         return None
 
-    reason = str(body.get("override_reason", "")).strip()
-    if not reason:
+    reason = body.get("override_reason")
+    if not isinstance(reason, str):
+        raise HTTPException(
+            status_code=422, detail="override_reason must be a string"
+        )
+    reason = reason.strip()
+    if not 1 <= len(reason) <= 500:
         raise HTTPException(
             status_code=422,
-            detail="override_reason is required when budget_override is true",
+            detail="override_reason must be between 1 and 500 characters",
         )
 
     client_host = request.client.host if request.client else "unknown"
@@ -70,7 +113,21 @@ def _manual_override(
 
 def _enforce_api_budget(override: dict | None) -> dict:
     budget = get_budget_status()
-    if not budget.get("paid_calls_allowed", True) and override is None:
+    # Fail closed: a missing, malformed, or unavailable budget status never
+    # defaults to "allowed". Only an explicit manual override may proceed when
+    # the budget cannot be determined (the orchestrator honors it at claim).
+    if not isinstance(budget, dict) or budget.get("available") is not True:
+        if override is None:
+            logger.warning(
+                "paid_trigger_budget_unavailable",
+                status=budget.get("status") if isinstance(budget, dict) else None,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Daily LLM budget status unavailable",
+            )
+        return budget
+    if not budget.get("paid_calls_allowed", False) and override is None:
         logger.warning(
             "paid_trigger_budget_denied",
             today_cost_usd=budget.get("today_cost_usd"),
@@ -94,15 +151,20 @@ def _enforce_api_budget(override: dict | None) -> dict:
 
 
 async def _post_to_orchestrator(request: Request, url: str, **kwargs) -> httpx.Response:
-    """Use the shared app client when available; fall back to a new client for direct calls."""
+    """Send through the shared app client; capability is checked before send.
+
+    A POST is sent at most once: if the shared client is missing or unusable
+    the call fails closed with 503 instead of re-sending on a fallback client.
+    """
+    client = getattr(request.app.state, "orchestrator_client", None)
+    if client is None:
+        logger.error("orchestrator_client_unavailable", action="orchestrator_post")
+        raise HTTPException(status_code=503, detail="Orchestrator client unavailable")
     try:
-        client = request.app.state.orchestrator_client
         return await client.post(url, **kwargs)
     except (AttributeError, TypeError):
-        # AttributeError: no shared client (direct endpoint calls)
-        # TypeError: shared client is a plain Mock (budget tests)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            return await client.post(url, **kwargs)
+        logger.error("orchestrator_client_unusable", action="orchestrator_post")
+        raise HTTPException(status_code=503, detail="Orchestrator client unavailable")
 
 
 @router.post(
@@ -118,7 +180,7 @@ async def trigger_collect(source_id: str, request: Request):
     try:
         response = await _post_to_orchestrator(
             request,
-            f"{ORCHESTRATOR_URL}/run_collector/{source_id}",
+            f"{orchestrator_url()}/run_collector/{source_id}",
             json={"correlation_id": correlation_id},
             timeout=10.0,
             auth=_internal_basic_auth(),
@@ -168,26 +230,36 @@ async def trigger_process(
     try:
         response = await _post_to_orchestrator(
             request,
-            f"{ORCHESTRATOR_URL}/run_processor/{processor_id}",
+            f"{orchestrator_url()}/run_processor/{processor_id}",
             json={"correlation_id": correlation_id},
             timeout=10.0,
             auth=_internal_basic_auth(),
         )
     except httpx.TransportError as exc:
-        if override:
+        if override and _definitively_unspent_error(exc):
             mark_override_dispatch_failed(correlation_id, str(exc))
         logger.error("orchestrator_connect_failed", error=str(exc))
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Orchestrator unavailable",
+                "correlation_id": correlation_id,
+            },
+        )
 
     if response.status_code != 202:
-        if override:
+        if override and _definitively_rejected_status(response.status_code):
             mark_override_dispatch_failed(
                 correlation_id,
                 f"orchestrator returned HTTP {response.status_code}",
             )
         logger.error("orchestrator_unexpected_response", status=response.status_code)
         raise HTTPException(
-            status_code=502, detail="Orchestrator returned unexpected response"
+            status_code=502,
+            detail={
+                "message": "Orchestrator returned unexpected response",
+                "correlation_id": correlation_id,
+            },
         )
 
     payload = _orchestrator_job_payload(response, correlation_id, now)
@@ -211,7 +283,7 @@ async def trigger_news(source_id: str, request: Request):
     try:
         response = await _post_to_orchestrator(
             request,
-            f"{ORCHESTRATOR_URL}/run_news/{source_id}",
+            f"{orchestrator_url()}/run_news/{source_id}",
             json={"correlation_id": correlation_id},
             timeout=10.0,
             auth=_internal_basic_auth(),
@@ -288,7 +360,7 @@ async def trigger_cycle(
     try:
         response = await _post_to_orchestrator(
             request,
-            f"{ORCHESTRATOR_URL}/run_cycle",
+            f"{orchestrator_url()}/run_cycle",
             json={
                 "correlation_id": correlation_id,
                 "mode": mode,
@@ -298,15 +370,31 @@ async def trigger_cycle(
             auth=auth,
         )
     except httpx.TransportError as exc:
-        if override:
+        if override and _definitively_unspent_error(exc):
             mark_override_dispatch_failed(correlation_id, str(exc))
         logger.error("orchestrator_connect_failed", error=str(exc))
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Orchestrator unavailable",
+                "correlation_id": correlation_id,
+            },
+        )
 
     if response.status_code in {409, 422, 503}:
-        if override:
+        if override and _definitively_rejected_status(response.status_code):
             mark_override_dispatch_failed(
                 correlation_id, f"orchestrator returned HTTP {response.status_code}"
+            )
+        if response.status_code == 503:
+            # Ambiguous: the orchestrator may have committed acceptance before
+            # failing; keep the override live and give the operator recovery.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Cycle request rejected by orchestrator",
+                    "correlation_id": correlation_id,
+                },
             )
         fallback = (
             "Cycle already running"
@@ -319,13 +407,17 @@ async def trigger_cycle(
         )
 
     if response.status_code != 202:
-        if override:
+        if override and _definitively_rejected_status(response.status_code):
             mark_override_dispatch_failed(
                 correlation_id, f"orchestrator returned HTTP {response.status_code}"
             )
         logger.error("orchestrator_unexpected_response", status=response.status_code)
         raise HTTPException(
-            status_code=502, detail="Orchestrator returned unexpected response"
+            status_code=502,
+            detail={
+                "message": "Orchestrator returned unexpected response",
+                "correlation_id": correlation_id,
+            },
         )
 
     payload = _orchestrator_job_payload(response, correlation_id, now)

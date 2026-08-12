@@ -29,10 +29,35 @@ class ApiBudgetTests(unittest.TestCase):
         exact = budget_status(2.0, 2.0, 80)
         self.assertTrue(exact["exceeded"])
         self.assertFalse(exact["warning"])
-        for cap in (0, -1):
-            status = budget_status(100, cap, 80)
-            self.assertTrue(status["unlimited"])
-            self.assertFalse(status["exceeded"])
+        # A zero cap denies all paid calls; negative caps are malformed.
+        zero = budget_status(0.0, 0, 80)
+        self.assertTrue(zero["exceeded"])
+        self.assertFalse(zero["unlimited"])
+        self.assertFalse(zero["paid_calls_allowed"])
+        with self.assertRaises(ValueError):
+            budget_status(0.0, -1, 80)
+
+    def test_api_status_counts_active_and_settled_reservations(self):
+        config = {"budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80}}
+        with (
+            patch(
+                "budgets.query_one",
+                side_effect=[
+                    {"total_cost": 1.0, "total_tokens": 10},
+                    {"spent_usd": 0.5, "reserved_usd": 0.75},
+                ],
+            ) as query,
+        ):
+            status = get_budget_status(config)
+        self.assertEqual(status["reserved_usd"], 0.75)
+        self.assertEqual(status["unreserved_spend_usd"], 0.5)
+        self.assertEqual(status["committed_usd"], 1.25)
+        self.assertTrue(status["paid_calls_allowed"])
+        admission_sql = query.call_args_list[1].args[0]
+        self.assertIn("status = 'active'", admission_sql)
+        self.assertIn("status = 'settled'", admission_sql)
+        self.assertIn("GREATEST", admission_sql)
+        self.assertIn("LEFT JOIN", admission_sql)
 
     def test_api_reports_lookup_failure_as_unavailable_not_zero(self):
         config = {"budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80}}
@@ -60,7 +85,7 @@ class ApiBudgetTests(unittest.TestCase):
             self.assertNotIn("secret", str(status).lower())
 
     def test_invalid_cap_is_reported_unavailable_and_never_unlimited(self):
-        for cap in ("bad", None, math.nan, math.inf, -math.inf, True):
+        for cap in ("bad", None, math.nan, math.inf, -math.inf, True, -1, -0.01):
             with (
                 self.subTest(cap=cap),
                 patch("budgets.get_today_spend", return_value=(0, 0)),

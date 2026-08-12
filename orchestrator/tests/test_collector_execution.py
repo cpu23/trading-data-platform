@@ -23,6 +23,36 @@ class CollectorErrorMetadataTests(unittest.TestCase):
         self.assertEqual(result["error_class"], "transient_source")
         self.assertTrue(result["retryable"])
 
+    def test_generic_failure_never_persists_or_logs_raw_exception_text(self):
+        secret = "RAW_SECRET_abc123_bearer_token"
+        collector = MagicMock()
+        collector.collect.side_effect = RuntimeError(
+            f"provider rejected token={secret}"
+        )
+        written = {}
+
+        def capture(**kwargs):
+            written.update(kwargs)
+
+        with (
+            patch.object(runtime, "get_collector", return_value=collector),
+            patch.object(runtime, "_write_collection_log", side_effect=capture),
+            patch.object(runtime, "logger") as logger,
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            result = runtime._run_collector_impl("fred", {}, "correlation-id", False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_class"], "error")
+        self.assertNotIn(secret, str(result["error"]))
+        self.assertNotIn(secret, str(written.get("error_message")))
+        self.assertIsNone(written.get("error_traceback"))
+        for call in logger.error.call_args_list:
+            self.assertNotIn(secret, str(call))
+        self.assertEqual(
+            logger.error.call_args.kwargs["error_type"], "RuntimeError"
+        )
+
     def test_persistence_failure_is_retryable_and_explicit(self):
         collector = MagicMock()
         collector.collect.return_value = [{"series_id": "GDP"}]

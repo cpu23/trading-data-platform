@@ -23,30 +23,26 @@ class SequenceClock:
         return next(self._values)
 
 
+@patch("budgets._reserve_budget_quota", return_value="reservation-1")
 class LLMRequestPolicyTests(unittest.TestCase):
     def setUp(self):
         self.config = {
             "llm": {
                 "provider": "openrouter",
                 "api_key": "not-a-real-key",
-                "default_model": "provider/default",
-                "models": {
-                    "macro_regime": "provider/macro",
-                    "briefing": "provider/briefing",
-                },
+                "models": {"default": "provider/default"},
                 "max_output_tokens": {"macro_regime": 1800, "briefing": 2600},
                 "temperatures": {"macro_regime": 0.1, "briefing": 0.3},
                 "structured_response": {"macro_regime": True, "briefing": True},
                 "max_prices": {"briefing": {"completion": 3.5}},
                 "stage_timeout_seconds": 90,
                 "validation_retries": 1,
-                "max_retries": 1,
             },
-            "budgets": {"daily_llm_usd": 0},
+            "budgets": {"daily_llm_usd": 2.0},
         }
 
     @patch("llm_client.make_request")
-    def test_macro_request_uses_its_bounded_structured_policy(self, make_request):
+    def test_macro_request_uses_its_bounded_structured_policy(self, make_request, _reserve):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
@@ -58,7 +54,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
         call_llm("schema instructions", processor_id="macro_regime", config=self.config)
 
         request = make_request.call_args.kwargs
-        self.assertEqual(request["json_body"]["model"], "provider/macro")
+        self.assertEqual(request["json_body"]["model"], "provider/default")
         self.assertEqual(request["json_body"]["max_tokens"], 1800)
         self.assertEqual(request["json_body"]["temperature"], 0.1)
         self.assertEqual(
@@ -66,10 +62,11 @@ class LLMRequestPolicyTests(unittest.TestCase):
         )
         self.assertEqual(request["timeout"], 90.0)
         self.assertEqual(request["max_retries"], 1)
+        self.assertNotIn("idempotency_key", request)
         self.assertEqual(request["json_body"]["provider"], {"require_parameters": True})
 
     @patch("llm_client.make_request")
-    def test_json_schema_requires_a_supporting_provider(self, make_request):
+    def test_json_schema_requires_a_supporting_provider(self, make_request, _reserve):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
@@ -105,14 +102,13 @@ class LLMRequestPolicyTests(unittest.TestCase):
         )
 
     @patch("llm_client.make_request")
-    def test_stage_can_disable_openrouter_parameter_filtering(self, make_request):
+    def test_stage_can_disable_openrouter_parameter_filtering(self, make_request, _reserve):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
             "usage": {},
         }
         make_request.return_value = response
-        self.config["llm"]["models"]["investment_analysis"] = "openai/luna"
         self.config["llm"]["structured_response"]["investment_analysis"] = True
         self.config["llm"]["require_parameters"] = {
             "investment_analysis": False,
@@ -150,7 +146,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
         )
 
     @patch("llm_client.make_request")
-    def test_briefing_uses_its_own_larger_bounded_policy(self, make_request):
+    def test_briefing_uses_its_own_larger_bounded_policy(self, make_request, _reserve):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
@@ -161,7 +157,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
         call_llm("exact JSON shape", processor_id="briefing", config=self.config)
 
         body = make_request.call_args.kwargs["json_body"]
-        self.assertEqual(body["model"], "provider/briefing")
+        self.assertEqual(body["model"], "provider/default")
         self.assertEqual(body["max_tokens"], 2600)
         self.assertEqual(body["temperature"], 0.3)
         self.assertEqual(
@@ -169,7 +165,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
             {"require_parameters": True, "max_price": {"completion": 3.5}},
         )
 
-    def test_unknown_processor_uses_explicit_bounded_defaults(self):
+    def test_unknown_processor_uses_explicit_bounded_defaults(self, _reserve):
         policy = resolve_request_policy(self.config, "new_processor")
 
         self.assertEqual(policy.model, "provider/default")
@@ -179,7 +175,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
         self.assertEqual(policy.validation_retries, 1)
 
     @patch("llm_client.make_request")
-    def test_unsupported_structured_response_is_not_sent(self, make_request):
+    def test_unsupported_structured_response_is_not_sent(self, make_request, _reserve):
         self.config["llm"]["structured_response"]["macro_regime"] = False
         response = Mock()
         response.json.return_value = {
@@ -193,7 +189,7 @@ class LLMRequestPolicyTests(unittest.TestCase):
         self.assertNotIn("response_format", make_request.call_args.kwargs["json_body"])
 
     @patch("llm_client.make_request")
-    def test_malformed_usage_is_sanitized_to_finite_zeroes(self, make_request):
+    def test_malformed_usage_is_sanitized_to_finite_zeroes(self, make_request, _reserve):
         response = Mock()
         response.json.side_effect = [
             {
@@ -221,32 +217,31 @@ class LLMRequestPolicyTests(unittest.TestCase):
             self.assertEqual(result["tokens_output"], 0)
             self.assertEqual(result["cost_usd"], 0.0)
 
-    def test_invalid_unbounded_config_fails_closed(self):
+    def test_invalid_unbounded_config_fails_closed(self, _reserve):
         self.config["llm"]["max_output_tokens"]["briefing"] = 0
         with self.assertRaisesRegex(ValueError, "max_output_tokens"):
             resolve_request_policy(self.config, "briefing")
 
 
+@patch("budgets._reserve_budget_quota", return_value="reservation-1")
 class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
     def setUp(self):
         self.config = {
             "llm": {
                 "api_key": "not-a-real-key",
-                "default_model": "provider/default",
-                "models": {"briefing": "provider/briefing"},
+                "models": {"default": "provider/default"},
                 "max_output_tokens": {"briefing": 2600},
                 "temperatures": {"briefing": 0.2},
                 "structured_response": {"briefing": True},
                 "stage_timeout_seconds": 90,
                 "validation_retries": 1,
-                "max_retries": 1,
             },
-            "budgets": {"daily_llm_usd": 0},
+            "budgets": {"daily_llm_usd": 2.0},
         }
 
     @patch("llm_client.call_llm")
     def test_retry_uses_remaining_stage_budget_and_records_distinct_attempts(
-        self, call
+        self, call, _reserve
     ):
         call.side_effect = [
             {
@@ -282,7 +277,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(
             stage.telemetry.validation_warnings, ["watchlist_notes missing UK100"]
         )
-        self.assertEqual(stage.telemetry.model, "provider/briefing")
+        self.assertEqual(stage.telemetry.model, "provider/default")
         self.assertEqual(stage.telemetry.max_output_tokens, 2600)
         self.assertEqual(stage.telemetry.tokens_input_total, 24)
         self.assertEqual(stage.telemetry.tokens_output_total, 12)
@@ -291,7 +286,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("content", stage.telemetry.as_dict())
 
     @patch("llm_client.call_llm")
-    def test_exhausted_budget_raises_typed_timeout_without_retry_request(self, call):
+    def test_exhausted_budget_raises_typed_timeout_without_retry_request(self, call, _reserve):
         call.return_value = {"content": "bad", "duration_ms": 89999}
         stage = LLMStage(
             self.config, "briefing", clock=SequenceClock(0, 0, 0, 89.999, 90)
@@ -307,7 +302,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("bad", str(raised.exception))
 
     @patch("llm_client.call_llm")
-    def test_first_http_attempt_cannot_complete_past_stage_deadline(self, call):
+    def test_first_http_attempt_cannot_complete_past_stage_deadline(self, call, _reserve):
         call.return_value = {"content": "{}", "duration_ms": 91000}
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 91))
 
@@ -319,7 +314,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(raised.exception.telemetry.first_attempt_duration_ms, 91000)
 
     @patch("llm_client.call_llm")
-    def test_first_valid_response_is_one_attempt_with_no_retry_duration(self, call):
+    def test_first_valid_response_is_one_attempt_with_no_retry_duration(self, call, _reserve):
         call.return_value = {"content": "{}", "duration_ms": 12}
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 0.012))
 
@@ -329,7 +324,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(stage.telemetry.first_attempt_duration_ms, 12)
         self.assertIsNone(stage.telemetry.validation_retry_duration_ms)
 
-    def test_validation_warning_telemetry_is_bounded(self):
+    def test_validation_warning_telemetry_is_bounded(self, _reserve):
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0))
         stage.add_validation_warnings(["x" * 1000] * 20)
 
@@ -339,7 +334,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         )
 
     @patch("llm_client.call_llm", side_effect=RuntimeError("raw-provider-secret"))
-    def test_failed_http_attempt_is_counted_without_leaking_provider_error(self, call):
+    def test_failed_http_attempt_is_counted_without_leaking_provider_error(self, call, _reserve):
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 0.025))
 
         with self.assertRaises(LLMStageFailure) as raised:
@@ -351,7 +346,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("secret", str(raised.exception))
 
     @patch("llm_client.call_llm", side_effect=RuntimeError("raw-provider-secret"))
-    def test_provider_error_completed_at_deadline_is_typed_timeout(self, call):
+    def test_provider_error_completed_at_deadline_is_typed_timeout(self, call, _reserve):
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 90))
 
         with self.assertRaises(LLMStageTimeout) as raised:
@@ -362,7 +357,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(raised.exception.telemetry.first_attempt_duration_ms, 90000)
         self.assertNotIn("secret", str(raised.exception))
 
-    def test_processor_failure_processing_log_keeps_safe_attempt_telemetry(self):
+    def test_processor_failure_processing_log_keeps_safe_attempt_telemetry(self, _reserve):
         from orchestrator import _run_processor_impl
 
         telemetry = LLMAttemptTelemetry(

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import httpx
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -21,6 +22,47 @@ from staleness import get_staleness_config, is_stale
 router = APIRouter()
 
 logger = get_logger("system.health")
+
+def _safe_config_version() -> str | None:
+    try:
+        return app_config.config_version()
+    except Exception:
+        return None
+
+
+
+def _dependency_unready_response(
+    *,
+    component: str,
+    reason: str,
+    data_health: str = "unknown",
+) -> JSONResponse:
+    """Return a contract-valid, redacted readiness failure."""
+    payload = SystemHealthResponse.model_validate(
+        {
+            "liveness": "ok",
+            "readiness": "unready",
+            "data_health": data_health,
+            "overall": "degraded",
+            "components": [
+                {
+                    "name": component,
+                    "kind": "service",
+                    "last_status": "error",
+                    "stale": True,
+                    "quality_warn": False,
+                    "error_message": reason,
+                }
+            ],
+            "today_llm_cost_usd": 0.0,
+            "today_token_count": 0,
+            "quality": {"overall": "unknown", "checks": []},
+            "config_version": _safe_config_version(),
+        }
+    )
+    return JSONResponse(status_code=503, content=payload.model_dump(mode="json"))
+
+
 
 
 def _load_local_health_data():
@@ -70,7 +112,6 @@ def _fmt(value):
 
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(request: Request):
-    # ── DB queries (wrapped — failure → readiness "unready", HTTP 503) ──
     try:
         (
             config,
@@ -79,153 +120,127 @@ async def get_system_health(request: Request):
             processor_rows,
             cost_rows,
         ) = await run_in_threadpool(_load_local_health_data)
-    except Exception:
-        logger.error("db_unavailable")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "liveness": "ok",
-                "readiness": "unready",
-                "data_health": "degraded",
-                "components": [],
-                "today_llm_cost_usd": 0.0,
-                "today_token_count": 0,
-                "quality": {},
-                "error": "Database unavailable",
-            },
+    except Exception as exc:
+        logger.warning(
+            "system_health_database_unavailable",
+            error_type=type(exc).__name__,
+        )
+        return _dependency_unready_response(
+            component="database",
+            reason="database dependency unavailable",
+            data_health="degraded",
         )
 
-    today_cost = 0.0
-    today_tokens = 0
-    if cost_rows:
-        today_cost = float(cost_rows[0].get("total_cost", 0) or 0)
-        today_tokens = int(cost_rows[0].get("total_tokens", 0) or 0)
+    today_cost = float(cost_rows[0].get("total_cost") or 0) if cost_rows else 0.0
+    today_tokens = int(cost_rows[0].get("total_tokens") or 0) if cost_rows else 0
 
-    components = []
-    schedule_map = {}
-    stream_info = {}
-
-    # ── Initialize quality_warn_map BEFORE using it ──
-    quality = {}
-    quality_warn_map = {}
-    contract_error: str | None = None
-
-    # ── Fetch and validate the orchestrator snapshot once ──
     try:
         health_response = await request.app.state.orchestrator_client.get(
-            "http://orchestrator:8000/health",
+            f"{app_config.orchestrator_url()}/health",
             timeout=5.0,
         )
         health_response.raise_for_status()
-        orchestration_model = OrchestratorHealthResponse.model_validate(
+        health_model = OrchestratorHealthResponse.model_validate(
             health_response.json()
         )
-        if orchestration_model.readiness == "unready":
-            raise ValueError(
-                f"orchestrator is not ready ({orchestration_model.readiness})"
-            )
-        orchestration = orchestration_model.model_dump(mode="python")
-        if orchestration_model.quality is None:
-            raise ValueError("invalid orchestrator quality contract: missing quality")
-        quality = orchestration_model.quality.model_dump(mode="python")
-    except ValidationError as exc:
-        quality_invalid = any(
-            error.get("loc") and error["loc"][0] == "quality"
-            for error in exc.errors(include_url=False, include_context=False)
+        if health_model.readiness != "ready":
+            raise ValueError("orchestrator is not ready")
+        if health_model.quality is None:
+            raise ValueError("orchestrator quality snapshot is missing")
+    except ValidationError:
+        logger.warning("orchestrator_health_contract_invalid")
+        return _dependency_unready_response(
+            component="orchestrator",
+            reason="invalid orchestrator health contract",
         )
-        contract_error = (
-            "invalid orchestrator quality contract"
-            if quality_invalid
-            else "invalid orchestrator health contract"
-        )
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
         logger.warning(
-            "orchestrator_contract_unavailable",
-            error=contract_error,
-            validation_error_count=exc.error_count(),
+            "orchestrator_health_unavailable",
+            error_type=type(exc).__name__,
         )
-    except Exception as exc:
-        contract_error = str(exc) or type(exc).__name__
-        logger.warning(
-            "orchestrator_contract_unavailable",
-            error=contract_error,
-            exception_type=type(exc).__name__,
-        )
-    if contract_error is not None:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "liveness": "ok",
-                "readiness": "unready",
-                "data_health": "degraded",
-                "overall": "degraded",
-                "components": [
-                    {
-                        "name": "orchestrator",
-                        "kind": "service",
-                        "last_run_at": None,
-                        "last_status": "error",
-                        "next_due_at": None,
-                        "stale": True,
-                        "quality_warn": False,
-                        "error_message": contract_error,
-                    },
-                    {
-                        "name": "live_prices",
-                        "kind": "stream",
-                        "last_run_at": None,
-                        "last_status": "unknown",
-                        "next_due_at": None,
-                        "stale": True,
-                        "quality_warn": False,
-                        "error_message": "orchestrator unavailable",
-                    },
-                ],
-                "today_llm_cost_usd": round(today_cost, 4),
-                "today_token_count": today_tokens,
-                "quality": {},
-            },
+        return _dependency_unready_response(
+            component="orchestrator",
+            reason="orchestrator dependency unavailable",
         )
 
+    health = health_model.model_dump(mode="python")
+    quality = health_model.quality.model_dump(mode="python")
+    schedule = health.get("scheduler") or {}
     schedule_map = {
         job["id"].split(":", 1)[-1]: job.get("next_due_at")
-        for job in orchestration.get("scheduler", {}).get("jobs", [])
+        for job in schedule.get("jobs", [])
     }
-    stream_info = orchestration.get("stream", {})
+    stream_info = health.get("stream") or {}
 
+    components = []
+    status_map = {
+        "available": "running",
+        "degraded": "degraded",
+        "unavailable": "error",
+    }
+    for component in health.get("components", []):
+        status = status_map[component["status"]]
+        components.append(
+            {
+                "name": component["name"],
+                "kind": component.get("kind") or "service",
+                "last_run_at": None,
+                "last_status": status,
+                "next_due_at": None,
+                "stale": status != "running",
+                "quality_warn": component.get("kind") == "data"
+                and status != "running",
+                "error_message": component.get("reason"),
+            }
+        )
+
+    quality_warn_map: dict[str, bool] = {}
     raw_checks = quality["checks"]
-    checks_iter = (
-        raw_checks.items()
-        if isinstance(raw_checks, dict)
-        else (
-            (check.get("name", f"check_{index}"), check)
+    if isinstance(raw_checks, dict):
+        checks_iter = raw_checks.items()
+    else:
+        checks_iter = (
+            (str(check.get("name") or f"check_{index}"), check)
             for index, check in enumerate(raw_checks)
         )
-    )
+
     unhealthy_checks = []
-    invalid_states = {"unhealthy", "stale", "future-invalid", "future_invalid"}
     for check_id, check_data in checks_iter:
-        status = str(check_data.get("status", check_data.get("freshness", ""))).lower()
-        unhealthy = not check_data.get("healthy", True) or status in invalid_states
+        status = str(
+            check_data.get("status", check_data.get("freshness", ""))
+        ).lower()
+        unhealthy = not check_data["healthy"] or status in {
+            "unhealthy",
+            "stale",
+            "future-invalid",
+            "future_invalid",
+        }
         if unhealthy:
             unhealthy_checks.append((check_id, check_data))
-            source_id = check_data.get("source_id", "")
+            source_id = check_data.get("source_id")
             if source_id:
                 quality_warn_map[source_id] = True
 
-    quality_degraded = quality.get("overall") != "healthy" or bool(unhealthy_checks)
+    if quality["overall"] == "healthy" and not raw_checks:
+        quality["overall"] = "unknown"
 
-    # ── Add live_prices stream component AFTER quality_warn_map is populated ──
-    stream_stale = True
-    if stream_info:
-        stream_stale = stream_info.get("status") not in ("connected", "simulated")
+    oanda = config.get("collectors", {}).get("oanda", {})
+    stream_required = bool(config.get("demo", {}).get("enabled", False)) or bool(
+        oanda.get("enabled", False) and oanda.get("stream_enabled", False)
+    )
+    stream_status = stream_info.get(
+        "status", "stopped" if stream_required else "disabled"
+    )
+    stream_stale = stream_required and stream_status not in {
+        "connected",
+        "simulated",
+    }
     components.append(
         {
             "name": "live_prices",
             "kind": "stream",
-            "last_run_at": stream_info.get("last_heartbeat") if stream_info else None,
-            "last_status": stream_info.get("status", "stopped")
-            if stream_info
-            else "unknown",
+            "last_run_at": stream_info.get("last_heartbeat"),
+            "last_status": stream_status,
             "next_due_at": None,
             "stale": stream_stale,
             "quality_warn": quality_warn_map.get("live_prices", False),
@@ -233,13 +248,16 @@ async def get_system_health(request: Request):
         }
     )
 
+    quality_degraded = quality["overall"] in {"degraded", "unhealthy"} or bool(
+        unhealthy_checks
+    )
     if quality_degraded:
         reasons = [
-            f"{check_id}: {check.get('detail', check.get('status', 'unhealthy'))}"
+            f"{check_id}: {check.get('detail') or 'unhealthy'}"
             for check_id, check in unhealthy_checks
         ]
         if not reasons:
-            reasons = [f"orchestrator quality overall is {quality.get('overall')}"]
+            reasons = [f"orchestrator quality overall is {quality['overall']}"]
         components.append(
             {
                 "name": "quality_checks",
@@ -253,34 +271,12 @@ async def get_system_health(request: Request):
             }
         )
 
-    # ── Build collector/processor components ──
-    enabled_collectors = config.get("collectors", {})
-    collector_map = {r["collector"]: r for r in collector_rows}
-
-    for source_id, coll_config in enabled_collectors.items():
-        if not coll_config.get("enabled", True):
+    collector_map = {row["collector"]: row for row in collector_rows}
+    for source_id, collector_config in config.get("collectors", {}).items():
+        if not collector_config.get("enabled", True):
             continue
         row = collector_map.get(source_id)
-        if row:
-            threshold_hours = thresholds.get("macro_hours", 30)
-            if source_id == "forex_factory":
-                threshold_hours = thresholds.get("events_hours", 8)
-            stale, _ = is_stale(row["started_at"], threshold_hours)
-            components.append(
-                {
-                    "name": source_id,
-                    "kind": "collector",
-                    "last_run_at": _fmt(row["started_at"]),
-                    "last_status": row.get("status", "unknown"),
-                    "next_due_at": schedule_map.get(source_id),
-                    "stale": stale,
-                    "quality_warn": quality_warn_map.get(source_id, False),
-                    "error_message": row.get("error_message")
-                    if row.get("status") in ("failed", "partial")
-                    else None,
-                }
-            )
-        else:
+        if row is None:
             components.append(
                 {
                     "name": source_id,
@@ -292,78 +288,117 @@ async def get_system_health(request: Request):
                     "quality_warn": quality_warn_map.get(source_id, False),
                 }
             )
-
-    enabled_processors = config.get("processors", {})
-    processor_map = {r["processor"]: r for r in processor_rows}
-
-    for proc_id, proc_config in enabled_processors.items():
-        if not proc_config.get("enabled", False):
             continue
-        row = processor_map.get(proc_id)
-        if row:
-            threshold_hours = thresholds.get("regime_hours", 18)
-            if proc_id == "briefing":
-                threshold_hours = thresholds.get("briefing_hours", 18)
-            stale, _ = is_stale(row["started_at"], threshold_hours)
+        threshold_hours = thresholds.get("macro_hours", 30)
+        if source_id == "forex_factory":
+            threshold_hours = thresholds.get("events_hours", 8)
+        stale, _ = is_stale(row["started_at"], threshold_hours)
+        components.append(
+            {
+                "name": source_id,
+                "kind": "collector",
+                "last_run_at": _fmt(row["started_at"]),
+                "last_status": row.get("status", "unknown"),
+                "next_due_at": schedule_map.get(source_id),
+                "stale": stale,
+                "quality_warn": quality_warn_map.get(source_id, False),
+                "error_message": (
+                    row.get("error_message")
+                    if row.get("status") in {"failed", "partial"}
+                    else None
+                ),
+            }
+        )
+
+    processor_map = {row["processor"]: row for row in processor_rows}
+    for processor_id, processor_config in config.get("processors", {}).items():
+        if not processor_config.get("enabled", False):
+            continue
+        row = processor_map.get(processor_id)
+        if row is None:
             components.append(
                 {
-                    "name": proc_id,
-                    "kind": "processor",
-                    "last_run_at": _fmt(row["started_at"]),
-                    "last_status": row.get("status", "unknown"),
-                    "next_due_at": schedule_map.get(proc_id),
-                    "stale": stale,
-                    "quality_warn": quality_warn_map.get(proc_id, False),
-                }
-            )
-        else:
-            components.append(
-                {
-                    "name": proc_id,
+                    "name": processor_id,
                     "kind": "processor",
                     "last_run_at": None,
                     "last_status": "never_run",
-                    "next_due_at": schedule_map.get(proc_id),
+                    "next_due_at": schedule_map.get(processor_id),
                     "stale": True,
-                    "quality_warn": quality_warn_map.get(proc_id, False),
+                    "quality_warn": quality_warn_map.get(processor_id, False),
                 }
             )
+            continue
+        threshold_hours = thresholds.get("regime_hours", 18)
+        if processor_id == "briefing":
+            threshold_hours = thresholds.get("briefing_hours", 18)
+        stale, _ = is_stale(row["started_at"], threshold_hours)
+        components.append(
+            {
+                "name": processor_id,
+                "kind": "processor",
+                "last_run_at": _fmt(row["started_at"]),
+                "last_status": row.get("status", "unknown"),
+                "next_due_at": schedule_map.get(processor_id),
+                "stale": stale,
+                "quality_warn": quality_warn_map.get(processor_id, False),
+                "error_message": (
+                    row.get("error_message")
+                    if row.get("status") in {"failed", "partial"}
+                    else None
+                ),
+            }
+        )
 
-    # ── Compute separate liveness/readiness/data_health ──
-    liveness = "ok"
-
-    any_stale = any(c.get("stale") for c in components)
+    any_stale = any(component["stale"] for component in components)
     any_error = any(
-        c.get("last_status") in ("failed", "partial", "error", "never_run", "unknown")
-        for c in components
+        component["last_status"]
+        in {"failed", "partial", "error", "never_run", "unknown", "degraded"}
+        for component in components
     )
-    any_quality_warn = any(c.get("quality_warn") for c in components)
-    has_components = len(components) > 0
-
-    readiness = "degraded" if not has_components or any_stale or any_error else "ready"
-
-    if any_quality_warn or any_stale or not has_components:
+    known_data_failure = (
+        any_stale
+        or any_error
+        or any(component["quality_warn"] for component in components)
+        or health["data_health"] == "degraded"
+    )
+    if known_data_failure:
         data_health = "degraded"
+    elif quality["overall"] == "unknown" or health["data_health"] == "unknown":
+        data_health = "unknown"
     else:
         data_health = "healthy"
 
-    # Keep backward-compatible overall for any consumers
     all_ok = all(
-        not c.get("stale") and c["last_status"] in ("success", "connected", "simulated")
-        for c in components
+        not component["stale"]
+        and component["last_status"]
+        in {
+            "success",
+            "healthy",
+            "connected",
+            "simulated",
+            "running",
+            "disabled",
+        }
+        for component in components
     )
-    overall = "healthy" if all_ok else "degraded"
-
-    return {
-        "liveness": liveness,
-        "readiness": readiness,
+    result = {
+        "liveness": "ok",
+        "readiness": "unready" if stream_stale else "ready",
         "data_health": data_health,
-        "overall": overall,
+        "overall": "healthy" if all_ok and data_health == "healthy" else "degraded",
         "components": components,
         "today_llm_cost_usd": round(today_cost, 4),
         "today_token_count": today_tokens,
         "quality": quality,
+        "config_version": health.get("config_version"),
     }
+    response_model = SystemHealthResponse.model_validate(result)
+    if response_model.readiness == "unready":
+        return JSONResponse(
+            status_code=503,
+            content=response_model.model_dump(mode="json"),
+        )
+    return response_model.model_dump(mode="json")
 
 
 @router.get("/system/budget")

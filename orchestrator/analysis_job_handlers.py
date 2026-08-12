@@ -106,19 +106,13 @@ def _serialise_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _job_settings() -> Mapping[str, Any]:
-    try:
-        config = load_config()
-    except Exception:
-        return {}
+    config = load_config()
     settings = _mapping(_mapping(config).get("event_pipeline")).get("jobs", {})
     return _mapping(settings)
 
 
 def _config() -> Mapping[str, Any]:
-    try:
-        return _mapping(load_config())
-    except Exception:
-        return {}
+    return _mapping(load_config())
 
 
 def _source_health_rows(
@@ -324,6 +318,7 @@ def update_macro_release_reactions(session: Any, job: Any) -> Any:
             key: _json_value(row.get(key))
             for key in (
                 "instrument_symbol",
+                "timeframe",
                 "horizon",
                 "target_at",
                 "observed_at",
@@ -616,6 +611,43 @@ def run_research_case_update_job(session: Any, job: Any) -> dict[str, Any]:
     }
 
 
+def run_investment_analysis_job(session: Any, job: Any) -> dict[str, Any]:
+    """Analyze one ingested investment document through the durable worker.
+
+    ``analyze_document`` opens its own bounded sessions and enforces the
+    daily LLM budget; the durable queue supplies retry/lease semantics and
+    deduplication via the ``investment-analysis:{document_id}`` identity.
+    """
+    from investment_service import (
+        MAX_OCR_PAGES,
+        OCR_WALL_SECONDS,
+        analyze_document,
+    )
+
+    payload = _mapping(_job_value(job, "payload", {}))
+    document_id = str(payload.get("document_id") or "").strip()
+    if not document_id:
+        raise ValueError("investment analysis job requires a document_id")
+    market_inputs = payload.get("market_inputs")
+    if not isinstance(market_inputs, Mapping):
+        market_inputs = None
+    result = analyze_document(
+        dict(_config()),
+        document_id,
+        market_inputs,
+        # The durable worker is not HTTP-bound: allow the full OCR page/wall
+        # budgets for scan-heavy regulatory documents.
+        ocr_page_budget=MAX_OCR_PAGES,
+        ocr_wall_seconds=OCR_WALL_SECONDS,
+    )
+    analysis_id = result.get("analysis_id") if isinstance(result, Mapping) else None
+    return {
+        "status": "completed",
+        "document_id": document_id,
+        "analysis_id": str(analysis_id) if analysis_id else None,
+    }
+
+
 _HANDLERS = {
     "publish_source_health_snapshot": publish_source_health_snapshot,
     "publish_watchlist_snapshot": publish_watchlist_snapshot,
@@ -628,6 +660,7 @@ _HANDLERS = {
     "publish_research_snapshot": publish_research_snapshot,
     "research_discovery": run_research_discovery_job,
     "research_case_update": run_research_case_update_job,
+    "investment_analysis": run_investment_analysis_job,
 }
 
 
@@ -649,9 +682,10 @@ __all__ = [
     "publish_source_health_snapshot",
     "publish_watchlist_snapshot",
     "publish_story_clusters_snapshot",
+    "route_job",
+    "run_investment_analysis_job",
     "run_research_case_update_job",
     "run_research_discovery_job",
-    "route_job",
     "update_macro_release_reactions",
     "update_story_market_confirmation",
 ]

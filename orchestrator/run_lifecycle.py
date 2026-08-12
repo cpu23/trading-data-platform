@@ -143,16 +143,14 @@ def heartbeat_run(
 
 
 def _heartbeat_interval_seconds(config: dict) -> float:
-    jobs = config.get("jobs", {})
-    if not isinstance(jobs, dict):
-        return DEFAULT_HEARTBEAT_INTERVAL_SECONDS
-    try:
-        interval = float(
-            jobs.get("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
-        )
-    except (TypeError, ValueError, OverflowError):
-        return DEFAULT_HEARTBEAT_INTERVAL_SECONDS
-    return interval if interval > 0 else DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    """Fixed run-heartbeat cadence.
+
+    There is no ``jobs`` configuration section; the heartbeat interval is a
+    process constant.  (Durable run heartbeats must outlive lease-based job
+    polling, so they are intentionally not derived from the event-pipeline
+    worker lease.)
+    """
+    return DEFAULT_HEARTBEAT_INTERVAL_SECONDS
 
 
 @contextmanager
@@ -224,6 +222,49 @@ def ensure_run(
     )
     if not start_run(config, correlation_id, f"sync:{uuid4()}"):
         raise RunStartConflict("accepted run could not be started")
+
+
+def _jsonb_expr(session, column: str = "summary") -> str:
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:
+        dialect = "postgresql"
+    return f"CAST(:{column} AS JSONB)" if dialect != "sqlite" else f":{column}"
+
+
+def finish_run_in_session(
+    session,
+    correlation_id: str,
+    result_status: str,
+    summary: dict,
+    error_message: str | None = None,
+    worker_id: str | None = None,
+) -> bool:
+    """Finalize a run row in the caller's transaction (no commit)."""
+    lifecycle_status = "failed" if result_status == "failed" else "completed"
+    allowed_from = (
+        "('running', 'accepted')" if lifecycle_status == "failed" else "('running')"
+    )
+    owner_clause = " AND worker_id = :worker_id" if worker_id is not None else ""
+    result = session.execute(
+        text(
+            "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
+            "summary = " + _jsonb_expr(session) + ", completed_at = :completed_at, "
+            "heartbeat_at = :completed_at, error_message = :error_message "
+            f"WHERE correlation_id = :cid AND status IN {allowed_from}"
+            + owner_clause
+        ),
+        {
+            "cid": correlation_id,
+            "status": lifecycle_status,
+            "result_status": result_status,
+            "summary": json.dumps(summary),
+            "completed_at": datetime.now(UTC),
+            "error_message": error_message,
+            "worker_id": worker_id,
+        },
+    )
+    return result.rowcount == 1
 
 
 def finish_run(

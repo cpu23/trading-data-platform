@@ -38,6 +38,19 @@ class CycleModeSettingsTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertIn(str(status), self.app_js)
 
+    def test_javascript_stops_for_every_durable_terminal_result(self):
+        for status in (
+            "success",
+            "partial",
+            "failed",
+            "validation_failed",
+            "budget_denied",
+            "budget_blocked",
+            "budget_unavailable",
+        ):
+            with self.subTest(status=status):
+                self.assertIn(f"'{status}'", self.app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

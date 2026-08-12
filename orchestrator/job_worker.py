@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import threading
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -48,19 +48,19 @@ class AnalysisJobWorker:
 
     @staticmethod
     def _settings(config: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(config, dict) or not isinstance(
-            config.get("event_pipeline"), dict
+        if not isinstance(config, Mapping) or not isinstance(
+            config.get("event_pipeline"), Mapping
         ):
             return {}
         settings = config["event_pipeline"].get("jobs")
-        return settings if isinstance(settings, dict) else {}
+        return settings if isinstance(settings, Mapping) else {}
 
     def _cfg(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._settings(config if config is not None else self.config)
 
     def _worker_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         worker = settings.get("worker")
-        return worker if isinstance(worker, dict) else {}
+        return worker if isinstance(worker, Mapping) else {}
 
     @staticmethod
     def _batch_size(settings: dict[str, Any], worker: dict[str, Any]) -> int:
@@ -89,7 +89,11 @@ class AnalysisJobWorker:
                 "worker_id"
             )
             if configured_id:
-                self.worker_id = str(configured_id)
+                # A configured id is a shared LABEL, not an identity: append a
+                # process-unique instance uuid so replicas never share
+                # claimed_by (a stale replica must never renew or finalize a
+                # job another replica reclaimed).
+                self.worker_id = f"{configured_id}:{uuid4()}"
             self._stop.clear()
             self._running = True
             self._thread = threading.Thread(
@@ -98,40 +102,47 @@ class AnalysisJobWorker:
             self._thread.start()
         return True
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def request_stop(self) -> None:
+        """Stop claiming after the current poll/job reaches its boundary."""
         self._stop.set()
+
+    def wait_stopped(self, timeout: float | None = None) -> bool:
+        """Wait for an in-flight job to finalize; None means a full drain."""
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(max(0.0, float(timeout)))
+            join_timeout = None if timeout is None else max(0.0, float(timeout))
+            thread.join(join_timeout)
+        stopped = thread is None or not thread.is_alive()
         with self._lock:
-            if thread is None or not thread.is_alive():
+            if stopped:
                 self._thread = None
                 self._running = False
+        return stopped
+
+    def stop(self, timeout: float | None = None) -> bool:
+        self.request_stop()
+        return self.wait_stopped(timeout)
 
     def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.poll_once()
-            except BaseException:
-                self._increment("poll_errors")
-            settings = self._cfg()
-            worker = self._worker_settings(settings)
-            try:
-                interval = max(
-                    0.05,
-                    float(
-                        worker.get(
-                            "poll_seconds",
-                            settings.get(
-                                "poll_seconds",
-                                settings.get("poll_interval_seconds", 2.0),
-                            ),
-                        )
-                    ),
-                )
-            except (TypeError, ValueError):
-                interval = 2.0
-            self._stop.wait(interval)
+        try:
+            while not self._stop.is_set():
+                try:
+                    self.poll_once()
+                except Exception:
+                    self._increment("poll_errors")
+                settings = self._cfg()
+                worker = self._worker_settings(settings)
+                try:
+                    interval = max(
+                        0.05,
+                        float(worker.get("poll_seconds", 1.0)),
+                    )
+                except (TypeError, ValueError):
+                    interval = 1.0
+                self._stop.wait(interval)
+        finally:
+            with self._lock:
+                self._running = False
 
     def _increment(self, key: str, value: int = 1) -> None:
         with self._lock:
@@ -200,7 +211,7 @@ class AnalysisJobWorker:
                         session, job_id, self.worker_id, lease_seconds
                     ):
                         return
-            except BaseException:
+            except Exception:
                 self._increment("poll_errors")
 
     @staticmethod
@@ -267,11 +278,13 @@ class AnalysisJobWorker:
                 ):
                     raise RuntimeError("job lease ownership lost")
             self._increment("succeeded")
-        except BaseException as exc:
+        except Exception as exc:
             self._increment("handler_errors")
             attempts = max(1, int(job.attempt_count))
             retry_cfg = (
-                settings.get("retry") if isinstance(settings.get("retry"), dict) else {}
+                settings.get("retry")
+                if isinstance(settings.get("retry"), Mapping)
+                else {}
             )
             max_attempts = max(1, int(retry_cfg.get("max_attempts", job.max_attempts)))
             if attempts >= max_attempts or attempts >= job.max_attempts:
@@ -279,24 +292,13 @@ class AnalysisJobWorker:
                     with self._session() as session:
                         if terminal_fail_job(session, job.id, self.worker_id, exc):
                             self._increment("failed")
-                except BaseException:
+                except Exception:
                     self._increment("poll_errors")
             else:
-                base = max(
-                    0.0,
-                    float(
-                        retry_cfg.get(
-                            "base_seconds", retry_cfg.get("base_backoff_seconds", 1.0)
-                        )
-                    ),
-                )
+                base = max(0.0, float(retry_cfg.get("base_seconds", 1.0)))
                 cap = max(
                     base,
-                    float(
-                        retry_cfg.get(
-                            "max_seconds", retry_cfg.get("max_backoff_seconds", 300.0)
-                        )
-                    ),
+                    float(retry_cfg.get("max_seconds", 300.0)),
                 )
                 jitter = max(0.0, float(retry_cfg.get("jitter_seconds", 0.25)))
                 delay = min(cap, base * (2 ** max(0, attempts - 1))) + self._random(
@@ -312,7 +314,7 @@ class AnalysisJobWorker:
                             exc,
                         ):
                             self._increment("retried")
-                except BaseException:
+                except Exception:
                     self._increment("poll_errors")
         finally:
             heartbeat_stop.set()
@@ -327,7 +329,7 @@ class AnalysisJobWorker:
             with self._session() as session:
                 query = (
                     settings.get("query")
-                    if isinstance(settings.get("query"), dict)
+                    if isinstance(settings.get("query"), Mapping)
                     else {}
                 )
                 repaired = reconcile_jobs(
@@ -350,23 +352,26 @@ class AnalysisJobWorker:
                 lease = float(
                     settings.get("lease_seconds", worker.get("lease_seconds", 120))
                 )
+                # Sequential worker: claim exactly ONE job per poll so no
+                # unhandled in-memory claim can expire and be reclaimed by
+                # another replica while a long first handler runs.
                 jobs = claim_jobs(
                     session,
                     self.worker_id,
-                    limit=self._batch_size(settings, worker),
+                    limit=1,
                     lease_seconds=max(1.0, lease),
                     job_types=settings.get("job_types")
                     if isinstance(settings.get("job_types"), (list, tuple))
                     else None,
                 )
             self._increment("claimed", len(jobs))
-        except BaseException:
+        except Exception:
             self._increment("poll_errors")
             return self.state_counters()
         for job in jobs:
             try:
                 self._handle(job, settings)
-            except BaseException:
+            except Exception:
                 self._increment("handler_errors")
         with self._lock:
             self._last_poll_at = datetime.now(UTC)

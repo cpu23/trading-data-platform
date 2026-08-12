@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -138,6 +139,33 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         self.assertEqual(worker.poll_once()["claimed"], 0)
         factory.assert_not_called()
 
+    def test_stop_waits_for_inflight_poll_to_reach_job_boundary(self):
+        worker = AnalysisJobWorker(
+            {"event_pipeline": {"jobs": {"enabled": True}}},
+            worker_id="analysis-test",
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_poll():
+            entered.set()
+            release.wait()
+            return {}
+
+        with patch.object(worker, "poll_once", side_effect=blocked_poll):
+            self.assertTrue(worker.start())
+            self.assertTrue(entered.wait(1))
+            stopper = threading.Thread(target=worker.stop)
+            stopper.start()
+            self.assertTrue(worker._stop.wait(1))
+            stopper.join(timeout=0.05)
+            self.assertTrue(stopper.is_alive())
+            release.set()
+            stopper.join(timeout=1)
+
+        self.assertFalse(stopper.is_alive())
+        self.assertFalse(worker.state["running"])
+
     def test_poll_exception_is_bounded_and_does_not_escape(self):
         @contextmanager
         def failing_session(*args):
@@ -152,7 +180,7 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         self.assertEqual(counters["poll_errors"], 1)
         self.assertNotIn("database unavailable", str(counters))
 
-    def test_poll_claims_configured_bounded_batch(self):
+    def test_poll_claims_exactly_one_job(self):
         @contextmanager
         def sessions(*args):
             yield SimpleNamespace()
@@ -175,7 +203,9 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         ):
             worker.poll_once()
 
-        self.assertEqual(claim.call_args.kwargs["limit"], 25)
+        # A sequential worker claims exactly one job per poll so an unhandled
+        # in-memory claim can never expire and be reclaimed by a replica.
+        self.assertEqual(claim.call_args.kwargs["limit"], 1)
 
     def test_heartbeat_renews_the_running_job_lease(self):
         sessions = []
@@ -257,7 +287,6 @@ class AnalysisJobWorkerTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
 
 
-
 class ResearchOperationsTests(unittest.TestCase):
     CONFIG = {"research_intelligence": {"enabled": True}}
 
@@ -316,8 +345,7 @@ class ResearchOperationsTests(unittest.TestCase):
             )
 
         fingerprints = [
-            call.kwargs["input_fingerprint"]
-            for call in enqueue_call.call_args_list
+            call.kwargs["input_fingerprint"] for call in enqueue_call.call_args_list
         ]
         self.assertEqual(fingerprints[0], fingerprints[1])
         self.assertNotEqual(fingerprints[1], fingerprints[2])
@@ -334,9 +362,7 @@ class ResearchOperationsTests(unittest.TestCase):
                 "research_intelligence.operations.start_run",
                 side_effect=RuntimeError("database unavailable"),
             ),
-            patch(
-                "research_intelligence.operations.enqueue_job"
-            ) as enqueue_call,
+            patch("research_intelligence.operations.enqueue_job") as enqueue_call,
             patch(
                 "research_intelligence.operations.finalize_run_safely",
                 return_value=True,
@@ -394,7 +420,9 @@ class ResearchOperationsTests(unittest.TestCase):
 
 
 class ResearchIntelligenceJobTests(unittest.TestCase):
-    def test_discovery_job_runs_macro_and_case_stages_and_returns_observable_counts(self):
+    def test_discovery_job_runs_macro_and_case_stages_and_returns_observable_counts(
+        self,
+    ):
         session = object()
         job = SimpleNamespace(
             job_type="research_discovery",
@@ -402,7 +430,10 @@ class ResearchIntelligenceJobTests(unittest.TestCase):
             correlation_id="correlation",
         )
         with (
-            patch("analysis_job_handlers._config", return_value={"research_intelligence": {}}),
+            patch(
+                "analysis_job_handlers._config",
+                return_value={"research_intelligence": {}},
+            ),
             patch(
                 "research_intelligence.service.run_macro_transmission",
                 return_value={"driver_count": 3, "model_cost_usd": 0.25},
@@ -489,6 +520,7 @@ class ResearchIntelligenceJobTests(unittest.TestCase):
         with patch("analysis_job_handlers._config", return_value={}):
             with self.assertRaisesRegex(ValueError, "requires a case id"):
                 route_job(object(), job)
+
 
 if __name__ == "__main__":
     unittest.main()

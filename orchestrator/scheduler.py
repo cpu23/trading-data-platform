@@ -1,389 +1,188 @@
+"""Schedule loop for durable operation jobs.
+
+The scheduler never executes a run inline: every scheduled fire calls the
+transactional ``accept_and_enqueue_operation`` and returns.  A worker role
+claims the durable job and executes it.  Duplicate logical runs are prevented
+by the operation_jobs active-identity index plus an advisory transaction lock
+keyed by the logical window, so two scheduler processes firing for the same
+window enqueue exactly one job.
+"""
+
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import text
 
-from analysis_jobs import enqueue_job
-from db import get_session
 from logging_config import get_logger
-from orchestrator import (
-    RunAcceptanceConflict,
-    accept_run,
-    aggregate_stage_statuses,
-    finalize_run_safely,
-    maintain_run_heartbeat,
-    run_collector,
-    run_news_source,
-    run_processor,
-    start_run,
-)
+from operation_jobs import accept_and_enqueue_operation
 from schedules import build_cron_trigger
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
 
-
-def _start_scheduled_run(
-    config: dict, correlation_id: str, worker_id: str, run_kind: str, component: str
-) -> bool | None:
-    """Claim an accepted scheduled run, finalizing it when the claim errors."""
-    try:
-        return start_run(config, correlation_id, worker_id)
-    except Exception:
-        reason = "run start unavailable"
-        logger.error(
-            "scheduled_run_start_failed",
-            correlation_id=correlation_id,
-            run_kind=run_kind,
-            component=component,
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {"status": "failed", "reason": reason},
-            config,
-            reason,
-            run_kind=run_kind,
-            component=component,
-        )
-        return None
-
-
 _build_cron_trigger = build_cron_trigger
 
 
-def _scheduled_collector(source_id: str, config: dict) -> None:
+def _window_key(fired_at: datetime) -> str:
+    """Stable logical identity for one scheduled window (UTC minute)."""
+    return fired_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:00")
+
+
+def _enqueue_scheduled_run(
+    config: dict,
+    run_kind: str,
+    component: str | None,
+    *,
+    dedupe_key: str,
+    payload: dict | None = None,
+    priority: int = 100,
+    max_attempts: int = 5,
+) -> None:
     correlation_id = str(uuid4())
-    accept_run(config, correlation_id, "scheduler", "collector", source_id)
-    worker_id = f"scheduler:{uuid4()}"
-    if (
-        _start_scheduled_run(config, correlation_id, worker_id, "collector", source_id)
-        is not True
-    ):
-        return
+    fired_at = datetime.now(UTC)
+    identity = f"{dedupe_key}:{_window_key(fired_at)}"
     try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            stages = _run_scheduled_collector_stages(source_id, config, correlation_id)
-            overall = aggregate_stage_statuses(
-                item["status"] for item in stages.values()
-            )
-            finalized = finalize_run_safely(
-                correlation_id,
-                overall,
-                {"stages": stages},
-                config,
-                worker_id=worker_id,
-                run_kind="collector",
-                component=source_id,
-            )
-            if finalized:
-                logger.info(
-                    "scheduled_collector_completed",
-                    source_id=source_id,
-                    correlation_id=correlation_id,
-                )
+        accepted_at, enqueued = accept_and_enqueue_operation(
+            config,
+            correlation_id=correlation_id,
+            triggered_by="scheduler",
+            run_kind=run_kind,
+            requested_component=component,
+            request_summary={
+                "triggered_by": "scheduler",
+                "run_kind": run_kind,
+                "component": component,
+                "window": _window_key(fired_at),
+            },
+            dedupe_key=identity,
+            input_fingerprint=str(
+                int(fired_at.replace(second=0, microsecond=0).timestamp())
+            ),
+            payload=payload or {},
+            priority=priority,
+            max_attempts=max_attempts,
+        )
     except Exception as exc:
         logger.error(
-            "scheduled_collector_failed",
-            source_id=source_id,
+            "scheduled_enqueue_failed",
+            run_kind=run_kind,
+            component=component,
+            error_type=type(exc).__name__,
+        )
+        return
+    if enqueued.inserted:
+        logger.info(
+            "scheduled_run_enqueued",
+            run_kind=run_kind,
+            component=component,
             correlation_id=correlation_id,
-            error=str(exc),
         )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {},
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="collector",
-            component=source_id,
+    else:
+        logger.info(
+            "scheduled_run_deduplicated",
+            run_kind=run_kind,
+            component=component,
+            correlation_id=correlation_id,
+            accepted_at=accepted_at.isoformat(),
         )
 
 
-def _run_scheduled_collector_stages(
-    source_id: str, config: dict, correlation_id: str
-) -> dict:
-    result = run_collector(
+def _scheduled_collector(source_id: str, config: dict) -> None:
+    _enqueue_scheduled_run(
+        config,
+        "collector",
         source_id,
-        config=config,
-        correlation_id=correlation_id,
-        manage_lifecycle=False,
+        dedupe_key=f"collector:{source_id}",
+        payload={
+            "run_dependents": True,
+            "mode": "refresh",
+        },
+        priority=90,
+        max_attempts=3,
     )
-    stages = {source_id: result}
-    if result["status"] in ("success", "partial"):
-        for processor_id, processor_config in config.get("processors", {}).items():
-            if not processor_config.get("enabled", False):
-                continue
-            if processor_config.get("schedule") != "after_dependency":
-                continue
-            from processors import get_processor
-
-            if source_id in get_processor(processor_id).get_depends_on():
-                stages[processor_id] = run_processor(
-                    processor_id,
-                    config=config,
-                    correlation_id=correlation_id,
-                    manage_lifecycle=False,
-                )
-    return stages
 
 
 def _scheduled_processor(processor_id: str, config: dict) -> None:
-    correlation_id = str(uuid4())
-    accept_run(config, correlation_id, "scheduler", "processor", processor_id)
-    worker_id = f"scheduler:{uuid4()}"
-    if (
-        _start_scheduled_run(
-            config, correlation_id, worker_id, "processor", processor_id
-        )
-        is not True
-    ):
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_processor(
-                processor_id,
-                config=config,
-                correlation_id=correlation_id,
-                manage_lifecycle=False,
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-                worker_id=worker_id,
-                run_kind="processor",
-                component=processor_id,
-            )
-            if finalized:
-                logger.info(
-                    "scheduled_processor_completed",
-                    processor_id=processor_id,
-                    correlation_id=correlation_id,
-                )
-    except Exception as exc:
-        logger.error(
-            "scheduled_processor_failed",
-            processor_id=processor_id,
-            correlation_id=correlation_id,
-            error=str(exc),
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {},
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="processor",
-            component=processor_id,
-        )
+    _enqueue_scheduled_run(
+        config,
+        "processor",
+        processor_id,
+        dedupe_key=f"processor:{processor_id}",
+        payload={"mode": "refresh"},
+        priority=90,
+        max_attempts=3,
+    )
 
 
 def _scheduled_news(source_id: str, config: dict) -> None:
-    correlation_id = str(uuid4())
-    try:
-        accept_run(config, correlation_id, "scheduler", "news", source_id)
-    except RunAcceptanceConflict:
-        logger.info("scheduled_news_acceptance_conflict", source_id=source_id)
-        return
-    except Exception:
-        logger.error("scheduled_news_acceptance_failed", source_id=source_id)
-        return
-    worker_id = f"scheduler:{uuid4()}"
-    if (
-        _start_scheduled_run(config, correlation_id, worker_id, "news", source_id)
-        is not True
-    ):
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            result = run_news_source(
-                source_id, correlation_id, config, manage_lifecycle=False
-            )
-            if result is None:
-                raise RuntimeError("run returned no result after ownership was claimed")
-            finalized = finalize_run_safely(
-                correlation_id,
-                result["status"],
-                result,
-                config,
-                result.get("error"),
-                worker_id=worker_id,
-                run_kind="news",
-                component=source_id,
-            )
-            if finalized:
-                logger.info(
-                    "scheduled_news_completed",
-                    source_id=source_id,
-                    correlation_id=correlation_id,
-                )
-    except Exception as exc:
-        from locks import RunConflict
-
-        conflict = isinstance(exc, RunConflict)
-        reason = str(exc) if conflict else "news run failed"
-        summary = {
-            "status": "failed",
-            "state": "conflict" if conflict else "failed",
-            "error": reason,
-            "code": "news_run_conflict" if conflict else "news_run_failed",
-            "feed_published": False,
-            "new_item_count": 0,
-            "duration_ms": 0,
-            "correlation_id": correlation_id,
-        }
-        logger.error(
-            "scheduled_news_failed",
-            source_id=source_id,
-            correlation_id=correlation_id,
-            code=summary["code"],
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            summary,
-            config,
-            reason,
-            worker_id=worker_id,
-            run_kind="news",
-            component=source_id,
-        )
+    _enqueue_scheduled_run(
+        config,
+        "news",
+        source_id,
+        dedupe_key=f"news:{source_id}",
+        payload={"mode": "refresh"},
+        priority=90,
+        max_attempts=3,
+    )
 
 
 def _scheduled_filings(config: dict) -> None:
-    from investment_filings import run_filing_collection
-
-    correlation_id = str(uuid4())
-    worker_id = f"scheduler:{uuid4()}"
-    try:
-        accept_run(config, correlation_id, "scheduler", "filings", "investment_filings")
-    except Exception:
-        logger.warning(
-            "scheduled_filings_acceptance_failed", correlation_id=correlation_id
-        )
-        return
-    if (
-        _start_scheduled_run(
-            config, correlation_id, worker_id, "filings", "investment_filings"
-        )
-        is not True
-    ):
-        return
-    try:
-        with maintain_run_heartbeat(config, correlation_id, worker_id):
-            filings_config = config.get("investment_filings", {})
-            auto_analyze = filings_config.get("auto_analyze", False)
-            result = run_filing_collection(
-                config, correlation_id=correlation_id, auto_analyze=auto_analyze
+    _enqueue_scheduled_run(
+        config,
+        "filings",
+        "investment_filings",
+        dedupe_key="filings:investment_filings",
+        payload={
+            "auto_analyze": bool(
+                config.get("investment_filings", {}).get("auto_analyze", False)
             )
-            finalized = finalize_run_safely(
-                correlation_id,
-                result.get("status", "completed"),
-                result,
-                config,
-                worker_id=worker_id,
-                run_kind="filings",
-                component="investment_filings",
-            )
-            if finalized:
-                logger.info(
-                    "scheduled_filings_completed",
-                    correlation_id=correlation_id,
-                    ingested=result.get("ingested", 0),
-                )
-    except Exception as exc:
-        logger.error(
-            "scheduled_filings_failed",
-            correlation_id=correlation_id,
-            error=str(exc),
-        )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {},
-            config,
-            str(exc),
-            worker_id=worker_id,
-            run_kind="filings",
-            component="investment_filings",
-        )
+        },
+        priority=90,
+        max_attempts=3,
+    )
 
 
 def _scheduled_research(config: dict) -> None:
     """Enqueue the bounded research workflow on the durable analysis queue."""
-    from research_intelligence.contracts import canonical_fingerprint
+    from research_intelligence.operations import enqueue_research_job
 
-    correlation_id = str(uuid4())
-    component = "research_intelligence"
-    accept_run(config, correlation_id, "scheduler", "processor", component)
-    worker_id = f"scheduler:{uuid4()}"
-    if (
-        _start_scheduled_run(
-            config, correlation_id, worker_id, "processor", component
-        )
-        is not True
-    ):
-        return
     try:
-        today = datetime.now(UTC).date().isoformat()
-        research_config = config.get("research_intelligence", {})
-        input_fingerprint = canonical_fingerprint(
-            {"date": today, "config": research_config}
-        )
-        with get_session(config) as session:
-            enqueued = enqueue_job(
-                session,
-                job_type="research_discovery",
-                dedupe_key=f"research-discovery:{today}",
-                input_fingerprint=input_fingerprint,
-                payload={"force": False},
-                correlation_id=correlation_id,
-                priority=80,
-                max_attempts=3,
-            )
-        result = {
-            "status": "success",
-            "job_id": str(enqueued.job.id) if enqueued.job is not None else None,
-            "inserted": enqueued.inserted,
-        }
-        finalize_run_safely(
-            correlation_id,
-            "success",
-            result,
+        enqueue_research_job(
             config,
-            None,
-            worker_id=worker_id,
-            run_kind="processor",
-            component=component,
-        )
-        logger.info(
-            "scheduled_research_enqueued",
-            correlation_id=correlation_id,
-            inserted=enqueued.inserted,
+            job_type="research_discovery",
+            force=False,
+            triggered_by="scheduler",
         )
     except Exception as exc:
         logger.error(
-            "scheduled_research_failed",
-            correlation_id=correlation_id,
+            "scheduled_research_enqueue_failed",
             error_type=type(exc).__name__,
         )
-        finalize_run_safely(
-            correlation_id,
-            "failed",
-            {},
-            config,
-            "research enqueue failed",
-            worker_id=worker_id,
-            run_kind="processor",
-            component=component,
-        )
+
+
+def _try_acquire_leader_connection(config: dict):
+    """Try to take the scheduler advisory leader lock; None when not leader.
+
+    The lock is session-scoped: the returned connection must stay open while
+    this process is the leader, and closing it releases the lock so a standby
+    can take over.
+    """
+    from db import get_engine
+
+    engine = get_engine(config)
+    connection = engine.connect()
+    try:
+        acquired = connection.execute(
+            text("SELECT pg_try_advisory_lock(hashtext('scheduler-leader'))")
+        ).scalar()
+    except Exception:
+        connection.close()
+        raise
+    if not acquired:
+        connection.close()
+        return None
+    return connection
 
 
 def start_scheduler(config: dict) -> None:

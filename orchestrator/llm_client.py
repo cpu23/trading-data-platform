@@ -3,7 +3,17 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from budgets import BudgetBlock, BudgetContext, BudgetPermit, enforce_budget
+import httpx
+
+from budgets import (
+    BudgetBlock,
+    BudgetContext,
+    BudgetPermit,
+    enforce_budget,
+    release_budget_reservation,
+    retain_budget_reservation,
+    settle_budget_reservation,
+)
 from http_client import make_request
 from logging_config import get_logger
 
@@ -106,6 +116,40 @@ def _safe_cost_usd(value) -> float:
     return parsed if math.isfinite(parsed) and parsed >= 0 else 0.0
 
 
+def _reported_cost_usd(value) -> float | None:
+    """Provider-reported numeric cost, or None when not explicitly reported.
+
+    Missing, non-numeric, or non-finite usage cost is ambiguous: the provider
+    may still have charged. Only an explicit numeric value (including zero)
+    is treated as a known actual for reservation settlement.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
+
+
+def _definitively_unspent_error(exc: BaseException) -> bool:
+    """True only when the provider provably did not bill.
+
+    Connection-establishment failures (connect error or connect timeout) and
+    explicit non-2xx status responses are nonbillable. Read, write, protocol,
+    and deadline errors can occur after the provider processed and charged, so
+    they are ambiguous and must retain the reservation estimate instead of
+    releasing it.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return True
+    if isinstance(exc, httpx.ConnectError):
+        return True
+    return isinstance(exc, httpx.ConnectTimeout)
+
+
 def _processor_value(llm_config: dict, key: str, processor_id: str, default):
     configured = llm_config.get(key, default)
     if isinstance(configured, dict):
@@ -113,40 +157,9 @@ def _processor_value(llm_config: dict, key: str, processor_id: str, default):
     return configured
 
 
-_warned_legacy_model_keys: set[str] = set()
-
-
 def _models_map(llm_config: dict) -> dict:
     models = llm_config.get("models", {})
     return models if isinstance(models, dict) else {}
-
-
-def _legacy_model_keys(llm_config: dict) -> list[str]:
-    """List deprecated model selector keys present in the configuration."""
-    keys: list[str] = []
-    legacy_default = llm_config.get("default_model")
-    if isinstance(legacy_default, str) and legacy_default.strip():
-        keys.append("llm.default_model")
-    for processor, value in _models_map(llm_config).items():
-        if processor == "default":
-            continue
-        override = value.get("model") if isinstance(value, dict) else value
-        if isinstance(override, str) and override.strip():
-            keys.append(f"llm.models.{processor}")
-    return keys
-
-
-def _warn_legacy_model_config(llm_config: dict) -> None:
-    keys = _legacy_model_keys(llm_config)
-    unseen = [key for key in keys if key not in _warned_legacy_model_keys]
-    if not unseen:
-        return
-    _warned_legacy_model_keys.update(unseen)
-    logger.warning(
-        "llm_model_config_deprecated",
-        legacy_keys=unseen,
-        replacement="llm.models.default",
-    )
 
 
 def resolve_model(
@@ -154,8 +167,12 @@ def resolve_model(
 ) -> str:
     """Resolve the single active model slug for every LLM processor.
 
-    Precedence: explicit call argument, then ``llm.models.default`` (the one
-    source of truth), then deprecated legacy selectors for one release.
+    Precedence: an explicit call argument (bounded benchmark/research
+    overrides only), then ``llm.models.default`` (the single source of
+    truth — every processor inherits it), then the pinned default.  Per-
+    processor selectors and legacy ``llm.default_model`` are unsupported:
+    frozen config validation rejects them and setup_state promotes any
+    legacy default.
     """
     if model:
         return model
@@ -163,16 +180,6 @@ def resolve_model(
     default = _models_map(llm_config).get("default")
     if isinstance(default, str) and default.strip():
         return default.strip()
-    _warn_legacy_model_config(llm_config)
-    if processor_id:
-        override = _models_map(llm_config).get(processor_id)
-        if isinstance(override, dict):
-            override = override.get("model")
-        if isinstance(override, str) and override.strip():
-            return override.strip()
-    legacy_default = llm_config.get("default_model")
-    if isinstance(legacy_default, str) and legacy_default.strip():
-        return legacy_default.strip()
     return DEFAULT_MODEL_SLUG
 
 
@@ -237,13 +244,13 @@ def resolve_request_policy(
             f"llm.validation_retries must be between 0 and {MAX_VALIDATION_RETRIES}"
         )
 
-    request_attempts = llm_config.get("max_retries", 1)
-    if (
-        not isinstance(request_attempts, int)
-        or isinstance(request_attempts, bool)
-        or request_attempts < 1
-    ):
-        raise ValueError("llm.max_retries must be at least 1")
+    if "max_retries" in llm_config:
+        raise ValueError(
+            "llm.max_retries is not supported: paid OpenRouter calls are "
+            "single-attempt and must never be replayed without a documented "
+            "idempotency contract"
+        )
+    request_attempts = 1
 
     if structured_response is None:
         structured_response = bool(
@@ -352,15 +359,28 @@ class LLMStage:
         if remaining <= 0:
             raise LLMStageTimeout("LLM stage deadline exhausted", self.telemetry)
 
-        if self._budget_permit is None:
-            try:
-                self._budget_permit = enforce_budget(
-                    self.config, self.processor_id, self.budget_context
-                )
-            except BudgetBlock as exc:
-                exc.telemetry = self.telemetry
-                raise
+        try:
+            if self._budget_permit is None:
+                try:
+                    self._budget_permit = enforce_budget(
+                        self.config,
+                        self.processor_id,
+                        self.budget_context,
+                        correlation_id=self.correlation_id,
+                        component=self.processor_id,
+                    )
+                except BudgetBlock as exc:
+                    exc.telemetry = self.telemetry
+                    raise
 
+            return self._call_with_permit(prompt, remaining)
+        finally:
+            # Each distinct outbound paid call carries its own reservation:
+            # the previous permit's reservation was settled, retained, or
+            # released by call_llm, so the next call must reserve afresh.
+            self._budget_permit = None
+
+    def _call_with_permit(self, prompt: str, remaining: float) -> dict:
         started_at = self.clock()
         try:
             result = call_llm(
@@ -375,7 +395,6 @@ class LLMStage:
                 structured_response=self.policy.structured_response,
                 response_schema=self.response_schema,
                 reasoning_effort=self.reasoning_effort,
-                max_retries=self.policy.request_attempts,
                 _budget_permit=self._budget_permit,
             )
         except Exception as exc:
@@ -401,7 +420,6 @@ def call_llm(
     prompt: str,
     model: str | None = None,
     temperature: float | None = None,
-    max_retries: int | None = None,
     correlation_id: str | None = None,
     config: dict | None = None,
     *,
@@ -436,8 +454,19 @@ def call_llm(
         structured_response=structured_response,
     )
     if _budget_permit is None or not _budget_permit.valid:
-        _budget_permit = enforce_budget(config, processor_id, budget_context)
-    request_attempts = policy.request_attempts if max_retries is None else max_retries
+        _budget_permit = enforce_budget(
+            config,
+            processor_id,
+            budget_context,
+            correlation_id=correlation_id,
+            component=processor_id,
+        )
+    # Paid OpenRouter chat completions are single-attempt: the endpoint has no
+    # documented inbound idempotency contract, so an ambiguous transport or
+    # 5xx failure must never be replayed (a replay could double-bill). The
+    # LLMStage validation-retry loop issues explicit, separately-budgeted
+    # calls instead.
+    request_attempts = 1
 
     if messages is None:
         request_messages = [{"role": "user", "content": prompt}]
@@ -520,7 +549,12 @@ def call_llm(
         correlation_id=correlation_id or "none",
     )
 
+    response_received = False
     try:
+        # Exactly one HTTP attempt, no Idempotency-Key: OpenRouter chat
+        # completions document no inbound idempotency contract, so replaying a
+        # POST after an ambiguous transport or 5xx failure could double-bill.
+        # Validation retries are explicit, separately-budgeted LLMStage calls.
         response = make_request(
             method="POST",
             url=OPENROUTER_URL,
@@ -529,11 +563,23 @@ def call_llm(
             timeout=policy.stage_timeout_seconds,
             max_retries=request_attempts,
             correlation_id=correlation_id,
+            deadline_seconds=policy.stage_timeout_seconds + 30.0,
         )
         response.raise_for_status()
+        response_received = True
         data = response.json()
         content = data["choices"][0]["message"]["content"]
     except Exception as exc:
+        if _budget_permit is not None:
+            if response_received or not _definitively_unspent_error(exc):
+                # A 2xx body arrived but was unusable, or the transport failed
+                # ambiguously after send (read/write/protocol/deadline): the
+                # provider may have charged, so retain the estimate instead of
+                # releasing it (never undercount paid calls). Only provable
+                # connect failures and explicit non-2xx statuses release.
+                retain_budget_reservation(_budget_permit.reservation_id, config)
+            else:
+                release_budget_reservation(_budget_permit.reservation_id, config)
         logger.error(
             "llm_call_failed",
             action="llm_call",
@@ -562,13 +608,23 @@ def call_llm(
     )
     model_used = data.get("model", policy.model)
     provider_name = data.get("provider")
-    cost_usd = _safe_cost_usd(usage.get("cost"))
+    reported_cost = _reported_cost_usd(usage.get("cost"))
+    cost_usd = reported_cost if reported_cost is not None else 0.0
     generation_id = data.get("id")
     transport_metadata = getattr(response, "extensions", {}).get("request_metadata")
     if not isinstance(transport_metadata, dict):
         transport_metadata = {}
     retry_count = max(0, _safe_token_count(transport_metadata.get("attempts")) - 1)
     schema_valid_first_pass = None if response_schema is None else True
+    if _budget_permit is not None:
+        if reported_cost is not None:
+            settle_budget_reservation(
+                _budget_permit.reservation_id, reported_cost, config
+            )
+        else:
+            # The provider did not report a numeric cost; treat the call as
+            # paid-but-unmetered and keep the estimate reserved.
+            retain_budget_reservation(_budget_permit.reservation_id, config)
 
     logger.info(
         "llm_call_completed",

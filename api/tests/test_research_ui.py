@@ -17,6 +17,7 @@ os.environ.update(
         "OANDA_API_KEY": "test",
         "DASHBOARD_USER": "test",
         "DASHBOARD_PASSWORD": "test",
+        "DEPLOYMENT_MODE": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
 )
