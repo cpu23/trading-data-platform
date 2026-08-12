@@ -1,10 +1,12 @@
 import os
+from collections.abc import Mapping
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
+from auth import setup_complete
 from budgets import DEFAULT_DAILY_LLM_USD
 from routes.json.settings import _read_secrets, active_model, timezone_context
 from routes.views.dashboard import (
@@ -18,7 +20,16 @@ router = APIRouter()
 
 
 def _has_key(secrets: dict, *names: str) -> bool:
-    return any(secrets.get(name) or os.environ.get(name) for name in names)
+    """True when a credential is available for a managed provider.
+
+    After activation the secrets file is authoritative: deleted (tombstoned)
+    or absent keys are unavailable and never fall back to the process
+    environment. Before activation the environment may provide credentials
+    (demo/CI deployments).
+    """
+    if setup_complete():
+        return any(bool(secrets.get(name)) for name in names)
+    return any(bool(secrets.get(name)) or bool(os.environ.get(name)) for name in names)
 
 
 def _next_cycle_text(health: dict | None) -> str:
@@ -39,9 +50,9 @@ async def settings_page(request: Request):
     templates = request.app.state.templates
     config = await run_in_threadpool(app_config.load_config)
     secrets = _read_secrets()
-    llm = config.get("llm", {}) if isinstance(config.get("llm"), dict) else {}
+    llm = config.get("llm", {}) if isinstance(config.get("llm"), Mapping) else {}
     budgets = (
-        config.get("budgets", {}) if isinstance(config.get("budgets"), dict) else {}
+        config.get("budgets", {}) if isinstance(config.get("budgets"), Mapping) else {}
     )
     tz = timezone_context(request, config)
     health = await _get_dashboard_health(request)

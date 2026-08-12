@@ -8,17 +8,18 @@
     <p class="dim">The platform assesses economics, policy, positioning and market context. It never tells you what, when or how to trade.</p>
   </section>
   <section class="setup-step">
+    <h2>Authorize setup</h2>
+    <p class="dim">Enter the bootstrap token configured as <code>SETUP_TOKEN</code>. Demo deployments may leave this blank.</p>
+    <input id="setup-token" type="password" maxlength="256" autocomplete="off" placeholder="Bootstrap token">
+  </section>
+  <section class="setup-step">
     <h2>Secure this dashboard</h2>
     <input id="setup-password" type="password" minlength="12" required autocomplete="new-password" placeholder="Administrator password">
   </section>
   <section class="setup-step">
     <h2>Connect intelligence</h2>
-    <input id="llm-base-url" value="https://openrouter.ai/api/v1" placeholder="OpenAI-compatible base URL">
     <input id="llm-model" value="deepseek/deepseek-v4-flash" placeholder="Model identifier">
     <input id="llm-key" type="password" placeholder="API key">
-    <details><summary>Advanced</summary>
-      <label>Reasoning effort <select id="reasoning"><option value="">Provider default</option><option>low</option><option>medium</option><option selected>high</option></select></label>
-    </details>
   </section>
   <section class="setup-step">
     <h2>Recommended coverage</h2>
@@ -61,16 +62,15 @@ document.getElementById('activate-setup').onclick = async function () {
   }
   const body = {
     password: password.value,
+    token: document.getElementById('setup-token').value,
     profile: {llm: {
-      base_url: document.getElementById('llm-base-url').value,
-      default_model: document.getElementById('llm-model').value,
-      reasoning_effort: document.getElementById('reasoning').value || null
+      models: {default: document.getElementById('llm-model').value.trim()}
     }},
     coverage: Object.fromEntries(
       [...document.querySelectorAll('[data-coverage]')].map(input => [input.dataset.coverage, input.checked])
     ),
     secrets: {
-      LLM_API_KEY: document.getElementById('llm-key').value,
+      OPENROUTER_API_KEY: document.getElementById('llm-key').value,
       FRED_API_KEY: document.getElementById('fred-key').value,
       OANDA_API_KEY: document.getElementById('oanda-key').value,
       EIA_API_KEY: document.getElementById('eia-key').value

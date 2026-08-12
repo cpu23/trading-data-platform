@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
+os.environ["DEPLOYMENT_MODE"] = "test"
 
 from auth import mint_csrf_token
 
@@ -42,10 +43,11 @@ MOCK_CONFIG = {
     "processors": {},
     "budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80},
 }
+CSRF_TOKEN = mint_csrf_token()
 AUTH = {
     "Authorization": "Basic dGVzdDp0ZXN0",
     "Origin": "http://testserver",
-    "X-CSRF-Token": mint_csrf_token(),
+    "X-CSRF-Token": CSRF_TOKEN,
 }
 
 with patch("config.load_config", return_value=MOCK_CONFIG):
@@ -106,6 +108,7 @@ class ApiClientLifecycleTests(unittest.TestCase):
         app = create_app(orchestrator_client_factory=factory)
 
         with TestClient(app) as client:
+            client.cookies.set("csrf-token", CSRF_TOKEN)
             self.assertIs(app.state.orchestrator_client, upstream)
             self.assertEqual(client.get("/api/quotes", headers=AUTH).status_code, 200)
             self.assertEqual(client.get("/api/quotes", headers=AUTH).status_code, 200)

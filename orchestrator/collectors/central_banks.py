@@ -7,8 +7,16 @@ from xml.etree import ElementTree
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
 from logging_config import get_logger
+from provider_origins import validate_configured_origin
 
 logger = get_logger("collector.central_banks")
+
+
+def _validated_feed_url(feed: dict, feeds_config: dict) -> str:
+    """Validate one configured central-bank feed origin before fetching."""
+    return validate_configured_origin(
+        feed.get("url"), feeds_config, label="central_banks feed"
+    )
 
 
 class CentralBanksCollector:
@@ -23,9 +31,10 @@ class CentralBanksCollector:
         failures = []
         for feed in feeds:
             try:
+                feed_url = _validated_feed_url(feed, config["collectors"]["central_banks"])
                 response = make_request(
                     "GET",
-                    feed["url"],
+                    feed_url,
                     headers=feed.get("headers"),
                     correlation_id=correlation_id,
                 )
@@ -116,9 +125,12 @@ class CentralBanksCollector:
                 "latency_ms": 0,
             }
         try:
+            feed_url = _validated_feed_url(
+                feeds[0], config["collectors"]["central_banks"]
+            )
             response = make_request(
                 "GET",
-                feeds[0]["url"],
+                feed_url,
                 headers=feeds[0].get("headers"),
                 timeout=15,
             )

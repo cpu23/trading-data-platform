@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
-import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from http_client import get_shared_client
 from logging_config import get_logger
+from provider_origins import validate_configured_origin
 from sources.news_result import NewsCollectionResult, NewsPublication
 from sources.news_storage import atomic_write_json, read_json
 
 logger = get_logger("kobeissi")
+
+MAX_KOBEISSI_BYTES = 5_000_000
+KOBEISSI_DEADLINE_SECONDS = 60.0
 
 
 def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +64,50 @@ def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _read_bounded_kobeissi(response) -> bytes:
+    """Read a Kobeissi response with byte and wall-deadline caps."""
+    started = time.monotonic()
+    chunks = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if time.monotonic() - started >= KOBEISSI_DEADLINE_SECONDS:
+            raise ValueError("Kobeissi fetch exceeded the total deadline")
+        total += len(chunk)
+        if total > MAX_KOBEISSI_BYTES:
+            raise ValueError(
+                f"Kobeissi response exceeds {MAX_KOBEISSI_BYTES // 1_000_000} MB"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _fetch_bytes(
+    url: str, *, headers: dict | None = None, timeout: float = 30.0
+) -> bytes:
+    """Fetch a Kobeissi response body through the shared resolve-and-pin
+    transport: the origin is validated up front, every send re-resolves DNS
+    and pins the connection (a poisoned/rebound api.twitterapi.io cannot
+    reach private networks), redirects are rejected so the X-API-Key
+    credential never follows a Location to another origin (a 3xx fails
+    closed), and body size and total fetch time are bounded. Tests inject
+    fake fetchers here to exercise normalisation.
+    """
+    client = get_shared_client()
+    with client.stream(
+        "GET",
+        url,
+        headers=headers,
+        follow_redirects=False,
+        timeout=timeout,
+    ) as resp:
+        if resp.status_code in {301, 302, 303, 307, 308}:
+            raise ValueError(
+                f"Kobeissi upstream redirected (HTTP {resp.status_code}); redirects are rejected"
+            )
+        resp.raise_for_status()
+        return _read_bounded_kobeissi(resp)
+
+
 def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
     """
     Fetch recent Kobeissi Letter tweets via twitterapi.io.
@@ -68,7 +117,12 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
     kobeissi_config = config.get("kobeissi", {})
     api_key = kobeissi_config.get("api_key", "")
     user_id = kobeissi_config.get("user_id", "3316376038")
-    api_base = kobeissi_config.get("api_base", "https://api.twitterapi.io")
+    api_base = validate_configured_origin(
+        kobeissi_config.get("api_base", "https://api.twitterapi.io"),
+        kobeissi_config,
+        label="Kobeissi api_base",
+        canonical={"https://api.twitterapi.io"},
+    )
     state_path = Path(kobeissi_config.get("state_path", "var/news/kobeissi/state.json"))
     output_dir = Path(kobeissi_config.get("output_path", "var/news/kobeissi"))
 
@@ -85,18 +139,23 @@ def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:
 
     params = {"userId": user_id, "count": str(count)}
     url = f"{api_base}/twitter/user/tweet_timeline?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "X-API-Key": api_key,
-            "User-Agent": "TradingResearchSystem/1.0",
-        },
-    )
 
     logger.info("kobeissi_fetch_started", count=count)
+    # Fetched through the shared resolve-and-pin transport (see
+    # ``_fetch_bytes``): the origin is validated and every send re-resolves
+    # DNS and pins the connection, redirects are disabled so the X-API-Key
+    # credential never follows a Location (a 3xx fails closed), and the
+    # body and total fetch time are bounded.
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
+        data = json.loads(
+            _fetch_bytes(
+                url,
+                headers={
+                    "X-API-Key": api_key,
+                    "User-Agent": "TradingResearchSystem/1.0",
+                },
+            )
+        )
     except Exception as exc:
         error = f"Kobeissi fetch failed: {type(exc).__name__}"
         logger.error("kobeissi_fetch_failed", error=error)

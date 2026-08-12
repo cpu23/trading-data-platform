@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
 from logging_config import get_logger
+from provider_origins import validate_configured_origin
 
 logger = get_logger("collector.cftc")
 
@@ -42,7 +43,15 @@ class CftcCollector:
             ),
         }
         response = make_request(
-            "GET", cfg["url"], params=params, correlation_id=correlation_id
+            "GET",
+            validate_configured_origin(
+                cfg["url"],
+                cfg,
+                label="CFTC url",
+                canonical={"https://publicreporting.cftc.gov/resource/gpe5-46if.json"},
+            ),
+            params=params,
+            correlation_id=correlation_id,
         )
         response.raise_for_status()
         records = []
@@ -112,8 +121,14 @@ class CftcCollector:
                 "latency_ms": 0,
             }
         try:
+            cftc_url = validate_configured_origin(
+                config["collectors"]["cftc"]["url"],
+                config["collectors"]["cftc"],
+                label="CFTC url",
+                canonical={"https://publicreporting.cftc.gov/resource/gpe5-46if.json"},
+            )
             response = make_request(
-                "GET", config["collectors"]["cftc"]["url"], params={"$limit": 1}
+                "GET", cftc_url, params={"$limit": 1}
             )
             return {
                 "healthy": response.status_code == 200,

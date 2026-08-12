@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from http_client import get_shared_client
 from logging_config import get_logger
 from sources.news_result import NewsCollectionResult, NewsPublication
 from sources.news_storage import atomic_write_json, read_json
@@ -18,6 +19,11 @@ logger = get_logger("reuters")
 REUTERS_SITEMAP_INDEX = (
     "https://www.reuters.com/arc/outboundfeeds/news-sitemap-index/?outputType=xml"
 )
+# Provider contract: child sitemap URLs come from the (upstream-controlled)
+# index payload, so they are pinned to the canonical Reuters host and their
+# bodies are size-bounded.
+REUTERS_SITEMAP_HOST = "www.reuters.com"
+MAX_SITEMAP_BYTES = 10_000_000
 
 _NS = {
     "sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
@@ -76,15 +82,91 @@ def _is_markets_relevant(
     return bool(matched), matched
 
 
-def _fetch_sitemap_index() -> list[str]:
-    import urllib.request
+def _read_bounded_sitemap(response, cap: int = MAX_SITEMAP_BYTES) -> bytes:
+    """Read a sitemap response with a hard byte cap."""
+    chunks = []
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > cap:
+            raise ValueError(f"sitemap response exceeds {cap // 1_000_000} MB")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
-    req = urllib.request.Request(
+
+def _fetch_bytes(
+    url: str,
+    *,
+    headers: dict | None = None,
+    timeout: float = 30.0,
+    cap: int = MAX_SITEMAP_BYTES,
+) -> bytes:
+    """Fetch a sitemap body through the shared resolve-and-pin transport.
+
+    Every real send re-resolves the host and requires all DNS answers to be
+    globally routable (fail-closed on rebinding), pins the connection to a
+    validated address, and re-validates each redirect hop; the body is hard
+    size-bounded. Tests inject fake fetchers here to exercise parsing.
+    """
+    client = get_shared_client()
+    with client.stream(
+        "GET",
+        url,
+        headers=headers,
+        follow_redirects=True,
+        timeout=timeout,
+    ) as resp:
+        resp.raise_for_status()
+        return _read_bounded_sitemap(resp, cap)
+
+
+def _validated_sitemap_url(url: str) -> str:
+    """Validate a child sitemap URL: public HTTPS and the canonical Reuters
+    host (the provider contract for index payloads).
+
+    Shape checks (scheme, embedded credentials, port) and the host pin run
+    here; DNS/rebinding validation is enforced at send time by the pinned
+    public-only transport (every send re-resolves and requires all answers
+    to be globally routable, and redirect hops re-enter the transport).
+    IP-literal child URLs are classified here so a private address is
+    rejected before any fetch.
+    """
+    import ipaddress
+
+    from contracts.outbound_security import (
+        OutboundSecurityError,
+        is_public_address,
+        parse_origin,
+        validate_public_url,
+    )
+
+    try:
+        normalized = validate_public_url(url, resolve=False)
+    except OutboundSecurityError as exc:
+        raise ValueError(f"invalid sitemap URL ({exc})") from exc
+    origin = parse_origin(normalized)
+    try:
+        literal = ipaddress.ip_address(origin.host)
+    except ValueError:
+        literal = None
+    if literal is not None and not is_public_address(literal):
+        raise ValueError(
+            f"invalid sitemap URL (hostname resolves to a non-public address ({literal}))"
+        )
+    if origin.host != REUTERS_SITEMAP_HOST:
+        raise ValueError(
+            f"sitemap URL must be on {REUTERS_SITEMAP_HOST}, got {origin.host}"
+        )
+    return normalized
+
+
+def _fetch_sitemap_index() -> list[str]:
+    """Fetch the canonical Reuters sitemap index through the pinned
+    public-only transport (per-hop validation, bounded body)."""
+    xml_data = _fetch_bytes(
         REUTERS_SITEMAP_INDEX,
         headers={"User-Agent": "TradingResearchSystem/1.0"},
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        xml_data = resp.read()
     root = ET.fromstring(xml_data)
     _require_sitemap_root(root, "sitemapindex")
     return [
@@ -97,15 +179,21 @@ def _fetch_sitemap_index() -> list[str]:
 def _parse_sitemap_page(
     url: str, seen_urls: set[str], config: dict
 ) -> list[dict[str, Any]]:
-    """Fetch a sitemap page and return normalised feed items."""
-    import urllib.request
+    """Fetch a sitemap page and return normalised feed items.
 
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "TradingResearchSystem/1.0"}
-    )
+    The child URL is upstream-controlled (came from the index payload), so it
+    is validated against the public-origin policy AND bound to the canonical
+    Reuters host before the pinned transport fetches it with a body cap.
+    """
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            xml_data = resp.read()
+        normalized_url = _validated_sitemap_url(url)
+    except ValueError as exc:
+        raise _SitemapPageFetchError(exc) from exc
+    try:
+        xml_data = _fetch_bytes(
+            normalized_url,
+            headers={"User-Agent": "TradingResearchSystem/1.0"},
+        )
     except Exception as exc:
         raise _SitemapPageFetchError(exc) from exc
 

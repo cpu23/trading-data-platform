@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
 from logging_config import get_logger
+from provider_origins import validate_configured_origin
 
 logger = get_logger("collector.official_macro")
 
@@ -51,7 +52,11 @@ class ConfiguredMacroCollector:
                     params.setdefault(source.get("api_key_param", "api_key"), api_key)
                 response = make_request(
                     "GET",
-                    series["url"],
+                    validate_configured_origin(
+                        series["url"],
+                        config["collectors"].get(self.source_id, {}),
+                        label=f"{self.source_id} series",
+                    ),
                     params=params or None,
                     headers=source.get("headers"),
                     correlation_id=correlation_id,
@@ -196,7 +201,11 @@ class ConfiguredMacroCollector:
                 params.setdefault(source.get("api_key_param", "api_key"), api_key)
             response = make_request(
                 "GET",
-                series[0]["url"],
+                validate_configured_origin(
+                    series[0]["url"],
+                    config["collectors"].get(self.source_id, {}),
+                    label=f"{self.source_id} series",
+                ),
                 params=params or None,
                 headers=source.get("headers"),
                 timeout=15,

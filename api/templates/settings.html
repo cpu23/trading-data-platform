@@ -17,10 +17,10 @@
 
     <fieldset class="settings-panel">
       <legend>Credentials</legend>
-      <label>OpenRouter key <span class="credential-state">{{ 'Saved' if has_openrouter_key else 'Not added' }}</span><input id="settings-openrouter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_openrouter_key else 'OpenRouter API key' }}" autocomplete="new-password"></label>
-      <label>FRED key <span class="credential-state">{{ 'Saved' if has_fred_key else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_fred_key else 'FRED API key' }}" autocomplete="new-password"></label>
-      <label>OANDA key <span class="credential-state">{{ 'Saved' if has_oanda_key else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_oanda_key else 'OANDA API key' }}" autocomplete="new-password"></label>
-      <label>TwitterAPI.io key <span class="credential-state">{{ 'Saved' if has_twitter_key else 'Not added' }}</span><input id="settings-twitter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_twitter_key else 'TwitterAPI.io key' }}" autocomplete="new-password"></label>
+      <label>OpenRouter key <span class="credential-state">{{ 'Saved' if has_openrouter_key else 'Not added' }}</span><input id="settings-openrouter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_openrouter_key else 'OpenRouter API key' }}" autocomplete="new-password">{% if has_openrouter_key %}<button type="button" class="credential-remove" data-secret="OPENROUTER_API_KEY" data-input="settings-openrouter-key">Remove</button>{% endif %}</label>
+      <label>FRED key <span class="credential-state">{{ 'Saved' if has_fred_key else 'Not added' }}</span><input id="settings-fred-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_fred_key else 'FRED API key' }}" autocomplete="new-password">{% if has_fred_key %}<button type="button" class="credential-remove" data-secret="FRED_API_KEY" data-input="settings-fred-key">Remove</button>{% endif %}</label>
+      <label>OANDA key <span class="credential-state">{{ 'Saved' if has_oanda_key else 'Not added' }}</span><input id="settings-oanda-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_oanda_key else 'OANDA API key' }}" autocomplete="new-password">{% if has_oanda_key %}<button type="button" class="credential-remove" data-secret="OANDA_API_KEY" data-input="settings-oanda-key">Remove</button>{% endif %}</label>
+      <label>TwitterAPI.io key <span class="credential-state">{{ 'Saved' if has_twitter_key else 'Not added' }}</span><input id="settings-twitter-key" type="password" placeholder="{{ 'Saved — enter a new key to replace it' if has_twitter_key else 'TwitterAPI.io key' }}" autocomplete="new-password">{% if has_twitter_key %}<button type="button" class="credential-remove" data-secret="TWITTERAPI_KEY" data-input="settings-twitter-key">Remove</button>{% endif %}</label>
       <div class="settings-actions"><button class="btn" id="test-connection" type="button">Test OpenRouter</button><button class="btn" id="test-model" type="button">Test model</button><span id="connection-result" class="control-status" role="status"></span></div>
     </fieldset>
 
@@ -102,6 +102,21 @@ const csrfHeader = () => {
   const item = document.cookie.split(';').map(v => v.trim()).find(v => v.startsWith('csrf-token='));
   return item ? {'X-CSRF-Token': decodeURIComponent(item.split('=').slice(1).join('='))} : {};
 };
+const removedSecrets = new Set();
+document.querySelectorAll('.credential-remove').forEach((button) => {
+  button.addEventListener('click', () => {
+    const key = button.dataset.secret;
+    removedSecrets.add(key);
+    const input = document.getElementById(button.dataset.input);
+    if (input) {
+      input.value = '';
+      input.placeholder = 'Not added';
+    }
+    const state = button.parentElement.querySelector('.credential-state');
+    if (state) state.textContent = 'Not added';
+    button.disabled = true;
+  });
+});
 const settingsPayload = () => ({
   llm: {
     models: {
@@ -110,10 +125,10 @@ const settingsPayload = () => ({
   },
   daily_budget_usd: Number(document.getElementById('settings-budget').value),
   secrets: {
-    OPENROUTER_API_KEY: document.getElementById('settings-openrouter-key').value,
-    FRED_API_KEY: document.getElementById('settings-fred-key').value,
-    OANDA_API_KEY: document.getElementById('settings-oanda-key').value,
-    TWITTERAPI_KEY: document.getElementById('settings-twitter-key').value
+    OPENROUTER_API_KEY: removedSecrets.has('OPENROUTER_API_KEY') ? null : document.getElementById('settings-openrouter-key').value,
+    FRED_API_KEY: removedSecrets.has('FRED_API_KEY') ? null : document.getElementById('settings-fred-key').value,
+    OANDA_API_KEY: removedSecrets.has('OANDA_API_KEY') ? null : document.getElementById('settings-oanda-key').value,
+    TWITTERAPI_KEY: removedSecrets.has('TWITTERAPI_KEY') ? null : document.getElementById('settings-twitter-key').value
   }
 });
 document.getElementById('test-connection').addEventListener('click', async () => {

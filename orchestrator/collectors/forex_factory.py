@@ -13,6 +13,7 @@ from sqlalchemy import text
 from db import get_session
 from http_client import make_request
 from logging_config import get_logger
+from provider_origins import validate_configured_origin
 
 logger = get_logger("collector.forex_factory")
 
@@ -53,11 +54,25 @@ class ForexFactoryCollector:
 
     def collect(self, config: dict, correlation_id: str) -> list[dict]:
         ff_config = config.get("collectors", {}).get("forex_factory", {})
-        source_url = ff_config.get(
-            "source_url", "https://www.forexfactory.com/calendar"
+        source_url = validate_configured_origin(
+            ff_config.get("source_url", "https://www.forexfactory.com/calendar"),
+            ff_config,
+            label="forex_factory source_url",
+            canonical={
+                "https://www.forexfactory.com/calendar",
+                "https://nfs.faireconomy.media",
+            },
         )
-        export_base_url = ff_config.get(
-            "weekly_export_base_url", "https://nfs.faireconomy.media"
+        export_base_url = validate_configured_origin(
+            ff_config.get(
+                "weekly_export_base_url", "https://nfs.faireconomy.media"
+            ),
+            ff_config,
+            label="forex_factory weekly_export_base_url",
+            canonical={
+                "https://www.forexfactory.com/calendar",
+                "https://nfs.faireconomy.media",
+            },
         )
         user_agent = ff_config.get(
             "user_agent",
@@ -856,8 +871,11 @@ class ForexFactoryCollector:
 
     def health_check(self, config: dict) -> dict:
         ff_config = config.get("collectors", {}).get("forex_factory", {})
-        source_url = ff_config.get(
-            "source_url", "https://www.forexfactory.com/calendar"
+        source_url = validate_configured_origin(
+            ff_config.get("source_url", "https://www.forexfactory.com/calendar"),
+            ff_config,
+            label="forex_factory source_url",
+            canonical={"https://www.forexfactory.com/calendar"},
         )
         user_agent = ff_config.get(
             "user_agent",

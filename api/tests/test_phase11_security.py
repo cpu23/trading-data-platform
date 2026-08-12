@@ -13,6 +13,7 @@ os.environ.update(
     DASHBOARD_USER="test", DASHBOARD_PASSWORD="test", LEGACY_BASIC_AUTH="1"
 )
 os.environ["STATE_DIR"] = "/tmp/test_state"
+os.environ["DEPLOYMENT_MODE"] = "test"
 
 with patch("config.load_config", return_value={"logging": {"level": "INFO"}}):
     from main import create_app  # noqa: E402
@@ -140,7 +141,13 @@ class Phase11SecurityTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
-            self.assertEqual(client.get("/quality", headers=AUTH).status_code, 200)
+            self.assertEqual(
+                client.get(
+                    "/quality",
+                    headers={**AUTH, "Origin": "https://testserver"},
+                ).status_code,
+                200,
+            )
             self.assertEqual(
                 client.post(
                     "/api/settings/timezone", json={"timezone": "UTC"}, headers=AUTH

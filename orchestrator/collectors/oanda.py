@@ -231,9 +231,27 @@ class OandaCollector:
 
     def _get_base_url(self, oanda_config: dict) -> str:
         if oanda_config.get("base_url"):
-            return oanda_config["base_url"]
+            return self._validated_origin(
+                str(oanda_config["base_url"]), oanda_config
+            )
         environment = oanda_config.get("environment", "live")
         return DEFAULT_BASE_URLS.get(environment, DEFAULT_BASE_URLS["live"])
+
+    @staticmethod
+    def _validated_origin(base_url: str, oanda_config: dict) -> str:
+        """Canonical OANDA origins are fixed; custom origins must be HTTPS
+        and public (validated against the shared policy)."""
+        from contracts.outbound_security import (
+            OutboundSecurityError,
+            validate_provider_origin,
+        )
+
+        if base_url in set(DEFAULT_BASE_URLS.values()):
+            return base_url
+        try:
+            return validate_provider_origin(base_url)
+        except OutboundSecurityError as exc:
+            raise ValueError(f"invalid OANDA base_url ({exc})") from exc
 
     def _parse_oanda_time(self, value: str) -> datetime:
         raw = value.replace("Z", "+00:00")
