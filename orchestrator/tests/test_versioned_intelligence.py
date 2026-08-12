@@ -10,7 +10,6 @@ from orchestrator import _run_processor_impl
 
 
 class VersionedIntelligenceTests(unittest.TestCase):
-    @patch("orchestrator._get_budget_status")
     @patch("orchestrator._consume_budget_override", return_value=None)
     @patch("orchestrator.ensure_run")
     @patch("orchestrator.get_processor")
@@ -21,9 +20,7 @@ class VersionedIntelligenceTests(unittest.TestCase):
         get_processor,
         ensure_run,
         consume_override,
-        budget,
     ):
-        budget.return_value = {"paid_calls_allowed": True}
         processor = Mock()
         processor.process.return_value = {
             "opinions": [

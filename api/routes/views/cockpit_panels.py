@@ -93,15 +93,16 @@ _CHANGE_FEED_SQL = """
     ) routed
     LEFT JOIN LATERAL (
         SELECT jsonb_agg(jsonb_build_object(
+                   'timeframe', w.timeframe,
                    'horizon', w.horizon,
                    'percentage_move', w.percentage_move,
                    'reaction_state', w.reaction_state
-               ) ORDER BY w.horizon) AS windows
+               ) ORDER BY w.timeframe, w.horizon) AS windows
         FROM (
-            SELECT horizon, percentage_move, reaction_state
+            SELECT timeframe, horizon, percentage_move, reaction_state
             FROM event_reaction_windows
             WHERE event_id = routed.event_id
-            ORDER BY horizon
+            ORDER BY timeframe, horizon
             LIMIT 4
         ) w
     ) react ON TRUE
@@ -654,6 +655,7 @@ def _feed_row(raw: dict) -> dict:
         move = item.get("percentage_move")
         windows.append(
             {
+                "timeframe": item.get("timeframe"),
                 "horizon": item.get("horizon"),
                 "percentage_move": move,
                 "reaction_state": item.get("reaction_state"),

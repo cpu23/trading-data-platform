@@ -91,31 +91,35 @@ class OutboxWorker:
     def _run(self) -> None:
         settings = _pipeline_config(self._config)
         poll = _number(settings, "poll_interval_seconds", 1.0, 0.01)
-        batch = max(1, int(_number(settings, "batch_size", 25, 1)))
+        # Sequential worker: one claim per poll so a queued in-memory claim
+        # cannot expire and be reclaimed by another replica mid-processing.
+        batch = 1
         lease = _number(settings, "lease_seconds", 30.0, 1.0)
         max_attempts = max(1, int(_number(settings, "max_attempts", 5, 1)))
         base_backoff = _number(settings, "base_backoff_seconds", 1.0, 0.01)
         max_backoff = max(
             base_backoff, _number(settings, "max_backoff_seconds", 60.0, base_backoff)
         )
-        while not self._stop.is_set():
-            self.state["last_poll_at"] = datetime.now(UTC)
-            try:
-                with get_session(self._config) as session:
-                    claims = claim_outbox(
-                        session,
-                        worker_id=self.state["worker_id"],
-                        limit=batch,
-                        lease_seconds=lease,
-                    )
-                self.state["claimed"] += len(claims)
-                for claim in claims:
-                    self._process(claim, max_attempts, base_backoff, max_backoff)
-            except Exception as exc:
-                # Poll errors must not kill the daemon; store only a type name.
-                self.state["last_error"] = type(exc).__name__
-            self._stop.wait(poll)
-        self.state["running"] = False
+        try:
+            while not self._stop.is_set():
+                self.state["last_poll_at"] = datetime.now(UTC)
+                try:
+                    with get_session(self._config) as session:
+                        claims = claim_outbox(
+                            session,
+                            worker_id=self.state["worker_id"],
+                            limit=batch,
+                            lease_seconds=lease,
+                        )
+                    self.state["claimed"] += len(claims)
+                    for claim in claims:
+                        self._process(claim, max_attempts, base_backoff, max_backoff)
+                except Exception as exc:
+                    # Poll errors must not kill the daemon; store only a type name.
+                    self.state["last_error"] = type(exc).__name__
+                self._stop.wait(poll)
+        finally:
+            self.state["running"] = False
 
     def _load_event(self, session: Any, event_id: Any) -> MarketEvent:
         from sqlalchemy import text

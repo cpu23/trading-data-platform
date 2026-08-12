@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -200,7 +201,7 @@ class EventImpactProcessor:
         processor's opinion result still succeeds.
         """
         settings = config.get("analysis_atoms", {})
-        if not isinstance(settings, dict) or not settings.get("enabled", False):
+        if not isinstance(settings, Mapping) or not settings.get("enabled", False):
             return None
         try:
             from atoms import publish_atom

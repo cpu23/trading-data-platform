@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from budgets import BudgetBlock, BudgetContext
 from errors import InvalidSourceData, PersistenceError, classify_error
+from llm_client import LLMStageFailure
 from logging_config import get_logger
 from processors.base import canonical_fingerprint
 
@@ -324,7 +325,19 @@ def _run_processor_impl(
         )
     except Exception as exc:
         status, error_class, retryable = _policy_metadata(exc)
-        error_message = str(exc)
+        # Persisted/logged fields never carry raw exception text: provider or
+        # model failures may echo opaque payloads, secrets, or prompt content
+        # that named-value redaction cannot catch. The operator-facing contract
+        # is carried by error_class; structured telemetry is bounded and safe.
+        # LLMStageFailure is the sole exception to the generic template: its
+        # message is a bounded constant chosen at the raise site (never
+        # provider/model payload), so it is safe to surface verbatim — e.g.
+        # "LLM response validation failed after retry".
+        error_message = (
+            str(exc)
+            if isinstance(exc, LLMStageFailure)
+            else f"processor failed ({error_class})"
+        )
         telemetry = getattr(exc, "telemetry", None)
         if telemetry is not None and hasattr(telemetry, "as_dict"):
             failure_input_summary = telemetry.as_dict()
@@ -332,7 +345,8 @@ def _run_processor_impl(
             "processor_failed",
             action="run_processor",
             processor=processor_id,
-            error=str(exc),
+            error_type=type(exc).__name__,
+            error_class=error_class,
             correlation_id=correlation_id,
         )
 
@@ -393,16 +407,23 @@ def _run_processor_impl(
                 status, error_class, retryable = _policy_metadata(
                     exc
                     if isinstance(exc, (InvalidSourceData, PersistenceError))
-                    else PersistenceError(str(exc))
+                    else PersistenceError("structured output DB write failed")
                 )
                 durable_output_id = None
                 durable_output_ids = []
-                error_message = str(exc)
+                # Bounded, raw-free: DB drivers may echo connection detail that
+                # redaction cannot catch; error_class carries the category.
+                error_message = (
+                    str(exc)
+                    if isinstance(exc, InvalidSourceData)
+                    else "structured output DB write failed"
+                )
                 logger.error(
                     "processor_db_write_failed",
                     action="run_processor",
                     processor=processor_id,
-                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    error_class=error_class,
                     correlation_id=correlation_id,
                 )
 
@@ -480,7 +501,7 @@ def _run_processor_impl(
             policy_error = (
                 exc
                 if isinstance(exc, (InvalidSourceData, PersistenceError))
-                else PersistenceError(str(exc))
+                else PersistenceError("structured output DB write failed")
             )
             policy_status, error_class, retryable = _policy_metadata(policy_error)
             status = (
@@ -491,13 +512,14 @@ def _run_processor_impl(
             error_message = (
                 str(exc)
                 if isinstance(exc, InvalidSourceData)
-                else f"DB write failed: {exc}"
+                else "structured output DB write failed"
             )
             logger.error(
                 "processor_db_write_failed",
                 action="run_processor",
                 processor=processor_id,
-                error=str(exc),
+                error_type=type(exc).__name__,
+                error_class=error_class,
                 correlation_id=correlation_id,
             )
 
@@ -623,6 +645,16 @@ def run_processor(
             if not facade.start_run(config, correlation_id, claim_worker_id):
                 return None
             worker_id = claim_worker_id
+            if budget_context is None:
+                authorize = _dependency(
+                    "_authorize_claimed_run_budget", _authorize_claimed_run_budget
+                )
+                budget_context = authorize(
+                    config,
+                    correlation_id,
+                    run_kind="processor",
+                    component=processor_id,
+                )
         heartbeat = (
             facade.maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
@@ -684,69 +716,108 @@ def run_processor(
         raise
 
 
-def _get_budget_status(config: dict) -> dict:
-    budget_cfg = config.get("budgets", {"daily_llm_usd": 2.00, "warn_at_pct": 80})
-    daily_cap = float(budget_cfg.get("daily_llm_usd", 2.00))
-    warn_pct = int(budget_cfg.get("warn_at_pct", 80))
-    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+def _consume_budget_override(
+    correlation_id: str,
+    config: dict,
+    *,
+    run_kind: str | None = None,
+    component: str | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    """Atomically consume a validated one-run override for this worker claim.
+
+    Returns the override only when every integrity check passes: the run row
+    exists for this correlation, the override is a requested one-run record,
+    it has a requestor, it has not expired, its run kind and requested
+    component match the run being claimed, and it was not already consumed by
+    another run. Anything missing or inconsistent returns ``None`` so callers
+    fail closed into normal budget enforcement.
+    """
+    current = now or datetime.now(UTC)
     with _get_session(config) as session:
         row = session.execute(
             text(
-                "SELECT COALESCE(SUM(cost_usd), 0) AS total_cost, COALESCE(SUM(tokens_input + tokens_output), 0) AS total_tokens FROM processing_log WHERE started_at >= :today_start"
-            ),
-            {"today_start": today_start},
-        ).fetchone()
-    total_cost = float(row._mapping.get("total_cost", 0) or 0) if row else 0.0
-    total_tokens = int(row._mapping.get("total_tokens", 0) or 0) if row else 0
-    unlimited = daily_cap <= 0
-    usage_pct = 0.0 if unlimited else round((total_cost / daily_cap) * 100, 2)
-    exceeded = False if unlimited else total_cost >= daily_cap
-    warning = False if unlimited or exceeded else usage_pct >= warn_pct
-    return {
-        "today_cost_usd": round(total_cost, 6),
-        "today_tokens": total_tokens,
-        "budget_cap_usd": daily_cap,
-        "unlimited": unlimited,
-        "warn_at_pct": warn_pct,
-        "usage_pct": usage_pct,
-        "warning": warning,
-        "exceeded": exceeded,
-        "hard_limit_reached": exceeded,
-        "paid_calls_allowed": unlimited or not exceeded,
-        "remaining_usd": None
-        if unlimited
-        else round(max(daily_cap - total_cost, 0.0), 6),
-    }
-
-
-def _consume_budget_override(correlation_id: str, config: dict) -> dict | None:
-    """Atomically consume an API-recorded override for this run."""
-    with _get_session(config) as session:
-        row = session.execute(
-            text(
-                "SELECT summary FROM cycle_runs WHERE correlation_id = :cid FOR UPDATE"
+                "SELECT summary, run_kind, requested_component FROM cycle_runs "
+                "WHERE correlation_id = :cid FOR UPDATE"
             ),
             {"cid": correlation_id},
         ).fetchone()
         if not row:
             return None
-        summary = row._mapping.get("summary") or {}
+        mapping = row._mapping
+        summary = mapping.get("summary") or {}
         if isinstance(summary, str):
-            summary = json.loads(summary)
-        override = summary.get("budget_override")
-        if not isinstance(override, dict) or not override.get("requested"):
+            try:
+                summary = json.loads(summary)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "budget_override_summary_invalid",
+                    correlation_id=correlation_id,
+                )
+                return None
+        override = (
+            summary.get("budget_override") if isinstance(summary, dict) else None
+        )
+        if not isinstance(override, dict) or override.get("requested") is not True:
             return None
         if override.get("consumed_at"):
+            # One-time: only the consuming run may re-read its own override.
             return override if override.get("consumed_by") == correlation_id else None
+        requested_by = override.get("requested_by")
+        if not isinstance(requested_by, str) or not requested_by.strip():
+            logger.warning(
+                "budget_override_missing_requestor", correlation_id=correlation_id
+            )
+            return None
+        expires_raw = override.get("expires_at")
+        try:
+            expires_at = datetime.fromisoformat(str(expires_raw))
+        except (TypeError, ValueError):
+            logger.warning(
+                "budget_override_invalid_expiry", correlation_id=correlation_id
+            )
+            return None
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= current:
+            logger.warning(
+                "budget_override_expired", correlation_id=correlation_id
+            )
+            return None
+        effective_run_kind = (
+            run_kind if run_kind is not None else mapping.get("run_kind")
+        )
+        effective_component = (
+            component
+            if component is not None
+            else mapping.get("requested_component")
+        )
+        if override.get("run_kind") != effective_run_kind:
+            logger.warning(
+                "budget_override_run_kind_mismatch",
+                correlation_id=correlation_id,
+                override_run_kind=override.get("run_kind"),
+                run_kind=effective_run_kind,
+            )
+            return None
+        if override.get("requested_component") != effective_component:
+            logger.warning(
+                "budget_override_component_mismatch",
+                correlation_id=correlation_id,
+                override_component=override.get("requested_component"),
+                component=effective_component,
+            )
+            return None
         override = {
             **override,
-            "consumed_at": datetime.now(UTC).isoformat(),
+            "consumed_at": current.isoformat(),
             "consumed_by": correlation_id,
         }
         summary["budget_override"] = override
         session.execute(
             text(
-                "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) WHERE correlation_id = :cid"
+                "UPDATE cycle_runs SET summary = CAST(:summary AS JSONB) "
+                "WHERE correlation_id = :cid"
             ),
             {"cid": correlation_id, "summary": json.dumps(summary)},
         )
@@ -759,6 +830,48 @@ def _consume_budget_override(correlation_id: str, config: dict) -> dict | None:
     return override
 
 
+def _authorize_claimed_run_budget(
+    config: dict,
+    correlation_id: str,
+    *,
+    run_kind: str,
+    component: str | None,
+) -> BudgetContext | None:
+    """Consume a validated override at worker claim and mint the trusted context.
+
+    The trusted authorization is minted here — inside the worker/orchestrator
+    execution path, after the run was durably claimed — never at an HTTP
+    acceptance boundary. Any consumption failure (including unreadable budget
+    state) fails closed: no context is minted and normal budget enforcement
+    applies.
+    """
+    from budgets import (
+        mint_trusted_manual_authorization,
+        trusted_manual_budget_context,
+    )
+
+    try:
+        override = _consume_budget_override(
+            correlation_id, config, run_kind=run_kind, component=component
+        )
+    except Exception as exc:
+        logger.warning(
+            "budget_override_claim_failed",
+            correlation_id=correlation_id,
+            run_kind=run_kind,
+            component=component,
+            error_type=type(exc).__name__,
+        )
+        return None
+    if override is None:
+        return None
+    return trusted_manual_budget_context(
+        force=True,
+        manual_authorized=True,
+        authorization=mint_trusted_manual_authorization(),
+    )
+
+
 # Publication owns the durable implementations. These aliases are intentionally
 # module-level so the facade can re-export the historical patch targets.
 from publication import _persist_processor_result, _write_processing_log  # noqa: E402
@@ -769,8 +882,8 @@ __all__ = [
     "_resolve_and_run_processors",
     "_run_processor_impl",
     "run_processor",
-    "_get_budget_status",
     "_consume_budget_override",
+    "_authorize_claimed_run_budget",
     "_persist_processor_result",
     "_write_processing_log",
 ]

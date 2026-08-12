@@ -171,7 +171,6 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
 
     @patch("orchestrator.finish_run")
     @patch("orchestrator._write_processing_log")
-    @patch("orchestrator._get_budget_status")
     @patch("orchestrator._consume_budget_override", return_value=None)
     @patch("orchestrator.get_processor")
     @patch("orchestrator.ensure_run")
@@ -180,11 +179,9 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
         ensure_run_mock,
         get_processor,
         consume_override,
-        budget_status,
         write_log,
         finish_run_mock,
     ):
-        budget_status.return_value = {"paid_calls_allowed": True}
         processor = Mock()
         processor.process.side_effect = OutputPolicyError(
             "market_intelligence", ["prohibited instruction"]

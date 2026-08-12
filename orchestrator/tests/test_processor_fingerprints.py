@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import orchestrator
 from budgets import BudgetContext
-from processors.base import canonical_fingerprint
+from contracts.runtime_config import ProcessorAssetContextConfig
+from processors.base import canonical_fingerprint, canonical_json_value
 from processors.briefing import DailyBriefingProcessor
 from processors.macro_regime import MacroRegimeProcessor
 
@@ -73,9 +74,26 @@ class CanonicalFingerprintTests(unittest.TestCase):
             canonical_fingerprint({"opinion_id": str(value)}),
         )
 
+    def test_runtime_config_mappings_are_json_compatible(self):
+        configured = ProcessorAssetContextConfig(
+            channels=["relative monetary policy"],
+            positioning_effects={"EUR": "positive"},
+        )
+        expected = {
+            "channels": ["relative monetary policy"],
+            "positioning_effects": {"EUR": "positive"},
+            "channel_effects": [],
+        }
+
+        self.assertEqual(canonical_json_value(configured), expected)
+        self.assertEqual(
+            canonical_fingerprint({"asset": configured}),
+            canonical_fingerprint({"asset": expected}),
+        )
+
     def test_prompt_model_schema_and_input_changes_change_fingerprint(self):
         processor = FingerprintedProcessor()
-        base = {"llm": {"default_model": "provider/a"}}
+        base = {"llm": {"models": {"default": "provider/a"}}}
         fingerprint = orchestrator.build_processor_fingerprint(processor, base)
 
         processor.get_prompt_version = Mock(return_value="prompt-v2")
@@ -86,7 +104,7 @@ class CanonicalFingerprintTests(unittest.TestCase):
         self.assertNotEqual(
             fingerprint,
             orchestrator.build_processor_fingerprint(
-                processor, {"llm": {"default_model": "provider/b"}}
+                processor, {"llm": {"models": {"default": "provider/b"}}}
             ),
         )
         processor.PROCESSOR_SCHEMA_VERSION = "macro-schema-2"
@@ -103,7 +121,7 @@ class CanonicalFingerprintTests(unittest.TestCase):
         self,
     ):
         processor = FingerprintedProcessor()
-        base = {"llm": {"default_model": "provider/a"}}
+        base = {"llm": {"models": {"default": "provider/a"}}}
         first = orchestrator.build_processor_fingerprint(processor, base)
 
         same_content_new_path = {
@@ -195,7 +213,7 @@ class PromptIdentityTests(unittest.TestCase):
 class ProcessorSkipRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.processor = FingerprintedProcessor()
-        self.config = {"llm": {"default_model": "provider/a"}}
+        self.config = {"llm": {"models": {"default": "provider/a"}}}
         self.writes = patch.object(
             orchestrator, "insert_records", return_value=Mock()
         ).start()

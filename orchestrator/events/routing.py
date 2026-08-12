@@ -16,13 +16,16 @@ def _event_value(event: Any, key: str, default: Any = None) -> Any:
 
 
 def _config() -> Mapping[str, Any]:
-    try:
-        from config_loader import load_config
+    """Load the validated configuration.
 
-        value = load_config()
-    except Exception:
-        return {}
-    return value if isinstance(value, Mapping) else {}
+    load_config() returns the last validated snapshot after a rejected
+    reload, so routing never runs on an empty config; an initial invalid
+    configuration propagates and stops work instead of silently falling
+    back to defaults.
+    """
+    from config_loader import load_config
+
+    return load_config()
 
 
 def _event_type(event: Any) -> str:
@@ -316,7 +319,7 @@ def initial_handler(session: Any, event: MarketEvent) -> dict[str, Any]:
             story_materiality=story_decision,
         )
         return result
-    if event_type == "price_tick":
+    if event_type == "price_tick" and phase5_enabled:
         from market_state import update_price_features
 
         result["market_state"] = update_price_features(session, event, config)

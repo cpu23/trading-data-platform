@@ -10,12 +10,9 @@ llm:
   api_key: ${OPENROUTER_API_KEY}
   api_keys:
     investment_analysis: ${OPENROUTER_API_KEY}
-  # 2026-08-08 core benchmark: Luna delivered 100% first-pass strict schemas
-  # and evidence validity across 36 runs at $0.0002 mean request cost.
   # Single source of truth: every LLM processor inherits llm.models.default.
-  # Per-processor model selectors are deprecated and ignored by the settings
-  # form; legacy keys in old operator profiles remain readable for one release
-  # with a deprecation warning.
+  # Per-processor model selectors are unsupported; the frozen config schema
+  # rejects them and setup_state promotes any legacy default.
   models:
     default: openai/gpt-5.6-luna
   # OpenRouter's Luna endpoint rejects sampling controls; omit temperature
@@ -55,9 +52,9 @@ llm:
       reasoning_effort: low
   stage_timeout_seconds: 90
   validation_retries: 1
-  # LLM schema validation owns the single bounded retry; source HTTP retry defaults
-  # are deliberately separate and are not inherited by LLM calls.
-  max_retries: 1
+  # Paid OpenRouter calls are single-attempt: the endpoint has no documented
+  # inbound idempotency contract, so ambiguous transport/5xx failures must
+  # never be replayed (a replay could double-bill). llm.max_retries is rejected.
   temperature: 0.2
 
 timezone:
@@ -99,22 +96,17 @@ event_pipeline:
   freshness_grace_seconds: 300
   jobs:
     enabled: true
-    batch_size: 25
-    lease_seconds: 120
     worker:
       enabled: true
       id: analysis-jobs
       batch_size: 25
       poll_seconds: 1.0
-      poll_interval_seconds: 1.0
       lease_seconds: 120
     retry:
       max_attempts: 5
       base_seconds: 1.0
       max_seconds: 300.0
       jitter_seconds: 0.25
-      base_backoff_seconds: 1.0
-      max_backoff_seconds: 300.0
     query:
       max_source_rows: 100
       max_watchlist_rows: 100
@@ -126,17 +118,33 @@ event_pipeline:
 
 market_state:
   enabled: true
-  query_limit: 500
+  # Per-symbol price-history row limit for feature reads (window-partitioned;
+  # a dense symbol cannot starve others).
+  rows_per_symbol: 500
+  # Default result limit for market-feature listing.
   snapshot_limit: 100
-  trend_window: 20
-  zscore_window: 60
-  realized_volatility_window: 30
+  # Bar windows are counts of observations (rows), not time.
+  trend_bars: 20
+  # Trailing intraday observations used for the z-score feature.
+  zscore_bars: 60
+  # Realized volatility is computed over exactly this many most-recent closes.
+  volatility_bars: 30
+  # Explicit-unit history window for feature reads. Units: minutes|hours|days.
+  lookback:
+    value: 7
+    unit: days
   state_thresholds:
-    volatility_high: 0.02
-    correlation_high: 0.75
-    trend_epsilon: 0.001
+    # Volatility state-change deadband (current vs previous realized volatility).
+    high_volatility_threshold: 0.02
+    # Cross-asset correlations at/above this absolute level are classified high.
+    high_correlation_threshold: 0.75
+    # Trend slope deadband.
+    trend_slope_epsilon: 0.001
+  # Basket DEFINITIONS (basket name -> member symbols). Breadth is computed
+  # from per-symbol price observations; definitions are never observations.
   baskets:
     global_risk: [EURUSD, AUDJPY, SP500, XAUUSD, GER40, UK100]
+  # Yield-curve DEFINITIONS (spread label -> [long key, short key]).
   yield_curves:
     us_10y_2y: [DGS10, DGS2]
     us_10y_3m: [DGS10, DGS3MO]
@@ -181,10 +189,80 @@ event_class_time_sensitivity:
 
 reaction_windows:
   baseline_lookback_minutes: 120
+  # Pre-event sample window (trading minutes) for matched-horizon volatility.
+  # Independent of the baseline bound: a 60m horizon needs multiple hours of
+  # samples to yield same-horizon returns.
+  volatility_lookback_minutes: 1440
   target_tolerance_minutes: 5
   max_event_age_minutes: 360
-  session_close: "21:00:00"
   backfill_limit: 100
+  # Optional venue calendars for calendar-aware baseline/target selection and
+  # end-of-session targets. Everything is optional: absent keys fall back to
+  # deterministic built-ins (24x5 FX, US/UK/DE exchange calendars with observed
+  # holidays, early closes, and DST). weekdays use ISO numbering:
+  # 1=Monday .. 5=Friday. Each venue's close_time is the single executable
+  # session-close source (there is no separate reaction_windows.session_close).
+  calendars:
+    default_venue: fx_24x5
+    # Per-instrument policy (every field executable):
+    #   venue                required base rule (built-in or a venues key)
+    #   exchange_calendar    optional rule selector; takes precedence over venue
+    #   timezone/session_open/session_close
+    #                        optional per-instrument overrides applied to the rule
+    #   price_timeframe      market-data feed for sample queries (defaults to
+    #                        the window timeframe)
+    #   target_selection_policy
+    #                        target = first market sample at/after the target
+    # Bare venue-name entries are also accepted as shorthand.
+    instruments:
+      SP500:
+        venue: nyse
+        price_timeframe: PRICE
+        target_selection_policy: first
+      US500:
+        venue: nyse
+        price_timeframe: PRICE
+        target_selection_policy: first
+      GER40:
+        venue: xetra
+        price_timeframe: PRICE
+        target_selection_policy: first
+      DE40:
+        venue: xetra
+        price_timeframe: PRICE
+        target_selection_policy: first
+      UK100:
+        venue: lse
+        price_timeframe: PRICE
+        target_selection_policy: first
+      FTSE100:
+        venue: lse
+        price_timeframe: PRICE
+        target_selection_policy: first
+    venues:
+      # FX market week (documented policy): opens Sunday 17:00
+      # America/New_York and closes Friday 17:00 America/New_York, continuous
+      # (no daily maintenance modeled). DST shifts the UTC boundaries.
+      fx_24x5:
+        timezone: America/New_York
+        open_time: "17:00:00"
+        close_time: "17:00:00"
+        weekdays: [7, 1, 2, 3, 4, 5]
+      nyse:
+        timezone: America/New_York
+        open_time: "09:30:00"
+        close_time: "16:00:00"
+        weekdays: [1, 2, 3, 4, 5]
+      xetra:
+        timezone: Europe/Berlin
+        open_time: "09:00:00"
+        close_time: "17:30:00"
+        weekdays: [1, 2, 3, 4, 5]
+      lse:
+        timezone: Europe/London
+        open_time: "08:00:00"
+        close_time: "16:30:00"
+        weekdays: [1, 2, 3, 4, 5]
 
 story_clustering:
   enabled: true
@@ -319,8 +397,8 @@ research_intelligence:
 
 collectors:
   fred:
-    enabled: true
-    api_key: ${FRED_API_KEY}
+    enabled: false
+    api_key: ${FRED_API_KEY:-}
     schedule: "0 6 * * *"
     metadata_ttl_days: 30
     max_concurrency: 4
@@ -402,9 +480,9 @@ collectors:
     request_delay_seconds: 2
 
   oanda:
-    enabled: true
+    enabled: false
     stream_enabled: true
-    api_key: ${OANDA_API_KEY}
+    api_key: ${OANDA_API_KEY:-}
     environment: practice
     schedule: "0 6,12,18 * * mon-fri"
     snapshot_timeframe: PRICE
@@ -989,13 +1067,6 @@ watchlist:
       - name: sectors
         symbols: []
 
-api:
-  host: 0.0.0.0
-  port: 8000
-  basic_auth:
-    username: ${DASHBOARD_USER}
-    password: ${DASHBOARD_PASSWORD}
-
 dashboard:
   stale_thresholds:
     briefing_hours: 18
@@ -1040,6 +1111,11 @@ data_quality:
 budgets:
   daily_llm_usd: 2.00
   warn_at_pct: 80
+  # Per-call admission estimate and lifetime for budget reservations; a paid
+  # call is admitted only while spent + active reservations + estimate fit the
+  # cap. Optional: orchestrator defaults are 0.05 USD and 600 seconds.
+  reservation_estimate_usd: 0.05
+  reservation_ttl_seconds: 600
 
 investment_filings:
   enabled: true

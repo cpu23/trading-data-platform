@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from contracts.runtime_config import LlmRoleConfig
 from processors._validators import OutputPolicyError, scan_prohibited_language
 from processors.intelligence import MarketIntelligenceProcessor
 
@@ -380,6 +381,25 @@ class IntelligenceSchemaTests(unittest.TestCase):
         self.assertEqual(profile["call_options"]["max_tokens"], 2400)
         self.assertEqual(
             profile["call_options"]["provider_preferences"]["order"], ["WandB"]
+        )
+
+    def test_stage_profile_consumes_frozen_runtime_role_config(self):
+        config = {
+            "llm": {
+                "intelligence_roles": {
+                    "analyst": LlmRoleConfig(reasoning_effort="high")
+                }
+            }
+        }
+
+        profile = self.processor._stage_profile(config, "analyst", "fallback")
+
+        self.assertEqual(
+            profile,
+            {
+                "model": "fallback",
+                "call_options": {"reasoning_effort": "high"},
+            },
         )
 
 

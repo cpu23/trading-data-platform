@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from contracts.runtime_config import WatchlistInstrumentConfig
 from processors._validators import (
     coerce_briefing_fields,
     validate_briefing_sections,
@@ -78,6 +79,18 @@ class BriefingTests(unittest.TestCase):
             note_schema["properties"]["asset_class"]["enum"],
             ["forex", "index", "metal"],
         )
+
+    def test_response_schema_consumes_frozen_runtime_watchlist(self):
+        configured = [
+            WatchlistInstrumentConfig(symbol="EURUSD", type="forex"),
+            WatchlistInstrumentConfig(symbol="SP500", type="index"),
+        ]
+
+        schema = DailyBriefingProcessor._response_schema(configured)["schema"]
+        note_properties = schema["properties"]["watchlist_notes"]["items"]["properties"]
+
+        self.assertEqual(note_properties["symbol"]["enum"], ["EURUSD", "SP500"])
+        self.assertEqual(note_properties["asset_class"]["enum"], ["forex", "index"])
 
     def test_prompt_assembly_includes_calendar_and_watchlist(self):
         processor = DailyBriefingProcessor()

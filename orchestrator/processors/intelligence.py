@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -13,6 +14,7 @@ from processors._validators import (
     OutputPolicyError,
     scan_prohibited_language,
 )
+from processors.base import canonical_json_value
 
 logger = get_logger("market_intelligence")
 
@@ -495,7 +497,7 @@ class MarketIntelligenceProcessor:
             "the configured order.\n"
             f"Required schema example:\n{json.dumps(schema)}\n"
             f"Configured symbols: {json.dumps(context['symbols'])}\n"
-            f"Allowed asset channels (eligibility rules, not evidence): {json.dumps(context.get('asset_context', {}))}\n"
+            f"Allowed asset channels (eligibility rules, not evidence): {json.dumps(canonical_json_value(context.get('asset_context', {})))}\n"
             f"CFTC market mapping: {json.dumps(context.get('positioning_markets', {}))}\n"
             "<UNTRUSTED_EVIDENCE>\n"
             f"{json.dumps(context['evidence'], default=str)}\n"
@@ -587,7 +589,7 @@ class MarketIntelligenceProcessor:
             "strict JSON with no extra keys and every symbol exactly once.\n"
             f"Required schema example:\n{json.dumps(schema)}\n"
             f"Configured symbols: {json.dumps(context['symbols'])}\n"
-            f"Allowed asset channels (eligibility rules, not evidence): {json.dumps(context.get('asset_context', {}))}\n"
+            f"Allowed asset channels (eligibility rules, not evidence): {json.dumps(canonical_json_value(context.get('asset_context', {})))}\n"
             "<UNTRUSTED_ROLE_OUTPUTS>\n"
             f"{json.dumps(roles, default=str)}\n"
             "</UNTRUSTED_ROLE_OUTPUTS>"
@@ -673,18 +675,18 @@ class MarketIntelligenceProcessor:
     @staticmethod
     def _stage_profile(config, stage, default_model):
         profiles = config.get("llm", {}).get("intelligence_roles", {})
-        profile = profiles.get(stage, {}) if isinstance(profiles, dict) else {}
+        profile = profiles.get(stage, {}) if isinstance(profiles, Mapping) else {}
         if isinstance(profile, str):
             profile = {"model": profile}
-        if not isinstance(profile, dict):
+        if not isinstance(profile, Mapping):
             profile = {}
         call_options = {}
         if profile.get("reasoning_effort") is not None:
             call_options["reasoning_effort"] = profile["reasoning_effort"]
         if profile.get("max_tokens") is not None:
             call_options["max_tokens"] = int(profile["max_tokens"])
-        if isinstance(profile.get("provider"), dict) and profile["provider"]:
-            call_options["provider_preferences"] = profile["provider"]
+        if isinstance(profile.get("provider"), Mapping) and profile["provider"]:
+            call_options["provider_preferences"] = dict(profile["provider"])
         return {
             "model": str(profile.get("model") or default_model),
             "call_options": call_options,

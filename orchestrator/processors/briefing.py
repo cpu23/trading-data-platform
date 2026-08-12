@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from uuid import uuid4
@@ -14,7 +15,11 @@ from investment_news import load_classified_news
 from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
 from processors._validators import coerce_briefing_fields, validate_briefing_sections
-from processors.base import canonical_fingerprint, load_prompt_template
+from processors.base import (
+    canonical_fingerprint,
+    canonical_json_value,
+    load_prompt_template,
+)
 from processors.macro_trends import format_macro_synthesis
 
 logger = get_logger("processor.briefing")
@@ -27,17 +32,17 @@ class DailyBriefingProcessor:
     PROCESSOR_SCHEMA_VERSION = "1"
 
     @staticmethod
-    def _response_schema(watchlist_config: list[dict]) -> dict:
+    def _response_schema(watchlist_config: list[Mapping]) -> dict:
         symbols = [
             item["symbol"]
             for item in watchlist_config
-            if isinstance(item, dict) and item.get("symbol")
+            if isinstance(item, Mapping) and item.get("symbol")
         ]
         asset_classes = sorted(
             {
                 item["type"]
                 for item in watchlist_config
-                if isinstance(item, dict) and item.get("type")
+                if isinstance(item, Mapping) and item.get("type")
             }
         )
         symbol_schema = {"type": "string"}
@@ -148,7 +153,9 @@ class DailyBriefingProcessor:
             today_events=calendar_bundle["today_prompt"],
             this_week_events=calendar_bundle["week_prompt"],
             watchlist=watchlist_str,
-            asset_context=json.dumps(asset_context, sort_keys=True),
+            asset_context=json.dumps(
+                canonical_json_value(asset_context), sort_keys=True
+            ),
             previous_briefing=previous_briefing,
             investment_news=json.dumps(investment_news, sort_keys=True),
             current_atoms=current_atoms,
@@ -860,13 +867,14 @@ class DailyBriefingProcessor:
         return result
 
     def _atom_limit(self, config: dict) -> int:
-        """Bound the atom set size from processor config (default 30)."""
+        """Bound the atom set size from processor config (default 30).
+
+        The typed ProcessorConfig guarantees max_atoms is an int in 1..200,
+        so no coercion or fallback is needed.
+        """
         processor_config = config.get("processors", {}).get("briefing", {})
-        try:
-            limit = int(processor_config.get("max_atoms", 30) or 30)
-        except (TypeError, ValueError, OverflowError):
-            limit = 30
-        return max(1, min(200, limit))
+        limit = processor_config.get("max_atoms", 30)
+        return max(1, min(200, int(limit)))
 
     def _get_atom_section(self, config: dict, correlation_id: str = "") -> str:
         """Deterministic current-atoms prompt section; empty on any failure."""

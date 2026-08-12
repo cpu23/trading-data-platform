@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import posixpath
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Protocol
@@ -10,7 +11,8 @@ from uuid import UUID
 from budgets import BudgetContext
 
 
-def _canonical_value(value):
+def canonical_json_value(value):
+    """Convert runtime mappings and scalar metadata to deterministic JSON values."""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
@@ -19,19 +21,19 @@ def _canonical_value(value):
         return value.isoformat()
     if isinstance(value, UUID):
         return str(value)
-    if isinstance(value, dict):
-        return {str(key): _canonical_value(item) for key, item in value.items()}
+    if isinstance(value, Mapping):
+        return {str(key): canonical_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_canonical_value(item) for item in value]
+        return [canonical_json_value(item) for item in value]
     if isinstance(value, set):
-        return sorted((_canonical_value(item) for item in value), key=str)
+        return sorted((canonical_json_value(item) for item in value), key=str)
     return value
 
 
 def canonical_fingerprint(payload: dict) -> str:
     """Return a deterministic SHA-256 over canonical bounded metadata."""
     serialized = json.dumps(
-        _canonical_value(payload),
+        canonical_json_value(payload),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

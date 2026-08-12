@@ -6,7 +6,7 @@ explicit instead of depending on where a broad catch happens.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -111,11 +111,13 @@ def build_news_feed_unlocked(
 
         persist_news_observations(config, items)
         pipeline = config.get("event_pipeline", {})
-        if isinstance(pipeline, dict) and pipeline.get("enabled", False):
+        if isinstance(pipeline, Mapping) and pipeline.get("enabled", False):
             from events.publisher import publish_news_records
 
             story_settings = config.get("story_clustering", {})
-            story_settings = story_settings if isinstance(story_settings, dict) else {}
+            story_settings = (
+                story_settings if isinstance(story_settings, Mapping) else {}
+            )
             try:
                 publish_limit = max(
                     1, min(1000, int(story_settings.get("publish_limit", 500)))

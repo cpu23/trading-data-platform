@@ -326,6 +326,8 @@ def operations_summary(
                 "COUNT(*) FILTER (WHERE completed_at IS NULL AND failed_at IS NULL "
                 "AND claimed_at IS NOT NULL AND claimed_at <= :expired) AS expired, "
                 "COUNT(*) FILTER (WHERE failed_at IS NOT NULL) AS failed, "
+                "COUNT(*) FILTER (WHERE completed_at IS NOT NULL) AS completed, "
+                "COUNT(*) FILTER (WHERE attempt_count > 1) AS retried, "
                 "MIN(created_at) FILTER (WHERE completed_at IS NULL AND failed_at IS NULL) AS oldest, "
                 "COALESCE(SUM(attempt_count), 0) AS attempts FROM event_outbox"
             ),
@@ -349,6 +351,8 @@ def operations_summary(
         "claimed": int(row["claimed"] or 0),
         "expired": int(row["expired"] or 0),
         "failed": int(row["failed"] or 0),
+        "completed": int(row["completed"] or 0),
+        "retried": int(row["retried"] or 0),
         "oldest": row["oldest"],
         "attempts": int(row["attempts"] or 0),
         "events_recent": [dict(item) for item in recent],

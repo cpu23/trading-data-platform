@@ -77,8 +77,8 @@ def feed_row(
 ):
     if windows is None:
         windows = [
-            {"horizon": "5m", "percentage_move": 0.4, "reaction_state": "persistence"},
-            {"horizon": "30m", "percentage_move": -0.2, "reaction_state": "reversal"},
+            {"timeframe": "PRICE", "horizon": "5m", "percentage_move": 0.4, "reaction_state": "persistence"},
+            {"timeframe": "PRICE", "horizon": "30m", "percentage_move": -0.2, "reaction_state": "reversal"},
         ]
     if markets is None:
         markets = [
@@ -328,6 +328,7 @@ class ChangeFeedQueryTests(unittest.TestCase):
 
         windows = [
             {
+                "timeframe": "PRICE" if index % 2 == 0 else "5m",
                 "horizon": f"{index}m",
                 "percentage_move": 0.1 * index,
                 "reaction_state": "persistence",
@@ -347,6 +348,7 @@ class ChangeFeedQueryTests(unittest.TestCase):
         self.assertEqual(processed["markets"], ["EURUSD", "SP500", "XAUUSD", "DXY"])
         self.assertEqual(len(processed["reaction_windows"]), 4)
         self.assertEqual(processed["reaction_windows"][0]["horizon"], "0m")
+        self.assertEqual(processed["reaction_windows"][0]["timeframe"], "PRICE")
         self.assertEqual(processed["state"], "confirmed")
         self.assertEqual(processed["state_class"], "bullish")
         self.assertTrue(processed["interpretation_available"])

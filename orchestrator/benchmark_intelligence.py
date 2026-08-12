@@ -303,7 +303,9 @@ def main():
     if unknown:
         raise SystemExit(f"Unknown variants: {', '.join(unknown)}")
 
-    config = load_config()
+    # The benchmark mutates its own copy (deepcopy + setdefault/assignment);
+    # convert the frozen validated snapshot to a plain dict first.
+    config = load_config().model_dump(mode="python")
     report = {
         "created_at": datetime.now(UTC).isoformat(),
         "variants": [],

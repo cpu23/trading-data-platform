@@ -45,15 +45,7 @@ def _response(payload=None, attempts=1):
 
 class ResolveModelTests(unittest.TestCase):
     def test_models_default_is_single_source_of_truth(self):
-        config = {
-            "llm": {
-                "models": {
-                    "default": "deepseek/deepseek-v4-flash-0731",
-                    "briefing": "legacy/briefing-model",
-                },
-                "default_model": "legacy/default",
-            }
-        }
+        config = {"llm": {"models": {"default": "deepseek/deepseek-v4-flash-0731"}}}
         self.assertEqual(resolve_model(config), "deepseek/deepseek-v4-flash-0731")
         self.assertEqual(
             resolve_model(config, processor_id="briefing"),
@@ -66,27 +58,38 @@ class ResolveModelTests(unittest.TestCase):
             resolve_model(config, model="explicit/model"), "explicit/model"
         )
 
-    def test_legacy_default_model_used_when_models_default_absent(self):
+    def test_legacy_default_model_is_ignored_without_models_default(self):
         config = {"llm": {"default_model": "legacy/default"}}
-        self.assertEqual(resolve_model(config), "legacy/default")
+        self.assertEqual(resolve_model(config), DEFAULT_MODEL_SLUG)
 
-    def test_legacy_processor_override_used_only_without_any_default(self):
+    def test_per_processor_selectors_are_ignored(self):
         config = {"llm": {"models": {"briefing": "provider/briefing"}}}
         self.assertEqual(
-            resolve_model(config, processor_id="briefing"), "provider/briefing"
+            resolve_model(config, processor_id="briefing"), DEFAULT_MODEL_SLUG
         )
         self.assertEqual(
             resolve_model(config, processor_id="event_impact"), DEFAULT_MODEL_SLUG
+        )
+        with_default = {
+            "llm": {
+                "models": {
+                    "default": "pinned/model",
+                    "briefing": "provider/briefing",
+                }
+            }
+        }
+        self.assertEqual(
+            resolve_model(with_default, processor_id="briefing"), "pinned/model"
         )
 
     def test_fallback_is_pinned_production_slug(self):
         self.assertEqual(resolve_model({}), DEFAULT_MODEL_SLUG)
         self.assertEqual(resolve_model({"llm": {}}), DEFAULT_MODEL_SLUG)
 
-    def test_structured_legacy_override_object_form(self):
+    def test_structured_legacy_override_object_form_is_ignored(self):
         config = {"llm": {"models": {"briefing": {"model": "provider/briefing"}}}}
         self.assertEqual(
-            resolve_model(config, processor_id="briefing"), "provider/briefing"
+            resolve_model(config, processor_id="briefing"), DEFAULT_MODEL_SLUG
         )
 
 
