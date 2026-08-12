@@ -14,9 +14,11 @@ retained for historical lineage but no longer populated.
 TwitterAPI.io requires `TWITTERAPI_KEY`; Reuters requires no credential. Never
 store credentials in source control.
 
-Production state and snapshots live under `/var/lib/trading-data/news`. Compose
-bind-mounts `./data/news` read-write into the orchestrator and read-only into the
-API, so restarts preserve source cursors and both services see the same feed.
+Production state and snapshots live under `/var/lib/trading-data/news`.
+Normal Compose shares the `newsdata` named volume read-write with the
+orchestrator/worker roles and read-only with the API, so restarts preserve
+source cursors without host source mounts. The explicit development override
+may bind `./data/news` at the same paths for local inspection.
 
 ## Commands
 

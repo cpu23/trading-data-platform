@@ -25,8 +25,8 @@ class CIWorkflowTests(unittest.TestCase):
         for name, directory in (("api-unit", "api"), ("orchestrator-unit", "orchestrator")):
             job = jobs[name]
             rendered = yaml.safe_dump(job)
-            self.assertIn("actions/setup-python@v5", rendered)
-            self.assertIn("astral-sh/setup-uv@v6", rendered)
+            self.assertRegex(rendered, r"actions/setup-python@[0-9a-f]{40}")
+            self.assertRegex(rendered, r"astral-sh/setup-uv@[0-9a-f]{40}")
             self.assertIn('python-version: \'3.12\'', rendered)
             self.assertIn("enable-cache: 'true'", rendered)
             commands = "\n".join(step.get("run", "") for step in job["steps"])
@@ -36,6 +36,18 @@ class CIWorkflowTests(unittest.TestCase):
                 [step.get("working-directory") for step in job["steps"] if "unittest discover" in step.get("run", "")],
                 [directory],
             )
+
+    def test_actions_are_pinned_to_immutable_commits(self):
+        uses = [
+            step["uses"]
+            for job in self.workflow["jobs"].values()
+            for step in job["steps"]
+            if "uses" in step
+        ]
+        self.assertTrue(uses)
+        for action in uses:
+            with self.subTest(action=action):
+                self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
 
     def test_static_job_covers_compile_migrations_compose_yaml_and_diff(self):
         commands = "\n".join(

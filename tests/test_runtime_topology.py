@@ -25,8 +25,9 @@ class RuntimeTopologyTests(unittest.TestCase):
         for path in COMPOSE_FILES:
             with self.subTest(path=path.name):
                 services = load_compose(path)["services"]
-                expected = {"postgres", "migrate", "orchestrator", "api"}
-                image_services = {"migrate", "orchestrator", "api"}
+                role_services = {"orchestrator", "scheduler", "worker", "outbox", "quotes"}
+                expected = {"postgres", "migrate", "api", *role_services}
+                image_services = {"migrate", "api", *role_services}
                 if path.name == "docker-compose.demo.yml":
                     expected.add("demo-live")
                     image_services.add("demo-live")
@@ -48,13 +49,22 @@ class RuntimeTopologyTests(unittest.TestCase):
                 )
 
                 orchestrator = services["orchestrator"]
-                self.assertIn("uvicorn", " ".join(orchestrator["command"]))
+                self.assertIn("roles run api", " ".join(orchestrator["command"]))
                 self.assertEqual(
                     orchestrator["depends_on"]["migrate"]["condition"],
                     "service_completed_successfully",
                 )
                 self.assertNotIn("ports", orchestrator)
                 self.assertIn("healthcheck", orchestrator)
+                for role in ("scheduler", "worker", "outbox", "quotes"):
+                    service = services[role]
+                    self.assertIn(f"roles run {role}", " ".join(service["command"]))
+                    self.assertIn(f"check {role}", " ".join(service["healthcheck"]["test"]))
+                    self.assertEqual(
+                        service["depends_on"]["migrate"]["condition"],
+                        "service_completed_successfully",
+                    )
+                    self.assertNotIn("ports", service)
 
                 api = services["api"]
                 self.assertIn("uvicorn", " ".join(api["command"]))
@@ -66,7 +76,10 @@ class RuntimeTopologyTests(unittest.TestCase):
                     api["depends_on"]["migrate"]["condition"],
                     "service_completed_successfully",
                 )
-                self.assertEqual(api["environment"]["ORCHESTRATOR_URL"], "http://orchestrator:8000")
+                self.assertIn(
+                    "http://orchestrator:8000",
+                    api["environment"]["ORCHESTRATOR_URL"],
+                )
                 self.assertEqual(len(api["ports"]), 1)
                 self.assertTrue(api["ports"][0].endswith(":8000"))
 
@@ -87,29 +100,106 @@ class RuntimeTopologyTests(unittest.TestCase):
         self.assertGreaterEqual(dockerfile.count("@sha256:"), 3)
         self.assertIn("USER 10001:10001", dockerfile)
         self.assertNotIn(":latest", dockerfile)
+        database_dockerfile = (ROOT / "db" / "Dockerfile").read_text()
+        self.assertIn("timescale/timescaledb@sha256:", database_dockerfile)
+        self.assertNotIn("timescaledb:latest", database_dockerfile)
         for path in COMPOSE_FILES:
-            source = path.read_text()
-            self.assertIn("timescale/timescaledb@sha256:", source)
-            self.assertNotIn("timescaledb:latest", source)
+            self.assertNotIn("timescaledb:latest", path.read_text())
+
+    def test_image_artifacts_stay_root_owned_and_only_state_is_writable(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        # A compromised runtime user must not be able to modify application
+        # code, config, prompts, or migrations shipped in the image.
+        self.assertNotRegex(dockerfile, r"chown[^\n]*\s/app(\s|$)")
+        self.assertIn("chown 10001:10001 /app/state", dockerfile)
+        self.assertIn("chmod 700 /app/state", dockerfile)
+        self.assertIn(
+            "chown -R 10001:10001 /var/log/trading-data /var/lib/trading-data",
+            dockerfile,
+        )
+        # Bytecode caching would write under the read-only /app tree; it is
+        # disabled so imports never depend on a writable image layer.
+        self.assertIn("ENV PYTHONDONTWRITEBYTECODE=1", dockerfile)
+
+    def test_normal_compose_is_immutable_authenticated_and_internal_db(self):
+        production = load_compose(ROOT / "docker-compose.yml")
+        services = production["services"]
+        self.assertNotIn("ports", services["postgres"])
+        api_environment = services["api"]["environment"]
+        self.assertEqual(api_environment["DEPLOYMENT_MODE"], "production")
+        self.assertNotIn("DISABLE_AUTH", api_environment)
+        for service_name, service in services.items():
+            for volume in service.get("volumes", []):
+                with self.subTest(service=service_name, volume=volume):
+                    self.assertFalse(str(volume).startswith("."))
+
+        development = load_compose(ROOT / "docker-compose.dev.yml")["services"]
+        self.assertIn("ports", development["postgres"])
+        self.assertTrue(
+            any(
+                str(volume).startswith(".")
+                for service in development.values()
+                for volume in service.get("volumes", [])
+            )
+        )
 
     def test_long_running_services_have_bounded_health_and_restart(self):
         for path in COMPOSE_FILES:
             services = load_compose(path)["services"]
-            for name in ("orchestrator", "api"):
+            for name in ("orchestrator", "scheduler", "worker", "outbox", "quotes", "api"):
                 with self.subTest(path=path.name, service=name):
                     service = services[name]
                     self.assertEqual(service["restart"], "unless-stopped")
                     health = service["healthcheck"]
                     for key in ("interval", "timeout", "retries", "start_period"):
                         self.assertIn(key, health)
-                    self.assertIn("http://127.0.0.1:8000", " ".join(health["test"]))
+                    probe = " ".join(health["test"])
+                    if name in {"orchestrator", "api"}:
+                        self.assertIn("http://127.0.0.1:8000", probe)
+                    else:
+                        self.assertIn(f"roles check {name}", probe)
+
+    def test_operatorstate_is_readonly_everywhere_except_api_writer(self):
+        """Immutable managed state: only the API setup/settings writer mounts
+        /app/state read-write; migrate and every role mount it read-only.
+
+        Production compose only — the demo compose is state-less by design
+        (demo credentials are baked, no managed operator state).
+        """
+        services = load_compose(COMPOSE_FILES[0])["services"]
+        for name in ("migrate", "orchestrator", "scheduler", "worker", "outbox", "quotes"):
+            volumes = services[name].get("volumes", [])
+            state_mounts = [v for v in volumes if "operatorstate" in v]
+            self.assertEqual(
+                len(state_mounts), 1, f"{name} must mount operatorstate"
+            )
+            self.assertTrue(
+                state_mounts[0].endswith(":ro"),
+                f"{name} must mount operatorstate read-only: {state_mounts[0]}",
+            )
+        api_volumes = services["api"].get("volumes", [])
+        api_state = [v for v in api_volumes if "operatorstate" in v]
+        self.assertEqual(len(api_state), 1, "api must mount operatorstate")
+        self.assertFalse(
+            api_state[0].endswith(":ro"),
+            "api (setup/settings writer) must keep operatorstate rw",
+        )
 
     def test_demo_is_offline_and_contains_no_secret_interpolation(self):
         demo = load_compose(ROOT / "docker-compose.demo.yml")
         rendered = (ROOT / "docker-compose.demo.yml").read_text()
         self.assertNotIn("${FRED_API_KEY", rendered)
         self.assertNotIn("${OPENROUTER_API_KEY", rendered)
-        for name in ("migrate", "orchestrator", "demo-live", "api"):
+        for name in (
+            "migrate",
+            "orchestrator",
+            "scheduler",
+            "worker",
+            "outbox",
+            "quotes",
+            "demo-live",
+            "api",
+        ):
             environment = demo["services"][name]["environment"]
             self.assertEqual(environment["DEMO_MODE"], "true")
             self.assertEqual(environment["FRED_API_KEY"], "demo-disabled")

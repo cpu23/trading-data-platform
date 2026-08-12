@@ -31,7 +31,15 @@ COPY db/migrations /app/db/migrations
 RUN groupadd --gid 10001 trading-data \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin trading-data \
     && mkdir -p /var/log/trading-data /var/lib/trading-data/news /app/state \
-    && chown -R 10001:10001 /var/log/trading-data /var/lib/trading-data /app
+    && chown -R 10001:10001 /var/log/trading-data /var/lib/trading-data \
+    && chown 10001:10001 /app/state \
+    && chmod 700 /app/state
+
+# Image artifacts (code, config, prompts, migrations, venvs) stay root-owned
+# and read-only for the runtime user; only the state and data paths above are
+# writable. Bytecode caching would otherwise try to write under /app and is
+# useless in an immutable image anyway.
+ENV PYTHONDONTWRITEBYTECODE=1
 
 USER 10001:10001
 

@@ -7,11 +7,18 @@ This guide describes the repaired split-service runtime. For topology rationale,
 The image is shared, but each Compose service owns one lifecycle:
 
 1. `postgres` starts and becomes healthy.
-2. `migrate` runs the checksum-verified migration chain once and exits successfully.
-3. `orchestrator` starts only after migration success. It is internal-only and owns scheduling, durable jobs, collectors, processors, news collection, and the quote stream.
-4. `api` starts after migrations and orchestrator health. It is the only application service with a host port.
+2. `migrate` applies the checksum-verified migration chain and exits.
+3. `orchestrator` serves only the internal HTTP control API.
+4. `scheduler` records durable logical-run identity and enqueues work.
+5. `worker` claims leased operation and analysis jobs.
+6. `outbox` publishes transactional outbox rows.
+7. `quotes` owns the quote stream.
+8. `api` serves the public dashboard/API and is the only application service with a host port.
 
-The shared application image runs as UID/GID 10001 with `no-new-privileges`, bounded memory/PIDs, and immutable Python/uv base digests. Compose named volumes `newsdata` and `logsdata` provide the writable shared paths; do not replace them with root-owned bind mounts unless UID 10001 has explicit access.
+Application containers run as UID/GID 10001 with `no-new-privileges`, bounded
+memory/PIDs, and immutable base digests. Normal Compose executes image-copied
+code and configuration; named volumes hold only mutable database, state, News,
+and log data. Use `docker-compose.dev.yml` explicitly for bind mounts.
 
 Start production only after replacing every required `.env` placeholder:
 
@@ -19,6 +26,12 @@ Start production only after replacing every required `.env` placeholder:
 cp .env.example .env
 docker compose config --quiet
 docker compose up -d
+```
+
+Development-only mounts and loopback PostgreSQL publication:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 Use the credential-free deterministic stack for local acceptance:
@@ -70,6 +83,40 @@ The header exposes one primary Refresh action and a compact mode menu.
 
 `force_full` is a trusted manual override, not a scheduler default. Concurrent identical cycles are rejected with a conflict rather than duplicated.
 
+### Authenticated browser workflow
+
+1. Sign in, open **Settings**, and review **Data & operations** before starting
+   work. The panel shows the active model and daily cap, restart/configuration
+   state, required-role health, source freshness, and the next scheduled run.
+2. Select **Run due cycle** for normal operation. The browser submits one
+   authenticated, CSRF-protected `/api/triggers/cycle` request and retains the
+   returned correlation ID.
+3. Keep the page open while it follows
+   `/api/system/cycle-status?correlation_id=<id>`. `accepted`, `queued`, and
+   `running` are non-terminal states. `success`, `partial`, `failed`, and
+   `validation_failed` are terminal outcomes; `partial` must be investigated
+   rather than treated as success.
+4. Expand the result or open **Operations** and **Logs** to identify the failed
+   component. **Quality checks** is the live data-trust view; `/ready` is the
+   dependency gate and `/live` is only process liveness.
+5. Retryable operation failures are requeued automatically under the bounded
+   worker policy. Start a new cycle only after a terminal result and only when
+   the whole cycle should be re-evaluated. Use **Force full cycle** only when
+   bypassing due-time and unchanged-input skips is intentional.
+
+The progress display is derived from persisted `cycle_runs`, collection and
+processing logs, not browser-local state. Closing the page does not cancel
+accepted work. A worker crash does not erase it: the job remains claimable
+after lease expiry, and the same correlation ID continues to expose the final
+state. Conversely, `202 Accepted` and a disabled button prove only durable
+admission, not successful execution.
+
+After setup or a Settings save that reports `restart_required`, wait for
+supervised roles to restart against the committed configuration version before
+judging a run. `docker compose ps` must show required services healthy and
+`/ready` must return 2xx; a version mismatch is an expected temporary
+non-readiness condition, not permission to bypass the gate.
+
 ## Scheduler semantics
 
 Schedules are UTC cron expressions from `config/config.yaml`.
@@ -87,15 +134,17 @@ The Operations page and authenticated health API expose scheduler state and next
 
 ## Durable jobs, abandonment, and retry
 
-A mutation is accepted into `cycle_runs` before background work begins. PostgreSQL advisory locks and durable idempotency ownership prevent duplicate execution. Running jobs heartbeat every 30 seconds.
+HTTP `202 Accepted` means the acceptance row and corresponding
+`operation_jobs` row committed in one transaction. The operation worker claims
+with `FOR UPDATE SKIP LOCKED`, records a lease owner and heartbeat, and applies
+bounded full-jitter retry/backoff. Completion is idempotent. A killed worker
+does not lose accepted work: another worker reclaims an expired lease.
 
-At orchestrator startup:
-
-- accepted jobs older than 15 minutes are marked `abandoned`;
-- running jobs whose heartbeat is older than 5 minutes are marked `abandoned`;
-- abandoned work is **not** retried automatically.
-
-Only abandoned runs can be retried through the authenticated retry route. Retry creates a new accepted run linked to the prior request; it does not rewrite history.
+Jobs that exhaust `max_attempts` enter an observable terminal failure state;
+they are never silently dropped or retried forever. Active dedupe identity and
+the scheduler's durable logical-run key prevent duplicate scheduled execution.
+`cycle_runs` remains the user-facing operation history rather than being used
+as an in-process task list.
 
 ## Hard budgets and deadlines
 
@@ -112,37 +161,79 @@ Current production defaults:
 - filing lookback: 730 days;
 - automatic model analysis after filing ingestion: disabled.
 
-Budget accounting includes failed attempts. If the budget state cannot be read, processing fails closed. Raw model responses and secrets are not persisted in failure telemetry.
+Budget decisions fail closed on missing or malformed data. Before a paid call,
+the worker transactionally reserves its estimate under a PostgreSQL lock;
+settled spend plus active reservations plus the request may not exceed the
+daily cap. Completion settles estimated to actual cost. Expired abandoned
+reservations are released explicitly.
+
+Manual overrides are durable but narrowly scoped to correlation ID, run kind,
+component/requestor, and expiry. The worker validates and consumes an override
+once at claim time, then mints the trusted in-process budget context. HTTP
+clients cannot mint that trust token, and it is propagated to every paid call.
+Raw model responses, credentials, and authorization material are not persisted
+in failure telemetry.
 
 ## Health contracts
 
-Health separates process survival from dependency and data quality:
+Health separates process survival, dependencies, and data trust:
 
-- `liveness: ok` means the process is running.
-- `readiness: ready` means required service dependencies are usable.
-- `readiness: unready` returns HTTP 503 when the database or required orchestrator contract is unavailable.
-- `data_health: degraded` reports stale or unhealthy data without pretending the process is dead.
+- `/live` means only that the HTTP process can respond.
+- `/ready` checks required database, configuration, internal-service, and role-heartbeat dependencies with bounded probes.
+- Critical dependency failure returns non-2xx readiness.
+- Data quality is explicitly `healthy`, `degraded`, or `unknown`.
+- A missing required quality subsystem or an empty result when data is expected is `unknown`, never healthy.
 
-The dashboard may therefore truthfully show **Degraded** while API readiness
-remains ready. `/api/system/health` is authenticated and makes one internal
-orchestrator `/health` request. That response carries a configuration-aware
-quality snapshot cached for 30 seconds by default. The cache TTL is bounded by
-`HEALTH_QUALITY_CACHE_SECONDS`; changing activated configuration replaces the
-configuration object and forces a new snapshot. Refreshes run under a lock so
-concurrent dashboard, settings, API, and Compose probes do not duplicate the
-quality sweep.
-
-The orchestrator `/quality` endpoint is intentionally uncached and is used by
-the operator Quality page for an explicit live diagnostic. The orchestrator
-health port remains internal to Compose. A stale snapshot can therefore affect
-summary health for at most the configured TTL, while the live Quality page is
-available when immediate confirmation is required.
+`/api/system/health` is authenticated and consumes one internal orchestrator
+health snapshot. Expensive quality checks may be cached for the bounded
+`HEALTH_QUALITY_CACHE_SECONDS` interval; the operator `/quality` path remains an
+explicit live diagnostic. Optional dependency failures can degrade status
+without failing readiness, while required dependency failures cannot.
 
 ## Authentication, CSRF, and SSE
 
-All API routes require Basic authentication except the exact SSE stream route. The authenticated token endpoint issues a short-lived, signed, path-bound, HttpOnly, SameSite-Strict cookie; the stream validates that cookie before starting its generator. Credentials and tokens never appear in the EventSource URL.
+Normal deployment requires authentication; `DISABLE_AUTH` is a startup error
+outside explicit demo/test mode. Browser login issues an HttpOnly,
+SameSite-Strict signed session. `SESSION_SIGNING_KEY_PREVIOUS` is read-only
+during rotation, while every new session uses the current key.
 
-Browser mutations require a signed, expiring CSRF token and same-origin validation. JSON-only machine requests are exempt only when they carry no browser signals. API-to-orchestrator mutations forward the configured internal Basic credentials.
+Authenticated browser `POST`, `PUT`, `PATCH`, and `DELETE` requests require a
+valid signed CSRF token and an Origin matching `EXTERNAL_ORIGIN`. The only token
+exemptions are the exact login and bootstrap-activation endpoints; broader
+`/api/setup/...` prefixes are protected. `TRUSTED_HOSTS` constrains Host
+headers. SSE uses a separate short-lived, path-bound token and
+`SSE_SIGNING_KEY`.
+
+First activation requires `SETUP_TOKEN` outside demo/test. Activation stages a
+complete versioned state, validates checksums and parsability, then atomically
+switches the current pointer. Failed or concurrent replacements cannot delete a
+previous valid version. Generate `SETUP_TOKEN`, `SESSION_SIGNING_KEY`,
+`CSRF_SIGNING_KEY`, and `SSE_SIGNING_KEY` independently with
+`secrets.token_urlsafe(48)`; never reuse the dashboard password.
+
+## Configuration commits and reloads
+
+Setup and Settings publish a fully validated, versioned configuration snapshot
+with one atomic `current` pointer switch. The API reads that committed snapshot
+without mutating process environment variables. Invalid candidate snapshots are
+rejected and the prior snapshot remains active.
+
+Scheduler, operation/analysis worker, outbox, and quote-stream roles capture the
+active configuration version at startup. After a valid commit they finish the
+current safe boundary, write their final heartbeat state, and exit; Compose
+restarts them against the new immutable snapshot. Until every required role
+reports the active version, `/ready` returns non-2xx with the mismatch. A
+rejected reload never triggers role exit. `restart_required` means the active
+runtime roles must recycle; Compose normally performs that restart
+automatically, while an unsupervised deployment must do so explicitly.
+
+The worker role quiesces both operation and analysis claim loops before waiting,
+so neither loop can claim fresh work while its sibling drains. Production and
+demo Compose allow 30 minutes for an in-flight job to reach its transactional
+finalization boundary. If the container is killed before that drain completes,
+the durable lease expires and another worker reclaims the job; no heartbeat may
+claim the old process stopped before both worker threads have exited.
+
 
 ## News operations and cost caution
 

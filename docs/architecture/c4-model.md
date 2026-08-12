@@ -78,17 +78,22 @@ flowchart TB
 
 | Container | Responsibility | Exposed interface |
 | --- | --- | --- |
-| Web/API | Authentication, onboarding, settings, concurrent dashboard rendering, investment/report views and APIs, evidence/history APIs, budgets, and orchestration proxying. | Loopback-bound port `8000` by default; deterministic demo uses `8001`. |
-| Orchestrator | Scheduler, isolated collectors, regulatory filing intake, document extraction, deterministic investment analysis, live and cached data quality, cycle coordination, analytical processors, atomic snapshot publication, and OANDA quote stream. | Internal port `8000`; not host-published by Compose. |
-| PostgreSQL/TimescaleDB | Normalized source records, filing documents, investment analyses, derived intelligence, version history, evidence lineage, operational runs, generation attempts, and retention functions. | Loopback-bound port `5432` by default. |
-| State init | Moves compatible legacy state into the private persistent volume before the application starts. | No network interface. |
+| Web/API | Authentication, onboarding, settings, concurrent dashboard rendering, investment/report views and APIs, evidence/history APIs, budgets, and orchestration proxying. | Loopback-bound port `8000` by default. |
+| Orchestrator API | Internal control, bounded health/quality, durable acceptance, status, and query contracts. | Internal port `8000`; never host-published by normal Compose. |
+| Scheduler | Cron reconciliation and durable logical-run enqueue only. | No network interface. |
+| Operation/analysis worker | Leased collectors, processors, filing work, investment analysis, and analysis jobs. | No network interface. |
+| Outbox worker | Transactional event publication. | No network interface. |
+| Quote streamer | OANDA/demo quote-stream ownership and durable heartbeat/state. | No network interface. |
+| PostgreSQL/TimescaleDB | Normalized source records, derived intelligence, durable jobs, reservations, leases, version history, and operational state. | Compose network only; development override may publish loopback `5432`. |
+| Migration gate | Applies checksum-verified forward migrations once. | No network interface. |
 
 ### Trust boundaries
 
 - The browser reaches the Web/API container only.
-- The orchestrator is reachable on the private Compose network.
-- Database and API host bindings default to loopback.
-- External secrets live in environment variables or private `0600` state files.
+- The orchestrator API and PostgreSQL are reachable only on the private Compose network.
+- Normal deployment publishes only the Web/API loopback port; the development
+  override may additionally publish PostgreSQL on loopback.
+- External secrets live in environment variables or private `0600` versioned setup state.
 - LAN or Tailscale exposure requires an explicitly configured trusted boundary.
 
 ## Level 3 — Web/API Components

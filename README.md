@@ -265,32 +265,36 @@ partial path and makes no external or paid API calls.
 ### Prerequisites
 
 - Docker and Docker Compose v2
-- A free [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html)
-- An OpenRouter API key for the enabled analytical processors
-- An OANDA personal access token for the enabled watchlist price collector
+- An OpenRouter API key for the analytical processors
+- A free [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html) when
+  US macroeconomic coverage is selected
+- An OANDA personal access token when the watchlist price collector is enabled
 - A descriptive SEC user agent; Companies House, EDINET, and OpenDART keys are
   optional and enable only their corresponding filing sources
 
-The production configuration treats those three credentials as required because
-the corresponding sources/processors are enabled. Empty values fail startup
-configuration validation; replace every placeholder before starting. The demo
-Compose file remains credential-free by supplying non-secret demo placeholders
-and disabling external collection.
+OpenRouter is globally required. Credentialed collectors fail closed when
+enabled without their matching key, while disabled collectors may remain
+blank. The demo Compose file remains credential-free by supplying non-secret
+demo placeholders and disabling external collection.
 
 ### Start The Platform
 
 ```bash
 cp .env.example .env
-# Populate every required FRED, OpenRouter, and OANDA credential and replace
-# the example passwords. Required values left blank are rejected at startup.
+# Populate OpenRouter and any selected collector credentials, replace the
+# dashboard password, and independently generate SETUP_TOKEN plus all three
+# signing keys.
 docker compose up -d
 ```
 
-Docker Compose starts four independently owned lifecycles:
+Docker Compose starts independently owned lifecycles:
 
 - PostgreSQL with TimescaleDB
 - A checksum-verified one-shot migration gate
-- The internal collection, scheduling, and processing orchestrator
+- An internal orchestrator HTTP API
+- A singleton scheduler that only enqueues durable work
+- A leased operation/analysis worker
+- Transactional-outbox and quote-stream workers
 - The public FastAPI JSON API and dashboard
 
 Application processes run as UID 10001 with no-new-privileges, bounded memory
@@ -298,6 +302,71 @@ and PID limits, immutable upstream image digests, and shared named volumes for
 logs and published News. Only the API publishes a host port.
 
 The dashboard is exposed at `http://127.0.0.1:8000` by default.
+
+Normal deployment runs code, configuration, prompts, migrations, and database
+bootstrap SQL copied into immutable images. PostgreSQL is reachable only on the
+Compose network. For source/configuration bind mounts and loopback database
+access during development, opt in explicitly:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+### Authentication And Bootstrap
+
+Normal deployment is authenticated. `DISABLE_AUTH` is rejected unless
+`DEPLOYMENT_MODE` is explicitly `demo` or `test`; loopback binding is not an
+authentication control. Before first activation, replace `SETUP_TOKEN` and the
+three purpose-specific signing-key placeholders in `.env`, then open `/setup`.
+The activation request must present the bootstrap token and commits a complete
+versioned state atomically.
+
+Browser mutations require a session, a signed CSRF token, and an `Origin` that
+matches `EXTERNAL_ORIGIN`. `TRUSTED_HOSTS` constrains accepted Host headers.
+Remote production browser origins must use HTTPS with `COOKIE_SECURE=1`; plain
+HTTP is accepted only for an explicit loopback origin. `ORCHESTRATOR_URL` is a
+deployment-controlled root origin and cannot be changed through setup/operator
+state, preventing that lower-trust state from retargeting internal credentials.
+`SESSION_SIGNING_KEY_PREVIOUS` provides a bounded session-rotation grace period;
+new sessions are always signed with `SESSION_SIGNING_KEY`. CSRF and SSE keys are
+never reused as session keys or derived from the dashboard password.
+
+Configuration commits are versioned, validated snapshots. The API adopts a
+valid commit atomically; long-running scheduler, worker, outbox, and quote roles
+detect the committed version, stop gracefully, and are restarted by Compose.
+During convergence, readiness reports a version mismatch rather than claiming
+the old and new configuration are equivalent. A rejected reload retains the
+last valid snapshot. `restart_required` means one or more runtime roles must
+restart; Compose normally performs that recycling automatically.
+
+### First Authenticated Run
+
+1. Open `/setup`, enter the configured `SETUP_TOKEN`, choose an administrator
+   password of at least 12 characters, select coverage, and add the model slug
+   and provider credentials required by the selected sources.
+2. Activate the platform. If the committed configuration changes a
+   restart-sensitive section, readiness may be non-2xx while the supervised
+   scheduler and workers exit at a safe boundary and restart against the new
+   configuration version. Wait for `docker compose ps` to report the required
+   services healthy.
+3. Open `/login` and sign in with the administrator password. Browser sessions
+   are authenticated and all state-changing requests use the signed CSRF token
+   issued by the application.
+4. Visit **Settings → Data & operations**. Review the active model, daily
+   budget, role health, next schedule, and source freshness before selecting
+   **Run due cycle**. The page follows the durable correlation ID through
+   collection and processing rather than treating HTTP `202 Accepted` as
+   completion.
+5. Inspect **Dashboard**, **News**, **Investments**, and **Research** for
+   outputs; use **Operations**, **Logs**, and **Quality checks** for a partial
+   or failed run. A terminal `partial` result means accepted work completed
+   durably but at least one collector or processor failed; it is not reported
+   as success.
+
+Use **Force full cycle** only for deliberate recovery or validation: it ignores
+normal due-time and unchanged-input skips and may consume substantially more
+provider budget. See [docs/operations.md](docs/operations.md) for exact cycle,
+queue, retry, and health semantics.
 
 ### Run And Inspect Collectors
 
@@ -368,8 +437,9 @@ scripts/smoke_test.sh
 The GitHub Actions workflow runs compilation, API/orchestrator/root tests,
 deterministic failure drills, migration and fixture checks, Compose validation,
 Ruff, dependency audits, clean-migration and live cross-service contracts, the
-credential-free demo smoke, and a High/Critical Trivy image gate on every push
-and pull request.
+credential-free demo smoke, and a Trivy image gate for fix-available High and
+Critical vulnerabilities on every push and pull request. Vulnerabilities with
+no published fix are reported separately rather than enforced by that gate.
 
 ## Project Structure
 

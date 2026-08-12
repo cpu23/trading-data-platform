@@ -8,20 +8,24 @@ instructions.
 
 The production Compose project contains:
 
-- `postgres`: PostgreSQL 16 with TimescaleDB.
+- `postgres`: PostgreSQL with TimescaleDB.
 - `migrate`: checksum-verified, one-shot schema gate.
-- `orchestrator`: collectors, scheduler, outbox delivery, durable analysis jobs,
-  section snapshot publication, reconciliation, filing intake, investment
-  analysis, quality checks, and the OANDA stream.
+- `orchestrator`: internal HTTP control API only.
+- `scheduler`: durable logical-run scheduling and enqueue.
+- `worker`: leased operation and analysis execution.
+- `outbox`: transactional event publication.
+- `quotes`: quote-stream ownership.
 - `api`: session-authenticated JSON/SSE API and server-rendered HTMX interface.
 
 The credential-free demo adds `demo-live`, a bounded deterministic publisher
 that inserts fictional price observations and watchlist invalidations. It does
 not call external providers or models.
 
-Configuration and prompts are mounted read-only. Private operator state is
-stored in the `platform_state` volume. The API exposes build identity at
-`/api/meta/build` and readiness at `/ready`.
+Normal deployment executes image-copied code, configuration, prompts,
+migrations, and database bootstrap SQL. `docker-compose.dev.yml` is the
+explicit bind-mount override. Private operator state is stored in the
+`operatorstate` volume. The API exposes build identity, `/live`, and
+dependency-aware `/ready`.
 
 ## State and Configuration Precedence
 
@@ -33,16 +37,17 @@ The platform merges:
 4. Private setup credentials in `/app/state/secrets.env`.
 
 The operator profile changes coverage, watchlist, endpoint, model, reasoning,
-and budget without rewriting repository configuration. Blank secret fields
-preserve the currently stored credential.
+and budget without rewriting repository defaults. Secret updates are
+tri-state: a non-empty string sets, omission or an empty string leaves
+unchanged, and JSON `null` deletes. Deleted values are absent from subsequent
+immutable settings snapshots; loaders do not keep them alive in global
+`os.environ`.
 
-Private files are created with `0600` permissions:
-
-- `auth.json`
-- `operator.yaml`
-- `secrets.env`
-- `activated.json`
-- `session_secret`
+Setup commits versioned directories under `/app/state/versions`. Each version
+contains `auth.json`, `operator.yaml`, `secrets.env`, and a checksummed
+`manifest.json`, all private. `activated.json` is the atomically replaced
+current-version pointer. Readers validate the marker, manifest, checksums, and
+parseability rather than treating partial legacy files as completed setup.
 
 ## Collection Contracts
 

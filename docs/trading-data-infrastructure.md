@@ -858,54 +858,23 @@ Logs go to stdout (visible in Docker logs) and to a rotating file. The `collecti
 
 ## 7. Docker Compose Layout
 
-```yaml
-# docker-compose.yml
+The executable source of truth is the root `docker-compose.yml`, validated in
+CI. Normal deployment uses immutable application and database images and runs
+separate `migrate`, `orchestrator`, `scheduler`, `worker`, `outbox`, `quotes`,
+and public `api` roles. Only the public API binds a host port; PostgreSQL and
+the internal orchestrator API remain on the Compose network.
 
-services:
-  postgres:
-    image: timescale/timescaledb:latest-pg16
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: trading_data
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d    # schema creation scripts
-    ports:
-      - "5432:5432"          # expose for direct DB access during development
-    restart: unless-stopped
+Development bind mounts and loopback PostgreSQL access are deliberately
+separate:
 
-  orchestrator:
-    build: ./orchestrator
-    env_file: .env
-    volumes:
-      - ./config:/app/config
-      - ./prompts:/app/prompts
-      - ./logs:/var/log/trading-data
-    depends_on:
-      - postgres
-    restart: unless-stopped
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
 
-  # Phase 2 additions:
-  # api:
-  #   build: ./api
-  #   env_file: .env
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - postgres
-  #   restart: unless-stopped
+The deterministic offline topology is:
 
-  # dashboard:
-  #   build: ./dashboard
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - api
-  #   restart: unless-stopped
-
-volumes:
-  pgdata:
+```bash
+docker compose -f docker-compose.demo.yml up --build
 ```
 
 ### 7.1 Directory Structure

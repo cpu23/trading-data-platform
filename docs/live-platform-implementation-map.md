@@ -128,6 +128,43 @@ the repository, and states the resolution chosen.
 - `orchestrator/reaction_windows.py`, `macro_releases.py` — mapped cross-asset
   windows with later-cycle backfill, immutable revision-aware cards, and a
   mutable staged pointer.
+- `orchestrator/venue_calendar.py` — stdlib-only venue calendars (24x5 FX,
+  US/UK/DE exchange sessions) with observed holidays, early closes, and DST
+  via `zoneinfo`; explicit baseline/pre, target/post, and session-close
+  direction semantics. The `exchange_calendars` package was evaluated and
+  rejection (pandas/numpy are not orchestrator dependencies); reliability comes
+  from explicit encoding instead: recurring rules cover 1990-2101 (fail fast
+  outside), with era rules (NYSE MLK since 1998, Juneteenth since 2022 per
+  SR-NYSE-2021-56; LSE jubilee/VE-day moves for 1995,
+  2002, 2012, 2020, 2022) and exceptional one-off closures (9/11, presidential
+  National Days of Mourning, Hurricane Sandy, LSE royal/state mourning days)
+  encoded through 2026 with that fail-closed boundary exposed in provenance.
+  The FX venue models the documented market week (Sunday 17:00
+  America/New_York through Friday 17:00 America/New_York, continuous, DST-
+  aware); calendar walks fail closed (CalendarBoundError) instead of
+  fabricating timestamps off the calendar.
+  Early closes are claimed only where reliable: US Black Friday (all years),
+  US pre-Independence (July 3 when it is an open session), US Christmas Eve
+  through the 2026 audit boundary, and UK Christmas Eve/New Year's Eve
+  half-days; config `holidays`/`early_closes` extend the rules per deployment.
+  Per-instrument metadata (venue/exchange_calendar/timezone/session bounds/
+  price timeframe/`target_selection_policy`) is typed and executed, resolved
+  as `InstrumentSessionPolicy` from `reaction_windows.calendars.instruments`.
+  `orchestrator/reaction_windows.py` selects baselines with direct directional
+  SQL (post-selection freshness policy records `stale_baseline`), targets with
+  the first at/after sample within a calendar-aware forward-tolerance bound,
+  computes matched-horizon realized volatility (timestamp-paired returns on a
+  separate `volatility_lookback_minutes` window with versioned provenance),
+  and persists selected/target timestamp offsets plus calendar/volatility
+  provenance.
+- `db/migrations/044_reaction_window_calendar_identity.sql` — additive offset
+  and calendar/volatility columns, deterministic per-identity legacy dedupe
+  (most recently updated, ties by greatest id), and the timeframe-scoped
+  unique identity `(event_id, instrument_symbol, timeframe, horizon)`.
+- `orchestrator/cli.py` `recompute-reaction-windows` — re-derives existing
+  windows with current selection and calendar rules (bounded, optionally
+  scoped to one event, `--legacy-only` for pre-044 rows with NULL/stale
+  volatility_version, `--dry-run` to report without mutating).
 - `orchestrator/materiality.py` — stored multiplicative component scoring,
   suppression reasons, configurable thresholds, and debounce provenance.
 - `orchestrator/events/routing.py`, `analysis_job_handlers.py` — fast-path T+0
@@ -135,8 +172,8 @@ the repository, and states the resolution chosen.
 - `api/routes/json/events.py`, dashboard routes/templates — bounded public card
   data and SSE-refreshed macro-release monitor without model inference.
 - `config/config.yaml` — market-state bounds, reaction policy,
-  `macro_event_mappings`, source confidence, time sensitivity, and routing
-  thresholds.
+  `macro_event_mappings`, source confidence, time sensitivity, routing
+  thresholds, and optional `reaction_windows.calendars` venue overrides.
 
 ### Phase 6 — Story clustering and news
 - `db/migrations/034_story_clusters.sql` (clusters, members, immutable versions)

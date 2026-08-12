@@ -5,19 +5,34 @@
 
 ## Context
 
-The platform has three different lifecycles: schema migration, the internal scheduler/orchestrator HTTP service, and the public dashboard/API. A single shell that starts more than one process makes the shell an accidental supervisor, obscures failures, and can leave a partially working container reported as healthy.
+The platform has distinct schema-migration, HTTP, scheduling, operation-worker,
+analysis-worker, outbox, and quote-stream lifecycles. A single shell or HTTP
+lifespan that starts more than one role makes one process an accidental
+supervisor, duplicates singleton work under replicas, and can report a
+partially working container as healthy.
 
 ## Decision
 
-Build one image containing both Python applications and run it as three Compose services:
+Build one application image and run one foreground role per Compose service:
 
-1. `migrate` waits for healthy PostgreSQL, runs `python cli.py migrate` once, and exits. A zero exit permits dependants through `service_completed_successfully`; any non-zero exit blocks them.
-2. `orchestrator` waits for PostgreSQL and migration success, then runs uvicorn in the foreground. It is internal-only and publishes no host port.
-3. `api` waits for migration success and a healthy orchestrator, then runs uvicorn in the foreground. It alone publishes application port 8000.
+1. `migrate` waits for PostgreSQL, applies the checksum-verified migration chain, and exits.
+2. `orchestrator` runs only the internal HTTP control API.
+3. `scheduler` acquires durable logical-run identity and enqueues operation jobs; it never executes scheduled work inline.
+4. `worker` claims leased operation and analysis jobs, heartbeats ownership, retries bounded transient failures, and exposes terminal poison-job state.
+5. `outbox` owns transactional-outbox publication.
+6. `quotes` owns the long-running quote stream.
+7. `api` runs the public dashboard and JSON API and is the only application service with a host port.
 
-Docker/Compose has process ownership. Each long-running container owns exactly one foreground process and uses `restart: unless-stopped`; migration uses `restart: "no"`. Service healthchecks are bounded and dependency-aware. PostgreSQL remains a separately supervised long-running service.
+Docker/Compose owns process supervision. Process ownership is explicit and
+split by role: each long-running container owns exactly one foreground
+process and uses `restart: unless-stopped`; migration uses `restart: "no"`.
+No application process starts, supervises, or restarts another role.
+PostgreSQL leases and durable heartbeats, rather than process-local globals,
+make status and crash recovery visible across replicas.
 
-Production and demo use the same split and ordering. Demo sets `DEMO_MODE=true`, which disables every collector and stream before scheduler startup, uses dummy disabled credentials, and reads only deterministic local database fixtures.
+Production and demo use the same role separation. Demo sets
+`DEPLOYMENT_MODE=demo` and `DEMO_MODE=true`, uses disabled provider credentials,
+and reads deterministic local fixtures.
 
 ## Options considered
 
@@ -35,21 +50,27 @@ Split services make independent failure, restart, health, logs, and resource own
 
 ## Health, restart, and migration ordering
 
-Orchestrator health reports liveness and returns 503 when its database
-dependency is unavailable. Its response includes a configuration-aware quality
-snapshot with a 30-second default TTL; the separate `/quality` endpoint remains
-an uncached live diagnostic. API health is authenticated and consumes that
-single orchestrator health contract, so dependency loss makes API readiness
-unhealthy rather than falsely green without duplicating the quality sweep.
-Bounded healthcheck timeouts prevent hung probes.
+The internal API exposes separate liveness and dependency-aware readiness.
+Role health comes from bounded database-backed heartbeats; a missing or stale
+required scheduler, worker, outbox, or quote role makes readiness fail instead
+of being inferred from process-local threads. Data quality is reported
+separately as healthy, degraded, or unknown. Compose healthchecks are bounded.
 
 ## Shared storage
 
-Configuration, prompts, routes, templates, and migrations are read-only bind mounts. The orchestrator has writable news storage; the API receives the same news storage read-only. Log storage is shared and writable only by the two services that may emit file logs. Migration receives neither news nor log storage. Demo uses local named volumes for shared storage so it cannot mutate production fixture directories; `down --volumes` removes them.
+Normal deployment copies code, configuration, prompts, migrations, and
+database bootstrap SQL into immutable images. Named volumes hold only writable
+PostgreSQL data, private operator state, logs, and published News. The API sees
+News read-only. `docker-compose.dev.yml` is the explicit development opt-in for
+source/configuration bind mounts and loopback PostgreSQL publication.
 
 ## Consequences
 
-The API resolves the orchestrator via `http://orchestrator:8000`, and no host can connect directly to the orchestrator. Compose implementations must support `service_completed_successfully`. Building one larger image is a deliberate trade-off for identical runtime dependencies and simpler release identity.
+The API resolves the internal control service through the configured
+`ORCHESTRATOR_URL`; no host can connect directly to that service. Compose
+implementations must support `service_completed_successfully`. One shared
+application image is a deliberate trade-off for identical runtime dependencies
+and a single release identity.
 
 ## Rollback
 

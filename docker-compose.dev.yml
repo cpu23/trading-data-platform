@@ -1,0 +1,53 @@
+# Development-only bind mounts and host database access.
+# Use: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
+
+  migrate:
+    volumes:
+      - ./config:/app/config:ro
+      - ./db/migrations:/app/db/migrations:ro
+
+  orchestrator:
+    working_dir: /workspace/orchestrator
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./orchestrator:/workspace/orchestrator
+
+  scheduler:
+    working_dir: /workspace/orchestrator
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./orchestrator:/workspace/orchestrator
+
+  worker:
+    working_dir: /workspace/orchestrator
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./orchestrator:/workspace/orchestrator
+
+  outbox:
+    working_dir: /workspace/orchestrator
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./orchestrator:/workspace/orchestrator
+
+  quotes:
+    working_dir: /workspace/orchestrator
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./orchestrator:/workspace/orchestrator
+
+  api:
+    working_dir: /workspace/api
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+      - ./api:/workspace/api

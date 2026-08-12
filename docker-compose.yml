@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: timescale/timescaledb@sha256:95a7997408e3295935e4afe8af8c09aae22bd51732131d1e7351c63d6198a71c
+    build:
+      context: ./db
+      dockerfile: Dockerfile
+      target: production
+    image: trading-data-postgres:0.1.0
     pids_limit: 256
     mem_limit: 768m
     environment:
@@ -9,9 +13,6 @@ services:
       POSTGRES_DB: ${DB_NAME:-trading_data}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "127.0.0.1:5432:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME:-trading_data}"]
@@ -32,8 +33,7 @@ services:
     command: ["/app/orchestrator/.venv/bin/python", "cli.py", "migrate"]
     env_file: .env
     volumes:
-      - ./config:/app/config:ro
-      - ./db/migrations:/app/db/migrations:ro
+      - operatorstate:/app/state:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,14 +48,12 @@ services:
     mem_limit: 1g
     security_opt: ["no-new-privileges:true"]
     working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "api"]
     env_file: .env
     volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
       - newsdata:/var/lib/trading-data/news
       - logsdata:/var/log/trading-data
-      - operatorstate:/app/state
+      - operatorstate:/app/state:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +67,117 @@ services:
       retries: 5
       start_period: 30s
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:0.1.0
+    pids_limit: 64
+    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "scheduler"]
+    env_file: .env
+    volumes:
+      - logsdata:/var/log/trading-data
+      - operatorstate:/app/state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "scheduler"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:0.1.0
+    pids_limit: 128
+    mem_limit: 1g
+    security_opt: ["no-new-privileges:true"]
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "worker"]
+    env_file: .env
+    volumes:
+      - newsdata:/var/lib/trading-data/news
+      - logsdata:/var/log/trading-data
+      - operatorstate:/app/state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Let claimed jobs reach their transactional finalization boundary.
+    stop_grace_period: 30m
+    healthcheck:
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "worker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  outbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:0.1.0
+    pids_limit: 64
+    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "outbox"]
+    env_file: .env
+    volumes:
+      - logsdata:/var/log/trading-data
+      - operatorstate:/app/state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "outbox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  quotes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading-data-platform:0.1.0
+    pids_limit: 64
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    working_dir: /app/orchestrator
+    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "quotes"]
+    env_file: .env
+    volumes:
+      - logsdata:/var/log/trading-data
+      - operatorstate:/app/state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "quotes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   api:
     build:
       context: .
@@ -81,17 +190,12 @@ services:
     command: ["/app/api/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     environment:
-      ORCHESTRATOR_URL: http://orchestrator:8000
-      DISABLE_AUTH: "1"
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-http://orchestrator:8000}
+      DEPLOYMENT_MODE: production
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
       - logsdata:/var/log/trading-data
-      - ./api/static:/app/api/static:ro
-      - ./api/templates:/app/api/templates:ro
-      - ./api/routes:/app/api/routes:ro
       - newsdata:/var/lib/trading-data/news:ro
       - operatorstate:/app/state
     depends_on:
@@ -100,6 +204,14 @@ services:
       migrate:
         condition: service_completed_successfully
       orchestrator:
+        condition: service_healthy
+      scheduler:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      outbox:
+        condition: service_healthy
+      quotes:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
