@@ -69,11 +69,13 @@ def make_app(auth=False):
 
     from auth import verify_credentials
     from routes.views.cockpit_panels import router
+    from routes.views.markets import router as markets_router
 
     dependencies = [Depends(verify_credentials)] if auth else None
     app = FastAPI(dependencies=dependencies)
     app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
     app.include_router(router)
+    app.include_router(markets_router)
     return app
 
 
@@ -446,10 +448,8 @@ class RouteTests(unittest.TestCase):
             ],
         }
         with (
-            patch("routes.views.cockpit_panels.load_cross_asset", return_value=payload),
-            patch(
-                "routes.views.cockpit_panels.app_config.load_config", return_value={}
-            ),
+            patch("routes.views.markets.load_cross_asset", return_value=payload),
+            patch("routes.views.markets.app_config.load_config", return_value={}),
         ):
             response = client.get("/partials/dashboard/cross-asset")
         self.assertNotIn("data-panel-key", response.text)
@@ -488,10 +488,8 @@ class RouteTests(unittest.TestCase):
             ],
         }
         with (
-            patch("routes.views.cockpit_panels.load_cross_asset", return_value=payload),
-            patch(
-                "routes.views.cockpit_panels.app_config.load_config", return_value={}
-            ),
+            patch("routes.views.markets.load_cross_asset", return_value=payload),
+            patch("routes.views.markets.app_config.load_config", return_value={}),
         ):
             response = client.get("/partials/dashboard/cross-asset")
         self.assertIn('data-panel-key="commodity_impulse"', response.text)
@@ -516,9 +514,9 @@ class RouteTests(unittest.TestCase):
             ],
         }
         with (
-            patch("routes.views.cockpit_panels.load_catalysts", return_value=payload),
+            patch("routes.views.markets.load_catalysts", return_value=payload),
             patch(
-                "routes.views.cockpit_panels.app_config.load_config",
+                "routes.views.markets.app_config.load_config",
                 return_value={"event_pipeline": {"sse": {"enabled": True}}},
             ),
         ):
@@ -526,9 +524,9 @@ class RouteTests(unittest.TestCase):
         self.assertIn("FOMC decision", response.text)
         self.assertIn("in 3h 0m", response.text)
         self.assertIn("DXY", response.text)
-        self.assertIn('hx-get="/partials/markets/catalysts"', response.text)
-        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
-        self.assertNotIn("data-live-section", response.text)
+        self.assertIn('data-live-url="/partials/markets/catalysts"', response.text)
+        self.assertIn('data-live-section="catalysts"', response.text)
+        self.assertNotIn("hx-trigger=", response.text)
 
     def test_briefing_delta_route_renders(self):
         from fastapi.testclient import TestClient

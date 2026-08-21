@@ -109,15 +109,16 @@ MARKETS_LAZY_SECTIONS = (
     ("/partials/markets/events", "Economic calendar"),
 )
 
-# Only macro releases have a matching production invalidation publisher.
+# Cross-asset context, catalysts, and macro releases retain their production
+# section_changed identities; the heartbeat is their disconnected-SSE fallback.
 MARKETS_SSE_PARTIALS = {
+    "cross_asset": "/partials/markets/cross-asset",
+    "catalysts": "/partials/markets/catalysts",
     "macro_release_cards": "/partials/markets/macro-releases",
 }
 
 # These partials have no matching publisher and always use the heartbeat.
 MARKETS_HEARTBEAT_PARTIALS = {
-    "cross_asset": "/partials/markets/cross-asset",
-    "catalysts": "/partials/markets/catalysts",
     "regime_section": "/partials/markets/regime",
     "indicators_section": "/partials/markets/indicators",
     "events_section": "/partials/markets/events",
@@ -344,21 +345,57 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         self.assertIn('id="top-strip-title"', rendered)
 
     def test_top_strip_refresh_contract(self):
-        for live in (False, True):
-            with self.subTest(live=live):
-                rendered = self.render(
-                    "partials/top_strip.html",
-                    strip=STRIP,
-                    live_updates_enabled=live,
-                )
-                self.assertIn(
-                    'hx-get="/partials/dashboard/top-strip"', rendered
-                )
-                self.assertIn(
-                    'hx-trigger="marketRefresh from:body"', rendered
-                )
-                self.assertNotIn("every 90s", rendered)
-                self.assertNotIn("data-live-section", rendered)
+        heartbeat = self.render(
+            "partials/top_strip.html",
+            strip=STRIP,
+            live_updates_enabled=False,
+        )
+        self.assertIn('hx-get="/partials/dashboard/top-strip"', heartbeat)
+        self.assertIn('hx-trigger="marketRefresh from:body"', heartbeat)
+        self.assertNotIn("data-live-section", heartbeat)
+
+        live = self.render(
+            "partials/top_strip.html",
+            strip=STRIP,
+            live_updates_enabled=True,
+        )
+        self.assertIn('data-live-section="top_strip"', live)
+        self.assertIn('data-live-event="section_changed"', live)
+        self.assertIn(
+            'data-live-url="/partials/dashboard/top-strip"', live
+        )
+        self.assertNotIn("hx-get=", live)
+        self.assertNotIn("hx-trigger=", live)
+        self.assertNotIn("every 90s", live)
+
+    def test_since_last_view_preserves_sse_with_heartbeat_fallback(self):
+        context = {
+            "since_last_view": {
+                "available": True,
+                "marker": None,
+                "sections": [],
+                "counts": {},
+            }
+        }
+        heartbeat = self.render(
+            "partials/since_last_view.html",
+            live_updates_enabled=False,
+            **context,
+        )
+        self.assertIn('hx-trigger="marketRefresh from:body"', heartbeat)
+        self.assertNotIn("data-live-section", heartbeat)
+
+        live = self.render(
+            "partials/since_last_view.html",
+            live_updates_enabled=True,
+            **context,
+        )
+        self.assertIn('data-live-section="since_last_view"', live)
+        self.assertIn('data-live-event="section_changed"', live)
+        self.assertIn(
+            'data-live-url="/partials/dashboard/since-last-view"', live
+        )
+        self.assertNotIn("hx-trigger=", live)
 
     # ── merged briefing surface ──────────────────────────────────────────────
 

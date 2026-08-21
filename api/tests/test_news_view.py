@@ -587,30 +587,14 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertIn("Canonical story monitor", canonical.text)
         self.assertIn('href="#story-monitor-title"', canonical.text)
 
-    def test_compat_url_uses_heartbeat_without_unpublished_sse_identity(self):
+    def test_compat_url_is_alias_on_canonical_handler(self):
         from routes.views.news import router
 
-        client = self.make_client(router)
-        for config in (
-            {"event_pipeline": {"sse": {"enabled": True}}},
-            {},
-        ):
-            with (
-                self.subTest(config=config),
-                patch("routes.views.news.load_config", return_value=config),
-                patch(
-                    "routes.views.news.load_change_feed",
-                    return_value=change_feed_payload(),
-                ),
-            ):
-                response = client.get("/partials/dashboard/change-feed")
-            self.assertIn(
-                'hx-get="/partials/news/change-feed"', response.text
-            )
-            self.assertIn(
-                'hx-trigger="marketRefresh from:body"', response.text
-            )
-            self.assertNotIn("data-live-section", response.text)
+        endpoints = {route.path: route.endpoint for route in router.routes}
+        self.assertIs(
+            endpoints["/partials/dashboard/change-feed"],
+            endpoints["/partials/news/change-feed"],
+        )
 
     def test_change_feed_renders_reaction_windows_and_load_earlier(self):
         from urllib.parse import quote
@@ -645,16 +629,14 @@ class NewsChangeFeedTests(unittest.TestCase):
             response = client.get("/partials/news/change-feed")
         self.assertNotIn("Load earlier", response.text)
 
-    def test_change_feed_always_uses_market_refresh_without_polling(self):
+    def test_change_feed_preserves_sse_with_heartbeat_fallback(self):
         from routes.views.news import router
 
         client = self.make_client(router)
-        for config in (
-            {"event_pipeline": {"sse": {"enabled": True}}},
-            {},
-        ):
+        for enabled in (False, True):
+            config = {"event_pipeline": {"sse": {"enabled": enabled}}}
             with (
-                self.subTest(config=config),
+                self.subTest(enabled=enabled),
                 patch("routes.views.news.load_config", return_value=config),
                 patch(
                     "routes.views.news.load_change_feed",
@@ -662,15 +644,24 @@ class NewsChangeFeedTests(unittest.TestCase):
                 ),
             ):
                 response = client.get("/partials/news/change-feed")
-            self.assertIn(
-                'hx-get="/partials/news/change-feed"', response.text
-            )
-            self.assertIn(
-                'hx-trigger="marketRefresh from:body"', response.text
-            )
-            self.assertIn('hx-swap="outerHTML"', response.text)
-            self.assertNotIn("data-live-section", response.text)
+            self.assertEqual(response.status_code, 200)
             self.assertNotIn("every 90s", response.text)
+            if enabled:
+                self.assertIn('data-live-section="change_feed"', response.text)
+                self.assertIn('data-live-event="section_changed"', response.text)
+                self.assertIn(
+                    'data-live-url="/partials/news/change-feed"',
+                    response.text,
+                )
+                self.assertNotIn("hx-trigger=", response.text)
+            else:
+                self.assertIn(
+                    'hx-get="/partials/news/change-feed"', response.text
+                )
+                self.assertIn(
+                    'hx-trigger="marketRefresh from:body"', response.text
+                )
+                self.assertNotIn("data-live-section", response.text)
 
 
 if __name__ == "__main__":

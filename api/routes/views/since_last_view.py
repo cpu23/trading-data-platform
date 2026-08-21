@@ -21,7 +21,13 @@ router = APIRouter()
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/app/state"))
 MARKER_FILE = STATE_DIR / "last_view.json"
 _SUMMARY_LIMIT = 20
+
+
 _MAX_AGE = timedelta(days=7)
+
+def _live_updates_enabled(config: dict) -> bool:
+    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
+
 
 
 def _parse_iso(value):
@@ -251,6 +257,7 @@ def partial_since_last_view(request: Request):
         {
             "request": request,
             "since_last_view": summary,
+            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 

@@ -265,6 +265,7 @@ async def dashboard(request: Request):
         "briefing": briefing,
         "briefing_sections": _briefing_sections(briefing),
         "briefing_delta": briefing_delta,
+        "live_updates_enabled": _live_updates_enabled(config),
         **tz_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)

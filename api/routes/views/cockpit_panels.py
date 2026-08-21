@@ -912,32 +912,6 @@ def load_briefing_delta(config: dict, latest=_MISSING) -> dict:
 
 
 
-@router.get("/partials/dashboard/cross-asset")
-def partial_cross_asset(request: Request):
-    config = app_config.load_config()
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "partials/cross_asset.html",
-        {
-            "request": request,
-            "cross_asset": load_cross_asset(config),
-        },
-    )
-
-
-@router.get("/partials/dashboard/catalysts")
-def partial_catalysts(request: Request):
-    config = app_config.load_config()
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "partials/catalysts.html",
-        {
-            "request": request,
-            "catalysts": load_catalysts(config),
-        },
-    )
 
 
 @router.get("/partials/dashboard/briefing-delta")

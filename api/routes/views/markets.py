@@ -205,6 +205,7 @@ def markets_page(request: Request):
 
 
 @router.get("/partials/markets/cross-asset")
+@router.get("/partials/dashboard/cross-asset")
 def partial_markets_cross_asset(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
@@ -214,11 +215,13 @@ def partial_markets_cross_asset(request: Request):
         {
             "request": request,
             "cross_asset": load_cross_asset(config),
+            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 
 
 @router.get("/partials/markets/catalysts")
+@router.get("/partials/dashboard/catalysts")
 def partial_markets_catalysts(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
@@ -228,6 +231,7 @@ def partial_markets_catalysts(request: Request):
         {
             "request": request,
             "catalysts": load_catalysts(config),
+            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 

@@ -371,6 +371,27 @@ class CompactStripRouteTests(unittest.TestCase):
         self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
         self.assertNotIn("data-live-section", response.text)
 
+    def test_top_strip_route_uses_sse_when_enabled(self):
+        from fastapi.testclient import TestClient
+
+        app = make_app()
+        client = TestClient(app)
+        with (
+            patch(
+                "routes.views.dashboard_strip.load_compact_strip",
+                return_value=COMPACT_STRIP,
+            ),
+            patch(
+                "routes.views.dashboard_strip.app_config.load_config",
+                return_value={"event_pipeline": {"sse": {"enabled": True}}},
+            ),
+        ):
+            response = client.get("/partials/dashboard/top-strip", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-live-section="top_strip"', response.text)
+        self.assertIn('data-live-event="section_changed"', response.text)
+        self.assertNotIn("hx-trigger=", response.text)
+
     def test_top_strip_fail_soft_shows_unavailable(self):
         from fastapi.testclient import TestClient
 
@@ -406,6 +427,26 @@ class MarketPartialAliasTests(unittest.TestCase):
         self.assertEqual(canonical_response.status_code, 200)
         self.assertEqual(legacy_response.status_code, 200)
         self.assertEqual(canonical_response.text, legacy_response.text)
+
+    def test_cross_asset_canonical_and_legacy_alias(self):
+        self._assert_aliases_identical(
+            "/partials/markets/cross-asset",
+            "/partials/dashboard/cross-asset",
+            patch(
+                "routes.views.markets.load_cross_asset",
+                return_value={"available": False, "panels": []},
+            ),
+        )
+
+    def test_catalysts_canonical_and_legacy_alias(self):
+        self._assert_aliases_identical(
+            "/partials/markets/catalysts",
+            "/partials/dashboard/catalysts",
+            patch(
+                "routes.views.markets.load_catalysts",
+                return_value={"available": False, "days": 7, "catalysts": []},
+            ),
+        )
 
     def test_macro_releases_canonical_and_legacy_alias(self):
         self._assert_aliases_identical(
@@ -551,7 +592,8 @@ class MergedBriefingTests(unittest.TestCase):
             self.assertEqual(context["briefing_delta"], BRIEFING_DELTA)
             self.assertEqual(context["briefing_delta"]["bullets"], BRIEFING_DELTA["bullets"])
             self.assertEqual(context["briefing_delta"]["atoms"], BRIEFING_DELTA["atoms"])
-            self.assertNotIn("live_updates_enabled", context)
+        self.assertTrue(page_context["live_updates_enabled"])
+        self.assertNotIn("live_updates_enabled", partial_context)
 
 
 if __name__ == "__main__":
