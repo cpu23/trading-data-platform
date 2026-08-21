@@ -25,6 +25,12 @@
   </div>
 </section>
 
+<section class="section change-feed-section" id="change-feed"
+         hx-get="/partials/news/change-feed" hx-trigger="load" hx-swap="outerHTML">
+  <div class="section-heading"><span class="label">Change feed</span></div>
+  <p role="status">Loading…</p>
+</section>
+
 <form class="logs-filter-bar" method="get" action="/news">
   <label class="sr-only" for="story-lane">Story lane</label>
   <select id="story-lane" name="lane">

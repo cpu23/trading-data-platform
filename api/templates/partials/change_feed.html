@@ -17,7 +17,7 @@
               <span class="change-feed-novelty tabular">novelty {{ row.novelty_display }}</span>
             {% endif %}
             {% if row.interpretation_available %}
-              <a class="quiet-link" href="/news">interpretation</a>
+              <a class="quiet-link" {% if news_page %}href="#story-monitor-title"{% else %}href="/news"{% endif %}>interpretation</a>
             {% endif %}
           </div>
           {% if row.markets %}
@@ -42,7 +42,7 @@
   {% endif %}
   {% if feed.has_earlier and feed.oldest_observed_at %}
     <button type="button" class="feed-load-earlier"
-            hx-get="/partials/dashboard/change-feed?before={{ feed.oldest_observed_at | urlencode }}&amp;limit={{ feed.limit }}"
+            hx-get="/partials/news/change-feed?before={{ feed.oldest_observed_at | urlencode }}&amp;limit={{ feed.limit }}"
             hx-swap="afterend"
             hx-target="this">Load earlier</button>
   {% endif %}
@@ -53,13 +53,17 @@
 <section class="section change-feed-section" id="change-feed"
          {% if live_updates_enabled %}data-live-section="change_feed"
          data-live-event="section_changed"
-         data-live-url="/partials/dashboard/change-feed"{% else %}
-         hx-get="/partials/dashboard/change-feed"
-         hx-trigger="every 90s"
+         data-live-url="/partials/news/change-feed"{% else %}
+         hx-get="/partials/news/change-feed"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
     <span class="label">Change feed</span>
-    <a class="quiet-link" href="/news">Open story monitor</a>
+    {% if news_page %}
+      <a class="quiet-link" href="#story-monitor-title">Canonical story monitor</a>
+    {% else %}
+      <a class="quiet-link" href="/news">Open story monitor</a>
+    {% endif %}
   </div>
   {% if not feed.available %}
     <div class="error-block" role="alert">Change feed unavailable.</div>

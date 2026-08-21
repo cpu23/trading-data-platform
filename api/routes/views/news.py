@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from config import load_config
 from db import query_many
+from routes.views.cockpit_panels import CHANGE_FEED_MAX_LIMIT, load_change_feed
 
 router = APIRouter()
 MAX_NEWS_FEED_BYTES = 2_000_000
@@ -330,6 +331,36 @@ def load_source_states(config: dict) -> list[dict]:
             }
         )
     return states
+
+
+def _live_updates_enabled(config: dict) -> bool:
+    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
+
+
+@router.get("/partials/news/change-feed")
+def partial_news_change_feed(
+    request: Request,
+    before: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=CHANGE_FEED_MAX_LIMIT),
+):
+    """Canonical continuous material change feed partial for /news.
+
+    Delegates to the shared cockpit loader; ``/partials/dashboard/change-feed``
+    in cockpit_panels remains a compatibility alias rendering the same partial.
+    """
+    config = load_config()
+    feed = load_change_feed(config, before=before, limit=limit)
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "partials/change_feed.html",
+        {
+            "request": request,
+            "feed": feed,
+            "append": before is not None,
+            "live_updates_enabled": _live_updates_enabled(config),
+            "news_page": True,
+        },
+    )
 
 
 @router.get("/news")
