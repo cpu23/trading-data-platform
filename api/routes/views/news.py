@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from config import load_config
 from db import query_many
-from routes.views.cockpit_panels import CHANGE_FEED_MAX_LIMIT, load_change_feed
+from routes.views.cockpit_panels import direction, json_obj, pct_display
+from routes.views.dashboard_strip import iso, time_display
 
 router = APIRouter()
 MAX_NEWS_FEED_BYTES = 2_000_000
@@ -337,7 +338,246 @@ def _live_updates_enabled(config: dict) -> bool:
     return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
+# ---------------------------------------------------------------------------
+# Change feed (owned by News; the legacy dashboard URL is an alias below)
+# ---------------------------------------------------------------------------
+
+CHANGE_FEED_MAX_LIMIT = 50
+
+_STATE_CLASSES = {
+    "confirmed": "bullish",
+    "contradicted": "bearish",
+    "completed": "mixed",
+    "developing": "neutral",
+}
+
+_CHANGE_FEED_SQL = """
+    SELECT routed.event_id, routed.observed_at, routed.effective_at,
+           routed.published_at, routed.event_type, routed.source,
+           routed.payload, routed.markets, routed.importance, routed.novelty,
+           COALESCE(react.windows, '[]'::jsonb) AS reaction_windows,
+           COALESCE(conf.flags, '[]'::jsonb) AS confirmation_flags,
+           COALESCE(atom.present, false) AS interpretation_available
+    FROM (
+        SELECT DISTINCT ON (me.id)
+               me.id AS event_id, me.observed_at, me.effective_at,
+               me.published_at, me.event_type, me.source, me.payload,
+               me.markets, em.importance, em.novelty
+        FROM market_events me
+        JOIN event_materiality em ON em.event_id = me.id
+        WHERE em.decision = 'route'
+        ORDER BY me.id,
+                 CASE WHEN em.job_type = 'event_atom' THEN 0 ELSE 1 END,
+                 em.score DESC, em.created_at DESC
+    ) routed
+    LEFT JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object(
+                   'timeframe', w.timeframe,
+                   'horizon', w.horizon,
+                   'percentage_move', w.percentage_move,
+                   'reaction_state', w.reaction_state
+               ) ORDER BY w.timeframe, w.horizon) AS windows
+        FROM (
+            SELECT timeframe, horizon, percentage_move, reaction_state
+            FROM event_reaction_windows
+            WHERE event_id = routed.event_id
+            ORDER BY timeframe, horizon
+            LIMIT 4
+        ) w
+    ) react ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT jsonb_agg(DISTINCT flag ORDER BY flag) AS flags
+        FROM (
+            SELECT jsonb_array_elements_text(smc.flags) AS flag
+            FROM story_market_confirmations smc
+            WHERE smc.source_event_id = routed.event_id
+            LIMIT 25
+        ) f
+    ) conf ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT true AS present
+        FROM analysis_atoms
+        WHERE source_event_id = routed.event_id
+          AND status IN ('validated', 'published')
+        LIMIT 1
+    ) atom ON TRUE
+    WHERE (:before IS NULL OR routed.observed_at < :before)
+    ORDER BY routed.observed_at DESC, routed.event_id DESC
+    LIMIT :limit
+"""
+
+
+def _validate_before(value):
+    """Strict ISO-8601 (timezone-aware) validation; 422 before any DB access."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid before timestamp; expected ISO-8601.",
+            ) from exc
+    else:
+        raise HTTPException(
+            status_code=422, detail="Invalid before timestamp; expected ISO-8601."
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise HTTPException(status_code=422, detail="before must include a UTC offset.")
+    return parsed.astimezone(UTC)
+
+
+def _json_list(value, limit: int) -> list:
+    if isinstance(value, list):
+        return list(value[:limit])
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return parsed[:limit] if isinstance(parsed, list) else []
+    return []
+
+
+def _importance_label(value) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    if value >= 0.7:
+        return "High"
+    if value >= 0.4:
+        return "Medium"
+    return "Low"
+
+
+def _importance_class(value) -> str | None:
+    label = _importance_label(value)
+    return label.lower() if label else None
+
+
+def _event_state(flags: list[str]) -> str:
+    names = set(flags)
+    if not names:
+        return "developing"
+    if "initial_move_reversed" in names:
+        return "contradicted"
+    if "confirmed_by_market" in names:
+        return "confirmed"
+    if "no_material_reaction" in names:
+        return "completed"
+    return "developing"
+
+
+def _market_symbols(markets, limit: int = 4) -> list[str]:
+    symbols: list[str] = []
+    items = _json_list(markets, limit=limit)
+    for item in items:
+        if isinstance(item, dict):
+            symbol = item.get("symbol") or item.get("canonical_id")
+        else:
+            symbol = item
+        symbol = str(symbol or "").strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+        if len(symbols) >= limit:
+            break
+    return symbols
+
+
+def _feed_row(raw: dict) -> dict:
+    payload = json_obj(raw.get("payload"))
+    event_type = raw.get("event_type") or "event"
+    title = payload.get("title") or event_type
+    timestamp = (
+        raw.get("effective_at") or raw.get("published_at") or raw.get("observed_at")
+    )
+    windows = []
+    for item in _json_list(raw.get("reaction_windows"), limit=4):
+        if not isinstance(item, dict):
+            continue
+        move = item.get("percentage_move")
+        windows.append(
+            {
+                "timeframe": item.get("timeframe"),
+                "horizon": item.get("horizon"),
+                "percentage_move": move,
+                "reaction_state": item.get("reaction_state"),
+                "direction": direction(move),
+                "display": pct_display(move),
+            }
+        )
+        if len(windows) >= 4:
+            break
+    flags = [
+        str(flag)
+        for flag in _json_list(raw.get("confirmation_flags"), limit=25)
+        if flag is not None
+    ]
+    state = _event_state(flags)
+    importance = raw.get("importance")
+    novelty = raw.get("novelty")
+    return {
+        "event_id": str(raw.get("event_id") or ""),
+        "observed_at": iso(raw.get("observed_at")),
+        "effective_at": iso(raw.get("effective_at")),
+        "published_at": iso(raw.get("published_at")),
+        "time_display": time_display(timestamp),
+        "title": str(title)[:500],
+        "source": raw.get("source"),
+        "markets": _market_symbols(raw.get("markets"), limit=4),
+        "importance": importance,
+        "importance_label": _importance_label(importance),
+        "importance_class": _importance_class(importance),
+        "novelty": novelty,
+        "novelty_display": (
+            f"{novelty:.2f}" if isinstance(novelty, (int, float)) else None
+        ),
+        "reaction_windows": windows,
+        "state": state,
+        "state_class": _STATE_CLASSES.get(state, "neutral"),
+        "interpretation_available": bool(raw.get("interpretation_available")),
+    }
+
+
+def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
+    """Latest routed market events, newest first, bounded by ``limit``.
+
+    ``before`` is validated strictly (ISO-8601, timezone-aware) and rejected
+    with a 422 before any database access.  ``limit`` is clamped to
+    ``CHANGE_FEED_MAX_LIMIT``; an extra row is fetched to signal
+    ``has_earlier`` for the "Load earlier" control.
+    """
+    bounded_limit = max(1, min(CHANGE_FEED_MAX_LIMIT, int(limit)))
+    before_dt = _validate_before(before)
+    try:
+        rows = query_many(
+            _CHANGE_FEED_SQL,
+            params={"before": before_dt, "limit": bounded_limit + 1},
+            config=config,
+        )
+    except Exception:
+        return {
+            "available": False,
+            "rows": [],
+            "has_earlier": False,
+            "limit": bounded_limit,
+            "oldest_observed_at": None,
+        }
+    has_earlier = len(rows) > bounded_limit
+    feed_rows = [_feed_row(raw) for raw in rows[:bounded_limit]]
+    return {
+        "available": True,
+        "rows": feed_rows,
+        "has_earlier": has_earlier,
+        "limit": bounded_limit,
+        "oldest_observed_at": feed_rows[-1]["observed_at"] if feed_rows else None,
+    }
+
+
 @router.get("/partials/news/change-feed")
+@router.get("/partials/dashboard/change-feed")
 def partial_news_change_feed(
     request: Request,
     before: str | None = Query(default=None),
@@ -345,8 +585,9 @@ def partial_news_change_feed(
 ):
     """Canonical continuous material change feed partial for /news.
 
-    Delegates to the shared cockpit loader; ``/partials/dashboard/change-feed``
-    in cockpit_panels remains a compatibility alias rendering the same partial.
+    The legacy ``/partials/dashboard/change-feed`` URL is an alias on this
+    same handler: it renders the same partial in dashboard wording (no
+    ``news_page``), so both surfaces keep their exact contracts.
     """
     config = load_config()
     feed = load_change_feed(config, before=before, limit=limit)
@@ -358,7 +599,7 @@ def partial_news_change_feed(
             "feed": feed,
             "append": before is not None,
             "live_updates_enabled": _live_updates_enabled(config),
-            "news_page": True,
+            "news_page": request.url.path == "/partials/news/change-feed",
         },
     )
 

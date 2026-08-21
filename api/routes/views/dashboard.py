@@ -1,34 +1,25 @@
 import asyncio
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
-from budgets import get_budget_status
-from db import query_many, query_one
+from db import query_many
 from logging_config import get_logger
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import get_events_upcoming_data
-from routes.json.regime import get_regime_current
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
-from routes.views.cockpit_panels import (
-    _NEXT_CATALYST_SQL,
-    _as_datetime,
-    _countdown_display,
-    _iso,
-    _primary_zone,
-    _session_label_for_hour,
-    load_briefing_delta,
-)
-from routes.views.markets import (
-    _format_stale_reason,
-    _matched_asset_events,
-    _parse_iso,
+from routes.views.cockpit_panels import load_briefing_delta
+from routes.views.dashboard_strip import load_compact_strip
+from routes.views.market_events import (
+    format_stale_reason,
+    matched_asset_events,
+    parse_iso,
 )
 from routes.views.news import load_story_context
 from routes.views.since_last_view import load_since_last_view
@@ -38,38 +29,6 @@ logger = get_logger("dashboard")
 
 def _get_templates(request: Request):
     return request.app.state.templates
-
-
-def _last_cycle_text(config: dict) -> str:
-    sql = """
-        SELECT started_at, completed_at FROM cycle_runs
-        WHERE status = 'completed'
-        ORDER BY completed_at DESC, started_at DESC
-        LIMIT 1
-    """
-    try:
-        row = query_one(sql, config=config)
-    except Exception:
-        return "No cycle run yet"
-    if row and (row.get("completed_at") or row.get("started_at")):
-        ts = row.get("completed_at") or row["started_at"]
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return f"Last cycle: {ts.strftime('%d %b %H:%M UTC')}"
-    return "No cycle run yet"
-
-
-def _latest_cycle_status(config: dict) -> str:
-    try:
-        row = query_one(
-            "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
-            config=config,
-        )
-    except Exception:
-        return "unknown"
-    if not row:
-        return "unknown"
-    return row.get("result_status") or row.get("status") or "unknown"
 
 
 def _split_sentences(text: str, limit: int) -> list[str]:
@@ -198,7 +157,7 @@ def _get_latest_prices(config: dict) -> dict:
         price_map[row["symbol"]] = {
             "price": float(price),
             "change": change,
-            "timestamp": _parse_iso(row.get("timestamp")),
+            "timestamp": parse_iso(row.get("timestamp")),
         }
     return price_map
 
@@ -244,69 +203,6 @@ def _live_updates_enabled(config: dict) -> bool:
     return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
-def _load_compact_strip(config: dict) -> dict:
-    """Compact session snapshot for the lean dashboard strip.
-
-    Sources only session label, current regime, and the single next catalyst
-    (contract: the dashboard strip must not load last price, last material
-    event, direction chips, source health, or budget).  Every sub-fetch is
-    isolated fail-soft.
-
-    Reuses the existing query/helper definitions from ``cockpit_panels``
-    (private ``_NEXT_CATALYST_SQL``, ``_session_label_for_hour``,
-    ``_primary_zone``, ``_as_datetime``, ``_iso``, ``_countdown_display``)
-    instead of copying SQL.  Handoff note: those helpers should be promoted to
-    public cockpit API (e.g. ``load_compact_strip``) so this dependency is not
-    on private names.
-    """
-    strip: dict = {
-        "available": True,
-        "session_label": None,
-        "regime": None,
-        "next_catalyst": None,
-    }
-    try:
-        strip["session_label"] = _session_label_for_hour(
-            datetime.now(_primary_zone(config)).hour
-        )
-    except Exception:
-        pass
-
-    try:
-        regime = get_regime_current()
-        if isinstance(regime, dict):
-            strip["regime"] = {
-                "regime": regime.get("regime"),
-                "sub_regime": regime.get("sub_regime"),
-                "confidence": regime.get("confidence"),
-                "created_at": regime.get("created_at"),
-            }
-    except Exception:
-        pass
-
-    try:
-        now = datetime.now(UTC)
-        row = query_one(_NEXT_CATALYST_SQL, params={"now": now}, config=config)
-        if row:
-            scheduled = _as_datetime(row.get("scheduled_at"))
-            minutes = None
-            if scheduled is not None:
-                minutes = max(
-                    0, int((scheduled - datetime.now(UTC)).total_seconds() // 60)
-                )
-            strip["next_catalyst"] = {
-                "event_name": row.get("event_name"),
-                "country": row.get("country"),
-                "scheduled_at": _iso(scheduled),
-                "countdown_minutes": minutes,
-                "countdown_display": _countdown_display(minutes),
-            }
-    except Exception:
-        pass
-
-    return strip
-
-
 router = APIRouter()
 
 
@@ -319,22 +215,24 @@ async def dashboard(request: Request):
         briefing_result,
         since_last_view_result,
         strip_result,
-        briefing_delta_result,
-        last_cycle_text,
-        last_cycle_status,
         health_result,
     ) = await asyncio.gather(
         run_in_threadpool(get_briefing_latest),
         run_in_threadpool(load_since_last_view, config),
-        run_in_threadpool(_load_compact_strip, config),
-        run_in_threadpool(load_briefing_delta, config),
-        run_in_threadpool(_last_cycle_text, config),
-        run_in_threadpool(_latest_cycle_status, config),
+        run_in_threadpool(load_compact_strip, config),
         _get_dashboard_health(request),
         return_exceptions=True,
     )
 
     briefing = None if isinstance(briefing_result, Exception) else briefing_result
+    briefing_delta_result = await run_in_threadpool(
+        load_briefing_delta, config, briefing
+    )
+    briefing_delta = (
+        {"available": False, "bullets": [], "atoms": [], "latest_date": None}
+        if isinstance(briefing_delta_result, Exception)
+        else briefing_delta_result
+    )
     system_health = (
         {
             "overall": "unavailable",
@@ -349,14 +247,6 @@ async def dashboard(request: Request):
 
     context = {
         "request": request,
-        "last_cycle_text": (
-            "No cycle run yet"
-            if isinstance(last_cycle_text, Exception)
-            else last_cycle_text
-        ),
-        "last_cycle_status": (
-            "unknown" if isinstance(last_cycle_status, Exception) else last_cycle_status
-        ),
         "current_time": now,
         "data_status": _data_status(system_health),
         "live_updates_enabled": _live_updates_enabled(config),
@@ -368,11 +258,7 @@ async def dashboard(request: Request):
         ),
         "briefing": briefing,
         "briefing_sections": _briefing_sections(briefing),
-        "briefing_delta": (
-            {"available": False, "bullets": [], "atoms": [], "latest_date": None}
-            if isinstance(briefing_delta_result, Exception)
-            else briefing_delta_result
-        ),
+        "briefing_delta": briefing_delta,
         **tz_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -390,11 +276,8 @@ async def partial_header(request: Request):
         "partials/header.html",
         {
             "request": request,
-            "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
-            "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
             "current_time": now,
             "data_status": _data_status(await _get_dashboard_health(request)),
-            "budget": await run_in_threadpool(get_budget_status),
             **tz_context,
         },
     )
@@ -453,7 +336,7 @@ def partial_cards_symbol(request: Request, symbol: str):
             events_data = get_events_upcoming_data(request=request, days=14)
             events = events_data.get("events", [])
             for ev in events:
-                ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
+                ev["scheduled_at"] = parse_iso(ev.get("scheduled_at"))
         except Exception:
             events = []
         return templates.TemplateResponse(
@@ -464,7 +347,7 @@ def partial_cards_symbol(request: Request, symbol: str):
                 "note": note,
                 "price": _get_latest_prices(config).get(symbol),
                 "drivers": _asset_drivers(note),
-                "matched_events": _matched_asset_events(symbol, events),
+                "matched_events": matched_asset_events(symbol, events),
                 "opinion_id": briefing.get("opinion_ids", [])[-1]
                 if briefing.get("opinion_ids")
                 else None,
@@ -491,7 +374,7 @@ def partial_cards(request: Request):
         briefing = get_briefing_latest()
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
-            briefing["stale_reason"] = _format_stale_reason(
+            briefing["stale_reason"] = format_stale_reason(
                 briefing["stale_reason"], "briefing"
             )
     except Exception:
@@ -523,7 +406,7 @@ def partial_briefing(request: Request):
         briefing = None
     briefing_delta = {"available": False, "bullets": [], "atoms": [], "latest_date": None}
     try:
-        briefing_delta = load_briefing_delta(config)
+        briefing_delta = load_briefing_delta(config, latest=briefing)
     except Exception:
         pass
     return templates.TemplateResponse(

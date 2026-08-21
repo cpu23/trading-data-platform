@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
@@ -240,6 +240,177 @@ def change_feed_payload(*, has_earlier=True, limit=30):
     }
 
 
+CONFIG = {
+    "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
+    "event_pipeline": {"sse": {"enabled": True}},
+}
+
+
+def feed_row(
+    observed_at,
+    *,
+    title="Fed holds rates",
+    event_type="rate_decision",
+    flags=(),
+    windows=None,
+    markets=None,
+    importance=0.8,
+    novelty=0.5,
+    interpretation=True,
+):
+    """Raw routed-event DB row as consumed by ``load_change_feed``."""
+    if windows is None:
+        windows = [
+            {"timeframe": "PRICE", "horizon": "5m", "percentage_move": 0.4, "reaction_state": "persistence"},
+            {"timeframe": "PRICE", "horizon": "30m", "percentage_move": -0.2, "reaction_state": "reversal"},
+        ]
+    if markets is None:
+        markets = [
+            {"symbol": "EURUSD"},
+            {"symbol": "SP500"},
+            {"symbol": "XAUUSD"},
+            {"symbol": "DXY"},
+            {"symbol": "USDJPY"},
+            {"symbol": "GER40"},
+        ]
+    return {
+        "event_id": "22222222-2222-4222-8222-222222222222",
+        "observed_at": observed_at,
+        "effective_at": observed_at,
+        "published_at": observed_at,
+        "event_type": event_type,
+        "source": "reuters",
+        "payload": {"title": title},
+        "markets": markets,
+        "importance": importance,
+        "novelty": novelty,
+        "reaction_windows": windows,
+        "confirmation_flags": list(flags),
+        "interpretation_available": interpretation,
+    }
+
+
+class NewsChangeFeedQueryTests(unittest.TestCase):
+    """Loader-level contract for the news-owned change feed loader."""
+
+    def test_rejects_bad_before_before_database_access(self):
+        from fastapi import HTTPException
+
+        from routes.views.news import load_change_feed
+
+        with patch("routes.views.news.query_many") as query:
+            with self.assertRaises(HTTPException) as caught:
+                load_change_feed(CONFIG, before="not-a-timestamp")
+        self.assertEqual(caught.exception.status_code, 422)
+        query.assert_not_called()
+
+        with patch("routes.views.news.query_many") as query:
+            with self.assertRaises(HTTPException) as caught:
+                load_change_feed(CONFIG, before="2026-08-06T12:00:00")
+        self.assertEqual(caught.exception.status_code, 422)
+        query.assert_not_called()
+
+    def test_bounds_limit_and_signals_has_earlier(self):
+        from routes.views.news import load_change_feed
+
+        rows = [feed_row(NOW - timedelta(minutes=index)) for index in range(31)]
+        with patch(
+            "routes.views.news.query_many", return_value=rows
+        ) as query:
+            feed = load_change_feed(CONFIG, limit=30)
+        self.assertTrue(feed["available"])
+        self.assertTrue(feed["has_earlier"])
+        self.assertEqual(len(feed["rows"]), 30)
+        self.assertEqual(query.call_args.kwargs["params"]["limit"], 31)
+
+        with patch("routes.views.news.query_many", return_value=rows[:30]):
+            feed = load_change_feed(CONFIG, limit=30)
+        self.assertFalse(feed["has_earlier"])
+        self.assertEqual(len(feed["rows"]), 30)
+
+        many_rows = [feed_row(NOW - timedelta(minutes=index)) for index in range(60)]
+        with patch(
+            "routes.views.news.query_many", return_value=many_rows
+        ) as query:
+            feed = load_change_feed(CONFIG, limit=999)
+        self.assertEqual(feed["limit"], 50)
+        self.assertTrue(feed["has_earlier"])
+        self.assertEqual(len(feed["rows"]), 50)
+        self.assertEqual(query.call_args.kwargs["params"]["limit"], 51)
+
+    def test_row_processing_caps_markets_and_windows(self):
+        from routes.views.news import load_change_feed
+
+        windows = [
+            {
+                "timeframe": "PRICE" if index % 2 == 0 else "5m",
+                "horizon": f"{index}m",
+                "percentage_move": 0.1 * index,
+                "reaction_state": "persistence",
+            }
+            for index in range(6)
+        ]
+        row = feed_row(
+            NOW,
+            flags=("confirmed_by_market", "market_moved_before_headline"),
+            windows=windows,
+        )
+        with patch("routes.views.news.query_many", return_value=[row]):
+            feed = load_change_feed(CONFIG, limit=30)
+        processed = feed["rows"][0]
+        self.assertEqual(processed["title"], "Fed holds rates")
+        self.assertEqual(processed["source"], "reuters")
+        self.assertEqual(processed["markets"], ["EURUSD", "SP500", "XAUUSD", "DXY"])
+        self.assertEqual(len(processed["reaction_windows"]), 4)
+        self.assertEqual(processed["reaction_windows"][0]["horizon"], "0m")
+        self.assertEqual(processed["reaction_windows"][0]["timeframe"], "PRICE")
+        self.assertEqual(processed["state"], "confirmed")
+        self.assertEqual(processed["state_class"], "bullish")
+        self.assertTrue(processed["interpretation_available"])
+        self.assertEqual(processed["importance_label"], "High")
+        self.assertEqual(processed["novelty_display"], "0.50")
+        self.assertEqual(processed["observed_at"], NOW.isoformat())
+
+    def test_title_falls_back_to_event_type(self):
+        from routes.views.news import load_change_feed
+
+        raw = feed_row(NOW)
+        raw["payload"] = {}
+        raw["event_type"] = "central_bank_rate"
+        with patch("routes.views.news.query_many", return_value=[raw]):
+            feed = load_change_feed(CONFIG)
+        self.assertEqual(feed["rows"][0]["title"], "central_bank_rate")
+
+    def test_state_mapping_from_confirmation_flags(self):
+        from routes.views.news import load_change_feed
+
+        cases = {
+            "developing": (),
+            "confirmed": ("confirmed_by_market",),
+            "contradicted": ("initial_move_reversed",),
+            "completed": ("no_material_reaction",),
+        }
+        for expected, flags in cases.items():
+            with patch(
+                "routes.views.news.query_many",
+                return_value=[feed_row(NOW, flags=flags)],
+            ):
+                feed = load_change_feed(CONFIG)
+            self.assertEqual(feed["rows"][0]["state"], expected)
+
+    def test_query_failure_is_fail_soft(self):
+        from routes.views.news import load_change_feed
+
+        with patch(
+            "routes.views.news.query_many",
+            side_effect=RuntimeError("secret sql"),
+        ):
+            feed = load_change_feed(CONFIG)
+        self.assertFalse(feed["available"])
+        self.assertEqual(feed["rows"], [])
+        self.assertNotIn("secret sql", str(feed))
+
+
 class NewsChangeFeedTests(unittest.TestCase):
     """Continuous change feed on /news: canonical partial, loader reuse,
     load-earlier, compatibility alias, and refresh/SSE exclusivity."""
@@ -286,10 +457,13 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertIn('hx-trigger="load"', response.text)
         self.assertIn("Evidence timeline · 2 shown", response.text)
 
-    def test_canonical_partial_reuses_cockpit_loader(self):
-        from routes.views import cockpit_panels, news
+    def test_canonical_partial_uses_news_owned_loader(self):
+        import routes.views.cockpit_panels as cockpit_panels
+        from routes.views import news
 
-        self.assertIs(news.load_change_feed, cockpit_panels.load_change_feed)
+        # The feed loader moved into News; cockpit_panels no longer owns it.
+        self.assertTrue(hasattr(news, "load_change_feed"))
+        self.assertFalse(hasattr(cockpit_panels, "load_change_feed"))
         client = self.make_client(news.router)
         with (
             patch("routes.views.news.load_config", return_value={}),
@@ -318,7 +492,7 @@ class NewsChangeFeedTests(unittest.TestCase):
             )
         with (
             patch("routes.views.news.load_config", return_value={}),
-            patch("routes.views.cockpit_panels.query_many") as query,
+            patch("routes.views.news.query_many") as query,
         ):
             response = client.get("/partials/news/change-feed?before=garbage")
         self.assertEqual(response.status_code, 422)
@@ -352,22 +526,13 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertEqual(loader.call_args.kwargs["limit"], 30)
 
     def test_compat_dashboard_change_feed_url_still_serves_partial(self):
-        from routes.views.cockpit_panels import router as cockpit_router
         from routes.views.news import router as news_router
 
-        client = self.make_client(news_router, cockpit_router)
+        client = self.make_client(news_router)
         with (
             patch("routes.views.news.load_config", return_value={}),
             patch(
-                "routes.views.cockpit_panels.app_config.load_config",
-                return_value={},
-            ),
-            patch(
                 "routes.views.news.load_change_feed",
-                return_value=change_feed_payload(),
-            ),
-            patch(
-                "routes.views.cockpit_panels.load_change_feed",
                 return_value=change_feed_payload(),
             ),
         ):
@@ -381,6 +546,64 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertIn('href="/news"', compat.text)
         self.assertIn("Canonical story monitor", canonical.text)
         self.assertIn('href="#story-monitor-title"', canonical.text)
+
+    def test_compat_url_live_attrs_and_polling_fallback(self):
+        """The legacy dashboard URL keeps SSE attrs and the hx fallback."""
+        from routes.views.news import router
+
+        client = self.make_client(router)
+        live_config = {"event_pipeline": {"sse": {"enabled": True}}}
+        with (
+            patch("routes.views.news.load_config", return_value=live_config),
+            patch(
+                "routes.views.news.load_change_feed",
+                return_value=change_feed_payload(),
+            ),
+        ):
+            live = client.get("/partials/dashboard/change-feed")
+        self.assertIn('data-live-section="change_feed"', live.text)
+        self.assertIn('data-live-event="section_changed"', live.text)
+        self.assertIn('data-live-url="/partials/news/change-feed"', live.text)
+        with (
+            patch("routes.views.news.load_config", return_value={}),
+            patch(
+                "routes.views.news.load_change_feed",
+                return_value=change_feed_payload(),
+            ),
+        ):
+            polling = client.get("/partials/dashboard/change-feed")
+        self.assertIn('hx-get="/partials/news/change-feed"', polling.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
+        self.assertNotIn("data-live-section", polling.text)
+
+    def test_change_feed_renders_reaction_windows_and_load_earlier(self):
+        from urllib.parse import quote
+
+        from routes.views.news import router
+
+        client = self.make_client(router)
+        feed = change_feed_payload(has_earlier=True)
+        with (
+            patch("routes.views.news.load_config", return_value={}),
+            patch("routes.views.news.load_change_feed", return_value=feed),
+        ):
+            response = client.get("/partials/news/change-feed")
+        self.assertIn("Fed holds rates", response.text)
+        self.assertIn("5m", response.text)
+        self.assertIn("+0.40%", response.text)
+        self.assertIn("confirmed", response.text)
+        self.assertIn("interpretation", response.text)
+        self.assertIn("Load earlier", response.text)
+        self.assertIn('hx-swap="afterend"', response.text)
+        self.assertIn("before=" + quote(NOW.isoformat(), safe=""), response.text)
+
+        feed["has_earlier"] = False
+        with (
+            patch("routes.views.news.load_config", return_value={}),
+            patch("routes.views.news.load_change_feed", return_value=feed),
+        ):
+            response = client.get("/partials/news/change-feed")
+        self.assertNotIn("Load earlier", response.text)
 
     def test_refresh_is_exclusive_sse_or_market_refresh_no_polling(self):
         from routes.views.news import router

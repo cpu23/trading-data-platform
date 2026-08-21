@@ -84,6 +84,7 @@ def make_app(*, auth=True, capturing_templates=False):
 
     from auth import verify_credentials
     from routes.views.dashboard import router as dashboard_router
+    from routes.views.dashboard_strip import router as dashboard_strip_router
     from routes.views.markets import router as markets_router
 
     dependencies = [Depends(verify_credentials)] if auth else None
@@ -94,6 +95,7 @@ def make_app(*, auth=True, capturing_templates=False):
         app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
     app.include_router(markets_router)
     app.include_router(dashboard_router)
+    app.include_router(dashboard_strip_router)
     return app
 
 
@@ -178,20 +180,12 @@ class SlimDashboardTests(unittest.TestCase):
                 return_value=SLV,
             ),
             patch(
-                "routes.views.dashboard._load_compact_strip",
+                "routes.views.dashboard.load_compact_strip",
                 return_value=COMPACT_STRIP,
             ),
             patch(
                 "routes.views.dashboard.load_briefing_delta",
                 return_value=BRIEFING_DELTA,
-            ),
-            patch(
-                "routes.views.dashboard._last_cycle_text",
-                return_value="No cycle run yet",
-            ),
-            patch(
-                "routes.views.dashboard._latest_cycle_status",
-                return_value="unknown",
             ),
             patch(
                 "routes.views.dashboard._get_dashboard_health",
@@ -201,9 +195,7 @@ class SlimDashboardTests(unittest.TestCase):
             # Removed datasets: must never be invoked by the lean page.
             patch("routes.views.dashboard.get_events_upcoming_data") as events,
             patch("routes.views.dashboard._get_latest_prices") as prices,
-            patch("routes.views.dashboard.get_budget_status") as budget,
             patch("routes.views.dashboard.load_story_context") as stories,
-            patch("routes.views.cockpit_panels.load_top_strip") as full_strip,
         ):
             response = client.get("/", headers=AUTH)
 
@@ -221,8 +213,6 @@ class SlimDashboardTests(unittest.TestCase):
             "live_updates_enabled",
             "data_status",
             "current_time",
-            "last_cycle_text",
-            "last_cycle_status",
         }
         self.assertTrue(required_keys.issubset(context.keys()))
         self.assertEqual(context["strip"], COMPACT_STRIP)
@@ -247,13 +237,14 @@ class SlimDashboardTests(unittest.TestCase):
             "research_intelligence",
             "dots",
             "budget",
+            "last_cycle_text",
+            "last_cycle_status",
             "timedelta",
         }
         self.assertTrue(removed_keys.isdisjoint(context.keys()))
 
-        for loader in (events, prices, budget, stories):
+        for loader in (events, prices, stories):
             loader.assert_not_called()
-        full_strip.assert_not_called()
         import routes.views.dashboard as dashboard_module
 
         self.assertFalse(hasattr(dashboard_module, "get_macro_release_cards_data"))
@@ -282,20 +273,12 @@ class SlimDashboardTests(unittest.TestCase):
                 return_value=SLV,
             ),
             patch(
-                "routes.views.dashboard._load_compact_strip",
+                "routes.views.dashboard.load_compact_strip",
                 return_value=COMPACT_STRIP,
             ),
             patch(
                 "routes.views.dashboard.load_briefing_delta",
                 return_value=BRIEFING_DELTA,
-            ),
-            patch(
-                "routes.views.dashboard._last_cycle_text",
-                return_value="No cycle run yet",
-            ),
-            patch(
-                "routes.views.dashboard._latest_cycle_status",
-                return_value="unknown",
             ),
             patch(
                 "routes.views.dashboard._get_dashboard_health",
@@ -315,6 +298,69 @@ class SlimDashboardTests(unittest.TestCase):
             {"direction_chips", "source_health", "budget", "last_price_update",
              "last_material_event"} & set(strip.keys())
         )
+
+
+class CompactStripRouteTests(unittest.TestCase):
+    """/partials/dashboard/top-strip (dashboard_strip router) rendering."""
+
+    def test_top_strip_requires_auth(self):
+        from fastapi.testclient import TestClient
+
+        app = make_app(auth=True)
+        client = TestClient(app)
+        with patch(
+            "routes.views.dashboard_strip.load_compact_strip",
+            return_value=COMPACT_STRIP,
+        ):
+            self.assertEqual(
+                client.get("/partials/dashboard/top-strip").status_code, 401
+            )
+
+    def test_top_strip_route_renders_compact_fields(self):
+        from fastapi.testclient import TestClient
+
+        app = make_app()
+        client = TestClient(app)
+        with (
+            patch(
+                "routes.views.dashboard_strip.load_compact_strip",
+                return_value=COMPACT_STRIP,
+            ),
+            patch(
+                "routes.views.dashboard_strip.app_config.load_config",
+                return_value={"event_pipeline": {"sse": {"enabled": False}}},
+            ),
+        ):
+            response = client.get("/partials/dashboard/top-strip", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Session snapshot", response.text)
+        self.assertIn("London", response.text)
+        self.assertIn("Current regime", response.text)
+        self.assertIn("risk_on", response.text)
+        self.assertIn("Next catalyst", response.text)
+        self.assertIn("US CPI", response.text)
+        self.assertIn('hx-get="/partials/dashboard/top-strip"', response.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
+        self.assertNotIn("data-live-section", response.text)
+
+    def test_top_strip_fail_soft_shows_unavailable(self):
+        from fastapi.testclient import TestClient
+
+        app = make_app()
+        client = TestClient(app)
+        with (
+            patch(
+                "routes.views.dashboard_strip.load_compact_strip",
+                return_value={"available": False},
+            ),
+            patch(
+                "routes.views.dashboard_strip.app_config.load_config",
+                return_value={"event_pipeline": {"sse": {"enabled": False}}},
+            ),
+        ):
+            response = client.get("/partials/dashboard/top-strip", headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Session snapshot unavailable.", response.text)
 
 
 class MarketPartialAliasTests(unittest.TestCase):

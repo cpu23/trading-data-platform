@@ -1,13 +1,16 @@
-"""Phase 8 dashboard cockpit panels: deterministic, fail-soft partials.
+"""Cockpit panels compatibility data layer: cross-asset, catalysts, delta.
 
-Every loader in this module is model-free: data comes from bounded SQL, from
-the existing ``routes.json`` readers (``get_regime_current``,
-``get_briefing_latest``), or from the deterministic budget adapter.  Each
-sub-fetch is isolated in its own ``try/except`` so one unavailable source
-degrades only its own field/panel and never the whole partial.  Query
-parameters are validated before any database access and raise a FastAPI 422
-when malformed.  No SQL text or exception detail is ever surfaced to the
-client.
+Every loader in this module is model-free: data comes from bounded SQL or
+from the existing ``routes.json`` readers (``get_briefing_latest``).  Each
+sub-fetch is isolated in its own ``try/except`` so one unavailable source degrades only its own field/panel
+and never the whole partial.  No SQL text or exception detail is ever
+surfaced to the client.
+
+The dashboard compact top strip lives in ``routes.views.dashboard_strip`` and
+the change feed lives in ``routes.views.news``; this module keeps the compat
+partial surfaces (``/partials/dashboard/cross-asset``,
+``/partials/dashboard/catalysts``, ``/partials/dashboard/briefing-delta``)
+and the loaders behind them.
 """
 
 from __future__ import annotations
@@ -17,34 +20,24 @@ import json
 import math
 import re
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Request
 
 import config as app_config
-from budgets import get_budget_status
-from db import query_many, query_one
+from db import query_many
 from routes.json.briefing import get_briefing_latest
-from routes.json.regime import get_regime_current
 from routes.views.asset_rules import ASSET_EVENT_RULES
+from routes.views.dashboard_strip import (
+    as_datetime,
+    countdown_display,
+    iso,
+    primary_zone,
+    time_display,
+)
 
 router = APIRouter()
 
-CHANGE_FEED_MAX_LIMIT = 50
 DIRECTION_THRESHOLD_PCT = 0.05
-
-# Top-strip direction chips: (key, market_data symbol, label).  ``vol`` has no
-# 1d symbol; it is derived from 5m price ranges instead.
-STRIP_CHIP_DEFS = (
-    ("rates", "US10Y", "Rates"),
-    ("dollar", "DXY", "Dollar"),
-    ("vol", None, "Vol"),
-    ("oil", "WTICOUSD", "Oil"),
-    ("gold", "XAUUSD", "Gold"),
-    ("equities", "SP500", "Equities"),
-)
-VOL_PROXY_SYMBOL = "SP500"
-VOL_PROXY_WINDOW = 12  # 5m buckets per window (1 hour)
 
 CATALYST_DAYS = 7
 CATALYST_LIMIT = 6
@@ -57,73 +50,11 @@ COUNTRY_TO_CURRENCY = {
     "CN": "CNY",
 }
 
-_STATE_CLASSES = {
-    "confirmed": "bullish",
-    "contradicted": "bearish",
-    "completed": "mixed",
-    "developing": "neutral",
-}
-
 _LATEST_MACRO_SQL = """
     SELECT DISTINCT ON (series_id) series_id, value, observed_at
     FROM macro_series
     WHERE series_id IN (SELECT jsonb_array_elements_text(:series_ids::jsonb))
     ORDER BY series_id, observed_at DESC
-    LIMIT :limit
-"""
-
-_CHANGE_FEED_SQL = """
-    SELECT routed.event_id, routed.observed_at, routed.effective_at,
-           routed.published_at, routed.event_type, routed.source,
-           routed.payload, routed.markets, routed.importance, routed.novelty,
-           COALESCE(react.windows, '[]'::jsonb) AS reaction_windows,
-           COALESCE(conf.flags, '[]'::jsonb) AS confirmation_flags,
-           COALESCE(atom.present, false) AS interpretation_available
-    FROM (
-        SELECT DISTINCT ON (me.id)
-               me.id AS event_id, me.observed_at, me.effective_at,
-               me.published_at, me.event_type, me.source, me.payload,
-               me.markets, em.importance, em.novelty
-        FROM market_events me
-        JOIN event_materiality em ON em.event_id = me.id
-        WHERE em.decision = 'route'
-        ORDER BY me.id,
-                 CASE WHEN em.job_type = 'event_atom' THEN 0 ELSE 1 END,
-                 em.score DESC, em.created_at DESC
-    ) routed
-    LEFT JOIN LATERAL (
-        SELECT jsonb_agg(jsonb_build_object(
-                   'timeframe', w.timeframe,
-                   'horizon', w.horizon,
-                   'percentage_move', w.percentage_move,
-                   'reaction_state', w.reaction_state
-               ) ORDER BY w.timeframe, w.horizon) AS windows
-        FROM (
-            SELECT timeframe, horizon, percentage_move, reaction_state
-            FROM event_reaction_windows
-            WHERE event_id = routed.event_id
-            ORDER BY timeframe, horizon
-            LIMIT 4
-        ) w
-    ) react ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT jsonb_agg(DISTINCT flag ORDER BY flag) AS flags
-        FROM (
-            SELECT jsonb_array_elements_text(smc.flags) AS flag
-            FROM story_market_confirmations smc
-            WHERE smc.source_event_id = routed.event_id
-            LIMIT 25
-        ) f
-    ) conf ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT true AS present
-        FROM analysis_atoms
-        WHERE source_event_id = routed.event_id
-          AND status IN ('validated', 'published')
-        LIMIT 1
-    ) atom ON TRUE
-    WHERE (:before IS NULL OR routed.observed_at < :before)
-    ORDER BY routed.observed_at DESC, routed.event_id DESC
     LIMIT :limit
 """
 
@@ -139,15 +70,6 @@ _CATALYSTS_SQL = """
       )
     ORDER BY scheduled_at ASC
     LIMIT 100
-"""
-
-_NEXT_CATALYST_SQL = """
-    SELECT event_id, event_name, country, scheduled_at, source, metadata
-    FROM econ_events
-    WHERE scheduled_at >= :now
-      AND lower(COALESCE(impact_level, '')) = 'high'
-    ORDER BY scheduled_at ASC
-    LIMIT 1
 """
 
 _VOL_TERM_SQL = """
@@ -169,54 +91,7 @@ _VOL_TERM_SQL = """
 # ---------------------------------------------------------------------------
 
 
-def _primary_zone(config: dict) -> ZoneInfo:
-    name = config.get("timezone", {}).get("primary", {}).get("name", "Europe/London")
-    try:
-        return ZoneInfo(name)
-    except Exception:
-        return ZoneInfo("Europe/London")
-
-
-def _session_label_for_hour(hour: int) -> str:
-    """Deterministic session label for the display-timezone hour.
-
-    Asia covers the Tokyo window, London the European morning/afternoon
-    overlap, New York the US afternoon window.
-    """
-    if 0 <= hour < 8:
-        return "Asia"
-    if 8 <= hour < 17:
-        return "London"
-    return "New York"
-
-
-def _as_datetime(value):
-    if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    return None
-
-
-def _iso(value) -> str | None:
-    parsed = _as_datetime(value)
-    return parsed.isoformat() if parsed else None
-
-
-def _time_display(value) -> str | None:
-    parsed = _as_datetime(value)
-    return parsed.strftime("%d %b %H:%M UTC") if parsed else None
-
-
-def _json_obj(value) -> dict:
+def json_obj(value) -> dict:
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
@@ -228,25 +103,13 @@ def _json_obj(value) -> dict:
     return {}
 
 
-def _json_list(value, limit: int) -> list:
-    if isinstance(value, list):
-        return list(value[:limit])
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return []
-        return parsed[:limit] if isinstance(parsed, list) else []
-    return []
-
-
-def _pct_display(value) -> str | None:
+def pct_display(value) -> str | None:
     if not isinstance(value, (int, float)):
         return None
     return f"{value:+.2f}%"
 
 
-def _direction(change, threshold: float = DIRECTION_THRESHOLD_PCT) -> str | None:
+def direction(change, threshold: float = DIRECTION_THRESHOLD_PCT) -> str | None:
     if not isinstance(change, (int, float)):
         return None
     if change > threshold:
@@ -254,14 +117,6 @@ def _direction(change, threshold: float = DIRECTION_THRESHOLD_PCT) -> str | None
     if change < -threshold:
         return "down"
     return "flat"
-
-
-def _countdown_display(minutes) -> str | None:
-    if minutes is None:
-        return None
-    if minutes < 60:
-        return f"{minutes}m"
-    return f"{minutes // 60}h {minutes % 60}m"
 
 
 def _pair_change(pair) -> float | None:
@@ -309,22 +164,6 @@ def _last_two_buckets(config: dict, symbols: list[str]) -> dict:
     return result
 
 
-def _market_symbols(markets, limit: int = 4) -> list[str]:
-    symbols: list[str] = []
-    items = _json_list(markets, limit=limit)
-    for item in items:
-        if isinstance(item, dict):
-            symbol = item.get("symbol") or item.get("canonical_id")
-        else:
-            symbol = item
-        symbol = str(symbol or "").strip().upper()
-        if symbol and symbol not in symbols:
-            symbols.append(symbol)
-        if len(symbols) >= limit:
-            break
-    return symbols
-
-
 def _watchlist_symbols(config: dict) -> list[str]:
     symbols: list[str] = []
     for group in config.get("watchlist", {}).values():
@@ -368,29 +207,6 @@ def _metadata_value(metadata) -> dict:
     return {}
 
 
-def _validate_before(value):
-    """Strict ISO-8601 (timezone-aware) validation; 422 before any DB access."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail="Invalid before timestamp; expected ISO-8601.",
-            ) from exc
-    else:
-        raise HTTPException(
-            status_code=422, detail="Invalid before timestamp; expected ISO-8601."
-        )
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise HTTPException(status_code=422, detail="before must include a UTC offset.")
-    return parsed.astimezone(UTC)
-
-
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
     n = len(xs)
     if n < 2:
@@ -404,34 +220,6 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return numerator / denominator if denominator else None
 
 
-def _importance_label(value) -> str | None:
-    if not isinstance(value, (int, float)):
-        return None
-    if value >= 0.7:
-        return "High"
-    if value >= 0.4:
-        return "Medium"
-    return "Low"
-
-
-def _importance_class(value) -> str | None:
-    label = _importance_label(value)
-    return label.lower() if label else None
-
-
-def _event_state(flags: list[str]) -> str:
-    names = set(flags)
-    if not names:
-        return "developing"
-    if "initial_move_reversed" in names:
-        return "contradicted"
-    if "confirmed_by_market" in names:
-        return "confirmed"
-    if "no_material_reaction" in names:
-        return "completed"
-    return "developing"
-
-
 def _normalize_section(value) -> str:
     if isinstance(value, list):
         parts = [str(part) for part in value]
@@ -442,293 +230,6 @@ def _normalize_section(value) -> str:
 
 def _section_fingerprint(value) -> str:
     return hashlib.sha256(_normalize_section(value).encode("utf-8")).hexdigest()[:16]
-
-
-# ---------------------------------------------------------------------------
-# Top strip
-# ---------------------------------------------------------------------------
-
-
-def _vol_proxy_change(config: dict) -> float | None:
-    """Vol proxy: % change in the latest vs prior 1h SP500 5m range."""
-    rows = query_many(
-        """
-        SELECT bucket, high, low, close FROM market_data_5m
-        WHERE symbol = :symbol
-        ORDER BY bucket DESC
-        LIMIT :limit
-        """,
-        params={"symbol": VOL_PROXY_SYMBOL, "limit": VOL_PROXY_WINDOW * 2},
-        config=config,
-    )
-    if len(rows) < VOL_PROXY_WINDOW:
-        return None
-
-    def range_pct(chunk: list[dict]) -> float | None:
-        highs = [row["high"] for row in chunk if row.get("high") is not None]
-        lows = [row["low"] for row in chunk if row.get("low") is not None]
-        closes = [row["close"] for row in chunk if row.get("close")]
-        if not highs or not lows or not closes:
-            return None
-        average_close = sum(closes) / len(closes)
-        return (max(highs) - min(lows)) / average_close * 100.0
-
-    now_range = range_pct(rows[:VOL_PROXY_WINDOW])
-    prev_range = range_pct(rows[VOL_PROXY_WINDOW : VOL_PROXY_WINDOW * 2])
-    if now_range is None or prev_range is None or not prev_range:
-        return None
-    return (now_range / prev_range - 1.0) * 100.0
-
-
-def load_top_strip(config: dict) -> dict:
-    """Deterministic session snapshot; every sub-fetch is isolated fail-soft."""
-    strip: dict = {
-        "available": True,
-        "session_label": None,
-        "last_price_update": None,
-        "last_price_update_display": None,
-        "last_material_event": None,
-        "regime": None,
-        "direction_chips": [],
-        "next_catalyst": None,
-        "source_health": None,
-        "budget": None,
-    }
-    try:
-        strip["session_label"] = _session_label_for_hour(
-            datetime.now(_primary_zone(config)).hour
-        )
-    except Exception:
-        pass
-
-    try:
-        row = query_one(
-            "SELECT MAX(timestamp) AS last_ts FROM market_data", config=config
-        )
-        if row and row.get("last_ts") is not None:
-            strip["last_price_update"] = _iso(row["last_ts"])
-            strip["last_price_update_display"] = _time_display(row["last_ts"])
-    except Exception:
-        pass
-
-    try:
-        row = query_one(
-            """
-            SELECT me.event_type, me.source, me.observed_at, me.effective_at,
-                   me.payload
-            FROM market_events me
-            JOIN event_materiality em ON em.event_id = me.id
-            WHERE em.decision = 'route'
-            ORDER BY COALESCE(me.effective_at, me.observed_at) DESC,
-                     me.observed_at DESC
-            LIMIT 1
-            """,
-            config=config,
-        )
-        if row:
-            payload = _json_obj(row.get("payload"))
-            strip["last_material_event"] = {
-                "title": payload.get("title")
-                or row.get("event_type")
-                or "Market event",
-                "source": row.get("source"),
-                "observed_at": _iso(row.get("observed_at")),
-                "time_display": _time_display(
-                    row.get("effective_at") or row.get("observed_at")
-                ),
-            }
-    except Exception:
-        pass
-
-    try:
-        regime = get_regime_current()
-        if isinstance(regime, dict):
-            strip["regime"] = {
-                "regime": regime.get("regime"),
-                "sub_regime": regime.get("sub_regime"),
-                "confidence": regime.get("confidence"),
-                "created_at": regime.get("created_at"),
-            }
-    except Exception:
-        pass
-
-    try:
-        symbols = [symbol for _, symbol, _ in STRIP_CHIP_DEFS if symbol]
-        buckets = _last_two_buckets(config, symbols)
-        chips = []
-        for key, symbol, label in STRIP_CHIP_DEFS:
-            if symbol is None:
-                try:
-                    change_pct = _vol_proxy_change(config)
-                except Exception:
-                    change_pct = None
-            else:
-                change_pct = _pair_change(buckets.get(symbol) or [])
-            chips.append(
-                {
-                    "key": key,
-                    "label": label,
-                    "symbol": symbol,
-                    "direction": _direction(change_pct),
-                    "change_pct": change_pct,
-                    "display": _pct_display(change_pct),
-                }
-            )
-        strip["direction_chips"] = chips
-    except Exception:
-        pass
-
-    try:
-        now = datetime.now(UTC)
-        row = query_one(_NEXT_CATALYST_SQL, params={"now": now}, config=config)
-        if row:
-            scheduled = _as_datetime(row.get("scheduled_at"))
-            minutes = None
-            if scheduled is not None:
-                minutes = max(
-                    0, int((scheduled - datetime.now(UTC)).total_seconds() // 60)
-                )
-            strip["next_catalyst"] = {
-                "event_name": row.get("event_name"),
-                "country": row.get("country"),
-                "scheduled_at": _iso(scheduled),
-                "countdown_minutes": minutes,
-                "countdown_display": _countdown_display(minutes),
-            }
-    except Exception:
-        pass
-
-    try:
-        rows = query_many(
-            """
-            SELECT state, COUNT(*) AS count
-            FROM source_freshness_state
-            GROUP BY state
-            ORDER BY state
-            """,
-            config=config,
-        )
-        by_state = [
-            {"state": row.get("state"), "count": int(row.get("count") or 0)}
-            for row in rows
-        ]
-        total = sum(item["count"] for item in by_state)
-        detail = " · ".join(f"{item['state']} {item['count']}" for item in by_state)
-        strip["source_health"] = {
-            "total": total,
-            "by_state": by_state,
-            "display": f"{total} sources" + (f" · {detail}" if detail else ""),
-        }
-    except Exception:
-        pass
-
-    try:
-        budget = get_budget_status(config)
-        if isinstance(budget, dict):
-            usage = budget.get("usage_pct")
-            strip["budget"] = {
-                **budget,
-                "display": f"{usage:g}%" if isinstance(usage, (int, float)) else "—",
-            }
-    except Exception:
-        pass
-
-    return strip
-
-
-# ---------------------------------------------------------------------------
-# Change feed
-# ---------------------------------------------------------------------------
-
-
-def _feed_row(raw: dict) -> dict:
-    payload = _json_obj(raw.get("payload"))
-    event_type = raw.get("event_type") or "event"
-    title = payload.get("title") or event_type
-    timestamp = (
-        raw.get("effective_at") or raw.get("published_at") or raw.get("observed_at")
-    )
-    windows = []
-    for item in _json_list(raw.get("reaction_windows"), limit=4):
-        if not isinstance(item, dict):
-            continue
-        move = item.get("percentage_move")
-        windows.append(
-            {
-                "timeframe": item.get("timeframe"),
-                "horizon": item.get("horizon"),
-                "percentage_move": move,
-                "reaction_state": item.get("reaction_state"),
-                "direction": _direction(move),
-                "display": _pct_display(move),
-            }
-        )
-        if len(windows) >= 4:
-            break
-    flags = [
-        str(flag)
-        for flag in _json_list(raw.get("confirmation_flags"), limit=25)
-        if flag is not None
-    ]
-    state = _event_state(flags)
-    importance = raw.get("importance")
-    novelty = raw.get("novelty")
-    return {
-        "event_id": str(raw.get("event_id") or ""),
-        "observed_at": _iso(raw.get("observed_at")),
-        "effective_at": _iso(raw.get("effective_at")),
-        "published_at": _iso(raw.get("published_at")),
-        "time_display": _time_display(timestamp),
-        "title": str(title)[:500],
-        "source": raw.get("source"),
-        "markets": _market_symbols(raw.get("markets"), limit=4),
-        "importance": importance,
-        "importance_label": _importance_label(importance),
-        "importance_class": _importance_class(importance),
-        "novelty": novelty,
-        "novelty_display": (
-            f"{novelty:.2f}" if isinstance(novelty, (int, float)) else None
-        ),
-        "reaction_windows": windows,
-        "state": state,
-        "state_class": _STATE_CLASSES.get(state, "neutral"),
-        "interpretation_available": bool(raw.get("interpretation_available")),
-    }
-
-
-def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
-    """Latest routed market events, newest first, bounded by ``limit``.
-
-    ``before`` is validated strictly (ISO-8601, timezone-aware) and rejected
-    with a 422 before any database access.  ``limit`` is clamped to
-    ``CHANGE_FEED_MAX_LIMIT``; an extra row is fetched to signal
-    ``has_earlier`` for the "Load earlier" control.
-    """
-    bounded_limit = max(1, min(CHANGE_FEED_MAX_LIMIT, int(limit)))
-    before_dt = _validate_before(before)
-    try:
-        rows = query_many(
-            _CHANGE_FEED_SQL,
-            params={"before": before_dt, "limit": bounded_limit + 1},
-            config=config,
-        )
-    except Exception:
-        return {
-            "available": False,
-            "rows": [],
-            "has_earlier": False,
-            "limit": bounded_limit,
-            "oldest_observed_at": None,
-        }
-    has_earlier = len(rows) > bounded_limit
-    feed_rows = [_feed_row(raw) for raw in rows[:bounded_limit]]
-    return {
-        "available": True,
-        "rows": feed_rows,
-        "has_earlier": has_earlier,
-        "limit": bounded_limit,
-        "oldest_observed_at": feed_rows[-1]["observed_at"] if feed_rows else None,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -821,8 +322,8 @@ def _panel_dollar_real_yields(config: dict) -> dict:
                     "label": "DXY",
                     "value": last_close,
                     "display": f"{last_close:.2f}",
-                    "direction": _direction(change),
-                    "detail": _pct_display(change),
+                    "direction": direction(change),
+                    "detail": pct_display(change),
                 }
             )
         indicators = [
@@ -888,8 +389,8 @@ def _panel_equity_breadth(config: dict) -> dict:
                 {
                     "label": symbol,
                     "value": change,
-                    "display": _pct_display(change),
-                    "direction": _direction(change),
+                    "display": pct_display(change),
+                    "direction": direction(change),
                     "detail": None,
                 }
             )
@@ -984,8 +485,8 @@ def _panel_commodity_impulse(config: dict) -> dict:
                 {
                     "label": symbol,
                     "value": change,
-                    "display": _pct_display(change),
-                    "direction": _direction(change),
+                    "display": pct_display(change),
+                    "direction": direction(change),
                     "detail": None,
                 }
             )
@@ -1079,7 +580,7 @@ def _panel_rolling_correlation(config: dict) -> dict:
                         "label": "Change",
                         "value": delta,
                         "display": f"{delta:+.2f}",
-                        "direction": _direction(delta, threshold=0.0),
+                        "direction": direction(delta, threshold=0.0),
                         "detail": None,
                     }
                 )
@@ -1114,8 +615,8 @@ def _panel_session_heatmap(config: dict) -> dict:
                 {
                     "label": symbol,
                     "value": change,
-                    "display": _pct_display(change),
-                    "direction": _direction(change),
+                    "display": pct_display(change),
+                    "direction": direction(change),
                     "detail": None,
                 }
             )
@@ -1149,7 +650,7 @@ def _panel_change_since_event(config: dict) -> dict:
         )
         rows_list = []
         for row in rows:
-            features = _json_obj(row.get("features"))
+            features = json_obj(row.get("features"))
             percentage_move = features.get("percentage_move")
             if percentage_move is None:
                 continue
@@ -1169,9 +670,9 @@ def _panel_change_since_event(config: dict) -> dict:
                     {
                         "label": f"{row.get('symbol')} {horizon}",
                         "value": value,
-                        "display": _pct_display(value),
-                        "direction": _direction(value),
-                        "detail": _time_display(row.get("as_of")),
+                        "display": pct_display(value),
+                        "direction": direction(value),
+                        "detail": time_display(row.get("as_of")),
                     }
                 )
         if not rows_list:
@@ -1250,7 +751,7 @@ def load_catalysts(config: dict) -> dict:
     except Exception:
         return {"available": False, "catalysts": [], "days": CATALYST_DAYS}
 
-    zone = _primary_zone(config)
+    zone = primary_zone(config)
     today_key = datetime.now(zone).date().isoformat()
 
     def day_label(day_key: str) -> str:
@@ -1266,7 +767,7 @@ def load_catalysts(config: dict) -> dict:
     for row in rows:
         if str(row.get("impact_level") or "").lower() != "high":
             continue
-        scheduled = _as_datetime(row.get("scheduled_at"))
+        scheduled = as_datetime(row.get("scheduled_at"))
         day_key = scheduled.astimezone(zone).date().isoformat() if scheduled else ""
         minutes = None
         if scheduled is not None:
@@ -1282,11 +783,11 @@ def load_catalysts(config: dict) -> dict:
                 "event_name": row.get("event_name"),
                 "country": row.get("country"),
                 "currency": currency,
-                "scheduled_at": _iso(scheduled),
+                "scheduled_at": iso(scheduled),
                 "day_key": day_key,
                 "day_label": day_label(day_key),
                 "countdown_minutes": minutes,
-                "countdown_display": _countdown_display(minutes),
+                "countdown_display": countdown_display(minutes),
                 "impact_level": row.get("impact_level"),
                 "impacted_symbols": _impacted_symbols(row, watchlist_symbols, currency),
             }
@@ -1338,13 +839,24 @@ def _delta_bullets(latest_sections: dict, previous_sections: dict | None) -> lis
     return bullets
 
 
-def load_briefing_delta(config: dict) -> dict:
-    """Latest briefing vs the previous briefing record; model-free delta."""
-    try:
-        latest = get_briefing_latest()
-    except Exception:
+_MISSING = object()
+
+
+def load_briefing_delta(config: dict, latest=_MISSING) -> dict:
+    """Latest briefing vs the previous briefing record; model-free delta.
+
+    ``latest`` may be preloaded by the caller (dashboard page, merged briefing
+    partial) so the latest-briefing read happens exactly once per request;
+    the default fetches it here for standalone callers and the compat partial.
+    """
+    if latest is _MISSING:
+        try:
+            latest = get_briefing_latest()
+        except Exception:
+            return {"available": False, "bullets": [], "atoms": [], "latest_date": None}
+    if not isinstance(latest, dict):
         return {"available": False, "bullets": [], "atoms": [], "latest_date": None}
-    latest_sections = latest.get("sections") if isinstance(latest, dict) else None
+    latest_sections = latest.get("sections")
     if not isinstance(latest_sections, dict):
         latest_sections = {}
 
@@ -1387,7 +899,7 @@ def load_briefing_delta(config: dict) -> dict:
         pass
     return {
         "available": True,
-        "latest_date": latest.get("briefing_date") or _iso(latest.get("created_at")),
+        "latest_date": latest.get("briefing_date") or iso(latest.get("created_at")),
         "bullets": bullets,
         "atoms": atoms,
     }
@@ -1400,42 +912,6 @@ def load_briefing_delta(config: dict) -> dict:
 
 def _live_updates_enabled(config: dict) -> bool:
     return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
-
-@router.get("/partials/dashboard/top-strip")
-def partial_top_strip(request: Request):
-    config = app_config.load_config()
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "partials/top_strip.html",
-        {
-            "request": request,
-            "strip": load_top_strip(config),
-            "live_updates_enabled": _live_updates_enabled(config),
-        },
-    )
-
-
-@router.get("/partials/dashboard/change-feed")
-def partial_change_feed(
-    request: Request,
-    before: str | None = Query(default=None),
-    limit: int = Query(default=30, ge=1, le=CHANGE_FEED_MAX_LIMIT),
-):
-    config = app_config.load_config()
-    templates = request.app.state.templates
-    feed = load_change_feed(config, before=before, limit=limit)
-    return templates.TemplateResponse(
-        request,
-        "partials/change_feed.html",
-        {
-            "request": request,
-            "feed": feed,
-            "append": before is not None,
-            "live_updates_enabled": _live_updates_enabled(config),
-        },
-    )
 
 
 @router.get("/partials/dashboard/cross-asset")
