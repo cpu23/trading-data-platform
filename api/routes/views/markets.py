@@ -23,7 +23,11 @@ from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
 from routes.json.settings import timezone_context
 from routes.views.cockpit_panels import load_catalysts, load_cross_asset
-from routes.views.market_events import format_stale_reason, parse_iso, with_event_display
+from routes.views.market_events import (
+    format_stale_reason,
+    parse_iso,
+    with_event_display,
+)
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
