@@ -21,7 +21,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pg_support import (
     INIT_DIR,
@@ -243,7 +243,7 @@ class ThesisMetricsNullablePgTests(unittest.TestCase):
                 (
                     reserved_at.date().isoformat(),
                     reserved_at,
-                    reserved_at.replace(hour=reserved_at.hour + 1),
+                    reserved_at + timedelta(hours=1),
                 ),
             )
             zero_row = connection.exec_driver_sql(
@@ -261,7 +261,7 @@ class ThesisMetricsNullablePgTests(unittest.TestCase):
                     (
                         reserved_at.date().isoformat(),
                         reserved_at,
-                        reserved_at.replace(hour=reserved_at.hour + 1),
+                        reserved_at + timedelta(hours=1),
                     ),
                 )
 

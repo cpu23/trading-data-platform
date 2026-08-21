@@ -80,7 +80,7 @@ class RuntimeTopologyTests(unittest.TestCase):
         self.assertIn("COPY api /app/api", dockerfile)
         self.assertIn("COPY orchestrator /app/orchestrator", dockerfile)
         self.assertIn('CMD ["python3", "--version"]', dockerfile)
-        self.assertNotIn("ENTRYPOINT", dockerfile)
+        self.assertIn("ENTRYPOINT []", dockerfile)
 
     def test_production_and_demo_have_split_ordered_services(self):
         for path in COMPOSE_FILES:
