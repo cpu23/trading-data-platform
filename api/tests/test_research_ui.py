@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -43,6 +44,34 @@ FUNNEL_LABELS = [
     "Catalysts",
     "Risks and counter-thesis",
 ]
+
+
+class _DomProbe(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.nodes = []
+
+    def handle_starttag(self, tag, attrs):
+        self.nodes.append((tag, dict(attrs)))
+
+    def has(self, tag, **attrs):
+        def matches(node_attrs):
+            for name, value in attrs.items():
+                key = name.replace("__", "-")
+                if key not in node_attrs or node_attrs[key] != value:
+                    return False
+            return True
+
+        return any(
+            node_tag == tag and matches(node_attrs)
+            for node_tag, node_attrs in self.nodes
+        )
+
+
+def dom_probe(markup):
+    probe = _DomProbe()
+    probe.feed(markup)
+    return probe
 
 
 def funnel_steps():
@@ -699,6 +728,10 @@ class ResearchRouteTests(unittest.TestCase):
         client = TestClient(app)
         with patch("routes.views.research.load_research_index") as loader:
             self.assertEqual(client.get("/research").status_code, 401)
+            self.assertEqual(client.get("/research/theses").status_code, 401)
+            self.assertEqual(
+                client.get(f"/research/theses/{THESIS_ID}").status_code, 401
+            )
         loader.assert_not_called()
 
     def test_index_renders_funnel_steps_in_order(self):
@@ -718,6 +751,130 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("Energy transition", text)
         self.assertNotIn("data-live-section", text)
+        dom = dom_probe(text)
+        self.assertTrue(dom.has("section", data__thesis__view="research-preview"))
+        self.assertTrue(dom.has("a", href="/research/theses"))
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn("groupQuery.set('status', 'active');", script)
+
+    def test_thesis_tournament_route_renders_operator_dom_contract(self):
+        response = self._client().get("/research/theses")
+
+        self.assertEqual(response.status_code, 200)
+        dom = dom_probe(response.text)
+        self.assertTrue(dom.has("main", data__thesis__view="desk"))
+        self.assertTrue(dom.has("button", type="button", data__thesis__run=None))
+        self.assertTrue(dom.has("tbody", data__thesis__opportunities=None))
+        self.assertTrue(dom.has("strong", data__status__value="model-cost"))
+        self.assertTrue(dom.has("strong", data__status__value="calibration"))
+        self.assertIn("Linked theses", response.text)
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn("return 'Brier ' + brier.toFixed(3)", script)
+        self.assertIn("function thesisLatestCycleAt(status)", script)
+        self.assertIn(
+            "thesisDate(thesisLatestCycleAt(status))",
+            script,
+        )
+        self.assertTrue(dom.has("div", role="status", aria__live="polite"))
+
+    def test_thesis_tournament_defaults_to_eligible_opportunities(self):
+        response = self._client().get("/research/theses")
+
+        self.assertEqual(response.status_code, 200)
+        dom = dom_probe(response.text)
+        self.assertTrue(dom.has("option", value="0"))
+        self.assertTrue(dom.has("option", value="0.25", selected=None))
+
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn("var thesisDefaultMinimumScore = '0.25';", script)
+        self.assertIn(
+            "score: score ? score.value : thesisDefaultMinimumScore",
+            script,
+        )
+        self.assertIn(
+            "opportunityQuery.set('minimum_score', selected.score);",
+            script,
+        )
+        self.assertIn(
+            "if (selected.score === '0') opportunityQuery.set('include_ineligible', 'true');",
+            script,
+        )
+        self.assertNotIn(
+            "if (selected.score) opportunityQuery.set('minimum_score'",
+            script,
+        )
+        self.assertIn(
+            "No eligible opportunities meet these filters. Choose Any score to inspect ineligible theses.",
+            script,
+        )
+        self.assertIn(
+            "? 'No eligible or ineligible opportunities meet these filters.'",
+            script,
+        )
+
+    def test_ineligible_opportunity_rows_are_visibly_non_rankable(self):
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn("blockers.length && labels.length < 8", script)
+
+        self.assertIn("if (item.eligible !== false) return '';", script)
+        self.assertIn("row.classList.add('thesis-opportunity-ineligible');", script)
+        self.assertIn("row.dataset.eligible = 'false';", script)
+        self.assertIn(
+            "eligibilityNote.setAttribute('aria-label', 'Ranking eligibility: ' + ineligibilityLabel);",
+            script,
+        )
+        self.assertIn(
+            "return 'Not eligible' + (labels.length ? ' · ' + labels.join(', ') : '');",
+            script,
+        )
+        style = (API_ROOT / "static" / "style.css").read_text()
+        self.assertIn("tr.thesis-opportunity-ineligible", style)
+        self.assertIn("box-shadow: inset 3px 0 0", style)
+
+    def test_thesis_detail_route_validates_uuid_before_render(self):
+        client = self._client()
+
+        with patch.object(
+            client.app.state.templates,
+            "TemplateResponse",
+            wraps=client.app.state.templates.TemplateResponse,
+        ) as renderer:
+            invalid = client.get("/research/theses/not-a-uuid")
+        self.assertEqual(invalid.status_code, 404)
+        renderer.assert_not_called()
+
+        response = client.get(f"/research/theses/{THESIS_ID}")
+        self.assertEqual(response.status_code, 200)
+        dom = dom_probe(response.text)
+        self.assertTrue(
+            dom.has(
+                "main",
+                data__thesis__view="detail",
+                data__thesis__id=str(THESIS_ID),
+            )
+        )
+        self.assertTrue(dom.has("details", data__evidence__relationship="contradicts"))
+        self.assertTrue(dom.has("div", data__thesis__playbooks=None))
+        self.assertTrue(dom.has("tbody", data__thesis__playbook__matches=None))
+        self.assertTrue(dom.has("dd", data__thesis__field="trend-context"))
+        self.assertTrue(dom.has("dd", data__thesis__field="valuation-context"))
+        self.assertTrue(dom.has("dd", data__thesis__field="sentiment-context"))
+        self.assertTrue(dom.has("ul", data__thesis__citation__map=None))
+        self.assertTrue(dom.has("ul", data__thesis__risks=None))
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn(
+            "renderThesisCitationMap(root, version.citation_map || core.citation_map);",
+            script,
+        )
+        self.assertIn("status: 'status'", script)
+        self.assertIn("actionability: 'actionability'", script)
+        self.assertIn("opposition: 'opposition'", script)
+        self.assertIn("function renderThesisRisks(root, risks)", script)
+        self.assertIn("function thesisStructuredFindings(value)", script)
+        self.assertIn("' · available ' + thesisDate(item.available_at)", script)
+        self.assertIn("var severity = risk.severity;", script)
+        self.assertNotIn("run.summary || run.result || run.findings", script)
+        self.assertFalse(dom.has("button", data__thesis__run=None))
 
     def test_evaluation_page_shows_variants_regressions_and_resource_use(self):
         client = self._client()
@@ -756,9 +913,7 @@ class ResearchRouteTests(unittest.TestCase):
                     "dimension_status_changes": {
                         "specificity": {"left": "pass", "right": "fail"}
                     },
-                    "resource_usage": {
-                        "delta": {"cost_usd": 0.002, "latency_ms": 150}
-                    },
+                    "resource_usage": {"delta": {"cost_usd": 0.002, "latency_ms": 150}},
                 }
             }
         ]

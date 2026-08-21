@@ -1,6 +1,7 @@
+import json
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -59,6 +60,7 @@ class FilingDeltaTests(unittest.TestCase):
                         "document_id": doc_id,
                         "company": "Acme",
                         "document_type": "annual_report",
+                        "report_date": date(2026, 6, 30),
                         "extracted_text": CURRENT_TEXT,
                         "created_at": NOW,
                     }
@@ -74,6 +76,16 @@ class FilingDeltaTests(unittest.TestCase):
         summary = compute_filing_delta({}, str(doc_id), session=session)
         self.assertEqual(summary["status"], "computed")
         self.assertEqual(summary["previous_document_id"], str(prev_id))
+        previous_statement, previous_params = session.calls[1]
+        self.assertIn("report_date < :report_date", previous_statement)
+        self.assertEqual(previous_params["report_date"], date(2026, 6, 30))
+        self.assertEqual(previous_params["document_id"], doc_id)
+        delete_calls = [
+            (index, params)
+            for index, (statement, params) in enumerate(session.calls)
+            if "DELETE FROM investment_filing_deltas" in statement
+        ]
+        self.assertEqual(delete_calls, [(2, {"document_id": doc_id})])
         inserts = [
             params
             for statement, params in session.calls
@@ -90,7 +102,10 @@ class FilingDeltaTests(unittest.TestCase):
         guidance = next(
             params for params in inserts if params["category"] == "guidance"
         )
-        self.assertIn("12%", guidance["metrics"]["percent_mentions"])
+        self.assertIn(
+            "12%",
+            json.loads(guidance["metrics"])["percent_mentions"],
+        )
         self.assertTrue(guidance["excerpt"])
 
     def test_delta_is_idempotent_per_document_and_category(self):
@@ -102,6 +117,7 @@ class FilingDeltaTests(unittest.TestCase):
                         "document_id": doc_id,
                         "company": "Acme",
                         "document_type": "annual_report",
+                        "report_date": None,
                         "extracted_text": CURRENT_TEXT,
                         "created_at": NOW,
                     }
@@ -111,6 +127,7 @@ class FilingDeltaTests(unittest.TestCase):
         )
         summary = compute_filing_delta({}, str(doc_id), session=session)
         self.assertEqual(summary["status"], "computed")
+        self.assertIsNone(session.calls[1][1]["report_date"])
         for statement, _params in session.calls:
             if "INSERT" in statement:
                 self.assertIn("ON CONFLICT (document_id, category)", statement)

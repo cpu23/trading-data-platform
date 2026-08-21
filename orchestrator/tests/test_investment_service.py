@@ -27,6 +27,39 @@ def metric(value, unit="USDm", period="FY2025", evidence="report evidence"):
     return {"value": value, "unit": unit, "period": period, "evidence": evidence}
 
 
+def sec_index_page(*rows):
+    """Build an EDGAR ``*-index.htm`` Document Format Files table body.
+
+    ``rows`` are ``(document_name, doc_type)`` pairs.
+    """
+    body = "".join(
+        f"<tr><td>{index}</td><td>{doc_type}</td>"
+        f"<td><a href='/Archives/edgar/data/x/{name}'>{name}</a></td>"
+        f"<td>{doc_type}</td><td>1000</td></tr>"
+        for index, (name, doc_type) in enumerate(rows, start=1)
+    )
+    return (
+        "<html><body><table class='tableFile' summary='Document Format Files'>"
+        "<tr><th scope='col'>Seq</th><th scope='col'>Description</th>"
+        "<th scope='col'>Document</th><th scope='col'>Type</th>"
+        "<th scope='col'>Size</th></tr>" + body + "</table></body></html>"
+    )
+
+
+def sec_directory_fake_request(index_response, index_page_response, primary_response):
+    """Route SEC recovery requests: index.json, then ``*-index.htm``, then the
+    selected primary document."""
+
+    def route(method, url, **kwargs):
+        if url.endswith("index.json"):
+            return index_response
+        if "-index.htm" in url or "-index.html" in url:
+            return index_page_response
+        return primary_response
+
+    return route
+
+
 class InvestmentIntakeTests(unittest.TestCase):
     def test_html_extraction_removes_active_content(self):
         raw = (
@@ -91,6 +124,32 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertEqual(result["symbol"], "MEM")
         self.assertEqual(result["industry"], "Semiconductors & Compute")
         self.assertEqual(result["filename"], "report.txt")
+
+    def test_metadata_uses_checked_in_issuer_industry_when_intake_omits_label(self):
+        result = service.normalize_metadata(
+            {
+                "company": "Micron Technology",
+                "symbol": "MU",
+                "region": "US",
+                "document_type": "annual_report",
+                "report_date": "2025-12-31",
+                "filename": "report.txt",
+            }
+        )
+        self.assertEqual(result["symbol"], "MU")
+        self.assertEqual(result["industry"], "Semiconductors & Compute")
+
+    def test_metadata_keeps_truly_unknown_issuer_unclassified(self):
+        result = service.normalize_metadata(
+            {
+                "company": "Example PLC",
+                "symbol": "EX",
+                "region": "EU",
+                "document_type": "annual_report",
+                "filename": "report.txt",
+            }
+        )
+        self.assertEqual(result["industry"], "Unclassified")
 
     def test_private_report_url_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-public address"):
@@ -341,9 +400,7 @@ class InvestmentIntakeTests(unittest.TestCase):
     def test_declared_oversize_rejected_before_body_is_read(self, client_class):
         fake_response = MagicMock()
         fake_response.status_code = 200
-        fake_response.headers = {
-            "content-length": str(service.MAX_DOCUMENT_BYTES + 1)
-        }
+        fake_response.headers = {"content-length": str(service.MAX_DOCUMENT_BYTES + 1)}
         fake_client = MagicMock()
         fake_client.__enter__.return_value = fake_client
         fake_client.stream.return_value.__enter__.return_value = fake_response
@@ -834,9 +891,7 @@ class InvestmentIntakeTests(unittest.TestCase):
                 return_value={"analysis_id": "an-1"},
             ) as analyze,
         ):
-            result = analysis_job_handlers.run_investment_analysis_job(
-                MagicMock(), job
-            )
+            result = analysis_job_handlers.run_investment_analysis_job(MagicMock(), job)
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["analysis_id"], "an-1")
@@ -881,6 +936,537 @@ class InvestmentIntakeTests(unittest.TestCase):
         excerpt = service.build_analysis_excerpt(report)
         self.assertLessEqual(len(excerpt), service.MAX_ANALYSIS_CHARS + 500)
         self.assertIn("AI data-centre demand", excerpt)
+
+    def test_excerpt_preserves_short_documents_unchanged(self):
+        report = "Item 1. Business\nRevenue outlook.\n"
+        self.assertEqual(service.build_analysis_excerpt(report), report)
+
+    def test_excerpt_ranks_substantive_sections_over_exhibit_noise(self):
+        exhibit = (
+            "EXHIBIT 10.1 EMPLOYMENT AGREEMENT\n"
+            + "The agreement addresses revenue sharing, risk allocation, cash flow "
+            + "guarantees and capex commitments between the parties. " * 200
+            + "\n"
+        )
+        certification = (
+            "CERTIFICATION PURSUANT TO SECTION 302 OF THE SARBANES-OXLEY ACT OF 2002\n"
+            + "I certify that revenue, net income and gross margin disclosures in "
+            + "this report are accurate. " * 200
+            + "\n"
+        )
+        xbrl = (
+            "XBRL INSTANCE DOCUMENT\n"
+            + "contextref period revenue risk demand cash flow. " * 200
+            + "\n"
+        )
+        business = "ITEM 1. BUSINESS\n" + (
+            "Our business focuses on AI data-centre demand, supply capacity and "
+            "pricing. " * 400 + "\n"
+        )
+        risk = "ITEM 1A. RISK FACTORS\n" + (
+            "Our risk profile includes pricing pressure, inventory levels, demand "
+            "variability and supply disruption. " * 400 + "\n"
+        )
+        mda = (
+            "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION "
+            + "AND RESULTS OF OPERATIONS\n"
+            + (
+                "Revenue grew as net income and gross margin expanded with operating "
+                "cash flow. " * 400 + "\n"
+            )
+        )
+        forward_looking = "FORWARD-LOOKING STATEMENTS\n" + (
+            "Management expectations about demand, pricing and capacity are "
+            "forward-looking in nature. " * 300 + "\n"
+        )
+        outlook = "OUTLOOK\n" + (
+            "Our outlook targets revenue growth driven by AI demand and capacity "
+            "expansion. " * 300 + "\n"
+        )
+        results = "RESULTS OF OPERATIONS\n" + (
+            "Operating results improved with revenue growth, net income and gross "
+            "margin expansion. " * 300 + "\n"
+        )
+        liquidity = "LIQUIDITY AND CAPITAL RESOURCES\n" + (
+            "Liquidity needs are funded by operating cash flow, capex plans and "
+            "available capacity. " * 300 + "\n"
+        )
+        strategy = "STRATEGY\n" + (
+            "Our strategy prioritises capex efficiency, supply resilience and "
+            "pricing discipline. " * 300 + "\n"
+        )
+        report = (
+            business
+            + exhibit
+            + risk
+            + mda
+            + certification
+            + forward_looking
+            + outlook
+            + xbrl
+            + results
+            + liquidity
+            + strategy
+        )
+        self.assertGreater(len(report), service.MAX_ANALYSIS_CHARS)
+
+        excerpt = service.build_analysis_excerpt(report)
+
+        self.assertLessEqual(len(excerpt), service.MAX_ANALYSIS_CHARS)
+        for marker in (
+            "ITEM 1. BUSINESS",
+            "ITEM 1A. RISK FACTORS",
+            "MANAGEMENT'S DISCUSSION",
+            "FORWARD-LOOKING STATEMENTS",
+            "OUTLOOK",
+            "Operating results improved",
+            "LIQUIDITY AND CAPITAL RESOURCES",
+            "STRATEGY",
+        ):
+            self.assertIn(marker, excerpt)
+        for noise in (
+            "EXHIBIT 10.1",
+            "EMPLOYMENT AGREEMENT",
+            "SECTION 302",
+            "SARBANES-OXLEY",
+            "XBRL",
+            "contextref",
+            "risk allocation",
+        ):
+            self.assertNotIn(noise, excerpt)
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_prefers_primary_over_largest_eligible(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    # Largest eligible HTML, but an XBRL viewer, not the report.
+                    {"name": "Financial_Report.htm", "size": 9_000_000},
+                    # The regulator primary document (ticker-date convention).
+                    {"name": "abc-20241231.htm", "size": 5_200_000},
+                    # Exhibit and certification files stay ineligible.
+                    {"name": "abc-ex101_20241231.htm", "size": 8_000_000},
+                    {"name": "abc-10k_ex31.htm", "size": 300_000},
+                    {"name": "000032019324000123-index.htm", "size": 400_000},
+                    {"name": "R1.htm", "size": 200_000},
+                ]
+            }
+        }
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("abc-20241231.htm", "10-K"),
+            ("Financial_Report.htm", "XBRL"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>Item 7 narrative</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "Item 7 MD&A narrative " * 100
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": "",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "Item 7 MD&A narrative " * 100)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("abc-20241231.htm", fetched[-1])
+        self.assertNotIn("Financial_Report.htm", fetched)
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_falls_back_to_largest_eligible(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    {"name": "report1.htm", "size": 1_000_000},
+                    {"name": "report2.htm", "size": 4_000_000},
+                    # Oversized and exhibit files stay ineligible.
+                    {"name": "huge.htm", "size": 25_000_000},
+                    {"name": "report-ex99.htm", "size": 5_000_000},
+                    {"name": "000000078926000123-index.htm", "size": 300_000},
+                ]
+            }
+        }
+        # No annual-form row in the index page, so naming heuristics apply.
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("report-ex99.htm", "EX-99"),
+            ("report1.htm", "GRAPHIC"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>report</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "plain report text " * 50
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/789/000000078926000123/"
+                ),
+                "extracted_text": "",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "plain report text " * 50)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("report2.htm", fetched[-1])
+        self.assertNotIn("huge.htm", fetched)
+        self.assertNotIn("report-ex99.htm", fetched)
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_honors_known_primary_metadata(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    {"name": "abc-10k.htm", "size": 4_000_000},
+                    {"name": "abc-20241231.htm", "size": 5_200_000},
+                    {"name": "000032019324000123-index.htm", "size": 300_000},
+                ]
+            }
+        }
+        # The index page would pick abc-10k.htm; known metadata must win.
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("abc-10k.htm", "10-K"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>metadata</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "metadata narrative " * 40
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": "",
+                "primary_document": "abc-20241231.htm",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "metadata narrative " * 40)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("abc-20241231.htm", fetched[-1])
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_ignores_exhibit_heavy_stored_text(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        stored = (
+            '{"source": "sec_edgar", "files": []}\n'
+            + "===== abc-ex101_20241231.htm =====\n"
+            + (
+                "The agreement addresses revenue sharing, risk allocation and cash "
+                "flow guarantees between the parties. " * 300
+            )
+        )
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    {"name": "abc-20241231.htm", "size": 5_200_000},
+                    {"name": "abc-ex101_20241231.htm", "size": 8_000_000},
+                    {"name": "000032019324000123-index.htm", "size": 300_000},
+                ]
+            }
+        }
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("abc-20241231.htm", "10-K"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>Item 7 MD&A</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "Item 7 MD&A narrative " * 100
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": stored,
+                "raw_content": b"raw bundle bytes",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "Item 7 MD&A narrative " * 100)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("abc-20241231.htm", fetched[-1])
+        self.assertNotIn("abc-ex101_20241231.htm", fetched)
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_uses_primary_despite_substantive_stored(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        # STM-style row: stored text carries substantive-looking narrative and
+        # raw_content, but the authoritative index page names the primary.
+        stored = (
+            "ITEM 1. BUSINESS\n"
+            + (
+                "Our business focuses on AI data-centre demand and supply "
+                "capacity. " * 300
+            )
+            + "\nITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION "
+            + "AND RESULTS OF OPERATIONS\n"
+            + ("Revenue grew with operating cash flow. " * 300)
+        )
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    {"name": "stm-20251231.htm", "size": 5_200_000},
+                    {"name": "stm-20251231_xbrl.htm", "size": 9_000_000},
+                    {"name": "000032019324000123-index.htm", "size": 300_000},
+                ]
+            }
+        }
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("stm-20251231.htm", "10-K"),
+            ("stm-20251231_xbrl.htm", "XBRL"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>STM primary</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "STM MD&A narrative " * 100
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": stored,
+                "raw_content": b"raw bundle bytes",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "STM MD&A narrative " * 100)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("stm-20251231.htm", fetched[-1])
+        self.assertNotIn("stm-20251231_xbrl.htm", fetched)
+
+    @patch("investment_service.extract_document_text")
+    @patch("investment_service.make_request")
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_prefers_annual_form_row_over_heuristics(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+        extract_document_text,
+    ):
+        # Wells-style duplicate report-date filenames: the ticker-date name is
+        # the XBRL bundle and the `_d2` suffix name is the Type=10-K primary.
+        index_response = MagicMock()
+        index_response.raise_for_status = MagicMock()
+        index_response.json.return_value = {
+            "directory": {
+                "item": [
+                    {"name": "wfc-20251231.htm", "size": 9_000_000},
+                    {"name": "wfc-20251231_d2.htm", "size": 5_200_000},
+                    {"name": "wfc-ex10k.htm", "size": 8_000_000},
+                    {"name": "000032019324000123-index.htm", "size": 300_000},
+                ]
+            }
+        }
+        index_page_response = MagicMock()
+        index_page_response.raise_for_status = MagicMock()
+        index_page_response.content = sec_index_page(
+            ("wfc-20251231_d2.htm", "10-K"),
+            ("wfc-20251231.htm", "XBRL"),
+            ("wfc-ex10k.htm", "EX-10.K"),
+        ).encode()
+        index_page_response.headers = {"content-type": "text/html"}
+        primary_response = MagicMock()
+        primary_response.raise_for_status = MagicMock()
+        primary_response.content = b"<html><body>WFC primary</body></html>"
+        primary_response.headers = {"content-type": "text/html"}
+
+        make_request.side_effect = sec_directory_fake_request(
+            index_response, index_page_response, primary_response
+        )
+        extract_document_text.return_value = "WFC MD&A narrative " * 100
+
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": "",
+            },
+        )
+
+        self.assertEqual(source, "sec_primary_document")
+        self.assertEqual(excerpt, "WFC MD&A narrative " * 100)
+        fetched = [str(call.args[1]) for call in make_request.call_args_list]
+        self.assertIn("wfc-20251231_d2.htm", fetched[-1])
+        self.assertNotIn("wfc-20251231.htm", fetched)
+        self.assertNotIn("wfc-ex10k.htm", fetched)
+
+    @patch("investment_service.make_request", side_effect=RuntimeError("boom"))
+    @patch("investment_service.get_shared_client")
+    @patch(
+        "investment_service._validate_public_url",
+        side_effect=lambda url: url,
+    )
+    def test_sec_primary_document_recovery_falls_back_to_stored_on_failure(
+        self,
+        validate_url,
+        get_shared_client,
+        make_request,
+    ):
+        stored = (
+            '{"source": "sec_edgar", "files": []}\n'
+            + "===== abc-ex101_20241231.htm =====\n"
+            + (
+                "The agreement addresses revenue sharing, risk allocation and cash "
+                "flow guarantees between the parties. " * 300
+            )
+        )
+        excerpt, source = service._load_report_excerpt(
+            {},
+            {
+                "document_id": "doc-1",
+                "filing_source": "sec_edgar",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/"
+                ),
+                "extracted_text": stored,
+                "raw_content": b"raw bundle bytes",
+            },
+        )
+
+        self.assertEqual(source, "stored_document")
+        self.assertEqual(excerpt, service.build_analysis_excerpt(stored))
 
     @patch("investment_service.extract_document_text_path")
     @patch("investment_service.get_session")
@@ -1025,14 +1611,375 @@ class InvestmentAggregationTests(unittest.TestCase):
             {"label": "Oversupply", "company_count": 1, "breadth_pct": 50.0},
         )
         comparisons = service._peer_comparisons(analyses)
-        revenue_peer = comparisons["a"]["metrics"]["revenue_growth_pct"]
-        self.assertEqual(revenue_peer["median"], 6.0)
-        self.assertEqual(revenue_peer["delta"], 4.0)
-        self.assertEqual(revenue_peer["percentile"], 75.0)
-        self.assertEqual(revenue_peer["sample_count"], 2)
+        comparison = comparisons["a"]
+        revenue_peer = comparison["metrics"]["revenue_growth_pct"]
+        self.assertEqual(revenue_peer["median"], 2.0)
+        self.assertEqual(revenue_peer["delta"], 8.0)
+        self.assertIsNone(revenue_peer["percentile"])
+        self.assertEqual(revenue_peer["sample_count"], 1)
+        self.assertEqual(comparison["company_count"], 1)
+        self.assertEqual(comparison["members"][0]["symbol"], "B")
+        self.assertNotIn("A", [member["symbol"] for member in comparison["members"]])
+        self.assertIn("same canonical industry", comparison["members"][0]["reasons"])
+
         regions = {item["code"]: item for item in service._aggregate_regions(analyses)}
         self.assertEqual(regions["US"]["company_count"], 1)
         self.assertEqual(regions["US"]["score"], 10.0)
+
+    def test_peer_distance_penalizes_sparse_financial_comparability(self):
+        subject = {
+            "region": "US",
+            "metrics": {
+                "revenue": {"change_pct": 10},
+                "fcf_margin": {"value": 20},
+            },
+            "fundamentals": {
+                "net_margin_pct": 12,
+                "return_on_equity_pct": 18,
+                "debt_to_equity": 0.5,
+                "capex_to_revenue_pct": 8,
+            },
+        }
+        sparse = {
+            "region": "US",
+            "metrics": {"revenue": {"change_pct": 10}},
+            "fundamentals": {},
+        }
+        comparable = {
+            "region": "EU",
+            "metrics": {
+                "revenue": {"change_pct": 11},
+                "fcf_margin": {"value": 18},
+            },
+            "fundamentals": {
+                "net_margin_pct": 11,
+                "return_on_equity_pct": 17,
+            },
+        }
+
+        sparse_distance, sparse_reasons = service._peer_distance(subject, sparse)
+        comparable_distance, _ = service._peer_distance(subject, comparable)
+
+        self.assertEqual(sparse_distance, 10.0)
+        self.assertLess(comparable_distance, sparse_distance)
+        self.assertIn("limited comparable financial metrics (1/7)", sparse_reasons)
+
+    def test_region_coverage_separates_analyzed_and_configured_companies(self):
+        analyses = [
+            {
+                "company": "Unknown US issuer",
+                "symbol": "UNKNOWN-US",
+                "region": "US",
+                "state": {"score": 3},
+            },
+            {
+                "company": "Unknown Asia issuer",
+                "symbol": "UNKNOWN-ASIA",
+                "region": "ASIA",
+                "state": {"score": 9},
+            },
+            {
+                "region": "EU",
+                "state": {"score": 8},
+            },
+        ]
+
+        regions = {item["code"]: item for item in service._aggregate_regions(analyses)}
+
+        self.assertEqual(regions["US"]["company_count"], 1)
+        self.assertEqual(regions["US"]["configured_company_count"], 100)
+        self.assertEqual(regions["US"]["coverage_status"], "configured")
+        self.assertEqual(regions["EU"]["company_count"], 0)
+        self.assertEqual(regions["EU"]["configured_company_count"], 200)
+        self.assertEqual(regions["EU"]["coverage_status"], "configured")
+        self.assertEqual(regions["ASIA"]["company_count"], 1)
+        self.assertEqual(regions["ASIA"]["configured_company_count"], 0)
+        self.assertEqual(regions["ASIA"]["coverage_status"], "not_configured")
+        self.assertIsNone(regions["ASIA"]["score"])
+        self.assertIsNone(regions["ASIA"]["stage"])
+
+    def test_valuation_coverage_counts_only_actual_outputs_and_market_values(self):
+        calculated = [
+            {
+                "valuation": {
+                    "dcf": {"status": "calculated", "per_share": 100},
+                    "pe_ratio": 20,
+                    "margin_of_safety": 0.2,
+                }
+            }
+            for _ in range(38)
+        ]
+        enterprise_only = [
+            {
+                "valuation": {
+                    "dcf": {
+                        "status": "enterprise_value_only",
+                        "enterprise_value": 1_000,
+                    }
+                }
+            }
+            for _ in range(32)
+        ]
+        unavailable = [
+            {"valuation": {"dcf": {"status": "unavailable"}}} for _ in range(148)
+        ]
+
+        coverage = service._valuation_coverage(
+            calculated + enterprise_only + unavailable
+        )
+
+        self.assertEqual(
+            coverage,
+            {
+                "dcf_calculated_count": 38,
+                "dcf_enterprise_value_only_count": 32,
+                "dcf_unavailable_count": 148,
+                "market_price_count": 0,
+                "pe_ratio_count": 0,
+                "margin_of_safety_count": 0,
+            },
+        )
+
+    def test_market_relative_coverage_requires_a_positive_market_price(self):
+        analyses = [
+            {
+                "valuation": {
+                    "market_price": 80,
+                    "pe_ratio": 16,
+                    "margin_of_safety": 0.2,
+                    "dcf": {"status": "calculated", "per_share": 100},
+                }
+            },
+            {
+                "valuation": {
+                    "market_price": None,
+                    "pe_ratio": 12,
+                    "margin_of_safety": 0.3,
+                    "dcf": {"status": "unavailable"},
+                }
+            },
+            {
+                "valuation": {
+                    "market_price": 0,
+                    "pe_ratio": 10,
+                    "margin_of_safety": 0.4,
+                    "dcf": {"status": "calculated", "per_share": 100},
+                }
+            },
+        ]
+
+        coverage = service._valuation_coverage(analyses)
+
+        self.assertEqual(coverage["market_price_count"], 1)
+        self.assertEqual(coverage["pe_ratio_count"], 1)
+        self.assertEqual(coverage["margin_of_safety_count"], 1)
+
+    def test_public_close_revalues_only_matching_report_currency(self):
+        facts = {
+            "metrics": {
+                "revenue": metric(1_000),
+                "operating_cash_flow": metric(120),
+                "capex": metric(20),
+                "diluted_eps": metric(2, unit="USD/share"),
+                "shares_outstanding": metric(100, unit="million shares"),
+                "net_debt": metric(50),
+            },
+            "prior_metrics": {
+                "revenue": metric(900, period="FY2024"),
+                "operating_cash_flow": metric(100, period="FY2024"),
+                "capex": metric(20, period="FY2024"),
+            },
+        }
+        now = service.datetime.now(service.UTC)
+        payload = {
+            "company": "Example",
+            "symbol": "EX",
+            "metrics": {},
+            "valuation": {"currency_unit": "USDm", "dcf": {"unit": "USDm"}},
+            "public_price_timestamp": now,
+            "public_price_close": 50,
+            "public_price_source": "public_equities",
+            "public_price_created_at": now,
+            "public_price_metadata": {
+                "currency": "USD",
+                "provider_symbol": "EX",
+                "source_reference": "https://example.test/chart/EX",
+                "adjusted": False,
+            },
+        }
+
+        result = service._attach_public_market_data(payload, facts)
+
+        self.assertEqual(result["valuation"]["market_price"], 50)
+        self.assertEqual(result["valuation"]["pe_ratio"], 25)
+        self.assertEqual(
+            result["valuation"]["market_data"]["comparison_status"], "comparable"
+        )
+        self.assertEqual(result["metrics"]["market_price"]["source"], "public_equities")
+        self.assertIn(
+            "unadjusted daily close", result["metrics"]["market_price"]["evidence"]
+        )
+
+    def test_public_close_preserves_stored_valuation_inputs(self):
+        facts = {
+            "metrics": {
+                "revenue": metric(1_000),
+                "operating_cash_flow": metric(120),
+                "capex": metric(20),
+                "diluted_eps": metric(2, unit="USD/share"),
+            },
+            "prior_metrics": {
+                "revenue": metric(900, period="FY2024"),
+                "operating_cash_flow": metric(100, period="FY2024"),
+                "capex": metric(20, period="FY2024"),
+            },
+        }
+        now = service.datetime.now(service.UTC)
+        payload = {
+            "company": "Example",
+            "symbol": "EX",
+            "metrics": {
+                "shares_outstanding": {
+                    "value": 100,
+                    "unit": "million shares",
+                    "source": "manual_input",
+                    "period": "valuation input",
+                },
+                "net_debt": {
+                    "value": 20,
+                    "unit": "USDm",
+                    "source": "manual_input",
+                    "period": "valuation input",
+                },
+            },
+            "valuation": {
+                "currency_unit": "USDm",
+                "dcf": {
+                    "unit": "USDm",
+                    "assumptions": {
+                        "discount_rate": 0.08,
+                        "terminal_growth": 0.02,
+                        "shares_outstanding": 100,
+                        "net_debt": 20,
+                    },
+                },
+            },
+            "public_price_timestamp": now,
+            "public_price_close": 50,
+            "public_price_source": "public_equities",
+            "public_price_created_at": now,
+            "public_price_metadata": {"currency": "USD"},
+        }
+
+        result = service._attach_public_market_data(payload, facts)
+        assumptions = result["valuation"]["dcf"]["assumptions"]
+
+        self.assertEqual(assumptions["discount_rate"], 0.08)
+        self.assertEqual(assumptions["terminal_growth"], 0.02)
+        self.assertEqual(assumptions["shares_outstanding"], 100)
+        self.assertEqual(assumptions["net_debt"], 20)
+        self.assertEqual(result["valuation"]["dcf"]["status"], "calculated")
+
+    def test_cross_currency_public_close_is_visible_but_not_used(self):
+        now = service.datetime.now(service.UTC)
+        payload = {
+            "company": "Example",
+            "symbol": "EX",
+            "metrics": {},
+            "valuation": {"currency_unit": "EURm", "dcf": {"unit": "EURm"}},
+            "public_price_timestamp": now,
+            "public_price_close": 50,
+            "public_price_source": "public_equities",
+            "public_price_created_at": now,
+            "public_price_metadata": {
+                "currency": "USD",
+                "source_reference": "https://example.test/chart/EX",
+            },
+        }
+
+        result = service._attach_public_market_data(payload, {"metrics": {}})
+
+        self.assertEqual(
+            result["valuation"]["market_data"]["comparison_status"],
+            "currency_mismatch",
+        )
+        self.assertNotIn("market_price", result["metrics"])
+        self.assertNotIn("market_price", result["valuation"])
+
+    def test_gbp_pence_quote_normalizes_before_comparison(self):
+        now = service.datetime.now(service.UTC)
+        payload = {
+            "company": "UK Example",
+            "symbol": "EX.L",
+            "metrics": {},
+            "valuation": {"currency_unit": "GBPm", "dcf": {"unit": "GBPm"}},
+            "public_price_timestamp": now,
+            "public_price_close": 1_250,
+            "public_price_source": "public_equities",
+            "public_price_created_at": now,
+            "public_price_metadata": {"currency": "GBp"},
+        }
+
+        result = service._attach_public_market_data(payload, {"metrics": {}})
+
+        self.assertEqual(result["valuation"]["market_price"], 12.5)
+        self.assertEqual(result["valuation"]["market_data"]["quote_scale"], 0.01)
+
+    def test_analysis_quality_exposes_freshness_completeness_and_warnings(self):
+        now = service.datetime.now(service.UTC)
+        current_report = service.date.fromordinal(
+            service.date.today().toordinal() - 100
+        )
+        payload = {
+            "company": "Example",
+            "symbol": "EX",
+            "report_date": current_report.isoformat(),
+            "source_url": "https://example.test/filing",
+            "analysis_updated_at": now,
+            "extraction": {
+                "status": "success",
+                "deterministic_metric_count": 12,
+            },
+            "metrics": {"revenue": {"value": 100}},
+            "evidence": [{"quote": "Revenue increased."}],
+            "drivers": ["revenue growth"],
+            "risks": ["competition"],
+            "valuation": {
+                "dcf": {
+                    "status": "calculated",
+                    "sensitivity": {"status": "calculated"},
+                },
+                "market_data": {
+                    "status": "current",
+                    "comparison_status": "comparable",
+                },
+            },
+            "peer_comparison": {
+                "company_count": 1,
+                "industry_company_count": 5,
+                "members": [{"symbol": "PEER"}],
+            },
+        }
+
+        quality = service._attach_analysis_quality(payload)["quality"]
+
+        self.assertEqual(quality["status"], "ready")
+        self.assertEqual(quality["report"]["status"], "current")
+        self.assertEqual(quality["deterministic"]["metric_count"], 12)
+        self.assertEqual(quality["narrative"]["evidence_quote_count"], 1)
+        self.assertEqual(quality["peers"]["selected_count"], 1)
+        self.assertEqual(quality["warnings"], [])
+
+        payload["report_date"] = "2020-12-31"
+        stale = service._attach_analysis_quality(payload)["quality"]
+        self.assertEqual(stale["status"], "stale")
+        self.assertIn("annual_report_stale", stale["warnings"])
+
+        payload["report_date"] = None
+        unknown = service._attach_analysis_quality(payload)["quality"]
+        self.assertEqual(unknown["report"]["status"], "unknown")
+        self.assertEqual(unknown["status"], "partial")
+        self.assertIn("report_date_unavailable", unknown["warnings"])
 
     def test_latest_company_baseline_prefers_verified_facts_over_newer_empty_report(
         self,
@@ -1081,10 +2028,415 @@ class InvestmentAggregationTests(unittest.TestCase):
         )
         self.assertEqual(result["industry_history"], [])
         self.assertEqual(result["research_summary"]["history_point_count"], 0)
+        self.assertEqual(
+            result["research_summary"]["valuation_coverage"],
+            {
+                "dcf_calculated_count": 0,
+                "dcf_enterprise_value_only_count": 0,
+                "dcf_unavailable_count": 0,
+                "market_price_count": 0,
+                "pe_ratio_count": 0,
+                "margin_of_safety_count": 0,
+            },
+        )
         self.assertEqual(len(result["industries"]), len(service.ALL_INDUSTRIES))
+
+    @patch("investment_service.load_classified_news", return_value=[])
+    @patch("investment_service.get_session")
+    def test_dashboard_applies_checked_in_industry_to_legacy_rows(
+        self,
+        get_session,
+        _load_classified_news,
+    ):
+        """Legacy rows with Unclassified or model-derived industries render
+        with the checked-in canonical industry at read time (no DB mutation)."""
+
+        def row(mapping):
+            return SimpleNamespace(_mapping=mapping)
+
+        def analysis_row(document, industry, classified_industry, analysis_id):
+            return {
+                "analysis_id": analysis_id,
+                "document_id": document["document_id"],
+                "facts": {},
+                "analysis": {
+                    "classification": {
+                        "industry": classified_industry,
+                        "confidence": "high",
+                    },
+                    "summary": "Legacy summary",
+                    "thesis": "Legacy thesis",
+                    "drivers": [],
+                    "catalysts": [],
+                    "risks": [],
+                    "watch_items": [],
+                    "score": 4.0,
+                    "state": {"score": 4.0},
+                },
+                "model": "legacy",
+                "tokens_input": 0,
+                "tokens_output": 0,
+                "cost_usd": 0.0,
+                "duration_ms": 0,
+                "created_at": None,
+                "company": document["company"],
+                "symbol": document["symbol"],
+                "region": document["region"],
+                "industry": industry,
+                "document_type": "annual_report",
+                "report_date": None,
+                "source_url": None,
+            }
+
+        def document_row(document_id, company, symbol, region, industry):
+            return {
+                "document_id": document_id,
+                "company": company,
+                "symbol": symbol,
+                "region": region,
+                "industry": industry,
+                "document_type": "annual_report",
+                "report_date": None,
+                "source_url": None,
+                "filename": f"{document_id}.txt",
+                "status": "analyzed",
+                "error_message": None,
+                "created_at": None,
+            }
+
+        mu = document_row("d-mu", "Micron Technology", "MU", "US", "Unclassified")
+        stm = document_row(
+            "d-stm",
+            "STMicroelectronics",
+            "STM",
+            "EU",
+            "Software, Cloud & Communications",
+        )
+        gs = document_row("d-gs", "Goldman Sachs", "GS", "US", "Unclassified")
+        ex = document_row("d-ex", "Example PLC", "EX", "EU", "Unclassified")
+        document_rows = [mu, stm, gs, ex]
+        company_rows = [
+            {key: item[key] for key in ("company", "symbol", "industry", "region")}
+            for item in document_rows
+        ]
+        analysis_rows = [
+            analysis_row(mu, "Unclassified", "Consumer", "a-mu"),
+            analysis_row(
+                stm,
+                "Software, Cloud & Communications",
+                "Software, Cloud & Communications",
+                "a-stm",
+            ),
+            analysis_row(gs, "Unclassified", "Unclassified", "a-gs"),
+            analysis_row(ex, "Unclassified", "Unclassified", "a-ex"),
+        ]
+
+        documents_result = MagicMock()
+        documents_result.fetchall.return_value = [row(item) for item in document_rows]
+        companies_result = MagicMock()
+        companies_result.fetchall.return_value = [row(item) for item in company_rows]
+        analyses_result = MagicMock()
+        analyses_result.fetchall.return_value = [row(item) for item in analysis_rows]
+        observations_result = MagicMock()
+        observations_result.fetchall.return_value = []
+        session = MagicMock()
+        session.execute.side_effect = [
+            documents_result,
+            companies_result,
+            analyses_result,
+            observations_result,
+        ]
+        get_session.return_value = session_context(session)
+
+        result = service.get_dashboard({})
+
+        documents_by_symbol = {item["symbol"]: item for item in result["documents"]}
+        self.assertEqual(
+            documents_by_symbol["MU"]["industry"], "Semiconductors & Compute"
+        )
+        self.assertEqual(
+            documents_by_symbol["STM"]["industry"], "Semiconductors & Compute"
+        )
+        self.assertEqual(
+            documents_by_symbol["GS"]["industry"], "Financials & Real Estate"
+        )
+        self.assertEqual(documents_by_symbol["EX"]["industry"], "Unclassified")
+
+        analyses_by_symbol = {item["symbol"]: item for item in result["analyses"]}
+        self.assertEqual(
+            analyses_by_symbol["MU"]["industry"], "Semiconductors & Compute"
+        )
+        self.assertEqual(
+            analyses_by_symbol["MU"]["classification"]["industry"],
+            "Semiconductors & Compute",
+        )
+        self.assertEqual(
+            analyses_by_symbol["STM"]["classification"]["industry"],
+            "Semiconductors & Compute",
+        )
+        self.assertEqual(
+            analyses_by_symbol["GS"]["classification"]["industry"],
+            "Financials & Real Estate",
+        )
+        self.assertEqual(
+            analyses_by_symbol["EX"]["classification"]["industry"], "Unclassified"
+        )
+
+        industries = {item["name"]: item for item in result["industries"]}
+        self.assertEqual(industries["Semiconductors & Compute"]["company_count"], 2)
+        self.assertEqual(industries["Financials & Real Estate"]["company_count"], 1)
+        self.assertEqual(industries["Unclassified"]["company_count"], 1)
 
 
 class InvestmentAnalysisServiceTests(unittest.TestCase):
+    def test_analysis_industry_precedence_uses_checked_in_metadata_first(self):
+        cases = [
+            # Checked-in issuer metadata wins over any model label.
+            (
+                {
+                    "symbol": "MU",
+                    "company": "Micron Technology",
+                    "industry": "Unclassified",
+                },
+                {"industry": "Consumer", "confidence": "high"},
+                "Semiconductors & Compute",
+            ),
+            (
+                {
+                    "symbol": "MU",
+                    "company": "Micron Technology",
+                    "industry": "Unclassified",
+                },
+                {"industry": "Unclassified", "confidence": "low"},
+                "Semiconductors & Compute",
+            ),
+            # Model Unclassified must not overwrite the document industry.
+            (
+                {
+                    "symbol": "ZZZZ",
+                    "company": "Unknown Co",
+                    "industry": "Semiconductors & Compute",
+                },
+                {"industry": "Unclassified", "confidence": "high"},
+                "Semiconductors & Compute",
+            ),
+            # Low-confidence model labels must not overwrite the document industry.
+            (
+                {
+                    "symbol": "ZZZZ",
+                    "company": "Unknown Co",
+                    "industry": "Semiconductors & Compute",
+                },
+                {"industry": "Consumer", "confidence": "low"},
+                "Semiconductors & Compute",
+            ),
+            # A concrete, trusted model label still classifies unknown issuers.
+            (
+                {"symbol": "ZZZZ", "company": "Unknown Co", "industry": "Unclassified"},
+                {"industry": "Beverages", "confidence": "moderate"},
+                "Consumer",
+            ),
+            # Unknown issuer with only a low-confidence model label fails closed.
+            (
+                {"symbol": "ZZZZ", "company": "Unknown Co", "industry": "Unclassified"},
+                {"industry": "Consumer", "confidence": "low"},
+                "Unclassified",
+            ),
+        ]
+        for document, classification, expected in cases:
+            with self.subTest(document=document, classification=classification):
+                self.assertEqual(
+                    service._resolve_analysis_industry(document, classification),
+                    expected,
+                )
+
+    def test_analysis_stores_checked_in_industry_over_model_classification(self):
+        document_id = "33333333-3333-3333-3333-333333333333"
+        analysis_id = "44444444-4444-4444-4444-444444444444"
+        document = {
+            "document_id": document_id,
+            "company": "Micron Technology",
+            "symbol": "MU",
+            "region": "US",
+            "industry": "Unclassified",
+            "document_type": "annual_report",
+            "report_date": None,
+            "source_url": "https://example.com/report",
+            "filename": "report.txt",
+            "extracted_text": "Annual report evidence. " * 20,
+        }
+        facts = {
+            "classification": {
+                "document_type": "annual_report",
+                "sector": "Technology",
+                "industry": "Consumer",
+                "region": "US",
+                "confidence": "low",
+            },
+            "qualitative": {
+                "ai_demand": {
+                    "present": True,
+                    "strength": "strong",
+                    "evidence": "AI demand",
+                },
+                "datacenter_demand": {
+                    "present": True,
+                    "strength": "strong",
+                    "evidence": "data-centre",
+                },
+                "supply_constraints": {
+                    "present": True,
+                    "strength": "moderate",
+                    "evidence": "tight supply",
+                },
+                "pricing_power": {
+                    "present": True,
+                    "strength": "strong",
+                    "evidence": "higher pricing",
+                },
+                "guidance_up": {
+                    "present": True,
+                    "strength": "strong",
+                    "evidence": "raised",
+                },
+                "guidance_down": {"present": False, "strength": "none", "evidence": ""},
+            },
+            "summary": "Demand, capex and pricing are accelerating.",
+            "thesis": "The cycle is strengthening.",
+            "drivers": ["AI demand"],
+            "catalysts": [
+                {
+                    "catalyst": "Capacity ramp",
+                    "horizon": "12 months",
+                    "evidence": "capex",
+                }
+            ],
+            "risks": [
+                {
+                    "risk": "Oversupply",
+                    "likelihood": "medium",
+                    "impact": "high",
+                    "mitigation": "Monitor inventory",
+                    "evidence": "capacity",
+                }
+            ],
+            "watch_items": ["Inventory growth"],
+        }
+
+        claim_session = MagicMock()
+        claim_session.execute.return_value.fetchone.return_value = (document_id,)
+        persist_session = MagicMock()
+        insert_result = MagicMock()
+        insert_result.fetchone.return_value = (analysis_id,)
+        persist_session.execute.side_effect = [
+            insert_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        stage = MagicMock()
+        stage.policy = SimpleNamespace(
+            model="openai/gpt-5.6-luna",
+            validation_retries=1,
+        )
+        stage.telemetry = SimpleNamespace(
+            tokens_input_total=1000,
+            tokens_output_total=400,
+            cost_usd_total=0.001,
+            first_attempt_duration_ms=150,
+            validation_retry_duration_ms=None,
+            validation_warnings=[],
+        )
+        stage.call.return_value = {"content": json.dumps(facts)}
+
+        with (
+            patch.object(service, "_load_document", return_value=document),
+            patch.object(
+                service,
+                "get_session",
+                side_effect=[
+                    session_context(claim_session),
+                    session_context(persist_session),
+                ],
+            ),
+            patch.object(service, "_load_news_context", return_value=[]),
+            patch.object(service, "_previous_analysis", return_value=(None, 0)),
+            patch.object(service, "LLMStage", return_value=stage),
+            patch.object(
+                service, "get_analysis", return_value={"analysis_id": analysis_id}
+            ),
+        ):
+            service.analyze_document({}, document_id)
+
+        statements = [
+            str(call.args[0]) for call in persist_session.execute.call_args_list
+        ]
+        update_index = next(
+            index
+            for index, statement in enumerate(statements)
+            if "UPDATE investment_documents" in statement
+        )
+        self.assertEqual(
+            persist_session.execute.call_args_list[update_index].args[1]["industry"],
+            "Semiconductors & Compute",
+        )
+        insert_index = next(
+            index
+            for index, statement in enumerate(statements)
+            if "INSERT INTO investment_analyses" in statement
+        )
+        stored_analysis = json.loads(
+            persist_session.execute.call_args_list[insert_index].args[1]["analysis"]
+        )
+        self.assertEqual(
+            stored_analysis["classification"]["industry"], "Semiconductors & Compute"
+        )
+
+    @patch("investment_service.get_session")
+    def test_get_analysis_applies_checked_in_industry_to_legacy_row(self, get_session):
+        row = SimpleNamespace(
+            _mapping={
+                "analysis_id": "a-mu",
+                "document_id": "d-mu",
+                "previous_document_id": None,
+                "facts": {},
+                "analysis": {
+                    "classification": {
+                        "industry": "Unclassified",
+                        "confidence": "low",
+                    },
+                    "summary": "Legacy summary",
+                    "thesis": "Legacy thesis",
+                    "drivers": [],
+                    "catalysts": [],
+                    "risks": [],
+                    "watch_items": [],
+                },
+                "model": "legacy",
+                "created_at": None,
+                "updated_at": None,
+                "company": "Micron Technology",
+                "symbol": "MU",
+                "region": "US",
+                "industry": "Unclassified",
+                "document_type": "annual_report",
+                "report_date": None,
+                "source_url": None,
+            }
+        )
+        session = MagicMock()
+        session.execute.return_value.fetchone.return_value = row
+        get_session.return_value = session_context(session)
+
+        result = service.get_analysis({}, "a-mu")
+
+        self.assertEqual(result["industry"], "Semiconductors & Compute")
+        self.assertEqual(
+            result["classification"]["industry"], "Semiconductors & Compute"
+        )
+
     def test_analysis_uses_strict_luna_schema_and_records_cost_duration(self):
         document_id = "11111111-1111-1111-1111-111111111111"
         analysis_id = "22222222-2222-2222-2222-222222222222"
@@ -1165,6 +2517,7 @@ class InvestmentAnalysisServiceTests(unittest.TestCase):
         insert_result.fetchone.return_value = (analysis_id,)
         persist_session.execute.side_effect = [
             insert_result,
+            MagicMock(),
             MagicMock(),
             MagicMock(),
             MagicMock(),

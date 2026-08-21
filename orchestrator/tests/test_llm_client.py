@@ -71,6 +71,48 @@ class LlmClientTests(unittest.TestCase):
         self.assertNotIn("idempotency_key", kwargs)
 
     @patch("llm_client.make_request")
+    def test_wraps_strict_json_schema_for_openrouter(self, request):
+        request.return_value = _response(
+            payload={
+                "choices": [{"message": {"content": '{"answer":"ok"}'}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        config = {
+            "llm": {
+                "api_key": "key",
+                "models": {"default": "provider/model"},
+            }
+        }
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {"answer": {"type": "string"}},
+        }
+
+        call_llm(
+            "hello",
+            config=config,
+            response_schema=schema,
+            _budget_permit=Mock(valid=True),
+        )
+
+        body = request.call_args.kwargs["json_body"]
+        self.assertEqual(
+            body["response_format"],
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        )
+        self.assertTrue(body["provider"]["require_parameters"])
+
+    @patch("llm_client.make_request")
     def test_explicit_messages_are_sent_unchanged(self, request):
         request.return_value = _response()
         config = {
@@ -149,6 +191,7 @@ class LlmClientTests(unittest.TestCase):
                 _budget_permit=Mock(valid=True),
             )
         request.assert_not_called()
+
 
 class HttpClientRetryTests(unittest.TestCase):
     @patch("http_client.time.sleep")

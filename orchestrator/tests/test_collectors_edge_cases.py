@@ -279,5 +279,55 @@ class CollectorEdgeCaseTests(unittest.TestCase):
         self.assertEqual(result["latency_ms"], 0)
 
 
+class FreeCollectorRegistryTests(unittest.TestCase):
+    """The executable collector registry covers every KNOWN_COLLECTORS id."""
+
+    def test_known_collectors_equal_executable_registry(self):
+        from collectors import STANDALONE_COLLECTORS, get_all_collectors
+        from contracts.runtime_config import KNOWN_COLLECTORS
+
+        executable = set(get_all_collectors()) | set(STANDALONE_COLLECTORS)
+        self.assertEqual(set(KNOWN_COLLECTORS), executable)
+        # OANDA stays standalone (excluded from dependency cycles); it must
+        # still be a KNOWN_COLLECTORS id so config and API agree.
+        self.assertIn("oanda", KNOWN_COLLECTORS)
+        self.assertNotIn("oanda", get_all_collectors())
+        self.assertIn("oanda", STANDALONE_COLLECTORS)
+
+    def test_every_known_collector_id_dispatches(self):
+        from collectors import get_collector
+        from contracts.runtime_config import KNOWN_COLLECTORS
+
+        for source_id in sorted(KNOWN_COLLECTORS):
+            with self.subTest(source_id=source_id):
+                collector = get_collector(source_id)
+                self.assertEqual(collector.source_id, source_id)
+
+    def test_new_free_ids_dispatch_to_their_collectors(self):
+        from collectors import get_collector
+        from collectors.cboe_options import CboeOptionsCollector
+        from collectors.company_expectations import CompanyExpectationsCollector
+        from collectors.issuer_news import IssuerNewsCollector
+        from collectors.issuer_transcripts import IssuerTranscriptsCollector
+        from collectors.public_equities import PublicEquitiesCollector
+        from collectors.public_positioning import (
+            FinraShortVolumeCollector,
+            SecForm4Collector,
+        )
+
+        expected = {
+            "issuer_news": IssuerNewsCollector,
+            "issuer_transcripts": IssuerTranscriptsCollector,
+            "public_equities": PublicEquitiesCollector,
+            "sec_form4": SecForm4Collector,
+            "finra_short_volume": FinraShortVolumeCollector,
+            "cboe_options": CboeOptionsCollector,
+            "company_expectations": CompanyExpectationsCollector,
+        }
+        for source_id, collector_type in expected.items():
+            with self.subTest(source_id=source_id):
+                self.assertIsInstance(get_collector(source_id), collector_type)
+
+
 if __name__ == "__main__":
     unittest.main()

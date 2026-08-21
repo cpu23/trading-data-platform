@@ -645,6 +645,69 @@ class FilingSourceStatusTests(unittest.TestCase):
         self.assertFalse(eu_esef["enabled"])
         self.assertEqual(eu_esef["companies"], 1)
 
+    def test_issuer_coverage_exposes_current_stale_missing_and_source_gaps(self):
+        companies = [
+            {"company": "Current", "symbol": "CUR", "region": "US", "cik": "1"},
+            {"company": "Stale", "symbol": "OLD", "region": "US", "cik": "2"},
+            {"company": "Queued", "symbol": "QUE", "region": "US", "cik": "3"},
+            {
+                "company": "UK Missing Key",
+                "symbol": "UK.L",
+                "region": "EU",
+                "company_number": "01234567",
+            },
+            {"company": "EU Missing", "symbol": "EU", "region": "EU"},
+        ]
+        rows = [
+            {
+                "company": "Current",
+                "symbol": "CUR",
+                "document_id": "doc-current",
+                "analysis_id": "analysis-current",
+                "document_status": "analyzed",
+                "report_date": date(2025, 12, 31),
+            },
+            {
+                "company": "Stale",
+                "symbol": "OLD",
+                "document_id": "doc-old",
+                "analysis_id": "analysis-old",
+                "document_status": "analyzed",
+                "report_date": date(2023, 12, 31),
+            },
+            {
+                "company": "Queued",
+                "symbol": "QUE",
+                "document_id": "doc-queued",
+                "analysis_id": None,
+                "document_status": "stored",
+                "report_date": date(2025, 12, 31),
+            },
+        ]
+
+        coverage = filings._filing_coverage(
+            companies,
+            rows,
+            companies_house_key_configured=False,
+            today=date(2026, 8, 20),
+        )
+
+        self.assertEqual(
+            coverage["by_status"],
+            {
+                "analysis_current": 1,
+                "analysis_stale": 1,
+                "document_awaiting_analysis": 1,
+                "document_failed": 0,
+                "missing_filing": 0,
+                "source_unconfigured": 2,
+            },
+        )
+        issuers = {item["symbol"]: item for item in coverage["issuers"]}
+        self.assertEqual(issuers["UK.L"]["expected_source"], "companies_house")
+        self.assertIn("key", issuers["UK.L"]["reason"])
+        self.assertEqual(issuers["EU"]["expected_source"], "eu_esef")
+
     @patch("investment_filings.get_session")
     def test_status_reads_latest_durable_filings_run(self, get_session):
         row = MagicMock()

@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DASHBOARD_USER", "internal-user")
@@ -1734,6 +1734,11 @@ class RuntimeFeatureTests(unittest.TestCase):
                 "schedule_enabled": True,
                 "schedule": "30 5 * * *",
             },
+            "thesis_autonomy": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "0 2,8,14,20 * * 1-5",
+            },
         }
 
         start_scheduler(config)
@@ -1741,8 +1746,77 @@ class RuntimeFeatureTests(unittest.TestCase):
 
         self.assertEqual(
             ids,
-            {"collector:fred", "processor:briefing", "research:discovery"},
+            {
+                "collector:fred",
+                "processor:briefing",
+                "research:discovery",
+                "thesis-autonomy:run",
+            },
         )
+
+    @patch("scheduler.BackgroundScheduler")
+    def test_thesis_autonomy_cron_job_coalesces_with_one_instance(
+        self, scheduler_factory
+    ):
+        scheduler = Mock()
+        scheduler.running = False
+        scheduler.get_jobs.return_value = []
+        scheduler_factory.return_value = scheduler
+
+        start_scheduler(
+            {
+                "collectors": {},
+                "processors": {},
+                "thesis_autonomy": {
+                    "enabled": True,
+                    "schedule_enabled": True,
+                    "schedule": "0 2,8,14,20 * * 1-5",
+                },
+            }
+        )
+
+        autonomy_calls = [
+            call
+            for call in scheduler.add_job.call_args_list
+            if call.kwargs.get("id") == "thesis-autonomy:run"
+        ]
+        self.assertEqual(len(autonomy_calls), 1)
+        autonomy_job = autonomy_calls[0]
+        self.assertTrue(autonomy_job.kwargs["coalesce"])
+        self.assertEqual(autonomy_job.kwargs["max_instances"], 1)
+        self.assertEqual(
+            autonomy_job.args[1].get_next_fire_time(
+                None, datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
+            ),
+            datetime(2026, 8, 10, 2, 0, tzinfo=UTC),
+        )
+
+    @patch("scheduler.BackgroundScheduler")
+    def test_disabled_thesis_autonomy_registers_no_cron_job(
+        self, scheduler_factory
+    ):
+        scheduler = Mock()
+        scheduler.running = False
+        scheduler.get_jobs.return_value = []
+        scheduler_factory.return_value = scheduler
+
+        start_scheduler(
+            {
+                "collectors": {},
+                "processors": {},
+                "thesis_autonomy": {
+                    "enabled": False,
+                    "schedule_enabled": True,
+                    "schedule": "0 2,8,14,20 * * 1-5",
+                },
+            }
+        )
+        autonomy_jobs = [
+            call.kwargs
+            for call in scheduler.add_job.call_args_list
+            if call.kwargs.get("id") == "thesis-autonomy:run"
+        ]
+        self.assertEqual(autonomy_jobs, [])
 
     @patch("scheduler.BackgroundScheduler")
     def test_filings_job_runs_immediately_on_scheduler_start(self, scheduler_factory):
@@ -2077,6 +2151,159 @@ class HealthContractTests(unittest.TestCase):
             dict,
             "Quality checks must be a dict for consumers to iterate with .items()",
         )
+
+
+class ThesisDeskTriggerTests(unittest.TestCase):
+    """Autonomous thesis desk: strict body, durable autonomy job, no leaks."""
+
+    def setUp(self):
+        self.auth_patcher = patch.dict(
+            os.environ,
+            {
+                "DASHBOARD_USER": "internal-user",
+                "DASHBOARD_PASSWORD": "internal-pass",
+            },
+        )
+        self.auth_patcher.start()
+        self.addCleanup(self.auth_patcher.stop)
+        from fastapi.testclient import TestClient
+
+        from main import app
+
+        self.client = TestClient(app, headers=INTERNAL_AUTH)
+
+    def test_thesis_run_requires_internal_auth(self):
+        from fastapi.testclient import TestClient
+
+        from main import app
+
+        anonymous = TestClient(app)
+        response = anonymous.post("/research/theses/run", json={})
+        self.assertEqual(response.status_code, 401)
+
+    def test_thesis_run_rejects_unknown_fields_before_enqueue(self):
+        with patch("main._enqueue_thesis_autonomy") as enqueue:
+            response = self.client.post(
+                "/research/theses/run",
+                json={"force": False, "unbounded": True},
+            )
+        self.assertEqual(response.status_code, 422)
+        enqueue.assert_not_called()
+        with patch("main._enqueue_thesis_autonomy") as enqueue:
+            invalid = self.client.post(
+                "/research/theses/run", json={"force": "yes"}
+            )
+        self.assertEqual(invalid.status_code, 422)
+        enqueue.assert_not_called()
+
+    def test_thesis_run_enqueues_durable_job_with_strict_body(self):
+        accepted = {
+            "status": "queued",
+            "job_id": "job-thesis-1",
+            "correlation_id": "corr-1",
+            "accepted_at": "2026-08-15T10:00:00+00:00",
+            "inserted": True,
+            "force": True,
+        }
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "main._enqueue_thesis_autonomy", return_value=accepted
+            ) as enqueue,
+        ):
+            response = self.client.post(
+                "/research/theses/run", json={"force": True}
+            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["job_id"], "job-thesis-1")
+        self.assertEqual(response.json()["status"], "queued")
+        enqueue.assert_called_once_with(
+            {}, force=True, triggered_by="api"
+        )
+
+    def test_thesis_run_prefers_sibling_helper_when_deployed(self):
+        import sys
+        from types import ModuleType
+
+        import main
+
+        sibling = ModuleType("thesis_autonomy")
+        sibling.enqueue_thesis_autonomy_job = MagicMock(
+            return_value={"job_id": "sibling-job", "status": "queued"}
+        )
+        original = sys.modules.get("thesis_autonomy")
+        sys.modules["thesis_autonomy"] = sibling
+        try:
+            with patch("main._fallback_enqueue_thesis_autonomy") as fallback:
+                result = main._enqueue_thesis_autonomy(
+                    {}, force=True, triggered_by="api"
+                )
+        finally:
+            if original is None:
+                sys.modules.pop("thesis_autonomy", None)
+            else:
+                sys.modules["thesis_autonomy"] = original
+        self.assertEqual(result["job_id"], "sibling-job")
+        sibling.enqueue_thesis_autonomy_job.assert_called_once_with(
+            {}, triggered_by="api", force=True, request_nonce=None
+        )
+        fallback.assert_not_called()
+
+    def test_thesis_run_fallback_enqueues_autonomy_identity(self):
+        import main
+
+        job = SimpleNamespace(
+            id="job-fallback-1", correlation_id="corr-fallback-1"
+        )
+        enqueued = SimpleNamespace(job=job, inserted=True)
+        with (
+            patch("main.accept_run", return_value=datetime(2026, 8, 15, 10, 0, tzinfo=UTC)),
+            patch("main.start_run", return_value=True),
+            patch("main.finalize_run_safely") as finalize,
+            patch("analysis_jobs.enqueue_job", return_value=enqueued) as enqueue,
+            patch("db.get_session") as get_session,
+        ):
+            session = get_session.return_value.__enter__.return_value
+            result = main._fallback_enqueue_thesis_autonomy(
+                {"some": "config"}, triggered_by="api", force=True
+            )
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["job_id"], "job-fallback-1")
+        self.assertTrue(result["inserted"])
+        enqueue.assert_called_once()
+        kwargs = enqueue.call_args.kwargs
+        self.assertEqual(kwargs["job_type"], "thesis_autonomy_run")
+        self.assertEqual(kwargs["dedupe_key"], "thesis-autonomy:global")
+        self.assertTrue(kwargs["input_fingerprint"])
+        self.assertEqual(kwargs["payload"], {"force": True})
+        self.assertEqual(kwargs["priority"], 90)
+        finalize.assert_called_once()
+        session.execute.assert_not_called()
+
+    def test_thesis_run_error_mapping_does_not_leak_exceptions(self):
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "main._enqueue_thesis_autonomy",
+                side_effect=ValueError("autonomy disabled"),
+            ),
+        ):
+            conflict = self.client.post("/research/theses/run", json={})
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["detail"], "autonomy disabled")
+        with (
+            patch("main._get_config", return_value={}),
+            patch(
+                "main._enqueue_thesis_autonomy",
+                side_effect=RuntimeError("secret db failure"),
+            ),
+        ):
+            failed = self.client.post(
+                "/research/theses/run", json={"force": True}
+            )
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(failed.json()["detail"], "Thesis run could not be queued")
+        self.assertNotIn("secret db failure", failed.text)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,51 @@ def response(status_code, *, headers=None, body=b"result"):
     return httpx.Response(status_code, headers=headers, content=body, request=request)
 
 
+class BoundedResponseTests(unittest.TestCase):
+    def test_streaming_response_cap_rejects_oversize_body(self):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    content=b"x" * 11,
+                    request=request,
+                )
+            )
+        )
+        self.addCleanup(client.close)
+
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/resource",
+                client=client,
+                max_retries=1,
+                max_response_bytes=10,
+            )
+
+    def test_streaming_response_cap_returns_bounded_content(self):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    content=b"bounded",
+                    request=request,
+                )
+            )
+        )
+        self.addCleanup(client.close)
+
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/resource",
+            client=client,
+            max_retries=1,
+            max_response_bytes=10,
+        )
+
+        self.assertEqual(result.content, b"bounded")
+
+
 class ConfigurableRetryTests(unittest.TestCase):
     def test_max_retries_is_total_attempts(self):
         client = ScriptedClient([response(503)])

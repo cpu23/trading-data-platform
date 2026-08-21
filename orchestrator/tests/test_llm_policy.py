@@ -42,7 +42,9 @@ class LLMRequestPolicyTests(unittest.TestCase):
         }
 
     @patch("llm_client.make_request")
-    def test_macro_request_uses_its_bounded_structured_policy(self, make_request, _reserve):
+    def test_macro_request_uses_its_bounded_structured_policy(
+        self, make_request, _reserve
+    ):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
@@ -102,7 +104,9 @@ class LLMRequestPolicyTests(unittest.TestCase):
         )
 
     @patch("llm_client.make_request")
-    def test_stage_can_disable_openrouter_parameter_filtering(self, make_request, _reserve):
+    def test_stage_can_disable_openrouter_parameter_filtering(
+        self, make_request, _reserve
+    ):
         response = Mock()
         response.json.return_value = {
             "choices": [{"message": {"content": "{}"}}],
@@ -189,7 +193,9 @@ class LLMRequestPolicyTests(unittest.TestCase):
         self.assertNotIn("response_format", make_request.call_args.kwargs["json_body"])
 
     @patch("llm_client.make_request")
-    def test_malformed_usage_is_sanitized_to_finite_zeroes(self, make_request, _reserve):
+    def test_malformed_usage_is_sanitized_to_finite_zeroes(
+        self, make_request, _reserve
+    ):
         response = Mock()
         response.json.side_effect = [
             {
@@ -221,6 +227,21 @@ class LLMRequestPolicyTests(unittest.TestCase):
         self.config["llm"]["max_output_tokens"]["briefing"] = 0
         with self.assertRaisesRegex(ValueError, "max_output_tokens"):
             resolve_request_policy(self.config, "briefing")
+
+    def test_large_bounded_tournament_output_is_supported(self, _reserve):
+        policy = resolve_request_policy(
+            self.config,
+            "thesis_autonomy",
+            max_output_tokens=16_384,
+        )
+        self.assertEqual(policy.max_output_tokens, 16_384)
+
+        with self.assertRaisesRegex(ValueError, "max_output_tokens"):
+            resolve_request_policy(
+                self.config,
+                "thesis_autonomy",
+                max_output_tokens=16_385,
+            )
 
 
 @patch("budgets._reserve_budget_quota", return_value="reservation-1")
@@ -286,7 +307,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("content", stage.telemetry.as_dict())
 
     @patch("llm_client.call_llm")
-    def test_exhausted_budget_raises_typed_timeout_without_retry_request(self, call, _reserve):
+    def test_exhausted_budget_raises_typed_timeout_without_retry_request(
+        self, call, _reserve
+    ):
         call.return_value = {"content": "bad", "duration_ms": 89999}
         stage = LLMStage(
             self.config, "briefing", clock=SequenceClock(0, 0, 0, 89.999, 90)
@@ -302,7 +325,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("bad", str(raised.exception))
 
     @patch("llm_client.call_llm")
-    def test_first_http_attempt_cannot_complete_past_stage_deadline(self, call, _reserve):
+    def test_first_http_attempt_cannot_complete_past_stage_deadline(
+        self, call, _reserve
+    ):
         call.return_value = {"content": "{}", "duration_ms": 91000}
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 91))
 
@@ -314,7 +339,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(raised.exception.telemetry.first_attempt_duration_ms, 91000)
 
     @patch("llm_client.call_llm")
-    def test_first_valid_response_is_one_attempt_with_no_retry_duration(self, call, _reserve):
+    def test_first_valid_response_is_one_attempt_with_no_retry_duration(
+        self, call, _reserve
+    ):
         call.return_value = {"content": "{}", "duration_ms": 12}
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 0.012))
 
@@ -334,7 +361,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         )
 
     @patch("llm_client.call_llm", side_effect=RuntimeError("raw-provider-secret"))
-    def test_failed_http_attempt_is_counted_without_leaking_provider_error(self, call, _reserve):
+    def test_failed_http_attempt_is_counted_without_leaking_provider_error(
+        self, call, _reserve
+    ):
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 0.025))
 
         with self.assertRaises(LLMStageFailure) as raised:
@@ -346,7 +375,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertNotIn("secret", str(raised.exception))
 
     @patch("llm_client.call_llm", side_effect=RuntimeError("raw-provider-secret"))
-    def test_provider_error_completed_at_deadline_is_typed_timeout(self, call, _reserve):
+    def test_provider_error_completed_at_deadline_is_typed_timeout(
+        self, call, _reserve
+    ):
         stage = LLMStage(self.config, "briefing", clock=SequenceClock(0, 0, 0, 90))
 
         with self.assertRaises(LLMStageTimeout) as raised:
@@ -357,7 +388,9 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
         self.assertEqual(raised.exception.telemetry.first_attempt_duration_ms, 90000)
         self.assertNotIn("secret", str(raised.exception))
 
-    def test_processor_failure_processing_log_keeps_safe_attempt_telemetry(self, _reserve):
+    def test_processor_failure_processing_log_keeps_safe_attempt_telemetry(
+        self, _reserve
+    ):
         from orchestrator import _run_processor_impl
 
         telemetry = LLMAttemptTelemetry(

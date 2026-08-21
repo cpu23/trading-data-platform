@@ -304,6 +304,31 @@ class ThesisHelperTests(unittest.TestCase):
         self.assertIn("ON CONFLICT", insert_sql)
         self.assertEqual(len(session.calls[1][1]), 2)
 
+    def test_invalidation_relationship_accepted_by_legacy_path(self):
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(),  # INSERT ... ON CONFLICT DO NOTHING
+            ]
+        )
+        count = add_thesis_evidence(
+            session,
+            str(THESIS_ID),
+            evidence=[
+                {
+                    "evidence_type": "macro_series",
+                    "evidence_id": "CPIAUCSL",
+                    "relationship": "invalidation",
+                    "excerpt": "CPI target invalidated.",
+                }
+            ],
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            session.calls[1][1][0]["relationship"], "invalidation"
+        )
+        session.commit.assert_not_called()
+
     def test_unknown_thesis_rejected(self):
         session = Session([Result(first=None)])
         with self.assertRaisesRegex(ValueError, "unknown thesis"):
@@ -956,6 +981,62 @@ class ResearchApiApiTests(unittest.TestCase):
         self.assertEqual(body["themes"][0]["id"], str(THEME_ID))
         self.assertEqual(body["themes"][0]["created_at"], NOW.isoformat())
         get_session.assert_called_once()
+
+
+class ThesisFusionDelegationTests(unittest.TestCase):
+    """Narrow compatibility delegation: desk evidence rows flow through
+    thesis_fusion.attach_evidence; legacy rows keep the legacy SQL path."""
+
+    def test_desk_evidence_rows_delegate_to_thesis_fusion(self):
+        desk_row = {
+            "evidence_type": "source_claim",
+            "evidence_id": "claim:capex-2026",
+            "relationship": "supports",
+            "source_family": "filings",
+            "content": {"statement": "Capex guide raised."},
+            "source_timestamp": "2026-08-01T00:00:00Z",
+        }
+        with patch("thesis_fusion.attach_evidence") as attach:
+            attach.return_value = {
+                "attached": 1,
+                "skipped_duplicate_fingerprint": 0,
+                "skipped_correlated": 0,
+            }
+            count = add_thesis_evidence(
+                Session([]), str(THESIS_ID), evidence=[desk_row]
+            )
+        self.assertEqual(count, 1)
+        attach.assert_called_once()
+        self.assertEqual(attach.call_args.args[0].calls, [])
+        self.assertEqual(attach.call_args.args[1], str(THESIS_ID))
+        self.assertEqual(attach.call_args.kwargs["evidence"], [desk_row])
+
+    def test_legacy_evidence_rows_keep_legacy_path(self):
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(),  # INSERT ... ON CONFLICT DO NOTHING
+            ]
+        )
+        with patch("thesis_fusion.attach_evidence") as attach:
+            count = add_thesis_evidence(
+                session,
+                str(THESIS_ID),
+                evidence=[
+                    {
+                        "evidence_type": "macro_series",
+                        "evidence_id": "CPIAUCSL",
+                        "relationship": "supports",
+                        "excerpt": "CPI cooled.",
+                    }
+                ],
+            )
+        attach.assert_not_called()
+        self.assertEqual(count, 1)
+        insert_sql = session.calls[1][0]
+        self.assertIn("INSERT INTO investment_thesis_evidence", insert_sql)
+        self.assertIn("ON CONFLICT", insert_sql)
+        session.commit.assert_not_called()
 
 
 if __name__ == "__main__":
