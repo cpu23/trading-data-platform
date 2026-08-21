@@ -200,8 +200,6 @@ class SlimDashboardTests(unittest.TestCase):
             ),
             # Removed datasets: must never be invoked by the lean page.
             patch("routes.views.dashboard.get_events_upcoming_data") as events,
-            patch("routes.views.dashboard.get_macro_release_cards_data") as releases,
-            patch("routes.views.dashboard.get_macro_dashboard") as macro,
             patch("routes.views.dashboard._get_latest_prices") as prices,
             patch("routes.views.dashboard.get_budget_status") as budget,
             patch("routes.views.dashboard.load_story_context") as stories,
@@ -253,11 +251,14 @@ class SlimDashboardTests(unittest.TestCase):
         }
         self.assertTrue(removed_keys.isdisjoint(context.keys()))
 
-        for loader in (events, releases, macro, prices, budget, stories):
+        for loader in (events, prices, budget, stories):
             loader.assert_not_called()
         full_strip.assert_not_called()
-
         import routes.views.dashboard as dashboard_module
+
+        self.assertFalse(hasattr(dashboard_module, "get_macro_release_cards_data"))
+        self.assertFalse(hasattr(dashboard_module, "get_macro_dashboard"))
+
 
         self.assertFalse(hasattr(dashboard_module, "_load_research_intelligence"))
 

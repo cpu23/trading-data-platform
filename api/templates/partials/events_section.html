@@ -1,6 +1,6 @@
 <section class="section events-section" id="events-section"
-         hx-get="/partials/events"
-         hx-trigger="cycleComplete from:body"
+         hx-get="/partials/markets/events"
+         hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="calendar-toolbar section-heading">
     <span class="calendar-title-group">

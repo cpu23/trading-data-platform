@@ -1,6 +1,6 @@
 <section class="section regime-section" id="regime-section"
-         hx-get="/partials/regime"
-         hx-trigger="cycleComplete from:body"
+         hx-get="/partials/markets/regime"
+         hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label">Global macro regime</span>

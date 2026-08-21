@@ -1,8 +1,8 @@
 <section class="section cross-asset-section" id="cross-asset"
          {% if live_updates_enabled %}data-live-section="cross_asset"
          data-live-event="section_changed"
-         data-live-url="/partials/dashboard/cross-asset"{% else %}
-         hx-get="/partials/dashboard/cross-asset"
+         data-live-url="/partials/markets/cross-asset"{% else %}
+         hx-get="/partials/markets/cross-asset"
          hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">

@@ -1,8 +1,8 @@
 <section class="section macro-release-section" id="macro-release-section"
          {% if live_updates_enabled %}data-live-section="macro_releases"
          data-live-event="section_changed"
-         data-live-url="/partials/dashboard/macro-releases"{% else %}
-         hx-get="/partials/dashboard/macro-releases"
+         data-live-url="/partials/markets/macro-releases"{% else %}
+         hx-get="/partials/markets/macro-releases"
          hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">

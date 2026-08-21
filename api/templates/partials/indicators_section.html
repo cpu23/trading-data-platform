@@ -1,6 +1,6 @@
 <section class="section indicators-section" id="indicators-section"
-         hx-get="/partials/indicators"
-         hx-trigger="cycleComplete from:body"
+         hx-get="/partials/markets/indicators"
+         hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   {% set section_dot = dot if dot is defined else dots.indicators %}
   <div class="section-heading">
