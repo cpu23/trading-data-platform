@@ -523,7 +523,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         self.assertIn("No operator notes yet", response.text)
         self.assertIn('data-chart="asset-intraday"', response.text)
 
-    def test_grid_partial_has_sse_identity_and_polling_fallback(self):
+    def test_grid_partial_has_sse_identity_and_market_refresh_contract(self):
         from fastapi.testclient import TestClient
 
         app = build_app()
@@ -548,6 +548,10 @@ class WatchlistGridRouteTests(unittest.TestCase):
         self.assertIn('data-live-section="watchlist_grid"', live.text)
         self.assertIn('data-live-event="section_changed"', live.text)
         self.assertIn('data-live-url="/partials/dashboard/watchlist-grid"', live.text)
+        # SSE sections declare only data-live attributes: no self-fetch and
+        # no marketRefresh/poll trigger on the section.
+        self.assertNotIn('hx-get="/partials/dashboard/watchlist-grid"', live.text)
+        self.assertNotIn("hx-trigger", live.text)
         with (
             patch(
                 "routes.views.watchlist_grid.app_config.load_config",
@@ -563,9 +567,98 @@ class WatchlistGridRouteTests(unittest.TestCase):
             ),
         ):
             polling = TestClient(app).get("/partials/dashboard/watchlist-grid")
+        # Non-SSE refresh is the shared marketRefresh heartbeat, never a poll.
         self.assertIn('hx-get="/partials/dashboard/watchlist-grid"', polling.text)
-        self.assertIn('hx-trigger="every 90s"', polling.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
+        self.assertNotIn("every 90s", polling.text)
         self.assertNotIn('data-live-section="watchlist_grid"', polling.text)
+
+    def test_grid_renders_one_row_per_symbol_with_keyboard_asset_buttons(self):
+        from fastapi.testclient import TestClient
+
+        app = build_app()
+        market_rows = [market_row("EURUSD"), market_row("XAUUSD")]
+        with (
+            patch(
+                "routes.views.watchlist_grid.app_config.load_config",
+                return_value=WATCHLIST_CONFIG,
+            ),
+            patch(
+                "routes.views.watchlist_grid.query_many",
+                side_effect=[market_rows, [], []],
+            ),
+            patch(
+                "routes.views.watchlist_grid.load_atom_context",
+                return_value={"atoms": []},
+            ),
+        ):
+            response = TestClient(app).get("/partials/dashboard/watchlist-grid")
+        self.assertEqual(response.status_code, 200)
+        # Exactly one representation per symbol: one row control and one
+        # drawer endpoint per symbol, no duplicated rows or data source.
+        self.assertEqual(response.text.count('class="asset-row-link"'), 2)
+        self.assertEqual(
+            response.text.count('hx-get="/partials/dashboard/asset/EURUSD"'), 1
+        )
+        self.assertEqual(
+            response.text.count('hx-get="/partials/dashboard/asset/XAUUSD"'), 1
+        )
+        # Semantic table headings: caption plus scope'd column/row headers.
+        self.assertIn('<caption class="sr-only">', response.text)
+        self.assertEqual(response.text.count('scope="col"'), 8)
+        self.assertEqual(response.text.count("scope=\"row\""), 2)
+        # Each row control is a native button (keyboard-operable) targeting
+        # the single shared drawer panel.
+        self.assertEqual(response.text.count('type="button"'), 2)
+        self.assertEqual(response.text.count('hx-target="#expansion-panel"'), 2)
+
+    def test_grid_cells_carry_mobile_labels(self):
+        from fastapi.testclient import TestClient
+
+        app = build_app()
+        with (
+            patch(
+                "routes.views.watchlist_grid.app_config.load_config",
+                return_value=WATCHLIST_CONFIG,
+            ),
+            patch(
+                "routes.views.watchlist_grid.query_many",
+                side_effect=[[market_row("EURUSD")], [], []],
+            ),
+            patch(
+                "routes.views.watchlist_grid.load_atom_context",
+                return_value={"atoms": []},
+            ),
+        ):
+            response = TestClient(app).get("/partials/dashboard/watchlist-grid")
+        for label in (
+            "Last",
+            "5m",
+            "Day",
+            "Vol state",
+            "Current catalyst",
+            "Interpretation",
+            "Price age",
+            "Analysis age",
+        ):
+            self.assertIn(f'data-label="{label}"', response.text)
+        # Values are rendered once per symbol: no duplicated mobile markup.
+        # EURUSD appears exactly twice: the button label and the drawer URL.
+        self.assertEqual(response.text.count("EURUSD"), 2)
+        self.assertEqual(response.text.count(">1.2<"), 1)
+
+    def test_mobile_layout_stacks_grid_without_page_overflow(self):
+        css = (API_ROOT / "static/style.css").read_text()
+        # Page-level guard: html/body never scroll horizontally.
+        self.assertIn("overflow-x: hidden", css)
+        # Desktop: the grid scrolls inside its contained wrapper.
+        self.assertIn(".watchlist-scroll", css)
+        self.assertIn("overflow-x: auto", css)
+        # Mobile: rows reflow into labelled stacks; the forced table width is
+        # reset so the reflowed content cannot widen the page at 390px.
+        self.assertIn("@media (max-width: 640px)", css)
+        self.assertIn("attr(data-label)", css)
+        self.assertIn(".watchlist-grid-section table { min-width: 0; }", css)
 
 
 class WatchlistGridAuthTests(unittest.TestCase):

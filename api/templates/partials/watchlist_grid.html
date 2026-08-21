@@ -3,7 +3,7 @@
          data-live-event="section_changed"
          data-live-url="/partials/dashboard/watchlist-grid"{% else %}
          hx-get="/partials/dashboard/watchlist-grid"
-         hx-trigger="every 90s"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
     <span class="label">Watchlist grid</span>
@@ -37,14 +37,14 @@
                       hx-target="#expansion-panel"
                       hx-swap="outerHTML">{{ row.symbol }}</button>
             </th>
-            <td class="numeric tabular">{{ row.last_price_text or '—' }}</td>
-            <td class="numeric tabular{{ ' change-up' if row.chg_5m and row.chg_5m > 0 else ' change-down' if row.chg_5m and row.chg_5m < 0 else '' }}">{{ row.chg_5m_text or '—' }}</td>
-            <td class="numeric tabular{{ ' change-up' if row.chg_day and row.chg_day > 0 else ' change-down' if row.chg_day and row.chg_day < 0 else '' }}">{{ row.chg_day_text or '—' }}</td>
-            <td>{% if row.vol_state %}<span class="vol-state vol-{{ row.vol_state }}">{{ row.vol_state }}</span>{% else %}—{% endif %}</td>
-            <td>{{ row.catalyst_text or '—' }}</td>
-            <td><span class="{{ row.interpretation_class }}">{{ row.interpretation }}</span></td>
-            <td class="numeric tabular" data-freshness-cell="price" title="{{ row.price_iso or '' }}">{{ row.price_age_text or '—' }}</td>
-            <td class="numeric tabular" data-freshness-cell="analysis" title="{{ row.analysis_iso or '' }}">{{ row.analysis_age_text or '—' }}</td>
+            <td class="numeric tabular" data-label="Last">{{ row.last_price_text or '—' }}</td>
+            <td class="numeric tabular{{ ' change-up' if row.chg_5m and row.chg_5m > 0 else ' change-down' if row.chg_5m and row.chg_5m < 0 else '' }}" data-label="5m">{{ row.chg_5m_text or '—' }}</td>
+            <td class="numeric tabular{{ ' change-up' if row.chg_day and row.chg_day > 0 else ' change-down' if row.chg_day and row.chg_day < 0 else '' }}" data-label="Day">{{ row.chg_day_text or '—' }}</td>
+            <td data-label="Vol state">{% if row.vol_state %}<span class="vol-state vol-{{ row.vol_state }}">{{ row.vol_state }}</span>{% else %}—{% endif %}</td>
+            <td data-label="Current catalyst">{{ row.catalyst_text or '—' }}</td>
+            <td data-label="Interpretation"><span class="{{ row.interpretation_class }}">{{ row.interpretation }}</span></td>
+            <td class="numeric tabular" data-freshness-cell="price" data-label="Price age" title="{{ row.price_iso or '' }}">{{ row.price_age_text or '—' }}</td>
+            <td class="numeric tabular" data-freshness-cell="analysis" data-label="Analysis age" title="{{ row.analysis_iso or '' }}">{{ row.analysis_age_text or '—' }}</td>
           </tr>
           {% else %}
           <tr>
