@@ -4,7 +4,7 @@
   {% include "partials/header.html" %}
   {% include "partials/top_strip.html" %}
   {% include "partials/since_last_view.html" %}
-  <section class="cockpit-shell" hx-get="/partials/dashboard/watchlist-grid" hx-trigger="load, marketRefresh from:body" hx-swap="outerHTML">
+  <section class="cockpit-shell" hx-get="/partials/dashboard/watchlist-grid" hx-trigger="load" hx-swap="outerHTML">
     <h2>Watchlist monitor</h2>
     <p role="status">Loading…</p>
   </section>

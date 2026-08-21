@@ -131,7 +131,8 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
             1,
             "Exactly one lazy watchlist grid shell is allowed",
         )
-        self.assertIn('hx-trigger="load, marketRefresh from:body"', self.dashboard)
+        self.assertIn('hx-trigger="load"', self.dashboard)
+        self.assertNotIn('hx-trigger="load, marketRefresh from:body"', self.dashboard)
 
     def test_dashboard_has_one_briefing_section_without_separate_delta(self):
         self.assertEqual(self.dashboard.count("partials/briefing_prose.html"), 1)
@@ -266,7 +267,7 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         disclosure = rendered[rendered.index("<details"):]
         self.assertIn('class="atom-counts"', disclosure)
         self.assertIn("macro_series", disclosure)
-        self.assertIn(">3<", disclosure)
+        self.assertIn(": 3</span>", disclosure)
         # Lazy evidence loading hooks preserved.
         self.assertIn("data-evidence-target", disclosure)
         self.assertIn('data-opinion-id="op-1"', disclosure)
