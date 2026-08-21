@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from routes.views.assets import router as assets_router
 from routes.views.cockpit_panels import router as cockpit_panels_router
+from routes.views.markets import router as markets_router
 from routes.views.dashboard import router as dashboard_router
 from routes.views.investment import router as investment_router
 from routes.views.logs import router as logs_router
@@ -17,6 +18,7 @@ from routes.views.watchlist_grid import router as watchlist_grid_router
 router = APIRouter()
 
 router.include_router(dashboard_router)
+router.include_router(markets_router)
 router.include_router(logs_router)
 router.include_router(quality_router)
 router.include_router(research_router)

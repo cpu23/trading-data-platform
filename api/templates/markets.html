@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Markets — Trading data{% endblock %}
+{% block content %}
+<header class="page-header" style="margin-bottom: 20px;">
+  <div class="page-header-left">{% include "partials/navigation.html" %}</div>
+</header>
+
+<main aria-label="Market context workspace">
+  <section class="cockpit-shell" aria-labelledby="markets-cross-asset-title"
+           hx-get="/partials/markets/cross-asset"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-cross-asset-title">Cross-asset context</span></div>
+    <p role="status">Loading…</p>
+  </section>
+
+  <section class="cockpit-shell" aria-labelledby="markets-catalysts-title"
+           hx-get="/partials/markets/catalysts"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-catalysts-title">Upcoming catalysts</span></div>
+    <p role="status">Loading…</p>
+  </section>
+
+  <section class="cockpit-shell" aria-labelledby="markets-macro-releases-title"
+           hx-get="/partials/markets/macro-releases"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-macro-releases-title">Macro release monitor</span></div>
+    <p role="status">Loading…</p>
+  </section>
+
+  <section class="cockpit-shell" aria-labelledby="markets-regime-title"
+           hx-get="/partials/markets/regime"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-regime-title">Global macro regime</span></div>
+    <p role="status">Loading…</p>
+  </section>
+
+  <section class="cockpit-shell" aria-labelledby="markets-indicators-title"
+           hx-get="/partials/markets/indicators"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-indicators-title">Key macro indicators</span></div>
+    <p role="status">Loading…</p>
+  </section>
+
+  <section class="cockpit-shell" aria-labelledby="markets-events-title"
+           hx-get="/partials/markets/events"
+           hx-trigger="load, marketRefresh from:body"
+           hx-swap="outerHTML">
+    <div class="section-heading"><span class="label" id="markets-events-title">Economic calendar</span></div>
+    <p role="status">Loading…</p>
+  </section>
+</main>
+{% endblock %}
