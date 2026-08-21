@@ -1,12 +1,12 @@
-<section class="section macro-release-section" id="macro-release-section"
+<section class="section macro-release-section" id="macro-release-section" aria-labelledby="markets-macro-releases-title"
          {% if live_updates_enabled %}data-live-section="macro_releases"
          data-live-event="section_changed"
-         data-live-url="/partials/dashboard/macro-releases"{% else %}
-         hx-get="/partials/dashboard/macro-releases"
-         hx-trigger="every 45s"
+         data-live-url="/partials/markets/macro-releases"{% else %}
+         hx-get="/partials/markets/macro-releases"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
-    <span class="label">Macro release monitor</span>
+    <span class="label" id="markets-macro-releases-title" role="heading" aria-level="2">Macro release monitor</span>
     <span class="section-note">Deterministic · no model inference</span>
   </div>
   {% if macro_releases.error %}

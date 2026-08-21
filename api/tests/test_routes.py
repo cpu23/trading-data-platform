@@ -967,16 +967,13 @@ class TestLiveViewPartials(unittest.TestCase):
     PRICE_MAP = {"EURUSD": {"price": 1.125, "change": 0.002}}
 
     @staticmethod
-    def _dashboard_response(config, briefing, price_map, releases=None):
+    def _dashboard_response(config, briefing):
         with ExitStack() as stack:
             stack.enter_context(
                 patch(
                     "routes.views.dashboard.app_config.load_config",
                     return_value=config,
                 )
-            )
-            stack.enter_context(
-                patch("routes.views.dashboard.get_regime_current", return_value={})
             )
             stack.enter_context(
                 patch(
@@ -986,35 +983,35 @@ class TestLiveViewPartials(unittest.TestCase):
             )
             stack.enter_context(
                 patch(
-                    "routes.views.dashboard.get_events_upcoming_data",
-                    return_value={"events": [], "grouped": {}},
+                    "routes.views.dashboard.load_since_last_view",
+                    return_value={
+                        "available": False,
+                        "marker": None,
+                        "sections": [],
+                        "counts": {},
+                    },
                 )
             )
             stack.enter_context(
                 patch(
-                    "routes.views.dashboard.get_macro_release_cards_data",
-                    return_value=releases or {"cards": []},
-                )
-            )
-            stack.enter_context(
-                patch("routes.views.dashboard.get_macro_dashboard", return_value={})
-            )
-            stack.enter_context(
-                patch(
-                    "routes.views.dashboard._get_latest_prices",
-                    return_value=price_map,
+                    "routes.views.dashboard.load_compact_strip",
+                    return_value={
+                        "available": True,
+                        "session_label": "London",
+                        "regime": None,
+                        "next_catalyst": None,
+                    },
                 )
             )
             stack.enter_context(
                 patch(
-                    "routes.views.dashboard._last_cycle_text",
-                    return_value="No cycle run yet",
-                )
-            )
-            stack.enter_context(
-                patch(
-                    "routes.views.dashboard._latest_cycle_status",
-                    return_value="unknown",
+                    "routes.views.dashboard.load_briefing_delta",
+                    return_value={
+                        "available": False,
+                        "bullets": [],
+                        "atoms": [],
+                        "latest_date": None,
+                    },
                 )
             )
             stack.enter_context(
@@ -1022,15 +1019,6 @@ class TestLiveViewPartials(unittest.TestCase):
                     "routes.views.dashboard._get_dashboard_health",
                     new_callable=AsyncMock,
                     return_value={"components": []},
-                )
-            )
-            stack.enter_context(
-                patch("routes.views.dashboard.get_budget_status", return_value={})
-            )
-            stack.enter_context(
-                patch(
-                    "routes.views.dashboard.load_story_context",
-                    return_value={"status": "empty", "clusters": [], "lanes": {}},
                 )
             )
             return client.get("/", headers=AUTH)
@@ -1053,40 +1041,34 @@ class TestLiveViewPartials(unittest.TestCase):
             "live_updates_enabled": live_updates_enabled,
         }
 
-    def test_watchlist_partial_matches_enabled_initial_section(self):
+    def test_watchlist_grid_is_the_single_lazy_dashboard_watchlist(self):
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.watchlist_grid.app_config.load_config",
                 return_value=self.ENABLED_CONFIG,
             ),
             patch(
-                "routes.views.dashboard.get_briefing_latest",
-                return_value=self.BRIEFING,
-            ),
-            patch(
-                "routes.views.dashboard._get_latest_prices",
-                return_value=self.PRICE_MAP,
+                "routes.views.watchlist_grid.load_watchlist_grid",
+                return_value={"available": False, "rows": []},
             ),
         ):
             partial = client.get(
-                "/partials/dashboard/watchlist",
+                "/partials/dashboard/watchlist-grid",
                 headers=AUTH,
             )
-        initial = self._dashboard_response(
-            self.ENABLED_CONFIG,
-            self.BRIEFING,
-            self.PRICE_MAP,
-        )
+        initial = self._dashboard_response(self.ENABLED_CONFIG, self.BRIEFING)
 
         self.assertEqual(partial.status_code, 200)
         self.assertEqual(initial.status_code, 200)
-        self.assertIn(partial.text.strip(), initial.text)
-        self.assertIn("Watchlist", partial.text)
-        self.assertIn("EURUSD", partial.text)
+        self.assertEqual(
+            initial.text.count('hx-get="/partials/dashboard/watchlist-grid"'), 1
+        )
+        self.assertNotIn('hx-get="/partials/dashboard/watchlist"', initial.text)
+        self.assertIn("Watchlist grid", partial.text)
         self.assertIn('data-live-section="watchlist"', partial.text)
         self.assertIn('data-live-event="watchlist_changed"', partial.text)
         self.assertIn(
-            'data-live-url="/partials/dashboard/watchlist"',
+            'data-live-url="/partials/dashboard/watchlist-grid"',
             partial.text,
         )
 
@@ -1192,11 +1174,7 @@ class TestLiveViewPartials(unittest.TestCase):
         self.assertNotIn("RAW_", source_health.text)
 
     def test_disabled_initial_pages_render_without_live_contract(self):
-        dashboard = self._dashboard_response(
-            MOCK_CONFIG,
-            self.BRIEFING,
-            self.PRICE_MAP,
-        )
+        dashboard = self._dashboard_response(MOCK_CONFIG, self.BRIEFING)
         with (
             patch(
                 "routes.views.operations._local_snapshot",
@@ -1256,29 +1234,27 @@ class TestLiveViewPartials(unittest.TestCase):
         }
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.markets.app_config.load_config",
                 return_value=self.ENABLED_CONFIG,
             ),
             patch(
-                "routes.views.dashboard.get_macro_release_cards_data",
+                "routes.views.markets.get_macro_release_cards_data",
                 return_value=cards,
             ),
         ):
             partial = client.get(
-                "/partials/dashboard/macro-releases",
+                "/partials/markets/macro-releases",
                 headers=AUTH,
             )
-        initial = self._dashboard_response(
-            self.ENABLED_CONFIG,
-            self.BRIEFING,
-            self.PRICE_MAP,
-            releases=cards,
-        )
+            markets = client.get("/markets", headers=AUTH)
         with patch("routes.json.events.query_many", return_value=[row]) as query:
             response = client.get("/api/events/releases?limit=6", headers=AUTH)
 
         self.assertEqual(partial.status_code, 200)
-        self.assertIn(partial.text.strip(), initial.text)
+        self.assertEqual(markets.status_code, 200)
+        self.assertEqual(
+            markets.text.count('hx-get="/partials/markets/macro-releases"'), 1
+        )
         self.assertIn("US nonfarm payrolls", partial.text)
         self.assertIn("Deterministic · no model inference", partial.text)
         self.assertIn('data-live-section="macro_releases"', partial.text)

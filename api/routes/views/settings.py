@@ -1,5 +1,6 @@
 import os
 from collections.abc import Mapping
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -8,13 +9,9 @@ from starlette.concurrency import run_in_threadpool
 import config as app_config
 from auth import setup_complete
 from budgets import DEFAULT_DAILY_LLM_USD
+from db import query_one
 from routes.json.settings import _read_secrets, active_model, timezone_context
-from routes.views.dashboard import (
-    _data_status,
-    _get_dashboard_health,
-    _last_cycle_text,
-    _latest_cycle_status,
-)
+from routes.views.dashboard import _data_status, _get_dashboard_health
 
 router = APIRouter()
 
@@ -30,6 +27,40 @@ def _has_key(secrets: dict, *names: str) -> bool:
     if setup_complete():
         return any(bool(secrets.get(name)) for name in names)
     return any(bool(secrets.get(name)) or bool(os.environ.get(name)) for name in names)
+
+
+def _last_cycle_text(config: dict) -> str:
+    """Human text for the last completed cycle run (settings page only)."""
+    sql = """
+        SELECT started_at, completed_at FROM cycle_runs
+        WHERE status = 'completed'
+        ORDER BY completed_at DESC, started_at DESC
+        LIMIT 1
+    """
+    try:
+        row = query_one(sql, config=config)
+    except Exception:
+        return "No cycle run yet"
+    if row and (row.get("completed_at") or row.get("started_at")):
+        ts = row.get("completed_at") or row["started_at"]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return f"Last cycle: {ts.strftime('%d %b %H:%M UTC')}"
+    return "No cycle run yet"
+
+
+def _latest_cycle_status(config: dict) -> str:
+    """Result/status of the most recent cycle run (settings page only)."""
+    try:
+        row = query_one(
+            "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
+            config=config,
+        )
+    except Exception:
+        return "unknown"
+    if not row:
+        return "unknown"
+    return row.get("result_status") or row.get("status") or "unknown"
 
 
 def _next_cycle_text(health: dict | None) -> str:

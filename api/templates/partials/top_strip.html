@@ -1,65 +1,33 @@
-<section class="section top-strip-section" id="top-strip"
+<section class="section top-strip-section" id="top-strip" aria-labelledby="top-strip-title"
          {% if live_updates_enabled %}data-live-section="top_strip"
          data-live-event="section_changed"
          data-live-url="/partials/dashboard/top-strip"{% else %}
          hx-get="/partials/dashboard/top-strip"
-         hx-trigger="every 90s"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
-    <span class="label">Session snapshot</span>
+    <span class="label" id="top-strip-title">Session snapshot</span>
   </div>
-  {% if not strip.available %}
+  {% if not strip or not strip.available %}
     <div class="empty-state">Session snapshot unavailable.</div>
   {% else %}
     <div class="top-strip-grid">
       <div class="strip-cell">
-        <span class="strip-label">Session</span>
-        <span class="strip-value tabular">{{ strip.session_label or '—' }}</span>
+        <span class="strip-label">Current session</span>
+        <span class="strip-value tabular">{% if strip.session_available is sameas false %}Unavailable{% else %}{{ strip.session_label or '—' }}{% endif %}</span>
       </div>
       <div class="strip-cell">
-        <span class="strip-label">Last price update</span>
-        <span class="strip-value tabular">{{ strip.last_price_update_display or '—' }}</span>
-      </div>
-      <div class="strip-cell">
-        <span class="strip-label">Last material event</span>
-        <span class="strip-value">{{ strip.last_material_event.title if strip.last_material_event else '—' }}</span>
-        {% if strip.last_material_event %}
-          <span class="strip-detail">{{ strip.last_material_event.source }}{% if strip.last_material_event.time_display %} · {{ strip.last_material_event.time_display }}{% endif %}</span>
-        {% endif %}
-      </div>
-      <div class="strip-cell">
-        <span class="strip-label">Regime</span>
-        <span class="strip-value">{{ strip.regime.regime if strip.regime and strip.regime.regime else '—' }}</span>
+        <span class="strip-label">Current regime</span>
+        <span class="strip-value">{% if strip.regime_available is sameas false %}Unavailable{% elif strip.regime and strip.regime.regime %}{{ strip.regime.regime }}{% else %}No current regime{% endif %}</span>
         {% if strip.regime and strip.regime.sub_regime %}
           <span class="strip-detail">{{ strip.regime.sub_regime }}{% if strip.regime.confidence %} · {{ strip.regime.confidence }}{% endif %}</span>
         {% endif %}
       </div>
-      <div class="strip-cell strip-cell-wide">
-        <span class="strip-label">Direction</span>
-        <span class="chip-row">
-          {% for chip in strip.direction_chips %}
-            <span class="direction-chip{% if chip.direction == 'up' %} chip-up{% elif chip.direction == 'down' %} chip-down{% elif chip.direction == 'flat' %} chip-flat{% endif %}">
-              {{ chip.label }} {{ chip.display or '—' }}
-            </span>
-          {% endfor %}
-        </span>
-      </div>
       <div class="strip-cell">
         <span class="strip-label">Next catalyst</span>
-        <span class="strip-value">{{ strip.next_catalyst.event_name if strip.next_catalyst else '—' }}</span>
+        <span class="strip-value">{% if strip.next_catalyst_available is sameas false %}Unavailable{% elif strip.next_catalyst %}{{ strip.next_catalyst.event_name }}{% else %}No upcoming high-impact catalyst{% endif %}</span>
         {% if strip.next_catalyst %}
           <span class="strip-detail">{% if strip.next_catalyst.countdown_display %}in {{ strip.next_catalyst.countdown_display }}{% endif %}{% if strip.next_catalyst.country %} · {{ strip.next_catalyst.country }}{% endif %}</span>
-        {% endif %}
-      </div>
-      <div class="strip-cell">
-        <span class="strip-label">Sources</span>
-        <span class="strip-value tabular">{{ strip.source_health.display if strip.source_health else '—' }}</span>
-      </div>
-      <div class="strip-cell">
-        <span class="strip-label">Budget</span>
-        <span class="strip-value tabular">{{ strip.budget.display if strip.budget else '—' }}</span>
-        {% if strip.budget and strip.budget.status %}
-          <span class="strip-detail">{{ strip.budget.status }}</span>
         {% endif %}
       </div>
     </div>

@@ -1,10 +1,10 @@
-<section class="section indicators-section" id="indicators-section"
-         hx-get="/partials/indicators"
-         hx-trigger="cycleComplete from:body"
+<section class="section indicators-section" id="indicators-section" aria-labelledby="markets-indicators-title"
+         hx-get="/partials/markets/indicators"
+         hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   {% set section_dot = dot if dot is defined else dots.indicators %}
   <div class="section-heading">
-    <span class="label">Key macro indicators{% if section_dot and section_dot.state %}<span class="status-dot status-{{ 'failed' if section_dot.state == 'failed' else 'partial' }}" title="{{ section_dot.title }}"></span>{% endif %}</span>
+    <span class="label" id="markets-indicators-title" role="heading" aria-level="2">Key macro indicators{% if section_dot and section_dot.state %}<span class="status-dot status-{{ 'failed' if section_dot.state == 'failed' else 'partial' }}" title="{{ section_dot.title }}"></span>{% endif %}</span>
   </div>
   {% if error or indicators_error %}
     <div class="error-block">Indicator data unavailable: {{ error or indicators_error }}</div>

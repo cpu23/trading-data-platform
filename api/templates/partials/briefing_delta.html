@@ -1,12 +1,10 @@
 <section class="section briefing-delta-section" id="briefing-delta"
-         {% if live_updates_enabled %}data-live-section="briefing_delta"
-         data-live-event="section_changed"
-         data-live-url="/partials/dashboard/briefing-delta"{% else %}
+         aria-labelledby="briefing-delta-title"
          hx-get="/partials/dashboard/briefing-delta"
-         hx-trigger="every 90s"
-         hx-swap="outerHTML"{% endif %}>
+         hx-trigger="marketRefresh from:body"
+         hx-swap="outerHTML">
   <div class="section-heading">
-    <span class="label">Briefing delta</span>
+    <span class="label" id="briefing-delta-title" role="heading" aria-level="2">Briefing delta</span>
     {% if briefing_delta.latest_date %}<span class="section-note tabular">{{ briefing_delta.latest_date }}</span>{% endif %}
   </div>
   {% if not briefing_delta.available %}

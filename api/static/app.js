@@ -729,10 +729,12 @@
     });
   }
 
-  /* Server-sent invalidations ------------------------------------------------ */
-  var LIVE_POLL_INTERVAL_MS = 45000;
+  /* Unified refresh heartbeat and server-sent invalidations ------------------ */
+  var MARKET_REFRESH_INTERVAL_MS = 90000;
+  var marketRefreshTimer = null;
+  var refreshBound = false;
   var liveStream = null;
-  var livePollingTimer = null;
+  var liveStreamHealthy = false;
   var liveEventHandlers = Object.create(null);
   var liveRefreshes = Object.create(null);
 
@@ -774,17 +776,35 @@
     registeredLiveSections(eventName, sectionKey).forEach(refreshLiveSection);
   }
 
-  function stopLivePolling() {
-    if (!livePollingTimer) return;
-    window.clearInterval(livePollingTimer);
-    livePollingTimer = null;
+  function dispatchMarketRefresh() {
+    document.body.dispatchEvent(new CustomEvent('marketRefresh', { bubbles: true }));
   }
 
-  function startLivePolling() {
-    if (livePollingTimer || !registeredLiveSections().length) return;
-    livePollingTimer = window.setInterval(function () {
-      refreshLiveSections();
-    }, LIVE_POLL_INTERVAL_MS);
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      if (marketRefreshTimer) {
+        window.clearInterval(marketRefreshTimer);
+        marketRefreshTimer = null;
+      }
+      return;
+    }
+    dispatchMarketRefresh();
+    ensureMarketRefresh();
+  }
+
+  function ensureMarketRefresh() {
+    if (!refreshBound) {
+      refreshBound = true;
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      document.body.addEventListener('marketRefresh', refreshLiveSectionsOnHeartbeat);
+    }
+    if (marketRefreshTimer || document.hidden) return;
+    marketRefreshTimer = window.setInterval(dispatchMarketRefresh, MARKET_REFRESH_INTERVAL_MS);
+  }
+
+  function refreshLiveSectionsOnHeartbeat() {
+    if (liveStreamHealthy || !registeredLiveSections().length) return;
+    refreshLiveSections();
   }
 
   function registerLiveEvent(eventName, refreshAll) {
@@ -807,21 +827,18 @@
   }
 
   function initLiveSections() {
+    ensureMarketRefresh();
     var sections = registeredLiveSections();
     if (!sections.length) return;
-    if (!window.EventSource) {
-      startLivePolling();
-      return;
-    }
+    if (!window.EventSource) return;
 
     if (!liveStream) {
       try {
         liveStream = new window.EventSource('/stream');
-        liveStream.onopen = stopLivePolling;
-        liveStream.onerror = startLivePolling;
+        liveStream.onopen = function () { liveStreamHealthy = true; };
+        liveStream.onerror = function () { liveStreamHealthy = false; };
       } catch (_error) {
         liveStream = null;
-        startLivePolling();
         return;
       }
     }
@@ -849,6 +866,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    ensureMarketRefresh();
     initCharts(document);
     initModal();
     initCards();

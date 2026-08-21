@@ -1,324 +1,34 @@
 import asyncio
 import json
 import re
-from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
-from budgets import get_budget_status
-from db import query_many, query_one
+from db import query_many
 from logging_config import get_logger
 from routes.json.briefing import get_briefing_latest
-from routes.json.events import get_events_upcoming_data, get_macro_release_cards_data
-from routes.json.macro import get_macro_dashboard
-from routes.json.regime import get_regime_current
+from routes.json.events import get_events_upcoming_data
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
-from routes.views.asset_rules import ASSET_EVENT_RULES
-from routes.views.cockpit_panels import load_top_strip
+from routes.views.cockpit_panels import load_briefing_delta
+from routes.views.dashboard_strip import load_compact_strip
+from routes.views.market_events import (
+    format_stale_reason,
+    matched_asset_events,
+    parse_iso,
+)
 from routes.views.news import load_story_context
 from routes.views.since_last_view import load_since_last_view
-from staleness import get_staleness_config, is_stale
 
 logger = get_logger("dashboard")
 
 
 def _get_templates(request: Request):
     return request.app.state.templates
-
-
-def _last_cycle_text(config: dict) -> str:
-    sql = """
-        SELECT started_at, completed_at FROM cycle_runs
-        WHERE status = 'completed'
-        ORDER BY completed_at DESC, started_at DESC
-        LIMIT 1
-    """
-    try:
-        row = query_one(sql, config=config)
-    except Exception:
-        return "No cycle run yet"
-    if row and (row.get("completed_at") or row.get("started_at")):
-        ts = row.get("completed_at") or row["started_at"]
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return f"Last cycle: {ts.strftime('%d %b %H:%M UTC')}"
-    return "No cycle run yet"
-
-
-def _latest_cycle_status(config: dict) -> str:
-    try:
-        row = query_one(
-            "SELECT status, result_status FROM cycle_runs ORDER BY started_at DESC LIMIT 1",
-            config=config,
-        )
-    except Exception:
-        return "unknown"
-    if not row:
-        return "unknown"
-    return row.get("result_status") or row.get("status") or "unknown"
-
-
-def _parse_iso(value) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return None
-
-
-def _format_stale_reason(stale_reason: str | None, section: str) -> str | None:
-    if not stale_reason or not stale_reason.startswith("Data is "):
-        return stale_reason
-    hours_part = stale_reason[len("Data is ") :]
-    if section == "regime":
-        return f"Macro data is {hours_part}"
-    if section == "briefing":
-        return f"Briefing is {hours_part}. Run cycle to refresh."
-    if section == "indicators":
-        return f"Macro data is {hours_part}"
-    return stale_reason
-
-
-def _freshness_dot(
-    stale: bool = False, failed: bool = False, title: str | None = None
-) -> dict:
-    if failed:
-        return {"state": "failed", "title": title or "Section failed to load"}
-    if stale:
-        return {"state": "stale", "title": title or "Data may be stale"}
-    return {"state": "", "title": ""}
-
-
-def _section_dots(
-    regime: dict,
-    events_data: dict,
-    briefing: dict | None,
-    indicators_stale: bool,
-    indicators_stale_reason: str | None,
-) -> dict:
-    return {
-        "regime": _freshness_dot(
-            stale=bool(isinstance(regime, dict) and regime.get("stale")),
-            failed=bool(isinstance(regime, dict) and regime.get("error")),
-            title=(
-                regime.get("error")
-                or regime.get("stale_reason")
-                or regime.get("created_at")
-            )
-            if isinstance(regime, dict)
-            else None,
-        ),
-        "events": _freshness_dot(
-            stale=bool(isinstance(events_data, dict) and events_data.get("stale")),
-            failed=bool(isinstance(events_data, dict) and events_data.get("error")),
-            title=(events_data.get("error") or events_data.get("stale_reason"))
-            if isinstance(events_data, dict)
-            else None,
-        ),
-        "indicators": _freshness_dot(
-            stale=indicators_stale,
-            failed=False,
-            title=indicators_stale_reason,
-        ),
-        "briefing": _freshness_dot(
-            stale=bool(briefing and briefing.get("stale")),
-            failed=False,
-            title=(briefing.get("stale_reason") or briefing.get("created_at"))
-            if briefing
-            else None,
-        ),
-    }
-
-
-def _primary_timezone(config: dict) -> ZoneInfo:
-    tz_name = config.get("timezone", {}).get("primary", {}).get("name", "Europe/London")
-    return ZoneInfo(tz_name)
-
-
-def _event_template_context(
-    events_data: dict,
-    config: dict,
-    *,
-    display_zone: ZoneInfo | None = None,
-) -> dict:
-    grouped = events_data.get("grouped", {}) if isinstance(events_data, dict) else {}
-    filtered_events = (
-        events_data.get("events", []) if isinstance(events_data, dict) else []
-    )
-    high_impact_grouped = {}
-    for day_key, events in grouped.items():
-        high_impact_events = [
-            event
-            for event in events
-            if str(event.get("impact_level") or "").lower() == "high"
-        ]
-        if high_impact_events:
-            high_impact_grouped[day_key] = high_impact_events
-    selected_zone = display_zone or _primary_timezone(config)
-    today_str = datetime.now(selected_zone).strftime("%Y-%m-%d")
-
-    def day_label_for(day_key: str) -> str:
-        if day_key == today_str:
-            return "Today"
-        try:
-            dt = datetime.strptime(day_key, "%Y-%m-%d")
-            return dt.strftime("%A")
-        except Exception:
-            return day_key
-
-    catalysts = _top_catalysts(events_data)
-    return {
-        "filtered_events": filtered_events,
-        "grouped": grouped,
-        "catalysts": catalysts,
-        "upcoming_label": _upcoming_label(high_impact_grouped, day_label_for),
-        "high_impact_grouped": high_impact_grouped,
-        "today_str": today_str,
-        "day_label_for": day_label_for,
-    }
-
-
-def _upcoming_label(high_impact_grouped: dict, day_label_for) -> str:
-    """Human label for the catalyst window, e.g. 'Today – Friday'."""
-    days = sorted(high_impact_grouped.keys())
-    if not days:
-        return ""
-    if len(days) == 1:
-        return day_label_for(days[0])
-    return f"{day_label_for(days[0])} – {day_label_for(days[-1])}"
-
-
-def _event_text(event: dict) -> str:
-    return " ".join(
-        str(event.get(key) or "")
-        for key in ("event_name", "currency", "country", "impact_level", "source")
-    ).lower()
-
-
-def _impact_score(event: dict) -> int:
-    impact = str(event.get("impact_level") or "").lower()
-    if impact == "high":
-        return 0
-    if impact == "medium":
-        return 1
-    return 2
-
-
-def _event_datetime(event: dict) -> datetime:
-    scheduled = _parse_iso(event.get("scheduled_at"))
-    if scheduled:
-        return scheduled
-    return datetime.max.replace(tzinfo=UTC)
-
-
-def _event_time_key(event: dict) -> tuple:
-    scheduled = _event_datetime(event)
-    if scheduled != datetime.max.replace(tzinfo=UTC):
-        return (0, scheduled)
-    return (1, event.get("london_time") or event.get("time_display") or "")
-
-
-def _chronological_event_key(event: dict) -> tuple:
-    return (_event_time_key(event), _impact_score(event))
-
-
-def _event_day_time_display(event: dict) -> str:
-    scheduled = _event_datetime(event)
-    if scheduled != datetime.max.replace(tzinfo=UTC):
-        day_label = event.get("day_label_short") or scheduled.strftime("%a")
-        return f"{day_label} · {event.get('time_display') or scheduled.strftime('%H:%M UTC')}"
-    return event.get("time_display") or "Time TBC"
-
-
-def _with_event_display(event: dict) -> dict:
-    enriched = dict(event)
-    enriched["day_time_display"] = _event_day_time_display(event)
-    return enriched
-
-
-def _top_catalysts(events_data: dict, limit: int = 6) -> list[dict]:
-    """High-impact events spread across the week instead of stacking on one busy day."""
-    high = [
-        ev
-        for ev in (events_data.get("events") or [])
-        if (ev.get("impact_level") or "").lower() == "high"
-    ]
-    by_day: dict[str, list[dict]] = {}
-    for ev in high:
-        by_day.setdefault(ev.get("day_key") or "", []).append(ev)
-    picked: list[dict] = []
-    queues = list(by_day.values())
-    while queues and len(picked) < limit:
-        next_queues = []
-        for queue in queues:
-            picked.append(queue.pop(0))
-            if queue:
-                next_queues.append(queue)
-        queues = next_queues
-    picked.sort(key=lambda ev: ev.get("scheduled_at") or "")
-    return [_with_event_display(ev) for ev in picked]
-
-
-def _event_matches_asset(symbol: str, event: dict) -> bool:
-    rules = ASSET_EVENT_RULES.get((symbol or "").upper())
-    if not rules:
-        return False
-    currency = str(event.get("currency") or "").upper()
-    country = str(event.get("country") or "").upper()
-    impact = str(event.get("impact_level") or "").lower()
-    if impact not in {"high", "medium"}:
-        return False
-    if currency and currency in rules.get("currencies", set()):
-        return True
-    if country and country in rules.get("countries", set()):
-        return True
-    text = _event_text(event)
-    return any(keyword in text for keyword in rules.get("keywords", set()))
-
-
-def _event_exposure_key(event: dict) -> str | None:
-    currency = str(event.get("currency") or "").upper()
-    country = str(event.get("country") or "").upper()
-    return currency or country or None
-
-
-def _matched_asset_events(
-    symbol: str, events: list[dict], limit: int = 6
-) -> list[dict]:
-    rules = ASSET_EVENT_RULES.get((symbol or "").upper(), {})
-    matches = sorted(
-        [event for event in events if _event_matches_asset(symbol, event)],
-        key=_chronological_event_key,
-    )
-    selected = matches[:limit]
-
-    currencies = rules.get("currencies", set())
-    if len(currencies) > 1 and len(matches) > limit:
-        selected_exposures = {_event_exposure_key(event) for event in selected}
-        missing = [
-            currency for currency in currencies if currency not in selected_exposures
-        ]
-        for currency in missing:
-            replacement = next(
-                (
-                    event
-                    for event in matches
-                    if _event_exposure_key(event) == currency and event not in selected
-                ),
-                None,
-            )
-            if replacement:
-                selected = selected[:-1] + [replacement]
-                selected = sorted(selected, key=_chronological_event_key)
-
-    return [_with_event_display(event) for event in selected[:limit]]
 
 
 def _split_sentences(text: str, limit: int) -> list[str]:
@@ -376,12 +86,10 @@ def _section_text(value) -> str:
 
 
 def _briefing_sections(briefing: dict | None) -> list[dict]:
-    """Three fixed briefing sections: what changed / interpretation / invalidation.
-
-    Falls back to legacy v3 keys (macro_trend/today/this_week) for briefings
-    generated before the three-section schema.
-    """
-    sections = briefing.get("sections", {}) if briefing else {}
+    """Return the three fixed briefing sections with truthful legacy fallbacks."""
+    if not briefing:
+        return []
+    sections = briefing.get("sections", {})
     if not isinstance(sections, dict):
         return []
 
@@ -389,27 +97,36 @@ def _briefing_sections(briefing: dict | None) -> list[dict]:
     interpretation = _section_text(sections.get("interpretation"))
     invalidation = _section_text(sections.get("invalidation"))
 
-    if not any([what_changed, interpretation, invalidation]):
-        legacy = [
-            (
-                "Macro trend",
-                sections.get("macro_trend") or sections.get("macro_summary"),
-            ),
-            ("Today", sections.get("today")),
-            ("This week", sections.get("this_week") or sections.get("upcoming_events")),
-        ]
-        return [
-            {"label": label, "body": _section_text(value)}
-            for label, value in legacy
-            if _section_text(value)
-        ]
+    if not any((what_changed, interpretation, invalidation)):
+        # Older records predate the fixed three-section contract. Preserve their
+        # decision context under the closest current headings, but never present
+        # an upcoming event as an invalidation condition.
+        what_changed = _section_text(sections.get("today"))
+        interpretation = " ".join(
+            text
+            for text in (
+                _section_text(
+                    sections.get("macro_trend") or sections.get("macro_summary")
+                ),
+                _section_text(
+                    sections.get("this_week") or sections.get("upcoming_events")
+                ),
+            )
+            if text
+        )
 
-    defs = [
-        ("What changed", what_changed),
-        ("Current interpretation", interpretation),
-        ("What would invalidate this", invalidation),
+    unavailable = "Not stated in this briefing."
+    return [
+        {"label": "What changed", "body": what_changed or unavailable},
+        {
+            "label": "Current interpretation",
+            "body": interpretation or unavailable,
+        },
+        {
+            "label": "What would invalidate this",
+            "body": invalidation or unavailable,
+        },
     ]
-    return [{"label": label, "body": body} for label, body in defs if body]
 
 
 def _asset_drivers(note: dict, limit: int = 4) -> list[str]:
@@ -447,7 +164,7 @@ def _get_latest_prices(config: dict) -> dict:
         price_map[row["symbol"]] = {
             "price": float(price),
             "change": change,
-            "timestamp": _parse_iso(row.get("timestamp")),
+            "timestamp": parse_iso(row.get("timestamp")),
         }
     return price_map
 
@@ -493,50 +210,6 @@ def _live_updates_enabled(config: dict) -> bool:
     return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
-def _load_research_intelligence(config: dict) -> dict:
-    """Load only bounded, material morning-bearing research context."""
-    try:
-        drivers = query_many(
-            """
-            SELECT target, driver_key, driver_label, direction, strength, horizon,
-                   mechanism, changed_since_prior, confidence, confidence_rationale,
-                   invalidation_conditions, valid_from
-            FROM research_market_drivers
-            WHERE superseded_at IS NULL
-            ORDER BY changed_since_prior DESC,
-                     CASE strength
-                         WHEN 'high' THEN 0 WHEN 'moderate' THEN 1
-                         WHEN 'low' THEN 2 ELSE 3
-                     END,
-                     target, valid_from DESC
-            LIMIT 8
-            """,
-            config=config,
-        )
-    except Exception:
-        drivers = []
-    try:
-        cases = query_many(
-            """
-            SELECT c.id, c.title, c.lifecycle_state, c.case_type, c.horizon,
-                   s.payload->'deliverable'->'what_changed'->>'text' AS what_changed,
-                   c.economic_significance, c.evidence_strength, c.last_changed_at
-            FROM research_cases c
-            LEFT JOIN research_case_snapshots s
-              ON s.case_id = c.id AND s.version = c.current_version
-            WHERE c.lifecycle_state IN ('research_ready', 'mature', 'weakening')
-              AND c.economic_significance = 'high'
-              AND c.last_changed_at >= NOW() - INTERVAL '7 days'
-            ORDER BY c.last_changed_at DESC, c.id DESC
-            LIMIT 4
-            """,
-            config=config,
-        )
-    except Exception:
-        cases = []
-    return {"drivers": drivers, "cases": cases}
-
-
 router = APIRouter()
 
 
@@ -546,172 +219,73 @@ async def dashboard(request: Request):
     templates = _get_templates(request)
 
     (
-        regime_result,
         briefing_result,
-        events_result,
-        macro_release_result,
-        macro_result,
-        price_result,
-        last_cycle_text,
-        last_cycle_status,
-        system_health,
-        budget,
-        news,
-        top_strip_result,
         since_last_view_result,
-        research_intelligence_result,
+        strip_result,
+        health_result,
     ) = await asyncio.gather(
-        run_in_threadpool(get_regime_current),
         run_in_threadpool(get_briefing_latest),
-        run_in_threadpool(get_events_upcoming_data, request=request, days=14),
-        run_in_threadpool(get_macro_release_cards_data, config=config, limit=6),
-        run_in_threadpool(get_macro_dashboard),
-        run_in_threadpool(_get_latest_prices, config),
-        run_in_threadpool(_last_cycle_text, config),
-        run_in_threadpool(_latest_cycle_status, config),
-        _get_dashboard_health(request),
-        run_in_threadpool(get_budget_status),
-        run_in_threadpool(load_story_context, limit=12),
-        run_in_threadpool(load_top_strip, config),
         run_in_threadpool(load_since_last_view, config),
-        run_in_threadpool(_load_research_intelligence, config),
+        run_in_threadpool(load_compact_strip, config),
+        _get_dashboard_health(request),
         return_exceptions=True,
     )
 
-    regime = (
-        {"error": str(regime_result)}
-        if isinstance(regime_result, Exception)
-        else regime_result
-    )
-    if regime.get("stale") and regime.get("stale_reason"):
-        regime = dict(regime)
-        regime["stale_reason"] = _format_stale_reason(regime["stale_reason"], "regime")
-
     briefing = None if isinstance(briefing_result, Exception) else briefing_result
-    if briefing and briefing.get("stale") and briefing.get("stale_reason"):
-        briefing = dict(briefing)
-        briefing["stale_reason"] = _format_stale_reason(
-            briefing["stale_reason"], "briefing"
-        )
-
-    events_data = (
-        {"error": str(events_result)}
-        if isinstance(events_result, Exception)
-        else events_result
+    briefing_delta_result = await run_in_threadpool(
+        load_briefing_delta, config, briefing
     )
-    macro_releases = (
-        {"cards": []}
-        if isinstance(macro_release_result, Exception)
-        else macro_release_result
+    briefing_delta = (
+        {"available": False, "bullets": [], "atoms": [], "latest_date": None}
+        if isinstance(briefing_delta_result, Exception)
+        else briefing_delta_result
     )
-    for event in events_data.get("events", []):
-        event["scheduled_at"] = _parse_iso(event.get("scheduled_at"))
-
-    indicators = []
-    indicators_stale = False
-    indicators_stale_reason = None
-    if not isinstance(macro_result, Exception):
-        indicator_configs = config.get("dashboard", {}).get("indicators", [])
-        precision_map = {
-            item["series_id"]: item.get("precision", 2) for item in indicator_configs
-        }
-        note_map = {item["series_id"]: item.get("note") for item in indicator_configs}
-        for indicator in macro_result.get("indicators", []):
-            indicator["precision"] = precision_map.get(indicator["series_id"], 2)
-            indicator["note"] = note_map.get(indicator["series_id"])
-            indicators.append(indicator)
-        last_run = macro_result.get("last_collector_run")
-        if last_run:
-            thresholds = get_staleness_config(config)
-            indicators_stale, indicators_stale_reason = is_stale(
-                _parse_iso(last_run), thresholds.get("macro_hours", 30)
-            )
-            indicators_stale_reason = _format_stale_reason(
-                indicators_stale_reason, "indicators"
-            )
-
-    tz_context = timezone_context(request, config)
-    now = datetime.now(tz_context["display_zone"])
-    event_context = _event_template_context(
-        events_data,
-        config,
-        display_zone=tz_context["display_zone"],
-    )
-
-    if isinstance(system_health, Exception):
-        system_health = {
+    system_health = (
+        {
             "overall": "unavailable",
             "error": "Health data unavailable.",
             "components": [],
         }
+        if isinstance(health_result, Exception)
+        else health_result
+    )
+    tz_context = timezone_context(request, config)
+    now = datetime.now(tz_context["display_zone"])
 
     context = {
         "request": request,
-        "last_cycle_text": (
-            "No cycle run yet"
-            if isinstance(last_cycle_text, Exception)
-            else last_cycle_text
-        ),
-        "last_cycle_status": (
-            "unknown" if isinstance(last_cycle_status, Exception) else last_cycle_status
-        ),
-        "system_health": system_health,
-        "regime": regime,
-        "briefing": briefing,
-        "live_updates_enabled": _live_updates_enabled(config),
-        "events_data": events_data,
-        "macro_releases": macro_releases,
-        "indicators": indicators,
-        "stale": indicators_stale,
-        "stale_reason": indicators_stale_reason,
         "current_time": now,
-        "timedelta": timedelta,
         "data_status": _data_status(system_health),
-        "briefing_sections": _briefing_sections(briefing),
-        "dots": _section_dots(
-            regime,
-            events_data,
-            briefing,
-            indicators_stale,
-            indicators_stale_reason,
-        ),
-        "price_map": {} if isinstance(price_result, Exception) else price_result,
-        "budget": {} if isinstance(budget, Exception) else budget,
-        "stories": {"clusters": [], "lanes": {}}
-        if isinstance(news, Exception)
-        else news,
-        "strip": {} if isinstance(top_strip_result, Exception) else top_strip_result,
+        "strip": {} if isinstance(strip_result, Exception) else strip_result,
         "since_last_view": (
             {"available": False, "marker": None, "sections": [], "counts": {}}
             if isinstance(since_last_view_result, Exception)
             else since_last_view_result
         ),
-        "research_intelligence": (
-            {"drivers": [], "cases": []}
-            if isinstance(research_intelligence_result, Exception)
-            else research_intelligence_result
-        ),
+        "briefing": briefing,
+        "briefing_sections": _briefing_sections(briefing),
+        "briefing_delta": briefing_delta,
+        "live_updates_enabled": _live_updates_enabled(config),
         **tz_context,
-        **event_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 
-@router.get("/partials/dashboard/macro-releases")
-def partial_macro_releases(request: Request):
-    config = app_config.load_config()
+@router.get("/partials/header")
+async def partial_header(request: Request):
+    config = await run_in_threadpool(app_config.load_config)
     templates = _get_templates(request)
-    try:
-        releases = get_macro_release_cards_data(config=config, limit=6)
-    except Exception:
-        releases = {"cards": [], "error": "Release cards unavailable."}
+    tz_context = timezone_context(request, config)
+    now = datetime.now(tz_context["display_zone"])
+
     return templates.TemplateResponse(
         request,
-        "partials/macro_release_cards.html",
+        "partials/header.html",
         {
             "request": request,
-            "macro_releases": releases,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "current_time": now,
+            "data_status": _data_status(await _get_dashboard_health(request)),
+            **tz_context,
         },
     )
 
@@ -728,87 +302,6 @@ def partial_news(request: Request):
             "request": request,
             "stories": stories,
             "live_updates_enabled": _live_updates_enabled(config),
-        },
-    )
-
-
-@router.get("/partials/header")
-async def partial_header(request: Request):
-    config = await run_in_threadpool(app_config.load_config)
-    templates = _get_templates(request)
-    tz_context = timezone_context(request, config)
-    now = datetime.now(tz_context["display_zone"])
-
-    return templates.TemplateResponse(
-        request,
-        "partials/header.html",
-        {
-            "request": request,
-            "last_cycle_text": await run_in_threadpool(_last_cycle_text, config),
-            "last_cycle_status": await run_in_threadpool(_latest_cycle_status, config),
-            "current_time": now,
-            "data_status": _data_status(await _get_dashboard_health(request)),
-            "budget": await run_in_threadpool(get_budget_status),
-            **tz_context,
-        },
-    )
-
-
-@router.get("/partials/regime")
-def partial_regime(request: Request):
-    templates = _get_templates(request)
-    regime = {}
-    try:
-        regime = get_regime_current()
-        if regime.get("stale") and regime.get("stale_reason"):
-            regime = dict(regime)
-            regime["stale_reason"] = _format_stale_reason(
-                regime["stale_reason"], "regime"
-            )
-    except Exception as exc:
-        regime = {"error": str(exc)}
-    return templates.TemplateResponse(
-        request,
-        "partials/regime_section.html",
-        {
-            "request": request,
-            "regime": regime,
-            "dot": _section_dots(regime, {}, None, False, None)["regime"],
-        },
-    )
-
-
-@router.get("/partials/events")
-def partial_events(request: Request):
-    config = app_config.load_config()
-    templates = _get_templates(request)
-    events_data = {}
-    try:
-        events_data = get_events_upcoming_data(request=request, days=14)
-        for ev in events_data.get("events", []):
-            ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
-    except Exception as exc:
-        events_data = {"error": str(exc)}
-
-    tz_context = timezone_context(request, config)
-    now = datetime.now(tz_context["display_zone"])
-    event_context = _event_template_context(
-        events_data,
-        config,
-        display_zone=tz_context["display_zone"],
-    )
-
-    return templates.TemplateResponse(
-        request,
-        "partials/events_section.html",
-        {
-            "request": request,
-            "events_data": events_data,
-            "current_time": now,
-            "timedelta": timedelta,
-            "dot": _section_dots({}, events_data, None, False, None)["events"],
-            **tz_context,
-            **event_context,
         },
     )
 
@@ -850,7 +343,7 @@ def partial_cards_symbol(request: Request, symbol: str):
             events_data = get_events_upcoming_data(request=request, days=14)
             events = events_data.get("events", [])
             for ev in events:
-                ev["scheduled_at"] = _parse_iso(ev.get("scheduled_at"))
+                ev["scheduled_at"] = parse_iso(ev.get("scheduled_at"))
         except Exception:
             events = []
         return templates.TemplateResponse(
@@ -861,7 +354,7 @@ def partial_cards_symbol(request: Request, symbol: str):
                 "note": note,
                 "price": _get_latest_prices(config).get(symbol),
                 "drivers": _asset_drivers(note),
-                "matched_events": _matched_asset_events(symbol, events),
+                "matched_events": matched_asset_events(symbol, events),
                 "opinion_id": briefing.get("opinion_ids", [])[-1]
                 if briefing.get("opinion_ids")
                 else None,
@@ -888,7 +381,7 @@ def partial_cards(request: Request):
         briefing = get_briefing_latest()
         if briefing and briefing.get("stale") and briefing.get("stale_reason"):
             briefing = dict(briefing)
-            briefing["stale_reason"] = _format_stale_reason(
+            briefing["stale_reason"] = format_stale_reason(
                 briefing["stale_reason"], "briefing"
             )
     except Exception:
@@ -909,72 +402,27 @@ def partial_cards(request: Request):
     )
 
 
-@router.get("/partials/indicators")
-def partial_indicators(request: Request):
-    config = app_config.load_config()
-    templates = _get_templates(request)
-    indicators = []
-    stale = False
-    stale_reason = None
-    try:
-        macro_data = get_macro_dashboard()
-        indicator_configs = config.get("dashboard", {}).get("indicators", [])
-        precision_map = {
-            ic["series_id"]: ic.get("precision", 2) for ic in indicator_configs
-        }
-        note_map = {ic["series_id"]: ic.get("note") for ic in indicator_configs}
-        for ind in macro_data.get("indicators", []):
-            ind["precision"] = precision_map.get(ind["series_id"], 2)
-            ind["note"] = note_map.get(ind["series_id"])
-            indicators.append(ind)
-        last_run = macro_data.get("last_collector_run")
-        if last_run:
-            thresholds = get_staleness_config(config)
-            stale, stale_reason = is_stale(
-                _parse_iso(last_run), thresholds.get("macro_hours", 30)
-            )
-            stale_reason = _format_stale_reason(stale_reason, "indicators")
-    except Exception as exc:
-        return templates.TemplateResponse(
-            request,
-            "partials/indicators_section.html",
-            {
-                "request": request,
-                "error": str(exc),
-                "indicators": [],
-                "stale": False,
-                "stale_reason": None,
-                "dot": _freshness_dot(failed=True, title=str(exc)),
-            },
-        )
-    return templates.TemplateResponse(
-        request,
-        "partials/indicators_section.html",
-        {
-            "request": request,
-            "indicators": indicators,
-            "stale": stale,
-            "stale_reason": stale_reason,
-            "dot": _freshness_dot(stale=stale, title=stale_reason),
-        },
-    )
-
-
 @router.get("/partials/briefing")
 def partial_briefing(request: Request):
     templates = _get_templates(request)
+    config = app_config.load_config()
     briefing = None
     try:
         briefing = get_briefing_latest()
     except Exception:
         briefing = None
+    briefing_delta = {"available": False, "bullets": [], "atoms": [], "latest_date": None}
+    try:
+        briefing_delta = load_briefing_delta(config, latest=briefing)
+    except Exception:
+        pass
     return templates.TemplateResponse(
         request,
         "partials/briefing_prose.html",
         {
             "request": request,
             "briefing": briefing,
-            "dot": _section_dots({}, {}, briefing, False, None)["briefing"],
             "briefing_sections": _briefing_sections(briefing),
+            "briefing_delta": briefing_delta,
         },
     )

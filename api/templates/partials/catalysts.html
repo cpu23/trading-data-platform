@@ -1,12 +1,13 @@
 <section class="section catalysts-section" id="catalysts"
+         aria-labelledby="markets-catalysts-title"
          {% if live_updates_enabled %}data-live-section="catalysts"
          data-live-event="section_changed"
-         data-live-url="/partials/dashboard/catalysts"{% else %}
-         hx-get="/partials/dashboard/catalysts"
-         hx-trigger="every 90s"
+         data-live-url="/partials/markets/catalysts"{% else %}
+         hx-get="/partials/markets/catalysts"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
-    <span class="label">Upcoming catalysts</span>
+    <span class="label" id="markets-catalysts-title" role="heading" aria-level="2">Upcoming catalysts</span>
     <span class="section-note">Next {{ catalysts.days }} days</span>
   </div>
   {% if not catalysts.available %}

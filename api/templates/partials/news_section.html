@@ -3,7 +3,7 @@
          data-live-event="section_changed"
          data-live-url="/partials/dashboard/news"{% else %}
          hx-get="/partials/dashboard/news"
-         hx-trigger="every 90s"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
     <span class="label">Canonical stories</span>
