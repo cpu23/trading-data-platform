@@ -23,7 +23,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Single pinned production model slug (spec §2.1). No floating "latest" alias.
 DEFAULT_MODEL_SLUG = "deepseek/deepseek-v4-flash-0731"
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
-MAX_ALLOWED_OUTPUT_TOKENS = 4096
+MAX_ALLOWED_OUTPUT_TOKENS = 16_384
 DEFAULT_STAGE_TIMEOUT_SECONDS = 90.0
 DEFAULT_VALIDATION_RETRIES = 1
 MAX_VALIDATION_RETRIES = 1
@@ -503,9 +503,19 @@ def call_llm(
     if response_schema is not None:
         if not isinstance(response_schema, dict):
             raise ValueError("response_schema must be a JSON Schema object")
+        schema_config = response_schema
+        if not (
+            isinstance(response_schema.get("name"), str)
+            and isinstance(response_schema.get("schema"), dict)
+        ):
+            schema_config = {
+                "name": "structured_response",
+                "strict": True,
+                "schema": response_schema,
+            }
         request_body["response_format"] = {
             "type": "json_schema",
-            "json_schema": response_schema,
+            "json_schema": schema_config,
         }
         if _processor_value(
             llm_config,

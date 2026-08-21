@@ -353,6 +353,218 @@ def _rate_input(value: Any, default: float) -> float | None:
     return parsed
 
 
+def _dcf_case(
+    starting_fcf: float,
+    annual_growth: float,
+    discount_rate: float,
+    terminal_growth: float,
+    *,
+    forecast_years: int = 5,
+) -> dict[str, Any] | None:
+    if (
+        starting_fcf <= 0
+        or discount_rate <= 0
+        or discount_rate <= terminal_growth
+        or not all(
+            math.isfinite(value)
+            for value in (
+                starting_fcf,
+                annual_growth,
+                discount_rate,
+                terminal_growth,
+            )
+        )
+    ):
+        return None
+    projected = starting_fcf
+    present_value = 0.0
+    forecast: list[dict[str, Any]] = []
+    for year in range(1, forecast_years + 1):
+        projected *= 1.0 + annual_growth
+        discounted = projected / ((1.0 + discount_rate) ** year)
+        forecast.append({"year": year, "fcf": projected, "present_value": discounted})
+        present_value += discounted
+    terminal_value = (
+        projected * (1.0 + terminal_growth) / (discount_rate - terminal_growth)
+    )
+    present_value_of_terminal = terminal_value / (
+        (1.0 + discount_rate) ** forecast_years
+    )
+    return {
+        "forecast": forecast,
+        "terminal_value": terminal_value,
+        "present_value_of_terminal": present_value_of_terminal,
+        "enterprise_value": present_value + present_value_of_terminal,
+    }
+
+
+def _valuation_sensitivity(
+    *,
+    starting_fcf: float | None,
+    annual_growth: float | None,
+    discount_rate: float | None,
+    terminal_growth: float | None,
+    net_debt: float | None,
+    shares: float | None,
+    reason: str | None,
+) -> dict[str, Any]:
+    if (
+        starting_fcf is None
+        or annual_growth is None
+        or discount_rate is None
+        or terminal_growth is None
+        or _dcf_case(
+            starting_fcf,
+            annual_growth,
+            discount_rate,
+            terminal_growth,
+        )
+        is None
+    ):
+        return {
+            "status": "unavailable",
+            "reason": reason or "base DCF assumptions are unavailable",
+            "wacc_terminal_grid": [],
+            "drivers": {},
+            "range": {
+                "enterprise_value_min": None,
+                "enterprise_value_max": None,
+                "per_share_min": None,
+                "per_share_max": None,
+            },
+            "largest_range_driver": None,
+        }
+
+    def values(*items: float) -> list[float]:
+        return sorted({round(item, 10) for item in items if math.isfinite(item)})
+
+    def case(
+        fcf_value: float,
+        growth_value: float,
+        wacc_value: float,
+        terminal_value: float,
+    ) -> dict[str, Any] | None:
+        result = _dcf_case(
+            fcf_value,
+            growth_value,
+            wacc_value,
+            terminal_value,
+        )
+        if result is None:
+            return None
+        enterprise_value = result["enterprise_value"]
+        equity_value = enterprise_value - net_debt if net_debt is not None else None
+        per_share = (
+            equity_value / shares
+            if equity_value is not None and shares is not None and shares > 0
+            else None
+        )
+        return {
+            "starting_fcf": fcf_value,
+            "annual_growth": growth_value,
+            "discount_rate": wacc_value,
+            "terminal_growth": terminal_value,
+            "enterprise_value": enterprise_value,
+            "equity_value": equity_value,
+            "per_share": per_share,
+        }
+
+    wacc_values = values(
+        max(0.04, terminal_growth + 0.005, discount_rate - 0.02),
+        discount_rate,
+        min(0.25, discount_rate + 0.02),
+    )
+    terminal_values = values(
+        max(-0.02, terminal_growth - 0.01),
+        terminal_growth,
+        min(discount_rate - 0.005, 0.08, terminal_growth + 0.01),
+    )
+    fcf_values = values(starting_fcf * 0.8, starting_fcf, starting_fcf * 1.2)
+    growth_values = values(
+        max(-0.20, annual_growth - 0.05),
+        annual_growth,
+        min(0.20, annual_growth + 0.05),
+    )
+
+    grid = [
+        output
+        for wacc_value in wacc_values
+        for terminal_value in terminal_values
+        if (
+            output := case(
+                starting_fcf,
+                annual_growth,
+                wacc_value,
+                terminal_value,
+            )
+        )
+        is not None
+    ]
+    driver_inputs = {
+        "discount_rate": [
+            (starting_fcf, annual_growth, value, terminal_growth)
+            for value in wacc_values
+        ],
+        "terminal_growth": [
+            (starting_fcf, annual_growth, discount_rate, value)
+            for value in terminal_values
+        ],
+        "starting_fcf": [
+            (value, annual_growth, discount_rate, terminal_growth)
+            for value in fcf_values
+        ],
+        "annual_growth": [
+            (starting_fcf, value, discount_rate, terminal_growth)
+            for value in growth_values
+        ],
+    }
+    drivers: dict[str, list[dict[str, Any]]] = {}
+    spreads: dict[str, float] = {}
+    for driver, inputs in driver_inputs.items():
+        outputs = [
+            output
+            for input_values in inputs
+            if (output := case(*input_values)) is not None
+        ]
+        drivers[driver] = outputs
+        enterprise_values = [output["enterprise_value"] for output in outputs]
+        spreads[driver] = (
+            max(enterprise_values) - min(enterprise_values)
+            if enterprise_values
+            else 0.0
+        )
+
+    all_cases = grid + [item for outputs in drivers.values() for item in outputs]
+    enterprise_values = [item["enterprise_value"] for item in all_cases]
+    per_share_values = [
+        item["per_share"] for item in all_cases if item["per_share"] is not None
+    ]
+    return {
+        "status": "calculated" if per_share_values else "enterprise_value_only",
+        "reason": (
+            None
+            if per_share_values
+            else "net debt and positive shares are required for per-share sensitivity"
+        ),
+        "method": (
+            "base assumptions varied independently across starting FCF, annual "
+            "growth, discount rate, and terminal growth; grid combines discount "
+            "rate and terminal growth"
+        ),
+        "wacc_terminal_grid": grid,
+        "drivers": drivers,
+        "range": {
+            "enterprise_value_min": min(enterprise_values),
+            "enterprise_value_max": max(enterprise_values),
+            "per_share_min": min(per_share_values) if per_share_values else None,
+            "per_share_max": max(per_share_values) if per_share_values else None,
+        },
+        "largest_range_driver": (
+            max(spreads, key=lambda name: (spreads[name], name)) if spreads else None
+        ),
+    }
+
+
 def _valuation(
     current_facts: Any,
     previous_facts: Any,
@@ -413,19 +625,17 @@ def _valuation(
         dcf_reason = "discount rate must exceed terminal growth"
     else:
         dcf_reason = None
+    model_reason = dcf_reason
     if dcf_reason is None:
-        projected = fcf
-        present_value = 0.0
-        for year in range(1, 6):
-            projected *= 1.0 + inferred_growth
-            discounted = projected / ((1.0 + wacc) ** year)
-            forecast.append(
-                {"year": year, "fcf": projected, "present_value": discounted}
-            )
-            present_value += discounted
-        terminal_value = projected * (1.0 + terminal_growth) / (wacc - terminal_growth)
-        present_value_of_terminal = terminal_value / ((1.0 + wacc) ** 5)
-        enterprise_value = present_value + present_value_of_terminal
+        base_case = _dcf_case(fcf, inferred_growth, wacc, terminal_growth)
+        if base_case is None:
+            dcf_reason = "base DCF assumptions are invalid"
+            model_reason = dcf_reason
+        else:
+            forecast = base_case["forecast"]
+            terminal_value = base_case["terminal_value"]
+            present_value_of_terminal = base_case["present_value_of_terminal"]
+            enterprise_value = base_case["enterprise_value"]
     equity_value = (
         enterprise_value - net_debt
         if enterprise_value is not None and net_debt is not None
@@ -438,6 +648,15 @@ def _valuation(
     )
     if enterprise_value is not None and per_share is None:
         dcf_reason = "net debt and positive shares are required for per-share value"
+    sensitivity = _valuation_sensitivity(
+        starting_fcf=fcf,
+        annual_growth=inferred_growth,
+        discount_rate=wacc,
+        terminal_growth=terminal_growth,
+        net_debt=net_debt,
+        shares=shares,
+        reason=model_reason,
+    )
     assumptions = {
         "forecast_years": 5,
         "wacc": wacc,
@@ -465,6 +684,7 @@ def _valuation(
         "equity_value": equity_value,
         "per_share": per_share,
         "assumptions": assumptions,
+        "sensitivity": sensitivity,
     }
     margin_of_safety = (
         1.0 - price / per_share
@@ -565,13 +785,19 @@ def build_deterministic_analysis(
         if override is None:
             continue
         prior_value = metrics[name]["prior_value"]
+        source = str(market_inputs.get(f"{name}_source") or "manual_input").strip()
+        period = str(market_inputs.get(f"{name}_period") or "valuation input").strip()
+        evidence = str(
+            market_inputs.get(f"{name}_evidence") or "manual valuation override"
+        ).strip()
+        unit = str(market_inputs.get(f"{name}_unit") or "").strip()
         metrics[name] = {
             **metrics[name],
             "value": override,
-            "unit": metrics[name]["unit"] or fallback_unit,
-            "period": "valuation input",
-            "evidence": "manual valuation override",
-            "source": "manual_input",
+            "unit": unit or metrics[name]["unit"] or fallback_unit,
+            "period": period[:120],
+            "evidence": evidence[:500],
+            "source": source[:120],
             "concept": None,
             "change": _change(override, prior_value),
             "change_pct": _pct_change(override, prior_value),

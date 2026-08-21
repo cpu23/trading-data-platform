@@ -35,6 +35,10 @@ class RequestDeadlineExceeded(httpx.TimeoutException):
     """Raised when the total request budget (attempts plus retry sleeps) runs out."""
 
 
+class ResponseBodyTooLarge(httpx.RequestError):
+    """Raised while streaming when a response exceeds its caller-owned cap."""
+
+
 def get_shared_client() -> httpx.Client:
     """Return this caller thread's connection-pooled outbound client.
 
@@ -177,10 +181,54 @@ def _close_timed_out_client(client) -> None:
         client.close()
 
 
+def _stream_bounded_response(
+    client,
+    *,
+    max_response_bytes: int,
+    **kwargs,
+) -> httpx.Response:
+    with client.stream(**kwargs) as response:
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > max_response_bytes:
+                    raise ResponseBodyTooLarge(
+                        f"response exceeds {max_response_bytes} bytes",
+                        request=response.request,
+                    )
+            except ValueError:
+                pass
+        body = bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > max_response_bytes:
+                raise ResponseBodyTooLarge(
+                    f"response exceeds {max_response_bytes} bytes",
+                    request=response.request,
+                )
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=bytes(body),
+            request=response.request,
+            extensions=dict(response.extensions),
+            history=list(response.history),
+        )
+
+
 def _request_with_deadline(client, remaining: float, **kwargs) -> httpx.Response:
     """Run one synchronous send behind a hard wall-clock cancellation point."""
+    max_response_bytes = kwargs.pop("max_response_bytes", None)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bounded-http")
-    future = executor.submit(client.request, **kwargs)
+    if max_response_bytes is None:
+        future = executor.submit(client.request, **kwargs)
+    else:
+        future = executor.submit(
+            _stream_bounded_response,
+            client,
+            max_response_bytes=max_response_bytes,
+            **kwargs,
+        )
     try:
         return future.result(timeout=remaining)
     except FutureTimeoutError as exc:
@@ -216,6 +264,7 @@ def make_request(
     wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    max_response_bytes: int | None = None,
 ) -> httpx.Response:
     """Make an HTTP request, with ``max_retries`` interpreted as total attempts.
 
@@ -238,6 +287,8 @@ def make_request(
         )
     if deadline_seconds is not None and deadline_seconds <= 0:
         raise ValueError("deadline_seconds must be positive")
+    if max_response_bytes is not None and max_response_bytes <= 0:
+        raise ValueError("max_response_bytes must be positive")
 
     started_at = clock()
     request_method = method.upper()
@@ -288,6 +339,7 @@ def make_request(
                 json=json_body,
                 timeout=attempt_timeout,
                 follow_redirects=follow_redirects,
+                max_response_bytes=max_response_bytes,
             )
             if clock() - started_at >= total_budget:
                 response.close()

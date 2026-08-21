@@ -322,6 +322,9 @@ class FredCollector:
             "api_key": api_key,
             "file_type": "json",
             "observation_start": start_date.strftime("%Y-%m-%d"),
+            "output_type": 3,
+            "realtime_start": start_date.strftime("%Y-%m-%d"),
+            "realtime_end": datetime.now(UTC).date().isoformat(),
         }
         started = time.monotonic()
         try:
@@ -355,15 +358,6 @@ class FredCollector:
         try:
             records = []
             for obs in observations:
-                value_str = obs.get("value", ".")
-                if value_str == "." or value_str is None:
-                    continue
-
-                try:
-                    value = float(value_str)
-                except (ValueError, TypeError):
-                    continue
-
                 date_str = obs.get("date", "")
                 try:
                     observed_at = datetime.strptime(date_str, "%Y-%m-%d").replace(
@@ -372,22 +366,51 @@ class FredCollector:
                 except ValueError:
                     continue
 
-                records.append(
-                    {
-                        "series_id": series_id,
-                        "observed_at": observed_at,
-                        "value": value,
-                        "source": "fred",
-                        "metadata": {
-                            "units": metadata.get("units", ""),
-                            "seasonal_adjustment": metadata.get(
-                                "seasonal_adjustment", ""
-                            ),
-                            "frequency": metadata.get("frequency", frequency),
-                            "title": metadata.get("title", ""),
-                        },
-                    }
-                )
+                versions: list[tuple[datetime | None, Any]] = []
+                if "value" in obs:
+                    versions.append((None, obs.get("value")))
+                else:
+                    prefix = f"{series_id}_"
+                    for key, raw_value in obs.items():
+                        if not str(key).startswith(prefix):
+                            continue
+                        vintage_text = str(key)[len(prefix) :]
+                        try:
+                            vintage_at = datetime.strptime(
+                                vintage_text, "%Y%m%d"
+                            ).replace(tzinfo=UTC)
+                        except ValueError:
+                            continue
+                        versions.append((vintage_at, raw_value))
+                    versions.sort(
+                        key=lambda item: item[0] or datetime.min.replace(tzinfo=UTC)
+                    )
+
+                for revision_number, (vintage_at, value_str) in enumerate(versions):
+                    if value_str == "." or value_str is None:
+                        continue
+                    try:
+                        value = float(value_str)
+                    except (ValueError, TypeError):
+                        continue
+                    records.append(
+                        {
+                            "series_id": series_id,
+                            "observed_at": observed_at,
+                            "value": value,
+                            "source": "fred",
+                            "released_at": None,
+                            "revision_at": vintage_at if revision_number > 0 else None,
+                            "metadata": {
+                                "units": metadata.get("units", ""),
+                                "seasonal_adjustment": metadata.get(
+                                    "seasonal_adjustment", ""
+                                ),
+                                "frequency": metadata.get("frequency", frequency),
+                                "title": metadata.get("title", ""),
+                            },
+                        }
+                    )
         except Exception as exc:
             return NormalizationOutcome(
                 (), error_code="parse_failed", exception_type=type(exc).__name__

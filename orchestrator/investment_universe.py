@@ -4,6 +4,298 @@ UNIVERSE_SNAPSHOT_DATE = "2026-07-29"
 UNIVERSE_SOURCE = "https://companiesmarketcap.com/"
 EU_UNIVERSE_SOURCE = "https://www.financecharts.com/screener/biggest-country-europe"
 
+# Checked-in canonical industry metadata for configured issuers. This is the
+# single authoritative mapping used by company analyses and company-linked
+# news: it is deterministic and is never overridden by low-confidence model
+# classifications or by keyword fallback (see industry_for). Amazon is mapped
+# once, to Software, Cloud & Communications (AWS is its primary investment
+# thesis driver), and that single choice is applied consistently everywhere.
+# Entries here override the normalized universe fields below for issuers
+# whose legacy checked-in label (or missing label) would misclassify them.
+ISSUER_INDUSTRIES: tuple[tuple[str, str, str], ...] = (
+    ("MU", "Micron Technology", "Semiconductors & Compute"),
+    ("STM", "STMicroelectronics", "Semiconductors & Compute"),
+    ("ASML", "ASML Holding", "Semiconductors & Compute"),
+    ("IFNNY", "Infineon Technologies", "Semiconductors & Compute"),
+    ("NXPI", "NXP Semiconductors", "Semiconductors & Compute"),
+    ("ASMIY", "ASM International", "Semiconductors & Compute"),
+    ("GS", "Goldman Sachs", "Financials & Real Estate"),
+    ("CVX", "Chevron", "Energy & Utilities"),
+    ("TSLA", "Tesla", "Consumer"),
+    ("UBER", "Uber", "Consumer"),
+    ("SPCX", "SpaceX", "Aerospace & Defence"),
+    ("ARGX", "argenx", "Healthcare"),
+    ("UNH", "UnitedHealth", "Healthcare"),
+    ("AMZN", "Amazon", "Software, Cloud & Communications"),
+    ("MCD", "McDonald", "Consumer"),
+)
+
+# Canonical industries for the remaining built-in US/UK issuers, whose
+# universe entries predate the industry ledger and carry no industry field.
+# Together with ISSUER_INDUSTRIES and the normalized EU fields, every issuer
+# returned by top_us_uk_eu_companies() resolves to one of the eight concrete
+# canonical categories via industry_for.
+ISSUER_INDUSTRY_LABELS: dict[str, str] = {
+    # US snapshot (market rank order).
+    "AAPL": "Consumer",
+    "NVDA": "Semiconductors & Compute",
+    "GOOG": "Software, Cloud & Communications",
+    "MSFT": "Software, Cloud & Communications",
+    "AVGO": "Semiconductors & Compute",
+    "META": "Software, Cloud & Communications",
+    "BRK-B": "Financials & Real Estate",
+    "LLY": "Healthcare",
+    "JPM": "Financials & Real Estate",
+    "WMT": "Consumer",
+    "AMD": "Semiconductors & Compute",
+    "V": "Financials & Real Estate",
+    "JNJ": "Healthcare",
+    "XOM": "Energy & Utilities",
+    "MA": "Financials & Real Estate",
+    "ABBV": "Healthcare",
+    "CSCO": "Software, Cloud & Communications",
+    "BAC": "Financials & Real Estate",
+    "INTC": "Semiconductors & Compute",
+    "COST": "Consumer",
+    "CAT": "Industrials & Materials",
+    "KO": "Consumer",
+    "AMAT": "Semiconductors & Compute",
+    "GE": "Aerospace & Defence",
+    "PG": "Consumer",
+    "ORCL": "Software, Cloud & Communications",
+    "HD": "Consumer",
+    "LRCX": "Semiconductors & Compute",
+    "MS": "Financials & Real Estate",
+    "MRK": "Healthcare",
+    "PM": "Consumer",
+    "NFLX": "Software, Cloud & Communications",
+    "PLTR": "Software, Cloud & Communications",
+    "RTX": "Aerospace & Defence",
+    "WFC": "Financials & Real Estate",
+    "PANW": "Software, Cloud & Communications",
+    "DELL": "Software, Cloud & Communications",
+    "TXN": "Semiconductors & Compute",
+    "GEV": "Energy & Utilities",
+    "KLAC": "Semiconductors & Compute",
+    "AXP": "Financials & Real Estate",
+    "C": "Financials & Real Estate",
+    "IBM": "Software, Cloud & Communications",
+    "TMO": "Healthcare",
+    "ANET": "Software, Cloud & Communications",
+    "AMGN": "Healthcare",
+    "VZ": "Software, Cloud & Communications",
+    "TMUS": "Software, Cloud & Communications",
+    "PEP": "Consumer",
+    "ABT": "Healthcare",
+    "NEE": "Energy & Utilities",
+    "CRWD": "Software, Cloud & Communications",
+    "SCHW": "Financials & Real Estate",
+    "BLK": "Financials & Real Estate",
+    "ADI": "Semiconductors & Compute",
+    "TJX": "Consumer",
+    "APH": "Semiconductors & Compute",
+    "WELL": "Financials & Real Estate",
+    "BA": "Aerospace & Defence",
+    "UNP": "Industrials & Materials",
+    "DE": "Industrials & Materials",
+    "DIS": "Software, Cloud & Communications",
+    "QCOM": "Semiconductors & Compute",
+    "T": "Software, Cloud & Communications",
+    "GILD": "Healthcare",
+    "BX": "Financials & Real Estate",
+    "SNDK": "Semiconductors & Compute",
+    "WDC": "Semiconductors & Compute",
+    "MRVL": "Semiconductors & Compute",
+    "BKNG": "Consumer",
+    "IBKR": "Financials & Real Estate",
+    "CRM": "Software, Cloud & Communications",
+    "PFE": "Healthcare",
+    "APP": "Software, Cloud & Communications",
+    "PLD": "Financials & Real Estate",
+    "SCCO": "Industrials & Materials",
+    "DHR": "Healthcare",
+    "CVS": "Healthcare",
+    "COP": "Energy & Utilities",
+    "LMT": "Aerospace & Defence",
+    "SYK": "Healthcare",
+    "COF": "Financials & Real Estate",
+    "BMY": "Healthcare",
+    "ISRG": "Healthcare",
+    "PGR": "Financials & Real Estate",
+    "SPGI": "Financials & Real Estate",
+    "PH": "Industrials & Materials",
+    "MO": "Consumer",
+    "VRTX": "Healthcare",
+    "LOW": "Consumer",
+    "SBUX": "Consumer",
+    # UK snapshot (market rank order).
+    "HSBC": "Financials & Real Estate",
+    "AZN": "Healthcare",
+    "ARM": "Semiconductors & Compute",
+    "SHEL": "Energy & Utilities",
+    "LIN": "Industrials & Materials",
+    "RR.L": "Aerospace & Defence",
+    "RIO": "Industrials & Materials",
+    "UL": "Consumer",
+    "BTI": "Consumer",
+    "GSK": "Healthcare",
+    "BP": "Energy & Utilities",
+    "BCS": "Financials & Real Estate",
+    "LYG": "Financials & Real Estate",
+    "AON": "Financials & Real Estate",
+    "NGG": "Energy & Utilities",
+    "BA.L": "Aerospace & Defence",
+    "NWG": "Financials & Real Estate",
+    "RELX": "Industrials & Materials",
+    "STAN.L": "Financials & Real Estate",
+    "LSEG.L": "Financials & Real Estate",
+    "CPG.L": "Consumer",
+    "AAL.L": "Industrials & Materials",
+    "DEO": "Consumer",
+    "CCEP": "Consumer",
+    "ANTO.L": "Industrials & Materials",
+    "HLN": "Healthcare",
+    "FERG": "Industrials & Materials",
+    "RKT.L": "Consumer",
+    "TSCO.L": "Consumer",
+    "III.L": "Financials & Real Estate",
+    "VOD": "Software, Cloud & Communications",
+    "SSE.L": "Energy & Utilities",
+    "PUK": "Financials & Real Estate",
+    "RPRX": "Healthcare",
+    "AHT.L": "Industrials & Materials",
+    "WTW": "Financials & Real Estate",
+    "IMB.L": "Consumer",
+    "FTI": "Energy & Utilities",
+    "AV.L": "Financials & Real Estate",
+    "BT-A.L": "Software, Cloud & Communications",
+    "ROIV": "Healthcare",
+    "IHG": "Consumer",
+    "NXT.L": "Consumer",
+    "NVT": "Industrials & Materials",
+    "LGEN.L": "Financials & Real Estate",
+    "ABF.L": "Consumer",
+    "SGRO.L": "Financials & Real Estate",
+    "HLMA.L": "Industrials & Materials",
+    "AAF.L": "Software, Cloud & Communications",
+    "INF.L": "Software, Cloud & Communications",
+    "ADM.L": "Financials & Real Estate",
+    "RTO": "Industrials & Materials",
+    "CNH": "Industrials & Materials",
+    "SNN": "Healthcare",
+    "UU.L": "Energy & Utilities",
+    "DPLM.L": "Industrials & Materials",
+    "SDR.L": "Financials & Real Estate",
+    "SVT.L": "Energy & Utilities",
+    "BNZL.L": "Industrials & Materials",
+    "ITRK.L": "Industrials & Materials",
+    "WISE.L": "Financials & Real Estate",
+    "SGE.L": "Software, Cloud & Communications",
+    "EDV.TO": "Industrials & Materials",
+    "MNG.L": "Financials & Real Estate",
+    "MKS.L": "Consumer",
+    "PNR": "Industrials & Materials",
+    "PSO": "Consumer",
+    "PHNX.L": "Financials & Real Estate",
+    "SMIN.L": "Industrials & Materials",
+    "SBRY.L": "Consumer",
+    "BEZ.L": "Financials & Real Estate",
+    "SMMT": "Healthcare",
+    "CNA.L": "Energy & Utilities",
+    "WEIR.L": "Industrials & Materials",
+    "IMI.L": "Industrials & Materials",
+    "GAW.L": "Consumer",
+    "JHG": "Financials & Real Estate",
+    "INVR.L": "Financials & Real Estate",
+    "MRO.L": "Industrials & Materials",
+    "BAB.L": "Aerospace & Defence",
+    "IGG.L": "Financials & Real Estate",
+    "ICG.L": "Financials & Real Estate",
+    "STJ.L": "Financials & Real Estate",
+    "LAND.L": "Financials & Real Estate",
+    "SPX.L": "Industrials & Materials",
+    "CCC.L": "Software, Cloud & Communications",
+    "KGF.L": "Consumer",
+    "PCO.WA": "Consumer",
+    "BGEO.L": "Financials & Real Estate",
+    "CNTA": "Healthcare",
+    "NE": "Energy & Utilities",
+    "BBOX.L": "Financials & Real Estate",
+    "LMP.L": "Financials & Real Estate",
+    "EZJ.L": "Industrials & Materials",
+    "JD.L": "Consumer",
+    "BLND.L": "Financials & Real Estate",
+    "CRDA.L": "Industrials & Materials",
+    "CTEC.L": "Healthcare",
+    "HWDN.L": "Consumer",
+    "WTB.L": "Consumer",
+}
+
+# GICS-style industry labels carried by the built-in EU snapshot, normalized
+# deterministically to the canonical taxonomy (consistent with the alias
+# mapping in investment_news.canonicalize_industry).
+_LEGACY_INDUSTRY_LABELS: dict[str, str] = {
+    "Information Technology": "Software, Cloud & Communications",
+    "Health Care": "Healthcare",
+    "Financials": "Financials & Real Estate",
+    "Energy": "Energy & Utilities",
+    "Utilities": "Energy & Utilities",
+    "Materials": "Industrials & Materials",
+    "Consumer Discretionary": "Consumer",
+    "Consumer Staples": "Consumer",
+    "Communication Services": "Software, Cloud & Communications",
+    "Industrials": "Industrials & Materials",
+}
+
+# Bounded checked-in name variants for configured issuers, used by the news
+# classifier so headlines using a well-known configured-name variant match
+# the issuer (e.g. "Goldman" -> GS, "Alphabet" -> GOOG). Aliases are matched
+# with word boundaries, never by arbitrary first-token truncation.
+ISSUER_ALIASES: dict[str, tuple[str, ...]] = {
+    "GOOG": ("Alphabet", "Google"),
+    "META": ("Meta", "Facebook"),
+    "BRK-B": ("Berkshire",),
+    "GS": ("Goldman",),
+    "JPM": ("JPMorgan",),
+    "XOM": ("Exxon",),
+    "LMT": ("Lockheed",),
+    "LOW": ("Lowe's",),
+    "MU": ("Micron",),
+    "ABT": ("Abbott",),
+    "TMO": ("Thermo Fisher",),
+    "BMY": ("Bristol-Myers",),
+    "PM": ("Philip Morris",),
+    "MO": ("Altria",),
+    "NEE": ("NextEra",),
+    "DIS": ("Disney",),
+    "TMUS": ("T-Mobile",),
+    "PANW": ("Palo Alto",),
+    "SCHW": ("Schwab",),
+    "BX": ("Blackstone",),
+    "UNP": ("Union Pacific",),
+    "DE": ("Deere",),
+    "ANET": ("Arista",),
+    "KLAC": ("KLA",),
+    "GE": ("GE",),
+    "LYG": ("Lloyds",),
+    "BA.L": ("BAE",),
+    "MURGY": ("Munich Re",),
+    "CODYY": ("Saint-Gobain",),
+}
+
+
+def _normalize_company_name(value: object) -> str:
+    name = " ".join(str(value).split()).casefold()
+    if name.endswith("'s"):
+        name = name[:-2]
+    return name
+
+
+def _canonical_industry_label(value: object) -> str:
+    label = " ".join(str(value or "").split()).strip()
+    return _LEGACY_INDUSTRY_LABELS.get(label, label)
+
+
 TOP_US_COMPANIES = (
     {
         "company": "Apple",
@@ -2668,9 +2960,74 @@ TOP_EU_COMPANIES = (
 )
 
 
+_ISSUER_INDUSTRY_BY_SYMBOL: dict[str, str] = {}
+_ISSUER_INDUSTRY_BY_COMPANY: dict[str, str] = {}
+
+
+def _build_issuer_industry_index() -> None:
+    """Index canonical industries for every configured issuer.
+
+    Three deterministic sources feed the index: the explicit US/UK labels,
+    the audited overrides (which win), and the normalized checked-in EU
+    industry fields. The company-name index derives from the universe tuples
+    so symbol and name lookups always agree.
+    """
+    for symbol, industry in ISSUER_INDUSTRY_LABELS.items():
+        _ISSUER_INDUSTRY_BY_SYMBOL[str(symbol).strip().upper()] = industry
+    for symbol, _company, industry in ISSUER_INDUSTRIES:
+        _ISSUER_INDUSTRY_BY_SYMBOL[str(symbol).strip().upper()] = industry
+    for company in TOP_EU_COMPANIES:
+        industry = _canonical_industry_label(company.get("industry"))
+        symbol = company.get("symbol")
+        if industry and industry != "Unclassified" and symbol:
+            _ISSUER_INDUSTRY_BY_SYMBOL.setdefault(str(symbol).strip().upper(), industry)
+    for company in (*TOP_US_COMPANIES, *TOP_UK_COMPANIES, *TOP_EU_COMPANIES):
+        name = company.get("company")
+        symbol = company.get("symbol")
+        if not name or not symbol:
+            continue
+        industry = _ISSUER_INDUSTRY_BY_SYMBOL.get(str(symbol).strip().upper())
+        if industry:
+            _ISSUER_INDUSTRY_BY_COMPANY[_normalize_company_name(name)] = industry
+
+
+_build_issuer_industry_index()
+
+
+def industry_for(symbol: object = None, company: object = None) -> str:
+    """Return the checked-in canonical industry for a configured issuer.
+
+    Resolution prefers the symbol, then the exact normalized company
+    identity. Every configured issuer in the built-in universe resolves to
+    one of the eight concrete canonical categories; unknown issuers fail
+    closed to "Unclassified" rather than guessing, so classification never
+    fabricates an industry.
+    """
+    if symbol:
+        industry = _ISSUER_INDUSTRY_BY_SYMBOL.get(str(symbol).strip().upper())
+        if industry:
+            return industry
+    if company:
+        industry = _ISSUER_INDUSTRY_BY_COMPANY.get(_normalize_company_name(company))
+        if industry:
+            return industry
+    return "Unclassified"
+
+
 def top_us_uk_eu_companies() -> list[dict]:
     """Return fresh mappings so callers cannot mutate the static universe."""
     return [
         dict(company)
         for company in (*TOP_US_COMPANIES, *TOP_UK_COMPANIES, *TOP_EU_COMPANIES)
     ]
+
+
+def configured_region_counts() -> dict[str, int]:
+    """Count configured issuers by canonical dashboard region."""
+    counts = {"US": 0, "EU": 0, "ASIA": 0}
+    for universe in (TOP_US_COMPANIES, TOP_UK_COMPANIES, TOP_EU_COMPANIES):
+        for company in universe:
+            region = company.get("region")
+            if region in counts:
+                counts[region] += 1
+    return counts

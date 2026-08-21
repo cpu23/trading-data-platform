@@ -37,6 +37,8 @@ class _StrictModel(BaseModel):
 class MarketEventType(StrEnum):
     PRICE_TICK = "price_tick"
     PRICE_BAR_CLOSED = "price_bar_closed"
+    OPTION_CHAIN_PUBLISHED = "option_chain_published"
+    CORPORATE_ACTION_PUBLISHED = "corporate_action_published"
     VOLATILITY_STATE_CHANGED = "volatility_state_changed"
     CORRELATION_STATE_CHANGED = "correlation_state_changed"
     MACRO_RELEASE = "macro_release"
@@ -45,6 +47,7 @@ class MarketEventType(StrEnum):
     HEADLINE_PUBLISHED = "headline_published"
     STORY_UPDATED = "story_updated"
     REGULATORY_FILING_PUBLISHED = "regulatory_filing_published"
+    TRANSCRIPT_PUBLISHED = "transcript_published"
     FILING_INGESTED = "filing_ingested"
     CENTRAL_BANK_COMMUNICATION = "central_bank_communication"
     POSITIONING_REPORT_PUBLISHED = "positioning_report_published"

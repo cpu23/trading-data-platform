@@ -22,11 +22,17 @@ llm:
   max_prices:
     briefing:
       completion: 3.5
+    thesis_autonomy:
+      completion: 3.5
   max_output_tokens:
     macro_regime: 1800
     briefing: 4096
     market_intelligence: 4096
     investment_analysis: 4096
+    # 32 candidates x 8 roles cannot fit in 4096 tokens; the desk needs a
+    # high ceiling so strict array outputs stay encodable.  The per-run and
+    # global daily budget caps remain the hard spend limits.
+    thesis_autonomy: 16384
   temperatures:
     macro_regime: 0.2
     briefing: 0.2
@@ -37,10 +43,12 @@ llm:
     briefing: true
     market_intelligence: true
     investment_analysis: true
+    thesis_autonomy: true
   # Luna supports strict schemas, but OpenRouter does not currently advertise
   # that capability for require_parameters endpoint filtering.
   require_parameters:
     investment_analysis: false
+    thesis_autonomy: false
   intelligence_roles:
     analyst:
       reasoning_effort: low
@@ -50,7 +58,7 @@ llm:
       reasoning_effort: low
     editor:
       reasoning_effort: low
-  stage_timeout_seconds: 90
+  stage_timeout_seconds: 180
   validation_retries: 1
   # Paid OpenRouter calls are single-attempt: the endpoint has no documented
   # inbound idempotency contract, so ambiguous transport/5xx failures must
@@ -85,9 +93,20 @@ event_pipeline:
     replay_limit: 100
     max_streams_per_client: 3
     retention_hours: 48
-  sources: [fred, oanda]
+  # Free/public keyless sources plus FRED/OANDA; corporate actions flow
+  # inside public_equities.
+  sources:
+    - fred
+    - oanda
+    - issuer_news
+    - issuer_transcripts
+    - company_expectations
+    - public_equities
+    - sec_form4
+    - finra_short_volume
+    - cftc
+    - cboe_options
   outbox_worker_enabled: true
-  batch_size: 50
   poll_interval_seconds: 1.0
   lease_seconds: 120
   max_attempts: 8
@@ -395,6 +414,48 @@ research_intelligence:
     deliverable: high
     macro_transmission: high
 
+# Autonomous thesis-fusion desk: two weekday runs for one private portfolio,
+# bounded evidence and promotion ceilings, a per-run model budget below the
+# global daily cap, and a three-hour UTC ingestion-time debounce bucket so
+# historical backfills coalesce. Null scoring inputs keep the pure-scoring
+# defaults (unknown, never invented).
+thesis_autonomy:
+  enabled: true
+  schedule_enabled: true
+  schedule: "0 8,20 * * 1-5"  # Weekdays 08:00/20:00 UTC
+  lookback_days: 30
+  # 13 adapters x ~31 rows each: enough for a 25-symbol price/options
+  # universe; the tournament prompt brief stays independently capped.
+  maximum_evidence: 400
+  # Four surfaced candidates and four total challenger calls are reviewable by
+  # one person; candidate and existing-thesis falsification share this hard cap.
+  maximum_promoted: 4
+  maximum_challenges_per_run: 4
+  event_debounce_minutes: 180
+  maximum_event_runs_per_day: 2
+  # Reserve a fixed share of the per-run cap for candidate and existing-thesis
+  # falsification. Generation/auditing cannot consume this allocation.
+  falsification_budget_fraction: 0.30
+  model_budget_usd_per_run: 0.75
+  reasoning_effort: high
+  # Zero-cost structured-output backend. Strict local validation and source
+  # gates remain authoritative; free-provider saturation fails soft per role.
+  model_override: nvidia/nemotron-3-super-120b-a12b:free
+  # Promotion requires at least three independent, auditable free-source
+  # families plus a genuine opposing variant for the same security/horizon.
+  # Filing, public-market, and measured-expectations evidence cannot collapse
+  # into one source-family vote.
+  minimum_supporting_source_families: 3
+  require_cited_excerpts: true
+  require_opposing_variants: true
+  # Twenty raw candidates across eight roles cannot fit in 4096 output tokens;
+  # 16384 keeps strict array outputs encodable. Truncation fails the role soft
+  # and the per-run ($0.75) and global daily ($5) budgets remain hard caps.
+  max_output_tokens: 16384
+  cost: null
+  liquidity: null
+  downside: null
+
 collectors:
   fred:
     enabled: false
@@ -516,29 +577,41 @@ collectors:
     enabled: true
     schedule: "0 22 * * 5"
     freshness_hours: 192
-    url: "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
-    limit: 5000
     lookback_days: 400
-    categories:
-      - [dealer, dealer_positions_long_all, dealer_positions_short_all]
-      - [asset_manager, asset_mgr_positions_long, asset_mgr_positions_short]
-      - [leveraged_funds, lev_money_positions_long, lev_money_positions_short]
-    contracts:
-      - market_id: "099741"
-        name: Euro FX
-        assets: [EURUSD]
-      - market_id: "097741"
-        name: Japanese Yen
-        assets: [AUDJPY, USDJPY]
-      - market_id: "232741"
-        name: Australian Dollar
-        assets: [AUDJPY]
-      - market_id: "088691"
-        name: Gold
-        assets: [XAUUSD]
-      - market_id: "076651"
-        name: Platinum
-        assets: [XPTUSD]
+    datasets:
+      - name: financial_futures
+        url: "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
+        limit: 5000
+        semantics: "CFTC Traders in Financial Futures futures-only positions; not short interest"
+        categories:
+          - [dealer, dealer_positions_long_all, dealer_positions_short_all]
+          - [asset_manager, asset_mgr_positions_long, asset_mgr_positions_short]
+          - [leveraged_funds, lev_money_positions_long, lev_money_positions_short]
+        contracts:
+          - market_id: "099741"
+            name: Euro FX
+            assets: [EURUSD]
+          - market_id: "097741"
+            name: Japanese Yen
+            assets: [AUDJPY, USDJPY]
+          - market_id: "232741"
+            name: Australian Dollar
+            assets: [AUDJPY]
+      - name: disaggregated_commodities
+        url: "https://publicreporting.cftc.gov/resource/72hh-3qpy.json"
+        limit: 5000
+        semantics: "CFTC Disaggregated futures-only positions; not short interest"
+        categories:
+          - [producer_merchant, prod_merc_positions_long, prod_merc_positions_short]
+          - [swap_dealer, swap_positions_long_all, swap__positions_short_all]
+          - [managed_money, m_money_positions_long_all, m_money_positions_short_all]
+        contracts:
+          - market_id: "088691"
+            name: Gold
+            assets: [XAUUSD]
+          - market_id: "076651"
+            name: Platinum
+            assets: [XPTUSD]
 
   central_banks:
     enabled: true
@@ -863,6 +936,370 @@ collectors:
         semantic_feature: energy.global
         region: US
 
+  # Free/public keyless sources. All are best-effort: bounded fetch settings,
+  # official HTTPS origins, and delayed-source semantics (SEC/FINRA/Cboe data
+  # is published after the fact; point-in-time timestamps stay explicit).
+  issuer_news:
+    enabled: true
+    # Poll official primary feeds every 30 minutes; conditional HTTP state
+    # (ETag/Last-Modified) makes 304 responses a valid empty result.
+    schedule: "*/30 * * * *"
+    state_path: "/var/lib/trading-data/news/issuer_news/state.json"
+    feeds:
+      # SEC EDGAR "current events" Atom feed for 8-K filings. SEC fair-access
+      # policy requires a descriptive user agent; falls back to the shared
+      # SEC_USER_AGENT value. entity_parser resolves each entry's standard
+      # "<form> - <company> (<10-digit CIK>) (<role>)" title into the filing
+      # company (institution + metadata.cik), with tickers only for the
+      # bounded map below; other filers keep the static institution.
+      - name: sec_current_8k
+        kind: feed
+        document_type: regulatory_update
+        institution: sec
+        entity_parser: sec_edgar
+        cik_symbols:
+          "0000320193": AAPL
+          "0000789019": MSFT
+          "0001045810": NVDA
+          "0001018724": AMZN
+          "0001652044": GOOGL
+          "0001326801": META
+          "0001318605": TSLA
+          "0000019617": JPM
+          "0001403161": V
+          "0001067983": BRK.B
+        url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom"
+        headers:
+          User-Agent: "${SEC_USER_AGENT:-TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)}"
+      - name: apple_newsroom
+        kind: feed
+        document_type: issuer_update
+        institution: apple
+        url: "https://www.apple.com/newsroom/rss-feed.rss"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: nvidia_newsroom
+        kind: feed
+        document_type: issuer_update
+        institution: nvidia
+        url: "https://nvidianews.nvidia.com/cats/press_release.xml"
+        fetch_full_text: true
+        max_content_chars: 100000
+
+      - name: microsoft_source
+        kind: feed
+        document_type: issuer_update
+        institution: Microsoft
+        url: "https://news.microsoft.com/source/feed/"
+        fetch_full_text: true
+        max_content_chars: 100000
+        content_origins:
+          - "https://www.microsoft.com/"
+          - "https://devblogs.microsoft.com/"
+          - "https://microsoft.ai/"
+      - name: google_blog
+        kind: feed
+        document_type: issuer_update
+        institution: Alphabet
+        url: "https://blog.google/rss/"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: meta_newsroom
+        kind: feed
+        document_type: issuer_update
+        institution: Meta
+        url: "https://about.fb.com/news/feed/"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: amd_releases
+        kind: feed
+        document_type: issuer_update
+        institution: AMD
+        url: "https://ir.amd.com/rss/news-releases.xml"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: amazon_press
+        kind: html_jsonld
+        document_type: issuer_update
+        institution: Amazon
+        url: "https://press.aboutamazon.com/"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: visa_releases
+        kind: html_jsonld
+        document_type: issuer_update
+        institution: Visa
+        url: "https://investor.visa.com/news/default.aspx"
+        fetch_full_text: true
+        max_content_chars: 100000
+      - name: mastercard_releases
+        kind: html_jsonld
+        document_type: issuer_update
+        institution: Mastercard
+        url: "https://investor.mastercard.com/investor-news/default.aspx"
+        fetch_full_text: true
+        max_content_chars: 100000
+  issuer_transcripts:
+    enabled: true
+    # Official IR pages and event feeds daily; text is extracted only from
+    # speaker-labelled transcripts and direct webcast audio stays local.
+    schedule: "0 7 * * *"
+    max_issuers: 20
+    max_page_bytes: 2000000
+    max_document_bytes: 25000000
+    max_audio_bytes: 250000000
+    max_links_per_page: 50
+    max_records_per_issuer: 25
+    max_redirects: 5
+    timeout_seconds: 30
+    audio_timeout_seconds: 300
+    transcription:
+      model: "small.en"
+      device: "cpu"
+      compute_type: "int8"
+      beam_size: 5
+      language: "en"
+      max_audio_seconds: 7200
+      timeout_seconds: 3600
+      model_dir: "/var/lib/trading-data/news/models/whisper"
+      vad_filter: true
+      condition_on_previous_text: false
+    issuers:
+      - institution: Apple
+        ticker: AAPL
+        url: "https://www.apple.com/investor/earnings-call/"
+        document_type: earnings_transcript
+      - institution: Microsoft
+        ticker: MSFT
+        url: "https://aka.ms/latestearnings"
+        document_type: earnings_transcript
+      - institution: Nvidia
+        ticker: NVDA
+        kind: q4_events
+        url: "https://investor.nvidia.com/feed/Event.svc/GetEventList?LanguageId=1&pageSize=8&pageNumber=0&tagList=&includeTags=true&year=-1&excludeSelection=0&eventSelection=0&eventDateFilter=0&includeFinancialReports=false&includePresentations=false&includePressReleases=false&sortOperator=1"
+        document_type: earnings_transcript
+      - institution: Amazon
+        ticker: AMZN
+        kind: q4_events
+        url: "https://ir.aboutamazon.com/feed/Event.svc/GetEventList?LanguageId=1&pageSize=1&pageNumber=0&tagList=&includeTags=true&year=-1&excludeSelection=0&eventSelection=0&eventDateFilter=0&includeFinancialReports=false&includePresentations=false&includePressReleases=false&sortOperator=1"
+        document_type: earnings_transcript
+      - institution: Alphabet
+        ticker: GOOGL
+        url: "https://abc.xyz/investor/"
+        document_type: earnings_transcript
+      - institution: Meta
+        ticker: META
+        url: "https://investor.atmeta.com/"
+        document_type: earnings_transcript
+      - institution: Tesla
+        ticker: TSLA
+        url: "https://ir.tesla.com/"
+        document_type: earnings_transcript
+      - institution: Broadcom
+        ticker: AVGO
+        url: "https://investors.broadcom.com/"
+        document_type: earnings_transcript
+      - institution: JPMorgan Chase
+        ticker: JPM
+        url: "https://www.jpmorganchase.com/ir/events"
+        document_type: earnings_transcript
+      - institution: Visa
+        ticker: V
+        url: "https://investor.visa.com/events-calendar/default.aspx"
+        document_type: earnings_transcript
+      - institution: UnitedHealth Group
+        ticker: UNH
+        url: "https://www.unitedhealthgroup.com/investors/events.html"
+        document_type: earnings_transcript
+      - institution: Exxon Mobil
+        ticker: XOM
+        url: "https://corporate.exxonmobil.com/investors/investor-relations"
+        document_type: earnings_transcript
+      - institution: Costco
+        ticker: COST
+        url: "https://investor.costco.com/events-and-presentations/default.aspx"
+        document_type: earnings_transcript
+      - institution: Walmart
+        ticker: WMT
+        url: "https://stock.walmart.com/events/default.aspx"
+        document_type: earnings_transcript
+      - institution: Procter & Gamble
+        ticker: PG
+        url: "https://www.pginvestor.com/events-and-presentations/default.aspx"
+        document_type: earnings_transcript
+      - institution: Johnson & Johnson
+        ticker: JNJ
+        url: "https://www.investor.jnj.com/events-and-presentations/default.aspx"
+        document_type: earnings_transcript
+      - institution: Home Depot
+        ticker: HD
+        url: "https://ir.homedepot.com/events-and-presentations"
+        document_type: earnings_transcript
+      - institution: Mastercard
+        ticker: MA
+        url: "https://investor.mastercard.com/events-and-presentations/default.aspx"
+        document_type: earnings_transcript
+      - institution: Oracle
+        ticker: ORCL
+        url: "https://investor.oracle.com/events-and-presentations/default.aspx"
+        document_type: earnings_transcript
+      - institution: AMD
+        ticker: AMD
+        url: "https://ir.amd.com/news-events/ir-calendar"
+        document_type: earnings_transcript
+
+  public_equities:
+    enabled: true
+    # Once after the US close on weekdays. Existing symbols request only five
+    # days; symbols with no stored daily bar receive one bounded three-month
+    # bootstrap, enough for 60-session trend evidence without daily backfill
+    # amplification. The checked-in 300-company universe expands at runtime.
+    schedule: "30 21 * * 1-5"
+    chart_base_url: "https://query1.finance.yahoo.com/v8/finance/chart"
+    symbols: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, BRK.B, AVGO, JPM, V, UNH, XOM, COST, WMT, PG, JNJ, HD, MA, ORCL, NFLX, AMD, CRM, PEP, KO]
+    max_symbols: 400
+    max_concurrency: 8
+    include_investment_universe: true
+    include_active_theses: true
+    range: "5d"
+    bootstrap_range: "3mo"
+    interval: "1d"
+    timeout_seconds: 15
+    user_agent: "trading-data-platform/1.0 (public-equity-daily; free market data collector)"
+
+  company_expectations:
+    enabled: true
+    # Daily point-in-time Nasdaq consensus EPS/revision, institutional-holder
+    # flow and reported short-interest snapshots, plus the next 21 calendar
+    # days of announced earnings dates. Missing values remain absent. Borrow
+    # availability/cost is explicitly unavailable rather than inferred.
+    schedule: "15 12 * * 1-5"
+    base_url: "https://api.nasdaq.com/api"
+    symbols: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, BRK.B, AVGO, JPM, V, UNH, XOM, COST, WMT, PG, JNJ, HD, MA, ORCL, NFLX, AMD, CRM, PEP, KO]
+    timeout_seconds: 8
+    max_concurrency: 8
+    max_symbols: 100
+    include_active_theses: true
+    lookback_days: 21
+    user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+  sec_form4:
+    enabled: true
+    # Hourly on weekdays; SEC fair-access policy (max 10 req/s) is honored by
+    # request_interval_seconds. Descriptive user agent from SEC_USER_AGENT.
+    schedule: "5 * * * mon-fri"
+    user_agent: "${SEC_USER_AGENT:-TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)}"
+    request_interval_seconds: 0.12
+    max_concurrency: 4
+    lookback_days: 30
+    max_filings_per_issuer: 100
+    max_document_bytes: 5000000
+    max_submissions_bytes: 25000000
+    issuers:
+      - cik: "0000320193"
+        symbol: AAPL
+      - cik: "0000789019"
+        symbol: MSFT
+      - cik: "0001045810"
+        symbol: NVDA
+      - cik: "0001018724"
+        symbol: AMZN
+      - cik: "0001652044"
+        symbol: GOOGL
+      - cik: "0001326801"
+        symbol: META
+      - cik: "0001318605"
+        symbol: TSLA
+      - cik: "0000019617"
+        symbol: JPM
+      - cik: "0001403161"
+        symbol: V
+      - cik: "0001067983"
+        symbol: BRK.B
+
+  finra_short_volume:
+    enabled: true
+    # Once daily after FINRA publishes the day's Reg SHO file (evening US
+    # time); the file for a non-trading day simply does not exist and is a
+    # valid empty outcome.
+    schedule: "15 23 * * 1-5"
+    url: "https://cdn.finra.org/equity/regsho/daily/"
+    file_prefix: "CNMSshvol"
+    file_suffix: ".txt"
+    lookback_days: 7
+    max_file_bytes: 20000000
+    request_interval_seconds: 0.05
+    symbols:
+      - symbol: AAPL
+        assets: [AAPL]
+      - symbol: MSFT
+        assets: [MSFT]
+      - symbol: NVDA
+        assets: [NVDA]
+      - symbol: AMZN
+        assets: [AMZN]
+      - symbol: GOOGL
+        assets: [GOOGL]
+      - symbol: META
+        assets: [META]
+      - symbol: TSLA
+        assets: [TSLA]
+      - symbol: BRK.B
+        assets: [BRK.B]
+      - symbol: AVGO
+        assets: [AVGO]
+      - symbol: JPM
+        assets: [JPM]
+      - symbol: V
+        assets: [V]
+      - symbol: UNH
+        assets: [UNH]
+      - symbol: XOM
+        assets: [XOM]
+      - symbol: COST
+        assets: [COST]
+      - symbol: WMT
+        assets: [WMT]
+      - symbol: PG
+        assets: [PG]
+      - symbol: JNJ
+        assets: [JNJ]
+      - symbol: HD
+        assets: [HD]
+      - symbol: MA
+        assets: [MA]
+      - symbol: ORCL
+        assets: [ORCL]
+      - symbol: NFLX
+        assets: [NFLX]
+      - symbol: AMD
+        assets: [AMD]
+      - symbol: CRM
+        assets: [CRM]
+      - symbol: PEP
+        assets: [PEP]
+      - symbol: KO
+        assets: [KO]
+
+  cboe_options:
+    enabled: true
+    # Every 30 minutes within US market hours (UTC window brackets both DST
+    # regimes on weekdays). Cboe delayed quotes carry an explicit 15-minute
+    # delay during market hours (delay_minutes).
+    schedule: "*/30 13-20 * * 1-5"
+    base_url: "https://cdn.cboe.com/api/global/delayed_quotes/options"
+    source_timezone: "America/Chicago"
+    user_agent: "trading-data-platform/0.1 (delayed-options collector; operator configured)"
+    delay_minutes: 15
+    max_symbols: 40
+    include_active_theses: true
+    max_contracts_per_symbol: 20000
+    max_expiries: 40
+    max_response_bytes: 30000000
+    rate_delay_seconds: 1.0
+    request_deadline_seconds: 60.0
+    symbols: [SPY, QQQ, IWM, AAPL, MSFT, NVDA, AMZN, TSLA, META, GOOGL, AVGO, JPM, V, UNH, XOM, COST, WMT, PG, JNJ, HD, MA, ORCL, NFLX, AMD, CRM]
+
 reuters:
   enabled: true
   on_demand_only: false
@@ -952,7 +1389,11 @@ reuters:
     - eurchf
 
 kobeissi:
-  enabled: true
+  # Paid third-party source (twitterapi.io): disabled by default so the
+  # deployment stays free-only; the block stays available for explicit
+  # future opt-in.  OpenRouter remains the only paid dependency, under the
+  # hard per-run and daily budgets.
+  enabled: false
   on_demand_only: true
   schedule_enabled: false
   schedule: "20 */6 * * *"
@@ -1109,12 +1550,16 @@ data_quality:
       quarterly: 150        # days from observation-period start
 
 budgets:
-  daily_llm_usd: 2.00
+  daily_llm_usd: 5.00
   warn_at_pct: 80
   # Per-call admission estimate and lifetime for budget reservations; a paid
   # call is admitted only while spent + active reservations + estimate fit the
   # cap. Optional: orchestrator defaults are 0.05 USD and 600 seconds.
   reservation_estimate_usd: 0.05
+  # The live p99 thesis-autonomy call cost is about $0.0116. Keep a bounded
+  # safety margin without reserving the generic $0.05 for every concurrent call.
+  estimates:
+    thesis_autonomy: 0.02
   reservation_ttl_seconds: 600
 
 investment_filings:

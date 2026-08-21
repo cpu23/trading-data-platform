@@ -96,6 +96,7 @@ from role_heartbeat import (
     fresh_role_heartbeats,
     update_role_heartbeat,
 )
+from run_lifecycle import accept_run, finalize_run_safely, start_run
 
 app = FastAPI(title="Trading Data Orchestrator")
 logger = get_logger("orchestrator.api")
@@ -990,6 +991,161 @@ def retry_research_analysis_job(job_id: UUID):
         )
         raise HTTPException(
             status_code=503, detail="Research job could not be retried"
+        ) from exc
+
+
+def _fallback_enqueue_thesis_autonomy(
+    config: dict[str, Any],
+    *,
+    triggered_by: str,
+    force: bool,
+    request_nonce: str | None = None,
+) -> dict[str, Any]:
+    """Queue one durable thesis-autonomy run through the analysis queue.
+
+    Temporary stand-in used until ``thesis_autonomy`` lands: mirrors
+    ``research_intelligence.operations.enqueue_research_job`` with the same
+    job identity the sibling helper will use (job type
+    ``thesis_autonomy_run``, dedupe key ``thesis-autonomy:global``, and a
+    request-date + nonce fingerprint), so both paths coalesce on the one
+    durable job and never double-enqueue.
+    """
+    from analysis_jobs import enqueue_job
+    from db import get_session
+    from research_intelligence.contracts import canonical_fingerprint
+
+    correlation_id = str(uuid4())
+    accepted_at = accept_run(
+        config,
+        correlation_id,
+        triggered_by,
+        "research",
+        "thesis_autonomy",
+        request_summary={
+            "job_type": "thesis_autonomy_run",
+            "force": bool(force),
+        },
+    )
+    worker_id = f"thesis-autonomy-enqueue:{uuid4()}"
+    try:
+        started = start_run(config, correlation_id, worker_id)
+    except Exception:
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {"status": "failed", "reason": "thesis autonomy run start unavailable"},
+            config,
+            "thesis autonomy run start unavailable",
+            run_kind="research",
+            component="thesis_autonomy",
+        )
+        raise
+    if not started:
+        raise RuntimeError("accepted thesis autonomy run could not be claimed")
+    try:
+        identity = {
+            "job_type": "thesis_autonomy_run",
+            "request_date": datetime.now(UTC).date().isoformat(),
+            "request_nonce": request_nonce or (correlation_id if force else None),
+        }
+        input_fingerprint = canonical_fingerprint(identity)
+        with get_session(config) as session:
+            enqueued = enqueue_job(
+                session,
+                job_type="thesis_autonomy_run",
+                dedupe_key="thesis-autonomy:global",
+                input_fingerprint=input_fingerprint,
+                payload={"force": bool(force)},
+                correlation_id=correlation_id,
+                priority=90 if force else 80,
+                max_attempts=3,
+            )
+        job = enqueued.job
+        result = {
+            "status": "queued" if enqueued.inserted else "already_queued",
+            "job_id": str(job.id) if job is not None else None,
+            "correlation_id": (
+                str(job.correlation_id) if job is not None else correlation_id
+            ),
+            "accepted_at": accepted_at.isoformat(),
+            "inserted": enqueued.inserted,
+            "force": bool(force),
+        }
+        finalize_run_safely(
+            correlation_id,
+            "success",
+            result,
+            config,
+            None,
+            worker_id=worker_id,
+            run_kind="research",
+            component="thesis_autonomy",
+        )
+        return result
+    except Exception:
+        finalize_run_safely(
+            correlation_id,
+            "failed",
+            {},
+            config,
+            "thesis autonomy enqueue failed",
+            worker_id=worker_id,
+            run_kind="research",
+            component="thesis_autonomy",
+        )
+        raise
+
+
+def _enqueue_thesis_autonomy(
+    config: dict[str, Any],
+    *,
+    triggered_by: str = "api",
+    force: bool = False,
+    request_nonce: str | None = None,
+) -> dict[str, Any]:
+    """Queue one durable thesis-autonomy run (``thesis_autonomy_run``).
+
+    Prefers the sibling ``thesis_autonomy`` helper once deployed; until it
+    is importable, falls back to the established analysis queue with the
+    same job identity so the durable job is never duplicated.
+    """
+    try:
+        from thesis_autonomy import enqueue_thesis_autonomy_job
+    except ImportError:
+        return _fallback_enqueue_thesis_autonomy(
+            config,
+            triggered_by=triggered_by,
+            force=force,
+            request_nonce=request_nonce,
+        )
+    return enqueue_thesis_autonomy_job(
+        config,
+        triggered_by=triggered_by,
+        force=force,
+        request_nonce=request_nonce,
+    )
+
+
+@app.post(
+    "/research/theses/run",
+    status_code=202,
+    dependencies=[Depends(require_internal_basic)],
+)
+def trigger_thesis_autonomy(body: dict | None = Body(default=None)):
+    """Queue one durable thesis-autonomy run immediately."""
+    force = _research_force(body)
+    try:
+        return _enqueue_thesis_autonomy(
+            _get_config(), force=force, triggered_by="api"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "thesis_autonomy_enqueue_failed", error_type=type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=503, detail="Thesis run could not be queued"
         ) from exc
 
 

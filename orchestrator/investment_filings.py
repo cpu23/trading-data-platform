@@ -941,6 +941,114 @@ def run_filing_collection(
     return summary
 
 
+def _filing_coverage(
+    companies: list[dict],
+    rows: list[dict],
+    *,
+    companies_house_key_configured: bool,
+    today: date | None = None,
+) -> dict:
+    """Classify every configured issuer against its latest annual report."""
+    reference_day = today or date.today()
+    by_identity: dict[str, dict] = {}
+    for row in rows:
+        mapping = dict(row)
+        for identity in (mapping.get("symbol"), mapping.get("company")):
+            key = str(identity or "").strip().casefold()
+            if key and key not in by_identity:
+                by_identity[key] = mapping
+
+    status_names = (
+        "analysis_current",
+        "analysis_stale",
+        "document_awaiting_analysis",
+        "document_failed",
+        "missing_filing",
+        "source_unconfigured",
+    )
+    counts = {name: 0 for name in status_names}
+    issuers: list[dict] = []
+    for company in companies:
+        symbol = _clean(company.get("symbol"), 32).upper()
+        company_name = _clean(company.get("company"), 240)
+        row = by_identity.get(symbol.casefold()) or by_identity.get(
+            company_name.casefold()
+        )
+        if company.get("cik") or company.get("sec_cik"):
+            expected_source = "sec_edgar"
+            source_ready = True
+        elif company.get("company_number"):
+            expected_source = "companies_house"
+            source_ready = companies_house_key_configured
+        else:
+            expected_source = "eu_esef"
+            source_ready = False
+
+        report_date = None
+        if row and row.get("report_date"):
+            raw_report_date = row["report_date"]
+            if isinstance(raw_report_date, date):
+                report_date = raw_report_date
+            else:
+                try:
+                    report_date = date.fromisoformat(str(raw_report_date)[:10])
+                except ValueError:
+                    report_date = None
+
+        reason = None
+        if row is None:
+            if source_ready:
+                status = "missing_filing"
+                reason = "no annual report stored"
+            else:
+                status = "source_unconfigured"
+                reason = (
+                    "free Companies House API key not configured"
+                    if expected_source == "companies_house"
+                    else "national ESEF source not configured"
+                )
+        elif str(row.get("document_status") or "").lower() in {"failed", "error"}:
+            status = "document_failed"
+            reason = (
+                _clean(row.get("error_message"), 500) or "document processing failed"
+            )
+        elif not row.get("analysis_id"):
+            status = "document_awaiting_analysis"
+            reason = "annual report stored but analysis is missing"
+        elif report_date is None or (reference_day - report_date).days > 550:
+            status = "analysis_stale"
+            reason = (
+                "annual-report date unavailable"
+                if report_date is None
+                else "latest analyzed annual report is older than 550 days"
+            )
+        else:
+            status = "analysis_current"
+
+        counts[status] += 1
+        issuers.append(
+            {
+                "company": company_name,
+                "symbol": symbol,
+                "region": _clean(company.get("region"), 16).upper(),
+                "expected_source": expected_source,
+                "source_ready": source_ready,
+                "status": status,
+                "reason": reason,
+                "document_id": str(row.get("document_id") or "") if row else None,
+                "analysis_id": str(row.get("analysis_id") or "") if row else None,
+                "report_date": report_date.isoformat() if report_date else None,
+                "analysis_updated_at": (
+                    str(row.get("analysis_updated_at") or "") if row else None
+                ),
+            }
+        )
+    issuers.sort(
+        key=lambda item: (item["status"] == "analysis_current", item["company"])
+    )
+    return {"total": len(companies), "by_status": counts, "issuers": issuers}
+
+
 def get_filing_source_status(config: dict) -> dict:
     """Return status of filing sources for the dashboard."""
     filings_config = config.get("investment_filings", {})
@@ -1042,8 +1150,34 @@ def get_filing_source_status(config: dict) -> dict:
         }
     )
 
-    # Last run info
+    # Issuer-level coverage and last-run state share one bounded session.
     with get_session(config) as session:
+        coverage_rows = (
+            session.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (
+                               COALESCE(NULLIF(UPPER(BTRIM(d.symbol)), ''),
+                                        LOWER(BTRIM(d.company)))
+                           )
+                           d.document_id, d.company, d.symbol, d.report_date,
+                           d.status AS document_status, d.error_message,
+                           d.filing_source, a.analysis_id,
+                           a.updated_at AS analysis_updated_at
+                    FROM investment_documents d
+                    LEFT JOIN investment_analyses a ON a.document_id = d.document_id
+                    WHERE d.document_type = 'annual_report'
+                    ORDER BY COALESCE(NULLIF(UPPER(BTRIM(d.symbol)), ''),
+                                      LOWER(BTRIM(d.company))),
+                             d.report_date DESC NULLS LAST,
+                             d.created_at DESC,
+                             a.updated_at DESC NULLS LAST
+                    """
+                )
+            )
+            .mappings()
+            .all()
+        )
         row = session.execute(
             text(
                 "SELECT accepted_at, completed_at, status, result_status, summary "
@@ -1053,6 +1187,11 @@ def get_filing_source_status(config: dict) -> dict:
                 "ORDER BY accepted_at DESC LIMIT 1"
             )
         ).fetchone()
+    coverage = _filing_coverage(
+        companies,
+        coverage_rows,
+        companies_house_key_configured=bool(companies_house_key),
+    )
     last_run = None
     if row:
         mapping = getattr(row, "_mapping", None) or {}
@@ -1082,4 +1221,5 @@ def get_filing_source_status(config: dict) -> dict:
         "companies_configured": len(companies),
         "sources": sources,
         "last_run": last_run,
+        "coverage": coverage,
     }

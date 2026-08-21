@@ -456,13 +456,31 @@ def _report_metric(concept: str) -> tuple[str, int] | None:
     return None
 
 
+def _well_formed_thousands(value: str) -> bool:
+    """Fail closed on truncated or foreign-locale comma groups.
+
+    Every thousands group after the first must be exactly three digits; a
+    short trailing group ('1,30' for '1,30x') means OCR dropped a digit or a
+    decimal comma slipped in, and the true magnitude cannot be recovered.
+    """
+    core = value.lstrip("+-")
+    if "," not in core:
+        return True
+    groups = core.split(".", 1)[0].split(",")
+    return len(groups[0]) <= 3 and all(len(group) == 3 for group in groups[1:])
+
+
 def _parse_number(value: str) -> float | None:
     value = html.unescape(value).replace("\xa0", " ").strip()
     if not value or value in {"-", "—", "–", "−", "n/a", "N/A"}:
         return None
     negative = value.startswith("(") and value.endswith(")")
-    value = value.strip("() ").replace(",", "").replace(" ", "").replace("−", "-")
-    value = re.sub(r"^[£$€¥]", "", value)
+    value = value.strip("() ")
+    value = re.sub(r"^[£$€¥]\s*", "", value)
+    value = value.replace(" ", "").replace("−", "-")
+    if not _well_formed_thousands(value):
+        return None
+    value = value.replace(",", "")
     try:
         number = float(value)
     except ValueError:
@@ -470,6 +488,146 @@ def _parse_number(value: str) -> float | None:
     if not math.isfinite(number):
         return None
     return -number if negative else number
+
+
+def _number_core(value: str) -> str:
+    """Digits and separators only, with sign, currency, and parentheses removed."""
+    core = html.unescape(value).replace("\xa0", " ").strip()
+    core = core.strip("() ")
+    core = re.sub(r"^[£$€¥]\s*", "", core)
+    return core.replace(" ", "").replace("−", "-").lstrip("+-")
+
+
+def _pair_plausible(current: float, prior: float) -> bool:
+    """True when aligned comparative values share a plausible magnitude."""
+    current_abs = abs(current)
+    prior_abs = abs(prior)
+    if not current_abs or not prior_abs:
+        return True
+    ratio = current_abs / prior_abs
+    return (1 / 3) <= ratio <= 3.0
+
+
+def _separator_loss_suspect(value: str) -> bool:
+    """True when a value reads like a thousands comma OCR'd as a dot.
+
+    A dot without a comma and at least three fractional digits is the OCR
+    signature of a lost separator ('3.870' for 3,870, '5.66390' for
+    5,663.9).  A leading-zero integer part ('0.025') marks a genuine
+    sub-unit decimal and is never reinterpreted.
+    """
+    core = _number_core(value)
+    if "," in core or "." not in core:
+        return False
+    integer_part, _, fraction = core.partition(".")
+    return len(fraction) >= 3 and not integer_part.startswith("0")
+
+
+def _decimal_places(value: str) -> int:
+    """Fractional digit count of a displayed number."""
+    core = _number_core(value)
+    if "." not in core:
+        return 0
+    return len(core.split(".", 1)[1])
+
+
+def _recover_value(
+    value_raw: str, naive: float, peer_raw: str, peer: float
+) -> float | None:
+    """Thousands-scale reading of a separator-lost column value, or None.
+
+    Every digit placement is scored against the aligned peer value and the
+    peer column's decimal formatting; exactly one plausible placement is
+    adopted, otherwise the value fails closed.  OCR sometimes pads a value
+    with a stray trailing zero ('5.66390' for 5,663.9) or drops both
+    separators outright ('13160' for 1,316.0); padding is dropped only while
+    the digit string still exceeds the aligned peer column's width.
+    """
+    core = _number_core(value_raw)
+    digits = core.replace(",", "").replace(".", "")
+    if not digits:
+        return None
+    peer_digits = _number_core(peer_raw).replace(",", "").replace(".", "")
+    if peer_digits and len(digits) > len(peer_digits):
+        stripped = digits.rstrip("0")
+        if len(stripped) <= len(peer_digits):
+            digits = stripped
+    magnitude = abs(int(digits))
+    peer_places = _decimal_places(peer_raw)
+    candidates: list[float] = []
+    for places in range(len(digits) + 1):
+        candidate = magnitude / (10.0**places)
+        if places != peer_places:
+            continue
+        if _pair_plausible(candidate, peer):
+            candidates.append(candidate)
+    if len(candidates) != 1:
+        return None
+    return -candidates[0] if naive < 0 else candidates[0]
+
+
+def _stripped_integer_suspect(value: str, peer: str) -> bool:
+    """True when a separator-free integer may be a comma/dot-stripped value.
+
+    A pure integer aligned with a thousands-grouped decimal column ('13160'
+    beside '2,071.3') can be OCR's loss of both separators ('1,316.0').
+    Recovery needs that column evidence, because genuine small integers never
+    align with a grouped decimal peer.
+    """
+    core = _number_core(value)
+    peer_core = _number_core(peer)
+    return "." not in core and "," not in core and "." in peer_core and "," in peer_core
+
+
+def _parse_number_pair(current_raw: str, prior_raw: str) -> tuple[float, float] | None:
+    """Parse an aligned current/prior row, reconciling OCR separator loss.
+
+    A single column whose thousands comma was misread as a decimal point
+    ('3.870' for 3,870, '5.66390' for 5,663.9) is recovered only when the
+    aligned peer value admits exactly one thousands-scale reading; a pure
+    integer that lost both separators ('13160' for 1,316.0 beside '2,071.3')
+    is recovered the same way.  Truncated figures ('1,30') and ambiguous
+    pairs fail closed instead of emitting an implausible magnitude; valid
+    decimals and negatives pass through.
+    """
+    current = _parse_number(current_raw)
+    prior = _parse_number(prior_raw)
+    if current is None or prior is None:
+        return None
+    if _pair_plausible(current, prior):
+        return current, prior
+    current_suspect = _separator_loss_suspect(current_raw)
+    prior_suspect = _separator_loss_suspect(prior_raw)
+    if current_suspect != prior_suspect:
+        if current_suspect:
+            recovered = _recover_value(current_raw, current, prior_raw, prior)
+            if recovered is None:
+                return None
+            return recovered, prior
+        recovered = _recover_value(prior_raw, prior, current_raw, current)
+        if recovered is None:
+            return None
+        return current, recovered
+    if not current_suspect:
+        # Neither side shows a dot-no-comma separator loss, but an implausible
+        # pair whose single pure-integer side aligns with a thousands-grouped
+        # decimal column may have lost its comma and decimal point entirely.
+        current_integer = _stripped_integer_suspect(current_raw, prior_raw)
+        prior_integer = _stripped_integer_suspect(prior_raw, current_raw)
+        if current_integer != prior_integer:
+            if current_integer:
+                recovered = _recover_value(current_raw, current, prior_raw, prior)
+                if recovered is None:
+                    return None
+                return recovered, prior
+            recovered = _recover_value(prior_raw, prior, current_raw, current)
+            if recovered is None:
+                return None
+            return current, recovered
+    # Both columns lost their separators (indistinguishable from genuine
+    # decimals) or neither is recoverable; keep the literal parse and let the
+    # existing per-metric validation decide.
+    return current, prior
 
 
 def _unit_currency(unit: str) -> str | None:
@@ -977,9 +1135,12 @@ def extract_report_text_facts(
             ]
         if len(number_matches) != 2:
             continue
-        values = [_parse_number(item.group(0)) for item in number_matches]
-        if any(value is None for value in values):
+        pair = _parse_number_pair(
+            number_matches[0].group(0), number_matches[1].group(0)
+        )
+        if pair is None:
             continue
+        values = list(pair)
         if metric in {
             "capex",
             "inventory",

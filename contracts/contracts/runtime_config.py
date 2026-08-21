@@ -45,6 +45,21 @@ NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 
 _TIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 _MARKET_SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,64}$")
+_CIK_PATTERN = re.compile(r"^\d{10}$")
+MAX_CIK_SYMBOLS = 500
+#: Hard cap enforced by the public_equities collector at runtime
+#: (``collectors.public_equities.HARD_MAX_SYMBOLS``).  Four hundred covers
+#: the checked-in 300-company investment universe plus a bounded live-thesis
+#: margin without admitting an unbounded scrape.
+PUBLIC_EQUITIES_HARD_MAX_SYMBOLS = 400
+PUBLIC_EQUITIES_HARD_MAX_CONCURRENCY = 16
+#: Canonical symbol grammar enforced by the public_equities collector at
+#: runtime (``orchestrator.collectors.public_equities``).  A validated
+#: config must only carry symbols the collector accepts: after the
+#: collector's ``strip().upper()`` canonicalization each symbol must match
+#: ``^[A-Z0-9][A-Z0-9.\-^=]{0,19}$``.  Kept in this shared contract so
+#: startup validation cannot drift from the collector grammar.
+PUBLIC_EQUITIES_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,19}$")
 _LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"})
 
 
@@ -278,7 +293,6 @@ class EventPipelineConfig(FrozenModel):
     sse: SseConfig = Field(default_factory=SseConfig)
     sources: list[NonBlankText] = Field(default_factory=lambda: ["fred", "oanda"])
     outbox_worker_enabled: bool = True
-    batch_size: int = Field(default=50, ge=1, le=10000)
     poll_interval_seconds: float = Field(default=1.0, ge=0.1, le=3600.0)
     lease_seconds: int = Field(default=120, ge=1, le=86400)
     max_attempts: int = Field(default=8, ge=1, le=1000)
@@ -670,6 +684,50 @@ class ResearchIntelligenceConfig(FrozenModel):
 
 
 # ---------------------------------------------------------------------------
+# thesis autonomy
+# ---------------------------------------------------------------------------
+
+
+class ThesisAutonomyConfig(FrozenModel):
+    """Scheduled autonomous thesis-fusion desk settings.
+
+    Bounds mirror the pure engine caps exactly (``thesis_tournament`` and
+    ``thesis_fusion``), so a value the engine would clamp or reject never
+    reaches it via config.  ``model_budget_usd_per_run`` is the per-run
+    ceiling; the global daily budget (``budgets.daily_llm_usd``) remains the
+    ultimate cap and is enforced by
+    ``AppConfig._check_thesis_autonomy_budget``.  ``cost``/``liquidity``/
+    ``downside`` are optional finite scoring inputs; None keeps the pure
+    scoring defaults (unknown, never invented).
+    """
+
+    enabled: bool = True
+    schedule_enabled: bool = True
+    schedule: str | None = None
+    lookback_days: int = Field(default=30, ge=1, le=3650)
+    # Mirrors the EvidenceRegistry collection cap (2000); the tournament
+    # prompt brief stays bounded at 200 items and the raw-candidate bound is
+    # the engine's own cap.
+    maximum_evidence: int = Field(default=96, ge=1, le=2000)
+    maximum_promoted: int = Field(default=64, ge=1, le=64)
+    maximum_challenges_per_run: int = Field(default=25, ge=1, le=100)
+    event_debounce_minutes: int = Field(default=60, ge=1, le=1440)
+    maximum_event_runs_per_day: int = Field(default=4, ge=0, le=24)
+    falsification_budget_fraction: float = Field(default=0.45, ge=0.1, le=0.9)
+    model_budget_usd_per_run: float = Field(default=0.75, ge=0.0)
+    minimum_supporting_source_families: int = Field(default=1, ge=1, le=10)
+    require_cited_excerpts: bool = False
+    require_opposing_variants: bool = False
+    reasoning_effort: str | None = None
+    model_override: str | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1, le=100000)
+    # Optional finite scoring inputs; None keeps the pure-scoring defaults.
+    cost: float | None = Field(default=None, ge=0.0, le=100.0)
+    liquidity: float | None = Field(default=None, ge=0.0, le=1.0)
+    downside: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+# ---------------------------------------------------------------------------
 # macro events
 # ---------------------------------------------------------------------------
 
@@ -728,6 +786,125 @@ class CftcContractConfig(FrozenModel):
     assets: list[NonBlankText] = Field(default_factory=list)
 
 
+class CftcDatasetConfig(FrozenModel):
+    """One official CFTC report schema and its compatible contract mappings."""
+
+    name: NonBlankText
+    url: NonBlankText
+    semantics: NonBlankText
+    limit: int = Field(default=5000, ge=1, le=1_000_000)
+    categories: list[tuple[NonBlankText, NonBlankText, NonBlankText]]
+    contracts: list[CftcContractConfig]
+
+
+class IssuerNewsFeedConfig(FrozenModel):
+    """One configured issuer_news primary feed (RSS/Atom or HTML/JSON-LD page).
+
+    Bounds mirror the ``issuer_news`` collector's per-feed clamps exactly, so
+    a value the collector would clamp or reject never reaches it via config.
+    """
+
+    name: NonBlankText | None = None
+    url: NonBlankText
+    enabled: bool = True
+    kind: Literal["feed", "html", "html_jsonld", "jsonld"] = "feed"
+    content_role: Literal["primary", "derivative"] = "primary"
+    document_type: NonBlankText = "issuer_update"
+    institution: NonBlankText | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    max_bytes: int = Field(default=5_000_000, ge=64_000, le=50_000_000)
+    timeout_seconds: int = Field(default=30, ge=5, le=120)
+    max_redirects: int = Field(default=5, ge=0, le=10)
+    max_items: int = Field(default=100, ge=1, le=1_000)
+    max_title_chars: int = Field(default=500, ge=20, le=2_000)
+    max_content_chars: int = Field(default=4_000, ge=0, le=100_000)
+    fetch_full_text: bool = False
+    max_document_bytes: int = Field(default=2_000_000, ge=64_000, le=10_000_000)
+    max_full_text_items: int = Field(default=20, ge=1, le=100)
+    content_origins: list[NonBlankText] = Field(default_factory=list, max_length=10)
+    # SEC EDGAR "current events" Atom entries are titled
+    # "<form> - <company> (<10-digit CIK>) (<role>)". Opting into
+    # ``sec_edgar`` makes the collector resolve the per-filing company into
+    # the record institution and ``metadata.cik`` (plus an optional
+    # ``metadata.ticker`` from ``cik_symbols``) instead of keeping the static
+    # feed-level institution. Non-matching titles keep the static
+    # institution; nothing is inferred from malformed titles.
+    entity_parser: Literal["sec_edgar"] | None = None
+    cik_symbols: dict[str, NonBlankText] = Field(
+        default_factory=dict, max_length=MAX_CIK_SYMBOLS
+    )
+
+    @field_validator("cik_symbols")
+    @classmethod
+    def _validate_cik_symbols(cls, value: dict[str, str]) -> dict[str, str]:
+        for cik in value:
+            if not _CIK_PATTERN.fullmatch(cik):
+                raise ValueError(f"cik_symbols keys must be 10-digit CIKs, got {cik!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_entity_parser_fields(self) -> IssuerNewsFeedConfig:
+        if self.cik_symbols and self.entity_parser != "sec_edgar":
+            raise ValueError("cik_symbols requires entity_parser: sec_edgar")
+        return self
+
+
+class SecForm4IssuerConfig(FrozenModel):
+    """One SEC EDGAR issuer watched for Form 4 insider filings."""
+
+    cik: NonBlankText
+    symbol: NonBlankText
+
+
+class FinraSymbolConfig(FrozenModel):
+    """One FINRA Reg SHO symbol, optionally mapped to platform assets."""
+
+    symbol: NonBlankText
+    assets: list[NonBlankText] = Field(default_factory=list)
+
+
+class IssuerTranscriptConfig(FrozenModel):
+    """One issuer transcript source page (official IR events/transcripts).
+
+    Mirrors the ``issuer_transcripts`` collector's per-issuer consumption:
+    ``url`` is the discovery page or event feed; ``kind`` selects bounded
+    HTML/feed autodiscovery or the Q4 public event contract; and
+    ``institution``/``ticker`` identify the issuer. Optional per-issuer
+    ``user_agent``/``headers`` override the section defaults.
+    """
+
+    kind: Literal["html", "feed", "q4_events"] = "html"
+    institution: NonBlankText | None = None
+    ticker: NonBlankText | None = None
+    url: NonBlankText
+    document_type: NonBlankText = "earnings_transcript"
+    user_agent: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class TranscriptionSettingsConfig(FrozenModel):
+    """Local faster-whisper transcription settings for issuer_transcripts.
+
+    Bounds mirror ``transcription.normalize_transcription_config`` so
+    out-of-range values are rejected here instead of silently clamped at
+    runtime.
+    """
+
+    model: NonBlankText = "small.en"
+    device: NonBlankText = "cpu"
+    compute_type: NonBlankText = "int8"
+    beam_size: int = Field(default=5, ge=1, le=10)
+    language: str | None = "en"
+    max_audio_seconds: int = Field(default=7_200, ge=1, le=86_400)
+    timeout_seconds: int = Field(default=3_600, ge=1, le=86_400)
+    max_audio_bytes: int = Field(default=250_000_000, ge=1, le=2_147_483_648)
+    model_dir: str | None = "/var/lib/trading-data/news/models/whisper"
+    local_files_only: bool = False
+    cpu_threads: int = Field(default=0, ge=0, le=1024)
+    vad_filter: bool = True
+    condition_on_previous_text: bool = False
+
+
 class CollectorConfig(FrozenModel):
     """Union schema covering every configured collector source.
 
@@ -768,13 +945,86 @@ class CollectorConfig(FrozenModel):
     lookback_days: int = Field(default=400, ge=1, le=36500)
     categories: list[list[str]] = Field(default_factory=list)
     contracts: list[CftcContractConfig] = Field(default_factory=list)
-    feeds: list[CollectorFeedConfig] = Field(default_factory=list)
+    datasets: list[CftcDatasetConfig] = Field(default_factory=list)
+    feeds: list[CollectorFeedConfig | IssuerNewsFeedConfig] = Field(
+        default_factory=list
+    )
     headers: dict[str, str] = Field(default_factory=dict)
     requires_api_key: bool = False
     credential_name: str | None = None
     public_api_key: str | None = None
     api_key_param: str | None = None
     max_retries: int = Field(default=1, ge=0, le=20)
+    # Free public sources (issuer_news / issuer_transcripts / public_equities
+    # / sec_form4 / finra_short_volume / cboe_options).  Fields are shared
+    # across the union schema; per-source applicability is enforced by
+    # ``_COLLECTOR_ALLOWED_FIELDS`` exactly as each collector consumes them.
+    state_path: str | None = None
+    issuers: list[SecForm4IssuerConfig | IssuerTranscriptConfig] = Field(
+        default_factory=list
+    )
+    symbols: list[str | FinraSymbolConfig] = Field(default_factory=list)
+    chart_base_url: str | None = None
+    max_symbols: int = Field(default=50, ge=1, le=1000)
+    # Strict: only a real YAML boolean opts the desk's symbol expansion in;
+    # coerced strings (e.g. "yes") are rejected instead of silently enabling
+    # extra market collection.
+    include_active_theses: bool = Field(default=False, strict=True)
+    # Strict opt-in for the checked-in investment universe.  Only
+    # public_equities accepts this flag; other collectors keep their narrower
+    # source-specific universes.
+    include_investment_universe: bool = Field(default=False, strict=True)
+    range: Literal["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"] | None = None
+    bootstrap_range: Literal[
+        "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"
+    ] | None = None
+    interval: Literal["1d"] | None = None
+    timeout_seconds: float = Field(default=30.0, ge=5.0, le=60.0)
+    max_issuers: int = Field(default=20, ge=1, le=200)
+    max_page_bytes: int = Field(default=2_000_000, ge=65_536, le=52_428_800)
+    max_audio_bytes: int = Field(default=250_000_000, ge=1_048_576, le=2_147_483_648)
+    max_links_per_page: int = Field(default=50, ge=1, le=500)
+    max_records_per_issuer: int = Field(default=25, ge=1, le=500)
+    max_redirects: int = Field(default=5, ge=0, le=10)
+    audio_timeout_seconds: float = Field(default=300.0, ge=10.0, le=3600.0)
+    transcription: TranscriptionSettingsConfig | None = None
+    request_interval_seconds: float = Field(default=0.1, ge=0.0, le=60.0)
+    max_filings_per_issuer: int = Field(default=100, ge=1, le=500)
+    max_document_bytes: int = Field(default=25_000_000, ge=10_000, le=50_000_000)
+    max_submissions_bytes: int = Field(default=25_000_000, ge=100_000, le=100_000_000)
+    archive_url: str | None = None
+    file_prefix: str | None = None
+    file_suffix: str | None = None
+    dates: list[str] | None = None
+    max_file_bytes: int = Field(default=20_000_000, ge=100_000, le=200_000_000)
+    source_timezone: str | None = None
+    delay_minutes: int = Field(default=15, ge=0, le=1440)
+    max_contracts_per_symbol: int = Field(default=20_000, ge=1, le=1_000_000)
+    max_expiries: int = Field(default=40, ge=1, le=1000)
+    max_response_bytes: int = Field(default=30_000_000, ge=1024, le=500_000_000)
+    rate_delay_seconds: float = Field(default=1.0, ge=0.0, le=3600.0)
+    request_deadline_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
+
+    @field_validator("source_timezone")
+    @classmethod
+    def _validate_source_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return _validate_zoneinfo(value)
+
+    @field_validator("dates")
+    @classmethod
+    def _validate_explicit_dates(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        from datetime import date as date_of_year
+
+        for item in value:
+            try:
+                date_of_year.fromisoformat(str(item).strip())
+            except ValueError as exc:
+                raise ValueError(f"invalid ISO trade date {item!r}") from exc
+        return value
 
 
 class MacroYieldCurveThresholds(FrozenModel):
@@ -1056,6 +1306,14 @@ KNOWN_COLLECTORS = frozenset(
         "ecb",
         "boe",
         "eia",
+        # Free/public keyless sources (scheduled without credentials).
+        "issuer_news",
+        "issuer_transcripts",
+        "public_equities",
+        "sec_form4",
+        "finra_short_volume",
+        "cboe_options",
+        "company_expectations",
     }
 )
 KNOWN_NEWS_SOURCES = frozenset({"reuters", "kobeissi"})
@@ -1110,11 +1368,8 @@ _COLLECTOR_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
             "enabled",
             "schedule",
             "freshness_hours",
-            "url",
-            "limit",
             "lookback_days",
-            "categories",
-            "contracts",
+            "datasets",
         }
     ),
     "central_banks": frozenset({"enabled", "schedule", "freshness_hours", "feeds"}),
@@ -1134,6 +1389,105 @@ _COLLECTOR_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
             "api_key_param",
             "max_retries",
             "series",
+        }
+    ),
+    "issuer_news": frozenset({"enabled", "schedule", "feeds", "state_path"}),
+    "issuer_transcripts": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "issuers",
+            "max_issuers",
+            "timeout_seconds",
+            "audio_timeout_seconds",
+            "max_page_bytes",
+            "max_document_bytes",
+            "max_audio_bytes",
+            "max_redirects",
+            "max_links_per_page",
+            "max_records_per_issuer",
+            "user_agent",
+            "headers",
+            "transcription",
+        }
+    ),
+    "public_equities": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "symbols",
+            "max_symbols",
+            "max_concurrency",
+            "include_active_theses",
+            "include_investment_universe",
+            "range",
+            "bootstrap_range",
+            "interval",
+            "timeout_seconds",
+            "user_agent",
+            "chart_base_url",
+        }
+    ),
+    "company_expectations": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "symbols",
+            "max_symbols",
+            "include_active_theses",
+            "base_url",
+            "timeout_seconds",
+            "max_concurrency",
+            "user_agent",
+            "lookback_days",
+        }
+    ),
+    "sec_form4": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "issuers",
+            "lookback_days",
+            "max_filings_per_issuer",
+            "max_concurrency",
+            "request_interval_seconds",
+            "max_document_bytes",
+            "max_submissions_bytes",
+            "user_agent",
+            "url",
+            "archive_url",
+        }
+    ),
+    "finra_short_volume": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "symbols",
+            "url",
+            "file_prefix",
+            "file_suffix",
+            "lookback_days",
+            "max_file_bytes",
+            "request_interval_seconds",
+            "dates",
+        }
+    ),
+    "cboe_options": frozenset(
+        {
+            "enabled",
+            "schedule",
+            "symbols",
+            "base_url",
+            "source_timezone",
+            "user_agent",
+            "include_active_theses",
+            "delay_minutes",
+            "max_symbols",
+            "max_contracts_per_symbol",
+            "max_expiries",
+            "max_response_bytes",
+            "rate_delay_seconds",
+            "request_deadline_seconds",
         }
     ),
 }
@@ -1167,6 +1521,7 @@ class AppConfig(FrozenModel):
     research_intelligence: ResearchIntelligenceConfig = Field(
         default_factory=ResearchIntelligenceConfig
     )
+    thesis_autonomy: ThesisAutonomyConfig = Field(default_factory=ThesisAutonomyConfig)
     collectors: dict[str, CollectorConfig] = Field(default_factory=dict)
     processors: dict[str, ProcessorConfig] = Field(default_factory=dict)
     reuters: ReutersConfig = Field(default_factory=ReutersConfig)
@@ -1286,6 +1641,103 @@ class AppConfig(FrozenModel):
                     f"collectors.{source_id} sets field(s) not applicable to "
                     "this source: " + ", ".join(sorted(unsupported))
                 )
+        # The shared ``max_symbols`` field is capped per source: the
+        # public_equities collector raises at runtime above its hard cap
+        # (HARD_MAX_SYMBOLS), while other sources (e.g. cboe_options) accept
+        # the full schema bound.  Reject the un-honorable value at startup.
+        public_equities = self.collectors.get("public_equities")
+        if (
+            public_equities is not None
+            and public_equities.max_symbols > PUBLIC_EQUITIES_HARD_MAX_SYMBOLS
+        ):
+            raise ValueError(
+                "collectors.public_equities.max_symbols must be at most "
+                f"{PUBLIC_EQUITIES_HARD_MAX_SYMBOLS} (the collector's hard cap)"
+            )
+        if (
+            public_equities is not None
+            and public_equities.max_concurrency
+            > PUBLIC_EQUITIES_HARD_MAX_CONCURRENCY
+        ):
+            raise ValueError(
+                "collectors.public_equities.max_concurrency must be at most "
+                f"{PUBLIC_EQUITIES_HARD_MAX_CONCURRENCY} "
+                "(the collector's hard cap)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_public_equities_symbols(self) -> AppConfig:
+        """public_equities accepts only canonical, unique, capped strings.
+
+        The shared ``symbols`` field also admits FINRA structured entries
+        (``FinraSymbolConfig``) for finra_short_volume, but the
+        public_equities collector raises at runtime on anything but strings.
+        Reject structured entries at validation time so a broken section can
+        never reach dispatch, in any deployment mode.  String symbols are
+        canonicalized exactly like the collector (trim + uppercase), must
+        match the collector symbol grammar, be unique after
+        canonicalization, and fit within the section's ``max_symbols``
+        (itself capped at the collector hard max), so dispatch-time
+        validation can never reject the same section later.
+        """
+        public_equities = self.collectors.get("public_equities")
+        if public_equities is None:
+            return self
+        canonical: list[str] = []
+        for symbol in public_equities.symbols:
+            if not isinstance(symbol, str):
+                raise ValueError(
+                    "collectors.public_equities.symbols must contain "
+                    "only strings; structured symbol entries are "
+                    "reserved for finra_short_volume"
+                )
+            normalized = symbol.strip().upper()
+            if not PUBLIC_EQUITIES_SYMBOL_PATTERN.fullmatch(normalized):
+                raise ValueError(
+                    "collectors.public_equities.symbols entries must be "
+                    "nonblank and match the public_equities symbol grammar "
+                    "after trimming and uppercasing"
+                )
+            canonical.append(normalized)
+        if len(set(canonical)) != len(canonical):
+            raise ValueError(
+                "collectors.public_equities.symbols contains duplicates "
+                "after trimming and uppercasing"
+            )
+        if len(canonical) > public_equities.max_symbols:
+            raise ValueError(
+                "collectors.public_equities.symbols exceeds the configured "
+                f"limit of {public_equities.max_symbols} symbols"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_company_expectation_symbols(self) -> AppConfig:
+        collector = self.collectors.get("company_expectations")
+        if collector is None:
+            return self
+        canonical: list[str] = []
+        for symbol in collector.symbols:
+            if not isinstance(symbol, str):
+                raise ValueError(
+                    "collectors.company_expectations.symbols must contain only strings"
+                )
+            normalized = symbol.strip().upper()
+            if not PUBLIC_EQUITIES_SYMBOL_PATTERN.fullmatch(normalized):
+                raise ValueError(
+                    "collectors.company_expectations.symbols entries must be "
+                    "canonical market symbols"
+                )
+            canonical.append(normalized)
+        if len(canonical) != len(set(canonical)):
+            raise ValueError(
+                "collectors.company_expectations.symbols contains duplicates"
+            )
+        if len(canonical) > collector.max_symbols:
+            raise ValueError(
+                "collectors.company_expectations.symbols exceeds max_symbols"
+            )
         return self
 
     @model_validator(mode="after")
@@ -1303,6 +1755,22 @@ class AppConfig(FrozenModel):
                 "unknown processor id(s) in config: "
                 + ", ".join(sorted(unknown_processors))
                 + f"; executable processors are {', '.join(sorted(KNOWN_PROCESSORS))}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_thesis_autonomy_budget(self) -> AppConfig:
+        """Per-run autonomy budget must never exceed the global daily cap.
+
+        The daily budget is the ultimate ceiling for every LLM consumer; a
+        per-run ceiling above it would be dead configuration at best and a
+        surprise override at worst, so it is rejected instead.
+        """
+        if self.thesis_autonomy.model_budget_usd_per_run > self.budgets.daily_llm_usd:
+            raise ValueError(
+                "thesis_autonomy.model_budget_usd_per_run must not exceed "
+                "budgets.daily_llm_usd; the global daily budget is the "
+                "ultimate cap"
             )
         return self
 
@@ -2173,6 +2641,7 @@ __all__ = [
     "CALENDAR_BUILTINS",
     "CalendarsConfig",
     "CftcContractConfig",
+    "CftcDatasetConfig",
     "CollectorConfig",
     "CollectorFeedConfig",
     "ConfigError",
@@ -2189,8 +2658,11 @@ __all__ = [
     "EventPipelineQueryConfig",
     "EventPipelineRetryConfig",
     "EventPipelineWorkerConfig",
+    "FinraSymbolConfig",
     "FrozenModel",
     "InstrumentConfig",
+    "IssuerNewsFeedConfig",
+    "IssuerTranscriptConfig",
     "InstrumentCalendarConfig",
     "InvestingConfig",
     "KNOWN_COLLECTORS",
@@ -2225,12 +2697,14 @@ __all__ = [
     "ResearchStageConfig",
     "ReutersConfig",
     "SourceSeriesConfig",
+    "SecForm4IssuerConfig",
     "SseConfig",
     "StaleThresholdsConfig",
     "StoryClusteringConfig",
     "StoryConfirmationConfig",
     "TimezoneConfig",
     "TimezoneZoneConfig",
+    "TranscriptionSettingsConfig",
     "VenueCalendarConfig",
     "WatchlistConfig",
     "WatchlistInstrumentConfig",

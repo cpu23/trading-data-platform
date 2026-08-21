@@ -1,5 +1,6 @@
+import re
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,10 @@ from config_loader import AppConfig
 from logging_config import get_logger
 
 logger = get_logger("db")
+
+# Identifiers are always collector-authored constants; anything else is
+# rejected so provider/user data can never shape SQL text.
+_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -116,6 +121,8 @@ def upsert_records(
     records: list[dict[str, Any]],
     conflict_columns: list[str],
     config: AppConfig | None = None,
+    *,
+    insert_only: bool = False,
 ) -> WriteResult:
     if not records:
         return WriteResult(attempted=0, written=0, failed=0, errors=())
@@ -129,21 +136,27 @@ def upsert_records(
     placeholders = ", ".join(f":{col}" for col in columns)
     conflict_cols = ", ".join(conflict_columns)
 
-    update_cols = [c for c in columns if c not in conflict_columns]
-    if update_cols:
-        update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-        sql = (
-            f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
-            f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_clause}"
-        )
-    else:
+    if insert_only:
         sql = (
             f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
             f"ON CONFLICT ({conflict_cols}) DO NOTHING"
         )
+    else:
+        update_cols = [c for c in columns if c not in conflict_columns]
+        if update_cols:
+            update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+            sql = (
+                f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+                f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_clause}"
+            )
+        else:
+            sql = (
+                f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+                f"ON CONFLICT ({conflict_cols}) DO NOTHING"
+            )
 
     return _write_records(
-        operation="upsert",
+        operation="upsert" if not insert_only else "insert",
         table_name=table_name,
         records=records,
         stmt=text(sql),
@@ -307,13 +320,17 @@ def upsert_records_in_session(
         return 0
     columns = list(records[0])
     updates = [column for column in columns if column not in conflict_columns]
+    assignments = [
+        (
+            f"{column} = LEAST({table_name}.{column}, "
+            f"{table_name}.created_at, EXCLUDED.{column})"
+            if table_name == "source_documents" and column == "acquired_at"
+            else f"{column} = EXCLUDED.{column}"
+        )
+        for column in updates
+    ]
     conflict = ", ".join(conflict_columns)
-    update_sql = (
-        "DO UPDATE SET "
-        + ", ".join(f"{column} = EXCLUDED.{column}" for column in updates)
-        if updates
-        else "DO NOTHING"
-    )
+    update_sql = "DO UPDATE SET " + ", ".join(assignments) if updates else "DO NOTHING"
     statement = text(
         f"INSERT INTO {table_name} ({', '.join(columns)}) "
         f"VALUES ({', '.join(f':{column}' for column in columns)}) "
@@ -324,6 +341,137 @@ def upsert_records_in_session(
             raise ValueError(f"Inconsistent columns for {table_name}")
         session.execute(statement, _prepare_record(record, table_name))
     return len(records)
+
+
+class BatchWriteError(RuntimeError):
+    """A declared write batch failed inside a caller-owned transaction.
+
+    The caller's transaction is invalid and must be rolled back; no batch in
+    the sequence may commit alone.  Metadata is bounded (validated table name
+    and exception class) and never carries exception text or record values.
+    """
+
+    def __init__(self, batch_index: int, table_name: str, error_type: str):
+        super().__init__(f"write batch {batch_index} failed ({error_type})")
+        self.batch_index = batch_index
+        self.table_name = table_name
+        self.error_type = error_type
+
+
+def _validate_identifier(value: Any, label: str) -> None:
+    """Reject identifiers that are not bounded lowercase SQL-safe constants."""
+    if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(f"invalid {label} identifier")
+
+
+def _batch_attributes(
+    batch: Any, index: int
+) -> tuple[str, list[dict], list[str], bool]:
+    """Extract and validate one declared batch without importing the model."""
+    if isinstance(batch, Mapping):
+        table_name = batch.get("table_name")
+        records = batch.get("records")
+        conflict_columns = batch.get("conflict_columns")
+        insert_only = batch.get("insert_only", False)
+    else:
+        table_name = getattr(batch, "table_name", None)
+        records = getattr(batch, "records", None)
+        conflict_columns = getattr(batch, "conflict_columns", None)
+        insert_only = getattr(batch, "insert_only", False)
+    if (
+        not isinstance(table_name, str)
+        or not isinstance(records, list)
+        or not isinstance(conflict_columns, list)
+    ):
+        raise ValueError(f"invalid write batch at index {index}")
+    if not all(isinstance(record, dict) for record in records):
+        raise ValueError(f"invalid write batch at index {index}")
+    _validate_identifier(table_name, "table")
+    for column in conflict_columns:
+        _validate_identifier(column, "conflict column")
+    if not records:
+        return table_name, records, conflict_columns, bool(insert_only)
+    canonical_keys = set(records[0])
+    for record_index, record in enumerate(records[1:], start=1):
+        if set(record) != canonical_keys:
+            raise ValueError(
+                f"record schema mismatch at index {record_index} in batch {index}"
+            )
+    for column in records[0]:
+        _validate_identifier(column, "column")
+    for column in conflict_columns:
+        if column not in records[0]:
+            raise ValueError(f"conflict column not present in batch {index} records")
+    return table_name, records, conflict_columns, bool(insert_only)
+
+
+def write_batches_in_session(
+    session: Any,
+    batches: Sequence[Any],
+) -> list[WriteResult]:
+    """Write a sequence of declared batches in one caller-owned transaction.
+
+    Every table and column identifier is validated against the bounded
+    lowercase pattern and every batch must be schema-homogeneous before any
+    statement executes, so provider data can never shape SQL text.  Batches
+    then execute in order on the provided ``session``: immutable batches use
+    ``INSERT ... ON CONFLICT DO NOTHING`` and mutable batches use the existing
+    upsert semantics.  The helper never commits; the caller's transaction owns
+    durability, so one failed batch rolls back every batch when the caller
+    rolls back (for example via :func:`get_session`).
+
+    Returns one :class:`WriteResult` per batch in declaration order.  Any
+    validation problem raises :class:`ValueError` before execution; any
+    execution failure raises :class:`BatchWriteError`.
+    """
+    if not batches:
+        return []
+    prepared = []
+    for index, batch in enumerate(batches):
+        table_name, records, conflict_columns, insert_only = _batch_attributes(
+            batch, index
+        )
+        prepared.append((index, table_name, records, conflict_columns, insert_only))
+
+    results: list[WriteResult] = []
+    for index, table_name, records, conflict_columns, insert_only in prepared:
+        if not records:
+            results.append(WriteResult(0, 0, 0, ()))
+            continue
+        columns = list(records[0])
+        col_list = ", ".join(columns)
+        placeholders = ", ".join(f":{column}" for column in columns)
+        statement = text(
+            f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})"
+        )
+        if conflict_columns:
+            conflict = ", ".join(conflict_columns)
+            if insert_only:
+                statement = text(
+                    f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({conflict}) DO NOTHING"
+                )
+            else:
+                updates = [c for c in columns if c not in conflict_columns]
+                if updates:
+                    update_clause = ", ".join(
+                        f"{column} = EXCLUDED.{column}" for column in updates
+                    )
+                    statement = text(
+                        f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+                        f"ON CONFLICT ({conflict}) DO UPDATE SET {update_clause}"
+                    )
+                else:
+                    statement = text(
+                        f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) "
+                        f"ON CONFLICT ({conflict}) DO NOTHING"
+                    )
+        try:
+            session.execute(statement, _prepare_records(records))
+        except Exception as exc:
+            raise BatchWriteError(index, table_name, _exception_type(exc)) from exc
+        results.append(WriteResult(len(records), len(records), 0, ()))
+    return results
 
 
 def _exception_type(exc: Exception) -> str:

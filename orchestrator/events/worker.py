@@ -91,8 +91,8 @@ class OutboxWorker:
     def _run(self) -> None:
         settings = _pipeline_config(self._config)
         poll = _number(settings, "poll_interval_seconds", 1.0, 0.01)
-        # Sequential worker: one claim per poll so a queued in-memory claim
-        # cannot expire and be reclaimed by another replica mid-processing.
+        # Keep one lease in memory at a time, but drain a backlog without an
+        # idle poll delay between completed claims.
         batch = 1
         lease = _number(settings, "lease_seconds", 30.0, 1.0)
         max_attempts = max(1, int(_number(settings, "max_attempts", 5, 1)))
@@ -103,6 +103,7 @@ class OutboxWorker:
         try:
             while not self._stop.is_set():
                 self.state["last_poll_at"] = datetime.now(UTC)
+                claimed = False
                 try:
                     with get_session(self._config) as session:
                         claims = claim_outbox(
@@ -111,13 +112,15 @@ class OutboxWorker:
                             limit=batch,
                             lease_seconds=lease,
                         )
+                    claimed = bool(claims)
                     self.state["claimed"] += len(claims)
                     for claim in claims:
                         self._process(claim, max_attempts, base_backoff, max_backoff)
                 except Exception as exc:
                     # Poll errors must not kill the daemon; store only a type name.
                     self.state["last_error"] = type(exc).__name__
-                self._stop.wait(poll)
+                if not claimed:
+                    self._stop.wait(poll)
         finally:
             self.state["running"] = False
 
