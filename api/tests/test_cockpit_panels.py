@@ -775,20 +775,16 @@ class RouteTests(unittest.TestCase):
         strip = {
             "available": True,
             "session_label": "London",
-            "last_price_update_display": "06 Aug 12:00 UTC",
-            "last_material_event": None,
-            "regime": None,
-            "direction_chips": [
-                {
-                    "key": "rates",
-                    "label": "Rates",
-                    "display": "+1.19%",
-                    "direction": "up",
-                }
-            ],
-            "next_catalyst": None,
-            "source_health": None,
-            "budget": None,
+            "regime": {
+                "regime": "controlled expansion",
+                "sub_regime": "broad based",
+                "confidence": "high",
+            },
+            "next_catalyst": {
+                "event_name": "US CPI",
+                "countdown_display": "2h 0m",
+                "country": "US",
+            },
         }
         with (
             patch("routes.views.cockpit_panels.load_top_strip", return_value=strip),
@@ -800,10 +796,12 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Session snapshot", response.text)
         self.assertIn("London", response.text)
-        self.assertIn("+1.19%", response.text)
-        # Fallback polling contract when live updates are disabled.
+        self.assertIn("Current regime", response.text)
+        self.assertIn("controlled expansion", response.text)
+        self.assertIn("Next catalyst", response.text)
+        self.assertIn("US CPI", response.text)
         self.assertIn('hx-get="/partials/dashboard/top-strip"', response.text)
-        self.assertIn('hx-trigger="every 90s"', response.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
         self.assertNotIn("data-live-section", response.text)
 
     def test_live_attrs_vs_hx_fallback_wrapper(self):
@@ -831,7 +829,7 @@ class RouteTests(unittest.TestCase):
             live = client.get("/partials/dashboard/change-feed")
         self.assertIn('data-live-section="change_feed"', live.text)
         self.assertIn('data-live-event="section_changed"', live.text)
-        self.assertIn('data-live-url="/partials/dashboard/change-feed"', live.text)
+        self.assertIn('data-live-url="/partials/news/change-feed"', live.text)
         with (
             patch("routes.views.cockpit_panels.load_change_feed", return_value=feed),
             patch(
@@ -839,8 +837,8 @@ class RouteTests(unittest.TestCase):
             ),
         ):
             polling = client.get("/partials/dashboard/change-feed")
-        self.assertIn('hx-get="/partials/dashboard/change-feed"', polling.text)
-        self.assertIn('hx-trigger="every 90s"', polling.text)
+        self.assertIn('hx-get="/partials/news/change-feed"', polling.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
         self.assertNotIn("data-live-section", polling.text)
 
     def test_change_feed_renders_reaction_windows_and_load_earlier(self):
