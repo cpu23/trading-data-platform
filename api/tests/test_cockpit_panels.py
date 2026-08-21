@@ -83,7 +83,6 @@ class CrossAssetQueryTests(unittest.TestCase):
 
         with (
             patch("routes.views.cockpit_panels.query_many", return_value=[]),
-            patch("routes.views.cockpit_panels.query_one", return_value=None),
         ):
             payload = cockpit_panels.load_cross_asset(CONFIG)
         self.assertFalse(payload["available"])
