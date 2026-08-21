@@ -793,12 +793,12 @@
   }
 
   function ensureMarketRefresh() {
-    if (marketRefreshTimer) return;
     if (!refreshBound) {
       refreshBound = true;
       document.addEventListener('visibilitychange', handleVisibilityChange);
       document.body.addEventListener('marketRefresh', refreshLiveSectionsOnHeartbeat);
     }
+    if (marketRefreshTimer || document.hidden) return;
     marketRefreshTimer = window.setInterval(dispatchMarketRefresh, MARKET_REFRESH_INTERVAL_MS);
   }
 

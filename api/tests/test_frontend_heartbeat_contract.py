@@ -50,11 +50,23 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
         # listener registration; repeated boot, swap, and settle invocations
         # cannot produce a second interval or duplicate body listeners.
         self.assertIn("function ensureMarketRefresh()", self.app_js)
-        self.assertIn("if (marketRefreshTimer) return;", self.app_js)
+        self.assertIn("if (marketRefreshTimer || document.hidden) return;", self.app_js)
         self.assertIn("if (!refreshBound) {", self.app_js)
         self.assertIn("refreshBound = true;", self.app_js)
         self.assertIn("function initLiveSections() {\n    ensureMarketRefresh();", self.app_js)
         self.assertIn("ensureMarketRefresh();", self.app_js)
+
+    def test_initial_hidden_startup_does_not_create_interval(self):
+        # If DOMContentLoaded fires while the tab is already hidden (background
+        # load or restore), ensureMarketRefresh must still bind the
+        # visibilitychange listener idempotently but must NOT create the
+        # interval; the restoration path starts it on first visibility return.
+        self.assertIn(
+            "if (marketRefreshTimer || document.hidden) return;", self.app_js
+        )
+        self.assertIn(
+            "if (!refreshBound) {\n      refreshBound = true;", self.app_js
+        )
 
     def test_periodic_dispatch_pauses_while_document_is_hidden(self):
         self.assertIn(
@@ -118,7 +130,7 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
         self.assertIn("initDynamicUi(evt.detail.target)", self.app_js)
         self.assertIn("function initDynamicUi(root) {", self.app_js)
         self.assertIn("initLiveSections();", self.app_js)
-        self.assertIn("if (marketRefreshTimer) return;", self.app_js)
+        self.assertIn("if (marketRefreshTimer || document.hidden) return;", self.app_js)
 
     def test_cycle_complete_and_quote_stream_behavior_preserved(self):
         self.assertIn(
