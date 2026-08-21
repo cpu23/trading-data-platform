@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -30,6 +31,28 @@ MOCK_CONFIG = {
     "budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80},
     "timezone": {"primary": {"name": "UTC", "label": "UTC"}},
 }
+
+
+class _InvestmentDomProbe(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.nodes = []
+
+    def handle_starttag(self, tag, attrs):
+        self.nodes.append((tag, dict(attrs)))
+
+    def has(self, tag, **attrs):
+        def matches(node_attrs):
+            for name, value in attrs.items():
+                key = name.replace("__", "-")
+                if key not in node_attrs or node_attrs[key] != value:
+                    return False
+            return True
+
+        return any(
+            node_tag == tag and matches(node_attrs)
+            for node_tag, node_attrs in self.nodes
+        )
 
 
 class InvestmentApiTests(unittest.TestCase):
@@ -75,7 +98,29 @@ class InvestmentApiTests(unittest.TestCase):
     def test_dashboard_proxies_shared_orchestrator_client(self):
         payload = {
             "model": "google/gemini-3.5-flash-lite",
-            "regions": [{"code": "US", "company_count": 0, "stage": "monitor"}],
+            "regions": [
+                {
+                    "code": "US",
+                    "company_count": 12,
+                    "configured_company_count": 100,
+                    "coverage_status": "configured",
+                    "stage": "forming",
+                },
+                {
+                    "code": "EU",
+                    "company_count": 8,
+                    "configured_company_count": 200,
+                    "coverage_status": "configured",
+                    "stage": "monitor",
+                },
+                {
+                    "code": "ASIA",
+                    "company_count": 0,
+                    "configured_company_count": 0,
+                    "coverage_status": "not_configured",
+                    "stage": None,
+                },
+            ],
             "industries": [],
             "documents": [],
             "analyses": [],
@@ -86,6 +131,7 @@ class InvestmentApiTests(unittest.TestCase):
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["model"], "google/gemini-3.5-flash-lite")
+        self.assertEqual(result.json()["regions"], payload["regions"])
         args = self.upstream.request.await_args.args
         self.assertEqual(
             args[:2], ("GET", "http://orchestrator:8000/investment/dashboard")
@@ -307,6 +353,15 @@ class InvestmentApiTests(unittest.TestCase):
     def test_investment_page_renders_required_sections(self):
         response = self.client.get("/investment", headers=self.headers)
         self.assertEqual(response.status_code, 200)
+        dom = _InvestmentDomProbe()
+        dom.feed(response.text)
+        self.assertTrue(dom.has("section", data__thesis__view="investment"))
+        self.assertTrue(dom.has("button", type="button", data__thesis__run=None))
+        self.assertTrue(dom.has("tbody", data__thesis__opportunities=None))
+        self.assertTrue(dom.has("strong", data__status__value="model-cost"))
+        self.assertTrue(dom.has("div", role="status", aria__live="polite"))
+        self.assertTrue(dom.has("option", value="0"))
+        self.assertTrue(dom.has("option", value="0.25", selected=None))
         self.assertIn("Key industries", response.text)
         self.assertIn("Deterministic signals", response.text)
         self.assertIn("SEC EDGAR", response.text)
@@ -316,6 +371,103 @@ class InvestmentApiTests(unittest.TestCase):
             response.text,
         )
         self.assertNotIn("model figures are overlaid", response.text)
+
+    def test_region_strip_distinguishes_analysis_from_configuration(self):
+        response = self.client.get("/investment", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+
+        page = response.text
+        self.assertIn("stateLine.textContent = 'not configured';", page)
+        self.assertIn(
+            "countLine.textContent = analyzedCount + ' of ' + configuredCount + ' analyzed';",
+            page,
+        )
+        self.assertIn(
+            "card.setAttribute('data-coverage-status', isConfigured ? 'configured' : 'not-configured');",
+            page,
+        )
+        self.assertNotIn("count + (count === 1 ? ' company' : ' companies')", page)
+
+    def test_percentage_points_render_without_sub_one_scaling(self):
+        response = self.client.get("/investment", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+
+        page = response.text
+        self.assertIn("else if (isPct) sval = fmtCompact(n) + '%';", page)
+        self.assertIn(
+            "else if (isPct) v.textContent = n.toFixed(1) + '%';",
+            page,
+        )
+        self.assertNotIn("Math.abs(n) < 1", page)
+
+        val_cell_examples = (
+            (0.4397, "0.4%"),
+            (-0.4397, "-0.4%"),
+            (12.3, "12.3%"),
+        )
+        for percentage_points, expected in val_cell_examples:
+            with self.subTest(percentage_points=percentage_points):
+                self.assertEqual(f"{percentage_points:.1f}%", expected)
+
+    def test_valuation_rendering_uses_only_comparable_public_market_prices(self):
+        response = self.client.get("/investment", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+
+        page = response.text
+        for label in (
+            "DCF scenario / share calculated",
+            "DCF enterprise value only",
+            "DCF unavailable",
+            "Comparable market inputs",
+            "P/E with market price",
+            "Margin of safety with market price",
+            "DCF scenario / model output",
+            "Public market close",
+            "Market source",
+            "Market capture",
+            "DCF status",
+            "DCF assumptions",
+            "Starting FCF",
+            "Inferred annual growth",
+            "WACC",
+            "Terminal growth",
+            "Shares outstanding",
+            "Net debt",
+            "DCF sensitivity",
+            "Sensitivity status",
+            "Enterprise value low",
+            "Enterprise value high",
+            "Per-share low",
+            "Per-share high",
+            "Largest range driver",
+            "Analysis quality ready",
+            "Quality & freshness",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, page)
+        self.assertIn(
+            "var pe = hasMarketPrice ? finiteValue",
+            page,
+        )
+        self.assertIn(
+            "var marginOfSafety = hasMarketPrice && dcfPerShare != null && dcfPerShare > 0 ? finiteValue",
+            page,
+        )
+        self.assertIn(
+            "if (marginOfSafety != null) marginOfSafety *= 100;",
+            page,
+        )
+        self.assertIn(
+            "Unavailable without a fresh currency-comparable public close or explicit manual input.",
+            page,
+        )
+        self.assertIn("public daily close or explicit manual input", page)
+        self.assertNotIn("marketData.comparison_status || 'comparable'", page)
+        self.assertIn(
+            'name="market_price" placeholder="not supplied"',
+            page,
+        )
+        self.assertNotIn("Intrinsic / share", page)
 
 
 if __name__ == "__main__":

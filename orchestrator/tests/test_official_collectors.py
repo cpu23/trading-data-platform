@@ -4,12 +4,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import collectors.central_banks as central_banks
+import collectors.official_macro as official_macro
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from collectors.central_banks import CentralBanksCollector
 from collectors.cftc import CftcCollector
 from collectors.official_macro import BoeCollector, EiaCollector, OecdCollector
+from errors import TransientSourceError
 
 
 def _public_dns(host, port, *args, **kwargs):
@@ -20,6 +25,24 @@ def _public_dns(host, port, *args, **kwargs):
 
 def _public_dns_patch():
     return patch("socket.getaddrinfo", side_effect=_public_dns)
+
+
+def _cftc_config(categories, contracts):
+    return {
+        "collectors": {
+            "cftc": {
+                "datasets": [
+                    {
+                        "name": "test",
+                        "url": "https://example.test",
+                        "semantics": "CFTC futures positions; not short interest",
+                        "categories": categories,
+                        "contracts": contracts,
+                    }
+                ]
+            }
+        }
+    }
 
 
 class OfficialCollectorTests(unittest.TestCase):
@@ -54,6 +77,7 @@ class OfficialCollectorTests(unittest.TestCase):
         )
         ecb_ids = {series["id"] for series in collectors["ecb"]["series"]}
         self.assertTrue({"HICP_YOY", "UNEMP"}.issubset(ecb_ids))
+
     @patch("collectors.central_banks.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
     def test_central_bank_feed_forwards_source_headers(self, _dns, request):
@@ -93,6 +117,129 @@ class OfficialCollectorTests(unittest.TestCase):
             correlation_id="corr",
         )
 
+    @patch("collectors.central_banks.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_central_bank_success_scrubs_credentialed_feed_url_from_metadata(
+        self, _dns, request
+    ):
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = f"https://example.test/feed?token={query_secret}&lang=en"
+        response = Mock()
+        response.content = b"""
+            <rss><channel><item>
+              <title>Policy update</title>
+              <pubDate>Fri, 07 Aug 2026 12:00:00 +0000</pubDate>
+              <link>https://example.test/update</link>
+              <description>Published source text.</description>
+            </item></channel></rss>
+        """
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [
+                        {
+                            "institution": "boe",
+                            "url": raw_feed_url,
+                            "headers": {"User-Agent": "research-client"},
+                        }
+                    ]
+                }
+            }
+        }
+
+        records = CentralBanksCollector().collect(config, "corr")
+
+        # The intended raw URL (query included) still goes outbound.
+        request.assert_called_once_with(
+            "GET",
+            raw_feed_url,
+            headers={"User-Agent": "research-client"},
+            correlation_id="corr",
+        )
+        metadata_feed = records[0]["metadata"]["feed"]
+        self.assertEqual(metadata_feed, "https://example.test/feed")
+        self.assertNotIn(query_secret, metadata_feed)
+        self.assertNotIn("token=", metadata_feed)
+        self.assertNotIn("lang=en", metadata_feed)
+        # No credential material anywhere in the persisted record payload.
+        self.assertNotIn(query_secret, " ".join(str(records).split()))
+
+    def test_central_bank_failure_scrubs_userinfo_and_query_from_payload_and_log(self):
+        user = "SENTINEL-USER"
+        password = "SENTINEL-PASSWORD"
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = (
+            f"https://{user}:{password}@example.test/feed"
+            f"?token={query_secret}&lang=en"
+        )
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [{"institution": "boe", "url": raw_feed_url}]
+                }
+            }
+        }
+
+        with patch.object(central_banks, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                CentralBanksCollector().collect(config, "corr")
+
+        failed = raised.exception.metadata["failed_feeds"][0]
+        self.assertEqual(failed["feed"], "https://example.test/feed")
+        for secret in (user, password, query_secret):
+            self.assertNotIn(secret, failed["feed"])
+            self.assertNotIn(secret, failed["error"])
+        self.assertEqual(
+            mock_logger.error.call_args.args[0], "central_bank_feed_failed"
+        )
+        log_feed = mock_logger.error.call_args.kwargs["feed"]
+        self.assertEqual(log_feed, "https://example.test/feed")
+        self.assertNotIn(user, log_feed)
+        self.assertNotIn(password, log_feed)
+        self.assertNotIn(query_secret, log_feed)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(user, log_error)
+        self.assertNotIn(password, log_error)
+        self.assertNotIn(query_secret, log_error)
+
+    @patch("collectors.central_banks.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_central_bank_failure_scrubs_query_from_error_and_log(self, _dns, request):
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = f"https://example.test/feed?token={query_secret}&lang=en"
+        request.side_effect = httpx.HTTPStatusError(
+            f"401 Client Error: Unauthorized for url '{raw_feed_url}'",
+            request=httpx.Request("GET", raw_feed_url),
+            response=httpx.Response(
+                401, request=httpx.Request("GET", raw_feed_url), content=b""
+            ),
+        )
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [{"institution": "boe", "url": raw_feed_url}]
+                }
+            }
+        }
+
+        with patch.object(central_banks, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                CentralBanksCollector().collect(config, "corr")
+
+        failed = raised.exception.metadata["failed_feeds"][0]
+        self.assertEqual(failed["feed"], "https://example.test/feed")
+        self.assertNotIn(query_secret, failed["error"])
+        self.assertNotIn("token=", failed["error"])
+        self.assertNotIn("lang=en", failed["error"])
+        self.assertIn("example.test", failed["error"])
+        log_feed = mock_logger.error.call_args.kwargs["feed"]
+        self.assertEqual(log_feed, "https://example.test/feed")
+        self.assertNotIn(query_secret, log_feed)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(query_secret, log_error)
+
     @patch("collectors.cftc.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
     def test_cftc_normalizes_positioning(self, _dns, request):
@@ -109,22 +256,17 @@ class OfficialCollectorTests(unittest.TestCase):
         ]
         response.raise_for_status.return_value = None
         request.return_value = response
-        config = {
-            "collectors": {
-                "cftc": {
-                    "url": "https://example.test",
-                    "categories": [
-                        [
-                            "dealer",
-                            "dealer_positions_long_all",
-                            "dealer_positions_short_all",
-                        ]
-                    ],
-                    "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
-                }
-            }
-        }
-        records = CftcCollector().collect(config, "corr")
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [{"market_id": "099741", "assets": ["EURUSD"]}],
+        )
+        records = CftcCollector().collect(config, "corr").records
         self.assertEqual(records[0]["net_position"], 100)
         self.assertEqual(records[0]["net_pct_open_interest"], 10)
         self.assertEqual(records[0]["metadata"]["assets"], ["EURUSD"])
@@ -141,6 +283,138 @@ class OfficialCollectorTests(unittest.TestCase):
 
     @patch("collectors.cftc.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_collects_compatible_financial_and_commodity_schemas(
+        self, _dns, request
+    ):
+        financial = Mock()
+        financial.raise_for_status.return_value = None
+        financial.json.return_value = [
+            {
+                "cftc_contract_market_code": "099741",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+            }
+        ]
+        commodity = Mock()
+        commodity.raise_for_status.return_value = None
+        commodity.json.return_value = [
+            {
+                "cftc_contract_market_code": "088691",
+                "contract_market_name": "GOLD",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "2000",
+                "m_money_positions_long_all": "700",
+                "m_money_positions_short_all": "500",
+            }
+        ]
+        request.side_effect = [financial, commodity]
+        config = {
+            "collectors": {
+                "cftc": {
+                    "datasets": [
+                        {
+                            "name": "financial",
+                            "url": "https://example.test/financial",
+                            "semantics": "TFF futures-only",
+                            "categories": [
+                                [
+                                    "dealer",
+                                    "dealer_positions_long_all",
+                                    "dealer_positions_short_all",
+                                ]
+                            ],
+                            "contracts": [
+                                {"market_id": "099741", "assets": ["EURUSD"]}
+                            ],
+                        },
+                        {
+                            "name": "commodities",
+                            "url": "https://example.test/commodities",
+                            "semantics": "Disaggregated futures-only",
+                            "categories": [
+                                [
+                                    "managed_money",
+                                    "m_money_positions_long_all",
+                                    "m_money_positions_short_all",
+                                ]
+                            ],
+                            "contracts": [
+                                {"market_id": "088691", "assets": ["XAUUSD"]}
+                            ],
+                        },
+                    ]
+                }
+            }
+        }
+
+        result = CftcCollector().collect(config, "corr")
+
+        self.assertEqual(len(result.records), 2)
+        self.assertEqual(result.successful_series, 2)
+        self.assertEqual(result.metrics, {"api_calls_made": 2})
+        self.assertEqual(
+            {row["metadata"]["dataset"] for row in result.records},
+            {"financial", "commodities"},
+        )
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_dataset_failure_does_not_discard_other_schema(self, _dns, request):
+        commodity = Mock()
+        commodity.raise_for_status.return_value = None
+        commodity.json.return_value = [
+            {
+                "cftc_contract_market_code": "088691",
+                "contract_market_name": "GOLD",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "2000",
+                "m_money_positions_long_all": "700",
+                "m_money_positions_short_all": "500",
+            }
+        ]
+        request.side_effect = [TransientSourceError("down"), commodity]
+        config = {
+            "collectors": {
+                "cftc": {
+                    "datasets": [
+                        {
+                            "name": "financial",
+                            "url": "https://example.test/financial",
+                            "semantics": "TFF futures-only",
+                            "categories": [],
+                            "contracts": [{"market_id": "099741"}],
+                        },
+                        {
+                            "name": "commodities",
+                            "url": "https://example.test/commodities",
+                            "semantics": "Disaggregated futures-only",
+                            "categories": [
+                                [
+                                    "managed_money",
+                                    "m_money_positions_long_all",
+                                    "m_money_positions_short_all",
+                                ]
+                            ],
+                            "contracts": [{"market_id": "088691"}],
+                        },
+                    ]
+                }
+            }
+        }
+
+        result = CftcCollector().collect(config, "corr")
+
+        self.assertTrue(result.partial_failure)
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.successful_series, 1)
+        self.assertEqual(result.errors[0]["dataset"], "financial")
+        self.assertEqual(result.errors[0]["error_class"], "transient_source")
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
     def test_cftc_ignores_unmapped_contracts(self, _dns, request):
         response = Mock()
         response.json.return_value = [
@@ -151,15 +425,10 @@ class OfficialCollectorTests(unittest.TestCase):
         ]
         response.raise_for_status.return_value = None
         request.return_value = response
-        config = {
-            "collectors": {
-                "cftc": {
-                    "url": "https://example.test",
-                    "categories": [],
-                    "contracts": [{"market_id": "099741", "assets": ["EURUSD"]}],
-                }
-            }
-        }
+        config = _cftc_config(
+            [],
+            [{"market_id": "099741", "assets": ["EURUSD"]}],
+        )
 
         with self.assertRaises(CollectorNoData):
             CftcCollector().collect(config, "corr")
@@ -299,6 +568,222 @@ class OfficialCollectorTests(unittest.TestCase):
             request.call_args.kwargs["headers"], {"User-Agent": "collector"}
         )
 
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_accepts_official_alphanumeric_market_codes(self, _dns, request):
+        response = Mock()
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "006NKJ",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+                "futonly_or_combined": "Combined",
+            }
+        ]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [{"market_id": "006NKJ", "assets": ["EURUSD"]}],
+        )
+
+        records = CftcCollector().collect(config, "corr").records
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["market_id"], "006NKJ")
+        # Alphanumeric codes are never coerced through int().
+        self.assertIsInstance(records[0]["market_id"], str)
+        self.assertEqual(records[0]["net_position"], 100)
+        self.assertEqual(records[0]["metadata"]["assets"], ["EURUSD"])
+        self.assertEqual(
+            records[0]["metadata"]["positioning_kind"], "futures_positioning"
+        )
+        self.assertIn("'006NKJ'", request.call_args.kwargs["params"]["$where"])
+        self.assertEqual(records[0]["metadata"]["futonly_or_combined"], "Combined")
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_matches_by_name_when_row_has_no_code(self, _dns, request):
+        response = Mock()
+        response.json.return_value = [
+            {
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "400",
+                "dealer_positions_short_all": "100",
+            }
+        ]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [
+                {
+                    "market_id": "EURUSD",
+                    "name": "Euro FX",
+                    "assets": ["EURUSD"],
+                }
+            ],
+        )
+
+        records = CftcCollector().collect(config, "corr").records
+
+        self.assertEqual(len(records), 1)
+        # The provider's own market name is kept as the official identity.
+        self.assertEqual(records[0]["market_id"], "EURO FX")
+        self.assertEqual(records[0]["metadata"]["assets"], ["EURUSD"])
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_market_ids_list_broadens_one_mapping(self, _dns, request):
+        response = Mock()
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "099741",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+            },
+            {
+                "cftc_contract_market_code": "099742",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "310",
+                "dealer_positions_short_all": "210",
+            },
+        ]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [
+                {
+                    "market_ids": ["099741", "099742"],
+                    "assets": ["EURUSD"],
+                }
+            ],
+        )
+
+        records = CftcCollector().collect(config, "corr").records
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {record["market_id"] for record in records}, {"099741", "099742"}
+        )
+        self.assertTrue(
+            all(record["metadata"]["assets"] == ["EURUSD"] for record in records)
+        )
+        self.assertIn("'099741'", request.call_args.kwargs["params"]["$where"])
+        self.assertIn("'099742'", request.call_args.kwargs["params"]["$where"])
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_futonly_or_combined_filters_rows(self, _dns, request):
+        response = Mock()
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "006NKJ",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+                "futonly_or_combined": "FutOnly",
+            },
+            {
+                "cftc_contract_market_code": "006NKJ",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "330",
+                "dealer_positions_short_all": "230",
+                "futonly_or_combined": "Combined",
+            },
+        ]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [
+                {
+                    "market_id": "006NKJ",
+                    "futonly_or_combined": "Combined",
+                    "assets": ["EURUSD"],
+                }
+            ],
+        )
+
+        records = CftcCollector().collect(config, "corr").records
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["net_position"], 100)
+        self.assertEqual(records[0]["metadata"]["futonly_or_combined"], "Combined")
+
+    @patch("collectors.cftc.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_cftc_positioning_is_never_labeled_short_interest(self, _dns, request):
+        response = Mock()
+        response.json.return_value = [
+            {
+                "cftc_contract_market_code": "006NKJ",
+                "contract_market_name": "EURO FX",
+                "report_date_as_yyyy_mm_dd": "2026-06-16",
+                "open_interest_all": "1000",
+                "dealer_positions_long_all": "300",
+                "dealer_positions_short_all": "200",
+            }
+        ]
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = _cftc_config(
+            [
+                [
+                    "dealer",
+                    "dealer_positions_long_all",
+                    "dealer_positions_short_all",
+                ]
+            ],
+            [{"market_id": "006NKJ"}],
+        )
+
+        records = CftcCollector().collect(config, "corr").records
+
+        self.assertEqual(
+            records[0]["metadata"]["positioning_kind"], "futures_positioning"
+        )
+        self.assertIn("not short interest", records[0]["metadata"]["semantics"].lower())
+
     @patch("collectors.official_macro.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
     def test_official_collector_reports_partial_series_failure(self, _dns, request):
@@ -338,6 +823,85 @@ class OfficialCollectorTests(unittest.TestCase):
             collector.last_result_metadata["series_failed"][0]["series_id"],
             "CLI_GB",
         )
+
+    @patch("collectors.official_macro.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_eia_failure_metadata_and_log_never_contain_api_key(self, _dns, request):
+        secret = "SENTINEL-EIA-KEY"
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": secret,
+                    "api_key_param": "api_key",
+                    "series": [
+                        {
+                            "id": "BRENT",
+                            "url": "https://example.test",
+                            "records_path": ["response", "data"],
+                            "date_field": "period",
+                            "value_field": "value",
+                        }
+                    ],
+                }
+            }
+        }
+        request.return_value = httpx.Response(
+            401,
+            request=httpx.Request(
+                "GET",
+                "https://example.test",
+                params={"api_key": secret, "frequency": "monthly"},
+            ),
+            content=b"",
+        )
+        with patch.object(official_macro, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                EiaCollector().collect(config, "corr")
+
+        error = raised.exception.metadata["failed_series"][0]["error"]
+        self.assertNotIn(secret, error)
+        self.assertNotIn("api_key=", error)
+        self.assertNotIn("frequency", error)
+        self.assertIn("example.test", error)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(secret, log_error)
+        self.assertEqual(
+            mock_logger.error.call_args.args[0], "official_series_failed"
+        )
+
+    @patch("collectors.official_macro.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_eia_health_message_never_contains_api_key(self, _dns, request):
+        secret = "SENTINEL-EIA-KEY"
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": secret,
+                    "api_key_param": "api_key",
+                    "series": [
+                        {
+                            "id": "BRENT",
+                            "url": "https://example.test",
+                            "records_path": ["response", "data"],
+                            "date_field": "period",
+                            "value_field": "value",
+                        }
+                    ],
+                }
+            }
+        }
+        request.side_effect = RuntimeError(
+            f"401 Unauthorized for url 'https://example.test/?api_key={secret}'"
+        )
+
+        result = EiaCollector().health_check(config)
+
+        self.assertFalse(result["healthy"])
+        self.assertNotIn(secret, result["message"])
+        self.assertNotIn("api_key", result["message"])
+        self.assertIn("example.test", result["message"])
 
 
 if __name__ == "__main__":

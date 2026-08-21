@@ -9,6 +9,7 @@ patch targets remain effective during the facade cutover.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import traceback
@@ -18,9 +19,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from collectors import get_collector
-from collectors.base import CollectionResult, elapsed_ms
-from db import get_session, upsert_records
+from collectors.base import CollectionResult, CollectionWriteBatch, elapsed_ms
+from db import get_session, upsert_records, write_batches_in_session
 from errors import (
     ERROR_CLASS_UNKNOWN,
     InvalidSourceData,
@@ -45,12 +48,15 @@ DEFAULT_COLLECTOR_WORKERS = 3
 MAX_COLLECTOR_WORKERS = 8
 
 logger = get_logger("orchestrator.collector_execution")
+_DYNAMIC_MARKET_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,19}$")
+_EQUITY_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,19}$")
 
 # Keep local patchability when this module is tested directly, while preferring
 # facade patch targets when it is called through the compatibility facade.
 _LOCAL_DEPENDENCIES = {
     "get_collector": get_collector,
     "upsert_records": upsert_records,
+    "write_batches_in_session": write_batches_in_session,
     "publish_collector_records_atomic": publish_collector_records_atomic,
     "record_collection_freshness": record_collection_freshness,
     "get_session": get_session,
@@ -85,6 +91,193 @@ def _resolved_config(config: dict | None) -> dict:
     from config_loader import load_config
 
     return load_config()
+
+
+def _with_active_thesis_symbols(
+    config: dict, source_id: str = "public_equities"
+) -> dict:
+    """Append bounded configured-universe and live-thesis market symbols.
+
+    Configured symbols keep priority.  ``public_equities`` may then opt into
+    the checked-in 300-company investment universe, followed by live fusion
+    thesis symbols ranked by opportunity score.  The merged list never
+    exceeds the source cap and the original frozen config snapshot is never
+    mutated.  Database failure drops only the live-thesis extension; the
+    static investment universe remains available without a database.
+    """
+    collectors = config.get("collectors")
+    section = collectors.get(source_id) if isinstance(collectors, Mapping) else None
+    if not isinstance(section, Mapping):
+        return config
+    include_theses = bool(section.get("include_active_theses"))
+    include_universe = source_id == "public_equities" and bool(
+        section.get("include_investment_universe")
+    )
+    if not include_theses and not include_universe:
+        return config
+    raw_symbols = section.get("symbols")
+    if not isinstance(raw_symbols, list):
+        return config
+    try:
+        hard_cap = 400 if source_id == "public_equities" else 200
+        cap = max(1, min(int(section.get("max_symbols", 50)), hard_cap))
+    except (TypeError, ValueError):
+        return config
+    symbol_pattern = (
+        _DYNAMIC_MARKET_SYMBOL_RE
+        if source_id == "public_equities"
+        else _EQUITY_SYMBOL_RE
+    )
+    sql_symbol_pattern = (
+        "^[A-Z0-9][A-Z0-9.^=-]{0,19}$"
+        if source_id == "public_equities"
+        else "^[A-Z0-9][A-Z0-9.-]{0,19}$"
+    )
+
+    configured: list[str] = []
+    seen: set[str] = set()
+    for value in raw_symbols:
+        symbol = str(value or "").strip().upper()
+        if symbol_pattern.fullmatch(symbol) and symbol not in seen:
+            configured.append(symbol)
+            seen.add(symbol)
+
+    universe_added = False
+    if include_universe and len(configured) < cap:
+        try:
+            from investment_universe import top_us_uk_eu_companies
+
+            for company in top_us_uk_eu_companies():
+                symbol = str(company.get("symbol") or "").strip().upper()
+                if symbol_pattern.fullmatch(symbol) and symbol not in seen:
+                    configured.append(symbol)
+                    seen.add(symbol)
+                    universe_added = True
+                if len(configured) >= cap:
+                    break
+        except Exception as exc:
+            _dependency("logger").warning(
+                "investment_collection_universe_unavailable",
+                action="extend_collection_universe",
+                source=source_id,
+                error_type=type(exc).__name__,
+            )
+
+    def extended_with(symbols: list[str]) -> dict:
+        collector_copy = dict(section)
+        collector_copy["symbols"] = symbols
+        collectors_copy = dict(collectors)
+        collectors_copy[source_id] = collector_copy
+        extended = dict(config)
+        extended["collectors"] = collectors_copy
+        return extended
+
+    remaining = cap - len(configured)
+    static_result = extended_with(configured) if universe_added else config
+    if not include_theses or remaining <= 0:
+        return static_result
+
+    # The grammar predicate, normalized grouping, and configured-symbol
+    # exclusion all run before ORDER BY/LIMIT. Invalid or duplicate persisted
+    # symbols therefore cannot consume a dynamic slot.
+    exclusion = "AND UPPER(BTRIM(symbol)) <> ALL(:excluded) " if configured else ""
+    params: dict[str, Any] = {"limit": cap * 2}
+    if configured:
+        params["excluded"] = configured
+    try:
+        with _dependency("get_session")(config) as session:
+            rows = (
+                session.execute(
+                    text(
+                        "SELECT UPPER(BTRIM(symbol)) AS symbol, "
+                        "MAX(opportunity_score) AS opportunity_score, "
+                        "MAX(updated_at) AS updated_at "
+                        "FROM investment_theses "
+                        "WHERE origin = 'fusion' "
+                        "AND status IN ('candidate', 'active', 'paused') "
+                        f"AND UPPER(BTRIM(symbol)) ~ '{sql_symbol_pattern}' "
+                        f"{exclusion}"
+                        "GROUP BY UPPER(BTRIM(symbol)) "
+                        "ORDER BY MAX(opportunity_score) DESC NULLS LAST, "
+                        "MAX(updated_at) DESC, UPPER(BTRIM(symbol)) "
+                        "LIMIT :limit"
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+    except Exception as exc:
+        _dependency("logger").warning(
+            "dynamic_collection_symbols_unavailable",
+            action="extend_collection_universe",
+            source=source_id,
+            error_type=type(exc).__name__,
+        )
+        return static_result
+
+    dynamic: list[str] = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol_pattern.fullmatch(symbol) and symbol not in seen:
+            dynamic.append(symbol)
+            seen.add(symbol)
+        if len(dynamic) >= remaining:
+            break
+    if not dynamic:
+        return static_result
+    return extended_with(configured + dynamic)
+
+
+def _with_public_equity_bootstrap(config: dict) -> dict:
+    """Mark symbols lacking any stored daily bar for one bounded backfill."""
+    collectors = config.get("collectors")
+    section = (
+        collectors.get("public_equities") if isinstance(collectors, Mapping) else None
+    )
+    if not isinstance(section, Mapping):
+        return config
+    symbols = [
+        str(value or "").strip().upper()
+        for value in section.get("symbols", [])
+        if _DYNAMIC_MARKET_SYMBOL_RE.fullmatch(str(value or "").strip().upper())
+    ]
+    if not symbols:
+        return config
+    try:
+        with _dependency("get_session")(config) as session:
+            rows = (
+                session.execute(
+                    text(
+                        """SELECT DISTINCT UPPER(BTRIM(symbol)) AS symbol
+                           FROM market_data
+                           WHERE source = 'public_equities'
+                             AND timeframe = '1d'
+                             AND UPPER(BTRIM(symbol)) = ANY(:symbols)
+                           ORDER BY symbol"""
+                    ),
+                    {"symbols": symbols},
+                )
+                .mappings()
+                .all()
+            )
+    except Exception as exc:
+        _dependency("logger").warning(
+            "public_equity_bootstrap_state_unavailable",
+            action="extend_collection_universe",
+            error_type=type(exc).__name__,
+        )
+        return config
+    existing = {str(row.get("symbol") or "").strip().upper() for row in rows}
+    collector_copy = dict(section)
+    collector_copy["_bootstrap_symbols"] = [
+        symbol for symbol in symbols if symbol not in existing
+    ]
+    collectors_copy = dict(collectors)
+    collectors_copy["public_equities"] = collector_copy
+    extended = dict(config)
+    extended["collectors"] = collectors_copy
+    return extended
 
 
 def collector_worker_limit(config: dict, enabled_count: int) -> int:
@@ -308,11 +501,19 @@ def _run_collector_impl(
     error_class = None
     retryable = False
     collection_metrics: dict[str, int] = {}
-
     try:
+        if source_id in {
+            "public_equities",
+            "company_expectations",
+            "cboe_options",
+        }:
+            config = _with_active_thesis_symbols(config, source_id)
+        if source_id == "public_equities":
+            config = _with_public_equity_bootstrap(config)
         raw_result = collector.collect(config, correlation_id)
         if isinstance(raw_result, CollectionResult):
             records = raw_result.records
+            additional_writes = list(raw_result.additional_writes)
             collection_metrics = dict(raw_result.metrics)
             if raw_result.all_failed:
                 error_message = _collection_issue_reason(
@@ -332,6 +533,7 @@ def _run_collector_impl(
                 retryable = policy["retryable"]
         else:
             records = raw_result
+            additional_writes = []
         records_fetched = len(records)
         exact_api_calls = collection_metrics.get("api_calls_made")
         if isinstance(exact_api_calls, int) and exact_api_calls >= 0:
@@ -342,9 +544,15 @@ def _run_collector_impl(
                 estimator = _estimate_api_calls
             api_calls_made = estimator(source_id, records_fetched, config)
 
-        if records:
+        if records or additional_writes:
             table_name = collector.get_target_table()
             conflict_columns = collector.get_conflict_columns()
+            # Collectors that declare immutable records (insert_only) must
+            # never revise a stored row: DO NOTHING conflicts keep
+            # re-collection idempotent without mutating history.  The flag
+            # is a class-level declaration: an instance lookup would read
+            # MagicMock attributes as truthy in tests.
+            insert_only = bool(getattr(type(collector), "insert_only", False))
             db_write_started = time.monotonic()
             try:
                 if _event_publication_enabled(source_id, config):
@@ -355,19 +563,68 @@ def _run_collector_impl(
                         conflict_columns=conflict_columns,
                         correlation_id=correlation_id,
                         config=config,
+                        additional_writes=additional_writes,
+                        insert_only=insert_only,
                     )
                     collection_metrics.update(
                         events_inserted=write_result.events_inserted,
                         events_deduplicated=write_result.events_deduplicated,
                         outbox_inserted=write_result.outbox_inserted,
                     )
+                    records_written = write_result.written
+                    write_attempted = write_result.attempted
+                    write_status = write_result.status
+                elif additional_writes:
+                    batches = [
+                        CollectionWriteBatch(
+                            table_name=table_name,
+                            records=records,
+                            conflict_columns=conflict_columns,
+                            insert_only=insert_only,
+                        )
+                    ]
+                    batches.extend(additional_writes)
+                    with _dependency("get_session")(config) as session:
+                        write_results = _dependency("write_batches_in_session")(
+                            session, batches
+                        )
+                    records_written = sum(
+                        write_result.written for write_result in write_results
+                    )
+                    write_attempted = sum(
+                        write_result.attempted for write_result in write_results
+                    )
+                    collection_metrics.update(
+                        db_batches_total=len(write_results),
+                        db_batches_written=sum(
+                            1
+                            for write_result in write_results
+                            if write_result.failed == 0
+                        ),
+                        db_records_written=records_written,
+                        db_records_failed=sum(
+                            write_result.failed for write_result in write_results
+                        ),
+                    )
+                    write_status = (
+                        "failed"
+                        if any(write_result.failed for write_result in write_results)
+                        else "success"
+                    )
                 else:
+                    # Single-table collectors keep the legacy writer: same
+                    # semantics and same dependency-injection seam, with the
+                    # collector's insert_only policy honored.
                     write_result = _dependency("upsert_records")(
                         table_name=table_name,
                         records=records,
                         conflict_columns=conflict_columns,
                         config=config,
+                        insert_only=insert_only,
                     )
+                    records_written = write_result.written
+                    write_attempted = write_result.attempted
+                    write_status = write_result.status
             except Exception as exc:
                 raise PersistenceError("collector persistence failed") from exc
             finally:
@@ -381,14 +638,12 @@ def _run_collector_impl(
                     correlation_id=correlation_id,
                     db_write_duration_ms=collection_metrics["db_write_duration_ms"],
                 )
-            records_written = write_result.written
-            write_status = write_result.status
             if write_status == "failed":
                 status = "failed"
                 error_class = PersistenceError.error_class
                 retryable = True
                 error_message = error_message or (
-                    f"All {write_result.attempted} DB writes failed for table {table_name}"
+                    f"All {write_attempted} DB writes failed for table {table_name}"
                 )
             elif write_status == "partial":
                 if status == "success":
@@ -396,7 +651,7 @@ def _run_collector_impl(
                 error_class = PersistenceError.error_class
                 retryable = True
                 error_message = error_message or (
-                    f"Partial DB write: {write_result.written}/{write_result.attempted} "
+                    f"Partial DB write: {records_written}/{write_attempted} "
                     f"records written to {table_name}"
                 )
     except Exception as exc:

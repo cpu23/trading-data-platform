@@ -579,9 +579,7 @@ def run_research_discovery_job(session: Any, job: Any) -> dict[str, Any]:
         "candidate_count": int(discovery.get("candidate_count") or len(cases)),
         "abstention_count": abstention_count,
         "driver_count": int(macro.get("driver_count") or 0),
-        "lifecycle_transition_count": len(
-            discovery.get("lifecycle_transitions", [])
-        ),
+        "lifecycle_transition_count": len(discovery.get("lifecycle_transitions", [])),
         "error_count": errors,
         "cost_usd": float(discovery.get("model_cost_usd") or 0)
         + float(macro.get("model_cost_usd") or 0),
@@ -648,6 +646,41 @@ def run_investment_analysis_job(session: Any, job: Any) -> dict[str, Any]:
     }
 
 
+def run_thesis_autonomy_job(session: Any, job: Any) -> dict[str, Any]:
+    """Run one bounded autonomous thesis-fusion cycle durably.
+
+    The cycle runs entirely inside the worker's caller-owned transaction;
+    the returned result is bounded (status, error count, model cost) and
+    safe for ``result_ref`` persistence.
+    """
+    from thesis_autonomy import run_autonomous_thesis_cycle
+
+    payload = _mapping(_job_value(job, "payload", {}))
+    result = run_autonomous_thesis_cycle(
+        session,
+        dict(_config()),
+        correlation_id=str(_job_value(job, "correlation_id", "") or "") or None,
+        as_of=payload.get("as_of") or None,
+    )
+    return {
+        "status": str(result.get("status") or "partial"),
+        "error_count": int(result.get("error_count") or 0),
+        "cost_usd": float(result.get("cost_usd") or 0),
+        "promoted_count": int(result.get("promoted_count") or 0),
+        "falsification_runs": int(result.get("falsification_runs") or 0),
+        "challenge_attempts": int(result.get("challenge_attempts") or 0),
+        "challenge_limit": int(result.get("challenge_limit") or 0),
+        "challenger_failures": int(result.get("challenger_failures") or 0),
+        "role_failures": int(result.get("role_failures") or 0),
+        "promotion_gate_rejections": int(result.get("promotion_gate_rejections") or 0),
+        "source_gate_rejections": int(result.get("source_gate_rejections") or 0),
+        "opposition_gate_rejections": int(
+            result.get("opposition_gate_rejections") or 0
+        ),
+        "semantic_audit_rejections": int(result.get("semantic_audit_rejections") or 0),
+    }
+
+
 _HANDLERS = {
     "publish_source_health_snapshot": publish_source_health_snapshot,
     "publish_watchlist_snapshot": publish_watchlist_snapshot,
@@ -661,6 +694,7 @@ _HANDLERS = {
     "research_discovery": run_research_discovery_job,
     "research_case_update": run_research_case_update_job,
     "investment_analysis": run_investment_analysis_job,
+    "thesis_autonomy_run": run_thesis_autonomy_job,
 }
 
 
@@ -686,6 +720,7 @@ __all__ = [
     "run_investment_analysis_job",
     "run_research_case_update_job",
     "run_research_discovery_job",
+    "run_thesis_autonomy_job",
     "update_macro_release_reactions",
     "update_story_market_confirmation",
 ]

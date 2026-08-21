@@ -53,7 +53,7 @@ flowchart LR
         FilingIntake["Scheduled filing intake"]
         Investment["Investment fact extraction<br/>and deterministic engine"]
         Intelligence["Regime, event, and<br/>briefing processors"]
-        ResearchEngine["Evidence adapters, dynamic cases,<br/>causal graph and market drivers"]
+        ResearchEngine["Evidence adapters, dynamic cases,<br/>competing theses and falsification"]
         Quality["Data-quality checks<br/>30-second health snapshot"]
     end
 
@@ -61,7 +61,7 @@ flowchart LR
         Raw["Raw time-series and events"]
         Reports["Report documents and analyses"]
         Derived["Derived market intelligence"]
-        Cases["Versioned research cases,<br/>edges, evidence and requests"]
+        Cases["Versioned cases and theses,<br/>forecasts, playbooks and evidence"]
         Operations["Run history, logs, costs"]
     end
 
@@ -71,7 +71,7 @@ flowchart LR
         Markets["Markets `/markets` — lazy shell:<br/>cross-asset, catalysts, macro releases,<br/>regime, indicators, calendar"]
         News["News `/news` — change feed,<br/>story monitor, source controls"]
         Investments["Investment research view"]
-        Research["Research case workspace"]
+        Research["Research case and thesis desks"]
         Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
         Heartbeat["Browser `marketRefresh` heartbeat:<br/>one timer; SSE sections never poll"]
@@ -121,10 +121,12 @@ derived outputs inspectable without mixing raw source data with analysis.
 
 ## Engineering Highlights
 
-- **Configuration-driven collectors:** FRED and OECD macro series, ECB and
-  Bank of England data, EIA energy balances, CFTC positioning, central-bank
-  communications, economic-calendar events, OANDA price snapshots, and their
-  intended schedules are defined in YAML rather than hard-coded.
+- **Configuration-driven collectors:** revision-aware FRED and OECD macro
+  series, ECB and Bank of England data, EIA energy balances, CFTC and FINRA
+  positioning, central-bank communications, economic-calendar events, OANDA
+  prices, historical option surfaces, issuer filings/news/transcripts, and
+  point-in-time company expectations, catalysts, institutional ownership, and
+  short interest are defined in YAML rather than hard-coded.
 - **Dependency-aware processing:** processors run only after their required
   collectors or upstream processors succeed.
 - **Traceable LLM usage:** processing logs capture model, prompt version, token
@@ -154,7 +156,13 @@ derived outputs inspectable without mixing raw source data with analysis.
   multidimensional value-capture review, counterevidence, cold-data requests,
   evidence-linked major-market drivers, and point-in-time replay with
   version-controlled benchmark episodes and model/prompt variant comparison.
-  See [docs/research-intelligence.md](docs/research-intelligence.md).
+  A separate bounded thesis tournament generates competing, citation-audited
+  candidates; deduplicates them by deterministic identity; continuously
+  challenges active theses; publishes scenario, catalyst, playbook, and
+  opportunity views; and records point-in-time forecast outcomes for
+  calibration. See
+  [docs/research-intelligence.md](docs/research-intelligence.md) and
+  [docs/investment-research.md](docs/investment-research.md).
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
@@ -290,14 +298,19 @@ The database keeps responsibilities explicit:
 
 ## Quick Start
 
-For a populated, credential-free live demo:
+For a populated, credential-free live demo that works from a brand-new named
+volume with no setup intervention:
 
 ```bash
 docker compose -f docker-compose.demo.yml up --build
-# Open http://127.0.0.1:8000 and sign in with demo / demo
+# Open http://127.0.0.1:8000; the browser shows a native sign-in prompt,
+# enter demo / demo
 ```
 
-The demo seeds deterministic fictional analysis and operational history, then
+A fresh demo volume has no setup state, so the API presents the HTTP Basic
+challenge at the root instead of the setup form; the demo never shows the
+setup page and needs no `SETUP_TOKEN` or placeholder credentials. The demo
+seeds deterministic fictional analysis and operational history, then
 publishes four bounded fictional prices plus real replayable watchlist
 invalidations every five seconds. It exercises the production DB→SSE→HTMX
 partial path and makes no external or paid API calls.
@@ -360,6 +373,13 @@ authentication control. Before first activation, replace `SETUP_TOKEN` and the
 three purpose-specific signing-key placeholders in `.env`, then open `/setup`.
 The activation request must present the bootstrap token and commits a complete
 versioned state atomically.
+
+Demo/test deployments that enable `LEGACY_BASIC_AUTH` with configured
+`DASHBOARD_USER`/`DASHBOARD_PASSWORD` credentials (the demo Compose file uses
+`demo`/`demo`) skip the setup bootstrap: the root challenges HTTP Basic, and
+`/login` and `/setup` redirect to it, so a fresh volume can sign in exactly as
+documented. Production deployments never skip the setup bootstrap; their
+setup form and token boundary are unchanged.
 
 Browser mutations require a session, a signed CSRF token, and an `Origin` that
 matches `EXTERNAL_ORIGIN`. `TRUSTED_HOSTS` constrains accepted Host headers.
@@ -477,9 +497,10 @@ scripts/smoke_test.sh
 The GitHub Actions workflow runs compilation, API/orchestrator/root tests,
 deterministic failure drills, migration and fixture checks, Compose validation,
 Ruff, dependency audits, clean-migration and live cross-service contracts, the
-credential-free demo smoke, and a Trivy image gate for fix-available High and
-Critical vulnerabilities on every push and pull request. Vulnerabilities with
-no published fix are reported separately rather than enforced by that gate.
+credential-free demo smoke, and a Trivy image gate that requires zero High and
+Critical vulnerabilities on the built application image on every push and pull
+request. The gate enforces every HIGH/CRITICAL finding — fixed or not — with no
+`ignore-unfixed` exemption, no severity overrides, and no ignore rules.
 
 ## Project Structure
 

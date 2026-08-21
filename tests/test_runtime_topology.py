@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -5,10 +6,70 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = (ROOT / "docker-compose.yml", ROOT / "docker-compose.demo.yml")
+DEPLOY_SCRIPT = ROOT / "scripts" / "deploy_runtime.sh"
+# The exact eight-role production topology.
+PRODUCTION_ROLES = frozenset(
+    {"postgres", "migrate", "orchestrator", "scheduler", "worker", "outbox", "quotes", "api"}
+)
+# The six long-running application roles the deployment script (re)creates.
+RUNTIME_ROLES = frozenset({"orchestrator", "scheduler", "worker", "outbox", "quotes", "api"})
 
 
 def load_compose(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
+
+
+def executable_lines(path: Path) -> str:
+    """The script with comment lines removed, so safety proofs cover the
+    commands the shell will actually run, not the prose describing them."""
+    return "\n".join(
+        line for line in path.read_text().splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+# Go duration units, as accepted by Compose's stop_grace_period. A loader
+# that normalizes the value may emit integer nanoseconds instead of a string.
+_DURATION_UNITS = {
+    "ns": 1e-9,
+    "us": 1e-6,
+    "µs": 1e-6,
+    "ms": 1e-3,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+    "d": 86400.0,
+}
+_DURATION_TOKEN = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h|d)")
+
+
+def stop_grace_seconds(value) -> float:
+    """stop_grace_period as a float number of seconds.
+
+    Compose accepts Go-style duration strings ('60s', '30m', '1h30m'), and
+    loaders that normalize durations may instead emit integer nanoseconds.
+    Both representations resolve to the same semantic duration; a bare
+    number string follows Go's ParseDuration convention (nanoseconds).
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"stop_grace_period must be a duration string or nanoseconds, got {value!r}")
+    if isinstance(value, (int, float)):
+        return value / 1_000_000_000
+    if not isinstance(value, str):
+        raise TypeError(f"stop_grace_period must be a duration string or nanoseconds, got {value!r}")
+    if not value:
+        raise ValueError("stop_grace_period must not be empty")
+    if value.isdigit():
+        return int(value) / 1_000_000_000
+    seconds = 0.0
+    position = 0
+    for match in _DURATION_TOKEN.finditer(value):
+        if match.start() != position:
+            raise ValueError(f"invalid stop_grace_period duration: {value!r}")
+        seconds += float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+        position = match.end()
+    if position != len(value):
+        raise ValueError(f"invalid stop_grace_period duration: {value!r}")
+    return seconds
 
 
 class RuntimeTopologyTests(unittest.TestCase):
@@ -19,7 +80,7 @@ class RuntimeTopologyTests(unittest.TestCase):
         self.assertIn("COPY api /app/api", dockerfile)
         self.assertIn("COPY orchestrator /app/orchestrator", dockerfile)
         self.assertIn('CMD ["python3", "--version"]', dockerfile)
-        self.assertNotIn("ENTRYPOINT", dockerfile)
+        self.assertIn("ENTRYPOINT []", dockerfile)
 
     def test_production_and_demo_have_split_ordered_services(self):
         for path in COMPOSE_FILES:
@@ -205,6 +266,82 @@ class RuntimeTopologyTests(unittest.TestCase):
             self.assertEqual(environment["FRED_API_KEY"], "demo-disabled")
             self.assertEqual(environment["OANDA_API_KEY"], "demo-disabled")
 
+    def test_demo_bootstrap_credentials_are_explicit_and_production_has_none(self):
+        """The demo bootstrap is explicit and safe: demo services carry
+        DEPLOYMENT_MODE=demo plus the non-secret demo/demo HTTP Basic
+        credentials so a fresh volume authenticates at the root with no setup
+        form. Production must not carry demo credentials or legacy auth."""
+        demo = load_compose(ROOT / "docker-compose.demo.yml")
+        for name in (
+            "migrate",
+            "orchestrator",
+            "scheduler",
+            "worker",
+            "outbox",
+            "quotes",
+            "demo-live",
+            "api",
+        ):
+            with self.subTest(service=name):
+                environment = demo["services"][name]["environment"]
+                self.assertEqual(environment["DEPLOYMENT_MODE"], "demo")
+                self.assertEqual(environment["LEGACY_BASIC_AUTH"], "1")
+                self.assertEqual(environment["DASHBOARD_USER"], "demo")
+                self.assertEqual(environment["DASHBOARD_PASSWORD"], "demo")
+
+        production = load_compose(ROOT / "docker-compose.yml")
+        for name, service in production["services"].items():
+            with self.subTest(service=name):
+                environment = service.get("environment", {})
+                self.assertNotIn("LEGACY_BASIC_AUTH", environment)
+                self.assertNotIn("DASHBOARD_PASSWORD", environment)
+
+    def test_production_compose_exposes_exactly_the_eight_expected_roles(self):
+        production = load_compose(ROOT / "docker-compose.yml")
+        self.assertEqual(PRODUCTION_ROLES, set(production["services"]))
+        for role in RUNTIME_ROLES:
+            with self.subTest(role=role):
+                service = production["services"][role]
+                self.assertEqual(service["restart"], "unless-stopped")
+                self.assertIn("healthcheck", service)
+                self.assertEqual(
+                    service["depends_on"]["postgres"]["condition"],
+                    "service_healthy",
+                )
+                self.assertEqual(
+                    service["depends_on"]["migrate"]["condition"],
+                    "service_completed_successfully",
+                )
+
+    def test_production_log_growth_is_bounded_and_outbox_drains_gracefully(self):
+        production = load_compose(ROOT / "docker-compose.yml")
+        for name, service in production["services"].items():
+            with self.subTest(service=name):
+                logging_config = service.get("logging")
+                self.assertIsNotNone(logging_config, f"{name} must bound container logs")
+                self.assertEqual(logging_config["driver"], "json-file")
+                self.assertIn("max-size", logging_config["options"])
+                self.assertIn("max-file", logging_config["options"])
+        # Rollout recreation must not SIGKILL an in-flight outbox dispatch:
+        # leases are 30s with bounded retry backoff, so 60s covers the
+        # completion/lease-release boundary. The worker's job drain is longer.
+        self.assertGreaterEqual(stop_grace_seconds(production["services"]["outbox"]["stop_grace_period"]), 30)
+        self.assertGreaterEqual(stop_grace_seconds(production["services"]["worker"]["stop_grace_period"]), 1800)
+
+    def test_live_contract_runner_asserts_exact_healthy_topology(self):
+        source = (ROOT / "scripts" / "test_service_contracts.py").read_text()
+        for marker in (
+            "assert_topology",
+            "PRODUCTION_ROLES",
+            "HEALTHY_ROLES",
+            "{{.Service}}|{{.State}}|{{.Health}}",
+            "migrate one-shot exited",
+            "missing expected roles",
+        ):
+            self.assertIn(marker, source)
+        for role in PRODUCTION_ROLES:
+            self.assertIn(role, source)
+
     def test_adr_records_ownership_ordering_storage_and_rollback(self):
         adr = (ROOT / "docs" / "adr" / "001-runtime-topology.md").read_text().lower()
         for term in (
@@ -217,6 +354,70 @@ class RuntimeTopologyTests(unittest.TestCase):
             "rollback",
         ):
             self.assertIn(term, adr)
+
+
+class DeploymentScriptSafetyTests(unittest.TestCase):
+    """Static proofs that scripts/deploy_runtime.sh performs a bounded,
+    idempotent, non-destructive rollout of exactly the expected roles."""
+
+    def test_deploy_script_never_tears_down_or_removes_volumes(self):
+        code = executable_lines(DEPLOY_SCRIPT)
+        for forbidden in (
+            "down",           # no teardown of any kind
+            "volume rm",      # never removes volumes
+            "--volumes",      # never uses the down -v / rm -v flags
+            "prune",          # no unbounded docker system/image/builder pruning
+            "rm -",           # no shell removal commands at all
+            "--force-recreate",
+        ):
+            self.assertNotIn(forbidden, code, f"forbidden destructive token {forbidden!r}")
+        self.assertIsNone(re.search(r"(^|\s)-v(\s|$)", code), "standalone -v flag forbidden")
+
+    def test_deploy_script_builds_brings_up_postgres_and_awaits_migrate(self):
+        script = DEPLOY_SCRIPT.read_text()
+        self.assertTrue(script.startswith("#!/usr/bin/env bash"))
+        self.assertIn("set -euo pipefail", script)
+        self.assertIn("COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.yml}", script)
+        self.assertIn("compose build", script)
+        self.assertIn("up -d postgres", script)
+        self.assertIn("await_healthy postgres", script)
+        self.assertIn("run --rm migrate", script)
+        self.assertIn("migrate completed successfully", script)
+        self.assertIn("MAX_ATTEMPTS", script)
+        self.assertIn('seq 1 "$MAX_ATTEMPTS"', script)
+
+    def test_deploy_script_recreates_exactly_the_six_runtime_roles(self):
+        script = DEPLOY_SCRIPT.read_text()
+        match = re.search(r'RUNTIME_ROLES="([^"]+)"', script)
+        self.assertIsNotNone(match, "RUNTIME_ROLES assignment missing")
+        self.assertEqual(RUNTIME_ROLES, set(match.group(1).split()))
+        # The recreate command uses --remove-orphans and nothing else that
+        # could touch volumes, and the role list is the only up target.
+        self.assertIn("up -d --remove-orphans $RUNTIME_ROLES", script)
+        # Every runtime role is awaited individually; a missing or unhealthy
+        # role makes the script fail.
+        self.assertIn("for role in $RUNTIME_ROLES", script)
+        self.assertIn('await_healthy "$role"', script)
+        self.assertIn("fail_with_logs", script)
+        self.assertIn("did not become healthy (missing or unhealthy)", script)
+
+    def test_deploy_script_targets_match_the_compose_runtime_graph(self):
+        production = load_compose(ROOT / "docker-compose.yml")
+        compose_runtime = set(production["services"]) - {"postgres", "migrate"}
+        match = re.search(r'RUNTIME_ROLES="([^"]+)"', DEPLOY_SCRIPT.read_text())
+        self.assertIsNotNone(match)
+        self.assertEqual(compose_runtime, set(match.group(1).split()))
+
+    def test_deploy_script_prints_bounded_state_and_preserves_volumes(self):
+        script = DEPLOY_SCRIPT.read_text()
+        # Failure output is bounded: one ps snapshot plus a capped log tail.
+        self.assertIn("compose ps", script)
+        self.assertIn("--tail=100", script)
+        self.assertIn("--- bounded service state ---", script)
+        # The named volumes the rollout must preserve are named explicitly.
+        for volume in ("pgdata", "newsdata", "logsdata", "operatorstate"):
+            self.assertIn(volume, script)
+        self.assertIn("preserving named volumes", script)
 
 
 if __name__ == "__main__":

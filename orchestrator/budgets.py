@@ -11,6 +11,12 @@ reserved, purely legacy, or mixed. A reservation settling after its TTL
 expired still records its real actual. A zero cap denies all paid calls (fail
 closed, no unlimited mode); a missing or malformed budget result always fails
 closed into ``BudgetUnavailable``.
+
+Model pricing is a first-class admission input: a known-free model slug
+(OpenRouter ``:free`` variant) reserves zero cost and is admitted without
+consuming the cap, while a paid model whose per-call pricing is not
+configured fails closed — the orchestrator never guesses an estimate for a
+paid call.
 """
 
 import math
@@ -25,7 +31,8 @@ from logging_config import get_logger
 logger = get_logger("budgets")
 DEFAULT_DAILY_LLM_USD = 2.0
 DEFAULT_WARN_AT_PCT = 80
-DEFAULT_RESERVATION_ESTIMATE_USD = 0.05
+# No generic estimate fallback for paid calls: a paid model whose pricing is
+# not explicitly configured fails closed instead of guessing.
 DEFAULT_RESERVATION_TTL_SECONDS = 600.0
 # Mirrors llm_client.DEFAULT_STAGE_TIMEOUT_SECONDS without importing it
 # (llm_client imports this module). The reservation must outlive the single
@@ -50,13 +57,35 @@ def _finite_number(value, name: str) -> float:
     return number
 
 
-def _reservation_policy(config: dict, processor: str) -> tuple[float, float]:
-    """Return (estimate_usd, ttl_seconds) for a paid call; invalid -> ValueError."""
+def _known_free_model(model: str | None) -> bool:
+    """True when the model slug is a known-free variant.
+
+    OpenRouter free tiers are addressed with a ``:free`` suffix
+    (``provider/model:free``).  A known-free model may reserve zero cost:
+    it never consumes the daily cap, yet still carries a reservation row so
+    dispatch and settlement stay audit-symmetric with paid calls.
+    """
+    return isinstance(model, str) and model.strip().lower().endswith(":free")
+
+
+def _reservation_policy(
+    config: dict, processor: str, model: str | None = None
+) -> tuple[float, float]:
+    """Return (estimate_usd, ttl_seconds) for one call; invalid -> ValueError.
+
+    A known-free model reserves zero.  A paid model requires explicitly
+    configured pricing (per-processor ``budgets.estimates``, else the generic
+    ``budgets.reservation_estimate_usd``); missing pricing fails closed with
+    ``ValueError`` so ``enforce_budget`` maps it to ``BudgetUnavailable`` and
+    no HTTP request is attempted.
+    """
     from collections.abc import Mapping
 
     budget_cfg = config.get("budgets", {})
     if not isinstance(budget_cfg, Mapping):
         raise ValueError("budgets must be an object")
+    if _known_free_model(model):
+        return 0.0, _reservation_ttl(config)
     estimate = None
     estimates = budget_cfg.get("estimates")
     if isinstance(estimates, Mapping):
@@ -64,12 +93,25 @@ def _reservation_policy(config: dict, processor: str) -> tuple[float, float]:
         if candidate is not None:
             estimate = candidate
     if estimate is None:
-        estimate = budget_cfg.get(
-            "reservation_estimate_usd", DEFAULT_RESERVATION_ESTIMATE_USD
+        estimate = budget_cfg.get("reservation_estimate_usd")
+    if estimate is None:
+        raise ValueError(
+            f"no configured pricing for paid model {processor!r}; "
+            "set budgets.estimates or budgets.reservation_estimate_usd"
         )
     estimate = _finite_number(estimate, "budgets.reservation_estimate_usd")
     if estimate <= 0:
         raise ValueError("budgets.reservation_estimate_usd must be positive")
+    return estimate, _reservation_ttl(config)
+
+
+def _reservation_ttl(config: dict) -> float:
+    """TTL for one reservation, validated against the LLM request deadline."""
+    from collections.abc import Mapping
+
+    budget_cfg = config.get("budgets", {})
+    if not isinstance(budget_cfg, Mapping):
+        raise ValueError("budgets must be an object")
     ttl = _finite_number(
         budget_cfg.get("reservation_ttl_seconds", DEFAULT_RESERVATION_TTL_SECONDS),
         "budgets.reservation_ttl_seconds",
@@ -94,7 +136,7 @@ def _reservation_policy(config: dict, processor: str) -> tuple[float, float]:
                 "budgets.reservation_ttl_seconds must be at least "
                 f"{min_ttl:g}s to cover the LLM request deadline"
             )
-    return estimate, ttl
+    return ttl
 
 
 def _reserve_budget_quota(
@@ -116,6 +158,8 @@ def _reserve_budget_quota(
     ``spent + active reservations + estimate`` over the cap. Raises
     ``BudgetExceeded`` when the quota is exhausted; any unreadable budget state
     propagates as an exception the caller maps to ``BudgetUnavailable``.
+    A zero estimate (known-free model) cannot oversubscribe and is always
+    admitted as long as the day is not already over the cap from paid spend.
     """
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
@@ -185,7 +229,7 @@ def _reserve_budget_quota(
         ).fetchone()
         spent = _finite_number(row._mapping.get("spent_usd"), "budget spent")
         reserved = _finite_number(row._mapping.get("reserved_usd"), "budget reserved")
-        if spent + reserved + estimate_usd > cap:
+        if estimate_usd > 0 and spent + reserved + estimate_usd > cap:
             raise BudgetExceeded(spent + reserved, cap, processor=processor)
         inserted = session.execute(
             text(
@@ -398,13 +442,17 @@ def enforce_budget(
     correlation_id: str | None = None,
     run_kind: str | None = None,
     component: str | None = None,
+    model: str | None = None,
     now: datetime | None = None,
 ) -> BudgetPermit:
-    """Admit one paid call under the daily cap, reserving its estimated cost.
+    """Admit one call under the daily cap, reserving its estimated cost.
 
-    A trusted manual override short-circuits before any budget state is read;
-    every other path fails closed: an unreadable or malformed budget result
-    raises ``BudgetUnavailable`` and no HTTP request is attempted.
+    The resolved model slug classifies the call: a known-free model
+    (``:free`` suffix) reserves zero cost, while a paid model with no
+    configured pricing fails closed.  A trusted manual override
+    short-circuits before any budget state is read; every other path fails
+    closed: an unreadable or malformed budget result raises
+    ``BudgetUnavailable`` and no HTTP request is attempted.
     """
     context = context or BudgetContext()
     if context.trusted_manual_force:
@@ -423,16 +471,10 @@ def enforce_budget(
             blocked_code="daily_llm_budget_unavailable",
         )
         raise BudgetUnavailable(processor=processor) from None
-    if cap == 0:
-        logger.warning(
-            "llm_budget_denied_zero_cap",
-            processor=processor,
-            budget_cap_usd=cap,
-            blocked_code=BudgetExceeded.code,
-        )
-        raise BudgetExceeded(0.0, cap, processor=processor)
     try:
-        estimate_usd, ttl_seconds = _reservation_policy(config, processor)
+        estimate_usd, ttl_seconds = _reservation_policy(
+            config, processor, model=model
+        )
         reservation_id = _reserve_budget_quota(
             config,
             processor,

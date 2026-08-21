@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -100,10 +101,10 @@ def compute_filing_delta(
         doc = (
             sess.execute(
                 text(
-                    """SELECT document_id, company, document_type, extracted_text,
-                          created_at
-                   FROM investment_documents
-                   WHERE document_id = CAST(:id AS UUID) LIMIT 1"""
+                    """SELECT document_id, company, document_type, report_date,
+                              extracted_text, created_at
+                       FROM investment_documents
+                       WHERE document_id = CAST(:id AS UUID) LIMIT 1"""
                 ),
                 {"id": document_id},
             )
@@ -115,19 +116,40 @@ def compute_filing_delta(
         previous = (
             sess.execute(
                 text(
-                    """SELECT document_id, extracted_text FROM investment_documents
-                   WHERE company = :company AND document_type = :document_type
-                     AND created_at < :created_at
-                   ORDER BY created_at DESC LIMIT 1"""
+                    """SELECT document_id, extracted_text
+                       FROM investment_documents
+                       WHERE company = :company
+                         AND document_type = :document_type
+                         AND document_id <> CAST(:document_id AS UUID)
+                         AND (
+                           (:report_date IS NOT NULL
+                            AND report_date IS NOT NULL
+                            AND report_date < :report_date)
+                           OR (:report_date IS NULL AND created_at < :created_at)
+                         )
+                       ORDER BY report_date DESC NULLS LAST, created_at DESC,
+                                document_id DESC
+                       LIMIT 1"""
                 ),
                 {
                     "company": doc["company"],
                     "document_type": doc["document_type"],
+                    "document_id": doc["document_id"],
+                    "report_date": doc["report_date"],
                     "created_at": doc["created_at"],
                 },
             )
             .mappings()
             .first()
+        )
+        # Recomputations must not retain categories from a superseded comparison.
+        # The caller-owned transaction keeps the delete-and-rebuild atomic.
+        sess.execute(
+            text(
+                """DELETE FROM investment_filing_deltas
+                   WHERE document_id = CAST(:document_id AS UUID)"""
+            ),
+            {"document_id": doc["document_id"]},
         )
         current_sections = _extract_sections(
             (doc["extracted_text"] or "")[:_TEXT_LIMIT]
@@ -181,7 +203,11 @@ def compute_filing_delta(
                     "previous_section_hash": previous_hash,
                     "excerpt": _diff_excerpt(section, previous_section or ""),
                     "previous_excerpt": (previous_section or "")[:_EXCERPT_LIMIT],
-                    "metrics": {"percent_mentions": _percent_mentions(section)},
+                    "metrics": json.dumps(
+                        {"percent_mentions": _percent_mentions(section)},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                 },
             )
             rows += 1

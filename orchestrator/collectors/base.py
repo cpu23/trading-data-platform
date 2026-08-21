@@ -8,6 +8,22 @@ def elapsed_ms(started_at: float) -> int:
     return max(0, round((time.monotonic() - started_at) * 1000))
 
 
+@dataclass(frozen=True)
+class CollectionWriteBatch:
+    """One declared write batch a collector returns alongside its primary records.
+
+    Each batch names the target table, homogeneous records, the conflict key,
+    and whether rows are immutable (insert-only) or mutable (upsert).  The
+    orchestrator persists the primary batch and every additional batch through
+    one transaction, so they commit or roll back together.
+    """
+
+    table_name: str
+    records: list[dict] = field(default_factory=list)
+    conflict_columns: list[str] = field(default_factory=list)
+    insert_only: bool = False
+
+
 @dataclass
 class CollectionResult:
     """Result of a collector run, carrying records and per-source errors.
@@ -16,6 +32,7 @@ class CollectionResult:
     """
 
     records: list[dict] = field(default_factory=list)
+    additional_writes: list[CollectionWriteBatch] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
     total_series: int = 0
     successful_series: int = 0

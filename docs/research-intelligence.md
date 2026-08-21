@@ -36,8 +36,8 @@ flowchart LR
 
 The tiers describe processing intent, not duplicate storage:
 
-- **Hot:** continuously maintained macro observations, macro release cards, market state, reaction windows, and the configured major-market universe. The bounded regional spine uses official FRED, OECD, ECB, Bank of England, EIA, and CFTC values plus Fed, ECB, Bank of England, and Bank of Japan communications. Hot evidence feeds driver synthesis and can participate in case discovery.
-- **Warm:** broad recurring company and industry evidence already held by the platform: Reuters and classified-news stories, canonical story clusters, investment observations, SEC/Companies House filing deltas, investment analyses, and financial facts referenced by those analyses.
+- **Hot:** continuously maintained macro observations, revision-aware macro release cards, market state, reaction windows, and the configured major-market universe. The bounded regional spine uses official FRED, OECD, ECB, Bank of England, EIA, and CFTC values plus Fed, ECB, Bank of England, and Bank of Japan communications. Hot evidence feeds driver synthesis and can participate in case discovery.
+- **Warm:** broad recurring company and industry evidence already held by the platform: Reuters and full-text primary issuer news, canonical story clusters, issuer transcripts, filing deltas and investment observations, normalized financial history, point-in-time consensus revisions and announced earnings dates, historical option surfaces, institutional ownership and short interest, FINRA short-volume flow, investment analyses, and the financial facts referenced by those analyses.
 - **Cold:** narrow evidence needed to test a weak causal edge or capture claim. The system records a `research_data_requests` row instead of pretending the evidence exists or creating an unbounded collector catalogue.
 
 A cold request records subject, requested evidence type, reason, desired
@@ -47,10 +47,10 @@ Status is one of `unresolved`, `in_progress`, `partially_satisfied`,
 `satisfied`, `unavailable`, `cancelled`, or `obsolete`.
 
 Highest-value remaining source gaps are explicit rather than silently inferred:
-official fiscal/budget state across all four regions, a licensed or otherwise
-reliable earnings-revision feed, and case-triggered industry capacity/lead-time
-series. Until a trustworthy source is configured, fiscal state stays unknown
-where evidence is absent and micro coverage is represented by
+official fiscal/budget state across all four regions, authenticated or licensed
+live securities-lending availability/cost/utilization, and case-triggered
+industry capacity/lead-time series. Until a trustworthy source is configured,
+those values stay unknown and missing micro coverage is represented by
 `research_data_requests`, not model-generated facts.
 
 ## Normalized Evidence Boundary

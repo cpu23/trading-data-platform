@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Thesis tournament — Trading data{% endblock %}
+{% block content %}
+<header class="page-header thesis-page-header">
+  <div class="page-header-left">
+    {% include "partials/navigation.html" %}
+    <a class="rs-back-link" href="/research">← Research</a>
+  </div>
+  <span class="control-status" role="status" aria-live="polite" data-thesis-header-status></span>
+</header>
+
+<main class="thesis-workspace" data-thesis-view="desk" aria-labelledby="thesis-desk-title">
+  <section class="section thesis-desk thesis-desk-full">
+    <div class="thesis-desk-heading">
+      <div>
+        <p class="thesis-eyebrow">Autonomous research desk</p>
+        <h1 class="thesis-page-title" id="thesis-desk-title">Opportunity inbox &amp; thesis tournament</h1>
+        <p class="thesis-operator-copy">Ranking is deterministic: opportunity, confidence, expected value, recency, then immutable ID. Human judgment gates every decision.</p>
+      </div>
+      <div class="thesis-actions" aria-label="Research desk controls">
+        <button class="btn" type="button" data-thesis-refresh>Refresh desk</button>
+        <button class="btn btn-secondary" type="button" data-thesis-run>Run research cycle</button>
+      </div>
+    </div>
+    <p class="thesis-run-note">Analysis only · queues one bounded evidence and falsification cycle · no execution</p>
+
+    <div class="thesis-status-strip" data-thesis-status-strip aria-label="Research operating status" aria-busy="true">
+      <div class="thesis-status-cell"><span>Last cycle</span><strong data-status-value="last-cycle">—</strong></div>
+      <div class="thesis-status-cell"><span>Model today</span><strong data-status-value="model-cost">—</strong></div>
+      <div class="thesis-status-cell"><span>Jobs</span><strong data-status-value="jobs">—</strong></div>
+      <div class="thesis-status-cell"><span>Sources / evidence</span><strong data-status-value="evidence">—</strong></div>
+      <div class="thesis-status-cell"><span>Active groups</span><strong data-status-value="groups">—</strong></div>
+      <div class="thesis-status-cell"><span>Linked theses</span><strong data-status-value="positions">—</strong></div>
+      <div class="thesis-status-cell"><span>Falsification</span><strong data-status-value="falsification">—</strong></div>
+      <div class="thesis-status-cell"><span>Calibration</span><strong data-status-value="calibration">—</strong></div>
+    </div>
+    <div class="thesis-view-status" data-thesis-message role="status" aria-live="polite">Loading research desk…</div>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-inbox-title">
+    <div class="section-heading thesis-section-heading">
+      <div>
+        <span class="label" id="thesis-inbox-title">Ranked opportunity inbox</span>
+        <span class="section-note">Score never substitutes for EV, downside, evidence, contradiction, catalyst, or confidence.</span>
+      </div>
+      <div class="thesis-toolbar" aria-label="Opportunity filters">
+        <label><span>Group</span><select class="compact-select" data-thesis-group-filter><option value="">All groups</option></select></label>
+        <label><span>Minimum score</span>
+          <select class="compact-select" data-thesis-score-filter>
+            <option value="0">Any score</option><option value="0.25" selected>0.25</option><option value="0.5">0.50</option><option value="0.75">0.75</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="thesis-table-wrap" data-thesis-opportunity-region aria-busy="true">
+      <table class="thesis-table">
+        <caption class="sr-only">Deterministically ranked research opportunities</caption>
+        <thead><tr><th scope="col">Thesis / why now</th><th scope="col">Direction</th><th scope="col">Score</th><th scope="col">EV / cost / downside</th><th scope="col">Confidence</th><th scope="col">Evidence / contradiction</th><th scope="col">Catalyst / neglect</th><th scope="col">Evaluated</th></tr></thead>
+        <tbody data-thesis-opportunities><tr><td colspan="8" class="thesis-state-cell">Loading opportunities…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-groups-title">
+    <div class="section-heading thesis-section-heading">
+      <div><span class="label" id="thesis-groups-title">Tournament groups</span><span class="section-note">Competing directional variants and their strongest current opportunity.</span></div>
+      <label class="thesis-inline-filter"><span>Status</span><select class="compact-select" data-thesis-status-filter><option value="">All statuses</option><option value="active">Active</option><option value="archived">Archived</option></select></label>
+    </div>
+    <div class="thesis-table-wrap" aria-busy="true" data-thesis-group-region>
+      <table class="thesis-table thesis-group-table">
+        <caption class="sr-only">Thesis tournament groups</caption>
+        <thead><tr><th scope="col">Tournament</th><th scope="col">Status</th><th scope="col">Bull / bear / neutral</th><th scope="col">Top score</th><th scope="col">Contradiction</th><th scope="col">Last evaluated</th></tr></thead>
+        <tbody data-thesis-groups><tr><td colspan="6" class="thesis-state-cell">Loading tournament groups…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-falsification-title">
+    <div class="section-heading">
+      <span class="label" id="thesis-falsification-title">Falsification queue</span>
+      <span class="section-note">Unresolved challenges stay visible; absence of a run is not a pass.</span>
+    </div>
+    <ol class="thesis-falsification-list" data-thesis-falsification-queue aria-busy="true">
+      <li class="thesis-state-cell">Loading falsification state…</li>
+    </ol>
+  </section>
+</main>
+<noscript><div class="error-block" role="alert">This desk requires JavaScript to load bounded thesis data. Existing research cases remain available from Research.</div></noscript>
+{% endblock %}

@@ -57,6 +57,51 @@ class InvestmentEngineTests(unittest.TestCase):
         self.assertEqual(len(dcf["forecast"]), 5)
         self.assertEqual(dcf["assumptions"]["inferred_growth"], 0.20)
         self.assertTrue(math.isfinite(dcf["per_share"]))
+        sensitivity = dcf["sensitivity"]
+        self.assertEqual(sensitivity["status"], "calculated")
+        self.assertLessEqual(len(sensitivity["wacc_terminal_grid"]), 9)
+        self.assertTrue(
+            all(
+                item["discount_rate"] > item["terminal_growth"]
+                for item in sensitivity["wacc_terminal_grid"]
+            )
+        )
+        self.assertLessEqual(
+            sensitivity["range"]["per_share_min"],
+            dcf["per_share"],
+        )
+        self.assertGreaterEqual(
+            sensitivity["range"]["per_share_max"],
+            dcf["per_share"],
+        )
+        self.assertIn(
+            sensitivity["largest_range_driver"],
+            {"starting_fcf", "annual_growth", "discount_rate", "terminal_growth"},
+        )
+
+    def test_dcf_sensitivity_remains_enterprise_value_only_without_bridge(self):
+        current = facts(revenue=200, operating_cash_flow=80, capex=20)
+        previous = facts(revenue=180, operating_cash_flow=70, capex=20)
+
+        sensitivity = build_deterministic_analysis(current, previous)["valuation"][
+            "dcf"
+        ]["sensitivity"]
+
+        self.assertEqual(sensitivity["status"], "enterprise_value_only")
+        self.assertIsNone(sensitivity["range"]["per_share_min"])
+        self.assertIsNotNone(sensitivity["range"]["enterprise_value_min"])
+
+    def test_dcf_sensitivity_fails_closed_with_invalid_base(self):
+        result = build_deterministic_analysis(
+            facts(revenue=200, operating_cash_flow=10, capex=20),
+            facts(revenue=180, operating_cash_flow=20, capex=10),
+        )
+
+        sensitivity = result["valuation"]["dcf"]["sensitivity"]
+
+        self.assertEqual(sensitivity["status"], "unavailable")
+        self.assertEqual(sensitivity["wacc_terminal_grid"], [])
+        self.assertIsNone(sensitivity["range"]["enterprise_value_min"])
 
     def test_pe_uses_eps_then_market_cap_net_income_fallback(self):
         direct = build_deterministic_analysis(facts(market_price=100, diluted_eps=5))

@@ -230,6 +230,8 @@ class AnalysisJobWorker:
             "lifecycle_transition_count",
             "error_count",
             "cost_usd",
+            "promoted_count",
+            "falsification_runs",
         )
         if isinstance(value, dict):
             candidates = value

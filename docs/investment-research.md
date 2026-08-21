@@ -78,13 +78,16 @@ deterministic analysis, persistence, and durable filing jobs.
 - deterministic company and industry trend series;
 - emerging themes from current-versus-prior classified-news windows;
 - bounded company and industry news with explicit classification provenance;
-- coverage, deterministic extraction, model cost, and duration summaries;
+- coverage, deterministic extraction, quality/freshness status, model cost, and
+  duration summaries;
 - the latest 100 report documents;
 - the latest analysis for each company, bounded to 300 companies, with lazy
-  drilldowns for metrics, fundamentals, signals, evidence, and peer comparison;
+  drilldowns for metrics, fundamentals, signals, evidence, explicitly selected
+  peers, free public market closes, valuation sensitivities, and quality
+  warnings;
 - manual file and public-URL intake;
-- optional valuation overrides;
-- report analysis and filing-collection controls.
+- optional valuation overrides, separately labelled from public prices;
+- report analysis, issuer-level filing-gap, and filing-collection controls.
 
 Primary navigation labels this page **Investments**. The page renders explicit
 loading, empty, success, and failure states and escapes untrusted values before
@@ -207,11 +210,51 @@ is available for invalid JSON.
 cash flow, margins, ROA, ROE, leverage, liquidity, cash conversion, DCF,
 valuation, and lifecycle rules. The dashboard derives dated industry series,
 news momentum, and latest-company industry breadth without model arithmetic.
-Observed company metrics are compared with same-industry latest-company
-medians, deltas, tie-aware percentiles, and sample counts; these are peer
-comparisons, not consensus estimates or live valuation data. Actual model,
-tokens, cost, status, end-to-end duration, model-call duration, correlation ID,
-and document ID are stored in the analysis and `processing_log`.
+Peer comparison excludes the subject and selects up to eight same-industry
+issuers by reporting region, growth, profitability, leverage, capital
+intensity, and same-currency revenue scale. Every member exposes its distance
+and selection reasons; missing financial features incur a deterministic
+penalty. Medians, tie-aware percentiles, sample counts, and leave-one-out
+median ranges use only the selected peers. Actual model, tokens, cost, status,
+end-to-end duration, model-call duration, correlation ID, and document ID are
+stored in the analysis and `processing_log`.
+
+### Valuation semantics
+
+DCF is a deterministic five-year scenario model, not a quoted or consensus
+valuation. The company drilldown shows starting free cash flow, inferred annual
+growth, WACC, terminal growth, forecast horizon, growth ceiling, shares, and net
+debt. Inferred growth is capped at 20%; WACC must be positive and exceed
+terminal growth. A bounded sensitivity ledger varies starting FCF, annual
+growth, discount rate, and terminal growth independently, plus a WACC/terminal
+grid. It reports enterprise-value and per-share ranges and the largest
+independent range driver; missing bridge inputs remain unavailable.
+
+Every latest-company annual analysis is assigned to exactly one DCF coverage
+category:
+
+- `calculated`: enterprise value was calculated and available net debt plus
+  positive shares support a per-share scenario output;
+- `enterprise_value_only`: enterprise value was calculated, but net debt or
+  positive shares are unavailable for the equity and per-share bridge;
+- `unavailable`: required starting FCF, comparable growth, or valid discount
+  assumptions are unavailable.
+
+`GET /api/investment/dashboard` adds these counts under
+`research_summary.valuation_coverage`, together with actual market-price, P/E,
+and margin-of-safety coverage. The keyless public-equities collector covers the
+checked-in 300-company universe plus bounded active-thesis symbols. A symbol
+with no stored daily bar receives one three-month bootstrap; later runs request
+five days. Responses have byte/row bounds and must echo the requested provider
+symbol. Each quote exposes provider URL, source/acquisition timestamps,
+currency, exchange, and freshness.
+
+Market-relative calculations require a positive price no older than seven
+days. GBp quotes normalize to GBP. A public quote is used only when its currency
+matches the filing; cross-currency and stale quotes remain visible but cannot
+drive P/E or margin of safety. Explicit manual prices remain supported and are
+labelled `manual_input`, with no public-source freshness claim. Stored shares,
+net debt, discount rate, and terminal growth survive public-price refreshes.
 
 ## Persistence
 
@@ -301,6 +344,112 @@ Optional portfolio context is read-only. An operator may import or maintain a
 holdings set; derived sector, country, currency, rate/commodity sensitivity,
 theme concentration, catalyst, and review-schedule summaries do not connect to
 an execution API and cannot place or recommend trades.
+
+## Autonomous Thesis Desk
+
+`/research/theses` is the operator workspace for the bounded autonomous
+thesis-fusion cycle. It is also summarized on `/investment` and `/research`.
+Two scheduled weekday runs collect point-in-time evidence from the configured
+news, transcript, filing, macro, price, options, insider-activity, and
+positioning adapters for a private research cadence. Company evidence remains
+source-owned and point-in-time.
+Immutable daily Nasdaq snapshots preserve consensus dispersion and revision
+history, announced earnings dates, institutional-holder changes, and reported
+short-interest history. FINRA short volume is labelled as a delayed flow proxy
+rather than short interest. The public source does not expose live borrow
+availability, cost, or utilization, so those fields remain explicitly
+unavailable until an authenticated securities-lending source is configured.
+Option features retain one immutable source/symbol/capture snapshot, and
+transcript/news adapters keep bounded verbatim excerpts instead of model
+summaries.
+
+Eight independently prompted research roles generate competing candidates.
+Shape-incomplete JSON is validated against the strict schema and receives at
+most one no-new-claims repair; semantic failures are never repaired.
+Deterministic code then:
+
+1. requires a named security, direction, horizon, quantified trend, current
+   valuation context, dated measured expectations/positioning context, complete
+   bull/base/bear paths, risks, and explicit invalidators;
+2. requires field-level citation arrays for claim, consensus, variant
+   perception, mechanism, catalyst, trend, valuation, and sentiment; their
+   exact union must equal `evidence_refs`;
+3. requires every current citation to resolve to a nonblank excerpt and at
+   least three independent free-source families;
+4. applies an independent semantic audit using only each field's own exact
+   excerpts before promotion;
+5. merges reruns by canonical theme, subject, direction, and horizon without
+   adding another role's evidence to the representative narrative;
+6. promotes only a complementary long/short pair for the same canonical
+   security and horizon after both candidates survive source, actionability,
+   semantic, and challenger gates; neutral or rejected variants never satisfy
+   opposition;
+7. attaches supporting and contradicting evidence and runs a bounded
+   challenger against candidates and active theses under one shared per-cycle
+   challenge cap;
+8. gates and blends the opportunity score from evidence strength,
+   contradiction-adjusted confidence, catalyst readiness, neglect, liquidity,
+   and downside, preserving every missing input as a blocker; and
+9. rechecks candidate/active status and a currently base-eligible complementary
+   long/short opponent on every opportunity read, so a paused, closed,
+   falsified, incomplete, or otherwise blocked side makes both sides
+   non-rankable.
+
+Expected value is a separate deterministic figure (probability-weighted
+scenario returns net of transaction cost) that is never blended into the
+opportunity score. Persisted opportunity ordering is eligible-first:
+theses with a positive gated score rank before blocked ones, then by
+expected value, opportunity score, confidence, catalyst readiness, neglect,
+evaluation recency, and id.
+
+The model cannot publish directly. Candidate identity, deduplication, evidence
+relationships, scores, lifecycle transitions, scenario targets, and outcome
+resolution are deterministic persistence operations. A breached thesis is
+paused for review, never closed automatically.
+
+Scenario price forecasts are frozen only against a close no older than seven
+days at their `as_of` boundary. Mature forecasts resolve once as hit, miss, or
+inconclusive from similarly fresh point-in-time market data; outcomes are
+append-only. Calibration assigns each complete bull/base/bear forecast set to
+exactly one realized scenario (the target closest to the terminal close), then
+reports a multiclass Brier score and probability bins. Superseded forecasts are
+not called mature merely because they were revised; maturity requires a
+recorded outcome.
+
+The public-equities collector combines the configured investment universe with
+bounded active-thesis symbols. `max_symbols`, `max_concurrency`,
+`include_investment_universe`, and `include_active_theses` bound that expansion.
+
+Authenticated desk routes:
+
+```text
+GET  /research/theses
+GET  /research/theses/{thesis_id}
+GET  /api/research/theses/status
+GET  /api/research/theses/groups
+GET  /api/research/theses/groups/{group_id}
+GET  /api/research/theses/opportunities
+GET  /api/research/theses/{thesis_id}
+POST /api/research/theses/run
+```
+
+Runtime limits and the explicit desk model override live under
+`thesis_autonomy`. The checked-in personal-use profile pins the desk to
+`nvidia/nemotron-3-super-120b-a12b:free` through OpenRouter. Its request price
+is zero, but shared-provider availability and rate limits remain external
+dependencies; every source and semantic gate still fails closed. Other
+processors retain their selections under `llm.models`.
+
+The profile caps evidence, promotions, output tokens, and per-run spend. Four
+candidate and existing-thesis challenger calls share one hard per-cycle cap;
+candidate calls consume the allowance before the bounded second pass. It
+reserves a fixed share of the model budget for falsification, publishes
+`partial` rather than concealing isolated role/source failures, and admits no
+more than the configured number of event-triggered cycles per UTC day under a
+transactional quota lock. The global daily LLM budget remains the final hard
+cap. Durable job leasing, heartbeats, retries, deduplication,
+generation-attempt telemetry, and fail-soft source/role isolation use the same
+operational contracts as the rest of the platform.
 
 ## Operations
 

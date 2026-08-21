@@ -97,7 +97,11 @@ class LLMEnforcementTests(unittest.TestCase):
                 "api_key": "top-secret",
                 "default_model": "provider/model",
             },
-            "budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80},
+            "budgets": {
+                "daily_llm_usd": 2.0,
+                "warn_at_pct": 80,
+                "reservation_estimate_usd": 0.05,
+            },
         }
 
     @patch("llm_client.make_request")
@@ -249,13 +253,21 @@ class LLMEnforcementTests(unittest.TestCase):
         self.assertEqual(reserve.call_args.kwargs["component"], "briefing")
 
     @patch("llm_client.make_request")
-    def test_zero_cap_denies_and_negative_fails_closed(self, make_request):
+    @patch("budgets.get_session")
+    def test_zero_cap_denies_and_negative_fails_closed(self, get_session, make_request):
+        # The zero-cap denial runs the admission quota check (paid call with
+        # pricing configured): spent + reserved + estimate > 0 cap denies.
+        session = _reservation_session(spent=0.0, reserved=0.0)
+        get_session.return_value.__enter__.return_value = session
         self.config["budgets"]["daily_llm_usd"] = 0
-        with self.assertRaises(BudgetExceeded):
+        with self.assertRaises(BudgetExceeded) as raised:
             call_llm("prompt", config=self.config)
+        self.assertEqual(raised.exception.code, "daily_llm_budget_exceeded")
+        # A negative cap is malformed and fails closed before any DB access.
         self.config["budgets"]["daily_llm_usd"] = -1
-        with self.assertRaises(BudgetUnavailable):
+        with self.assertRaises(BudgetUnavailable) as raised:
             call_llm("prompt", config=self.config)
+        self.assertEqual(raised.exception.code, "daily_llm_budget_unavailable")
         make_request.assert_not_called()
 
     @patch("llm_client.make_request")

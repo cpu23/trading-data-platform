@@ -14,7 +14,7 @@ from events.canonicalize import (
     content_hash,
     dedupe_key,
 )
-from events.contracts import EntityRef, MarketEvent, MarketEventType
+from events.contracts import EntityRef, MarketEvent, MarketEventType, MarketRef
 
 
 class CanonicalizationTests(unittest.TestCase):
@@ -136,6 +136,83 @@ class MarketEventContractTests(unittest.TestCase):
         del data["source_payload_id"]
         with self.assertRaises(ValidationError):
             MarketEvent.model_validate(data)
+
+
+class FreeSourceEventTypeTests(unittest.TestCase):
+    def setUp(self):
+        self.observed_at = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+
+    def test_new_free_source_event_types_are_explicit(self):
+        self.assertEqual(MarketEventType.TRANSCRIPT_PUBLISHED.value, "transcript_published")
+        self.assertEqual(
+            MarketEventType.OPTION_CHAIN_PUBLISHED.value, "option_chain_published"
+        )
+        self.assertEqual(
+            MarketEventType.CORPORATE_ACTION_PUBLISHED.value,
+            "corporate_action_published",
+        )
+
+    def test_compact_option_snapshot_event_has_stable_identity(self):
+        captured = self.observed_at
+        payload = {
+            "symbol": "AAPL",
+            "captured_at": captured.isoformat(),
+            "contract_count": 2,
+            "contracts_by_type": {"call": 1, "put": 1},
+            "expiration_count": 1,
+            "source_timestamp_min": "2026-08-05T11:59:00+00:00",
+            "source_timestamp_max": "2026-08-05T12:00:00+00:00",
+            "expiration_min": "2026-09-18",
+            "expiration_max": "2026-09-18",
+            "underlying_price": 232.0,
+            "delayed": True,
+            "delay_minutes": 15,
+            "truncated": {
+                "symbols": False,
+                "expiries": False,
+                "contracts": False,
+            },
+        }
+        markets = [
+            MarketRef(
+                canonical_id="equity:AAPL",
+                display_name="AAPL",
+                asset_class="equity",
+                symbol="AAPL",
+            )
+        ]
+        event = build_market_event(
+            MarketEventType.OPTION_CHAIN_PUBLISHED,
+            "cboe_options",
+            captured,
+            payload,
+            source_event_id=f"AAPL:{captured.isoformat()}",
+            effective_at=captured,
+            markets=markets,
+            identity={"symbol": "AAPL", "captured_at": captured.isoformat()},
+        )
+        self.assertEqual(event.event_type, "option_chain_published")
+        self.assertEqual(
+            event.dedupe_key, f"cboe_options:AAPL:{captured.isoformat()}"
+        )
+        self.assertEqual(event.source_event_id, f"AAPL:{captured.isoformat()}")
+        self.assertEqual(event.markets[0].canonical_id, "equity:AAPL")
+        # Identical snapshots hash identically; changed quotes do not.
+        replay = build_market_event(
+            MarketEventType.OPTION_CHAIN_PUBLISHED,
+            "cboe_options",
+            captured,
+            payload,
+            source_event_id=f"AAPL:{captured.isoformat()}",
+            effective_at=captured,
+            markets=markets,
+            identity={"symbol": "AAPL", "captured_at": captured.isoformat()},
+        )
+        self.assertEqual(event.content_hash, replay.content_hash)
+        self.assertEqual(
+            dedupe_key("cboe_options", f"AAPL:{captured.isoformat()}"),
+            event.dedupe_key,
+        )
 
 
 if __name__ == "__main__":

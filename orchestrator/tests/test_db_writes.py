@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, call, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
+from collectors.base import CollectionWriteBatch
 
 CONFIG = {"database": {"password": "DB_PASSWORD_SENTINEL"}}
 
@@ -225,6 +226,26 @@ class BatchFirstWriteTests(unittest.TestCase):
             "ON CONFLICT (id) DO NOTHING", str(session.execute.call_args.args[0])
         )
 
+    def test_insert_only_upsert_never_revises_existing_rows(self):
+        # insert_only keeps the legacy single-table path immutable: a
+        # conflict is a no-op and no EXCLUDED column ever updates a stored
+        # row (so updated_at can never be bumped by re-collection).
+        session = MagicMock()
+        with patch.object(
+            db, "get_session", return_value=_transaction(session, [], "batch")
+        ):
+            db.upsert_records(
+                "events",
+                [{"id": 1, "payload": {"secret": "value"}, "status": "new"}],
+                ["id"],
+                config=CONFIG,
+                insert_only=True,
+            )
+        sql = str(session.execute.call_args.args[0])
+        self.assertIn("ON CONFLICT (id) DO NOTHING", sql)
+        self.assertNotIn("DO UPDATE", sql)
+        self.assertNotIn("EXCLUDED", sql)
+
 
 class DiagnosticFallbackTests(unittest.TestCase):
     def _run_fallback(self, kind, failing_ids):
@@ -331,6 +352,207 @@ class DiagnosticFallbackTests(unittest.TestCase):
                 self.assertEqual(
                     events, ["batch:open", "batch:rollback", "batch:close"]
                 )
+
+
+class WriteBatchesInSessionTests(unittest.TestCase):
+    def _session(self):
+        return MagicMock(name="batch_write_session")
+
+    def test_insert_only_batch_uses_do_nothing_and_never_update(self):
+        session = self._session()
+        records = [{"action_id": "a1", "metadata": {"provider_event_key": "7"}}]
+        batches = [
+            CollectionWriteBatch(
+                "corporate_actions", records, ["action_id"], insert_only=True
+            )
+        ]
+
+        results = db.write_batches_in_session(session, batches)
+
+        self.assertEqual(results, [db.WriteResult(1, 1, 0, ())])
+        statement = str(session.execute.call_args.args[0])
+        self.assertIn(
+            "INSERT INTO corporate_actions (action_id, metadata) "
+            "VALUES (:action_id, :metadata)",
+            statement,
+        )
+        self.assertIn("ON CONFLICT (action_id) DO NOTHING", statement)
+        self.assertNotIn("DO UPDATE", statement)
+        params = session.execute.call_args.args[1]
+        self.assertEqual(params[0]["metadata"], json.dumps({"provider_event_key": "7"}))
+        session.commit.assert_not_called()
+
+    def test_mutable_batch_keeps_existing_upsert_semantics(self):
+        session = self._session()
+        batches = [CollectionWriteBatch("events", [{"id": 1, "payload": "x"}], ["id"])]
+
+        results = db.write_batches_in_session(session, batches)
+
+        self.assertEqual(results, [db.WriteResult(1, 1, 0, ())])
+        statement = str(session.execute.call_args.args[0])
+        self.assertIn(
+            "INSERT INTO events (id, payload) VALUES (:id, :payload)", statement
+        )
+        self.assertIn(
+            "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload", statement
+        )
+
+    def test_source_document_upsert_preserves_first_acquisition(self):
+        session = self._session()
+        db.upsert_records_in_session(
+            session,
+            "source_documents",
+            [
+                {
+                    "document_id": "doc-1",
+                    "acquired_at": "2026-08-15T07:00:00+00:00",
+                    "title": "Q2 call",
+                }
+            ],
+            ["document_id"],
+        )
+
+        statement = str(session.execute.call_args.args[0])
+        self.assertIn(
+            "acquired_at = LEAST(source_documents.acquired_at, "
+            "source_documents.created_at, EXCLUDED.acquired_at)",
+            statement,
+        )
+        self.assertIn("title = EXCLUDED.title", statement)
+
+    def test_mutable_batch_with_all_conflict_columns_uses_do_nothing(self):
+        session = self._session()
+        db.write_batches_in_session(
+            session, [CollectionWriteBatch("events", [{"id": 1}], ["id"])]
+        )
+        statement = str(session.execute.call_args.args[0])
+        self.assertIn("ON CONFLICT (id) DO NOTHING", statement)
+
+    def test_sequence_returns_deterministic_per_batch_results_in_order(self):
+        session = self._session()
+        batches = [
+            CollectionWriteBatch("events", [{"id": 1}, {"id": 2}], ["id"]),
+            CollectionWriteBatch(
+                "corporate_actions",
+                [{"action_id": "a"}, {"action_id": "b"}, {"action_id": "c"}],
+                ["action_id"],
+                insert_only=True,
+            ),
+        ]
+
+        results = db.write_batches_in_session(session, batches)
+
+        self.assertEqual(
+            results,
+            [
+                db.WriteResult(2, 2, 0, ()),
+                db.WriteResult(3, 3, 0, ()),
+            ],
+        )
+        self.assertEqual(session.execute.call_count, 2)
+        self.assertIn(
+            "INSERT INTO events",
+            str(session.execute.call_args_list[0].args[0]),
+        )
+        self.assertIn(
+            "INSERT INTO corporate_actions",
+            str(session.execute.call_args_list[1].args[0]),
+        )
+
+    def test_identifier_validation_rejects_unsafe_identifiers_before_execution(self):
+        unsafe = (
+            CollectionWriteBatch("market_data; DROP TABLE events", [{"id": 1}], ["id"]),
+            CollectionWriteBatch("events", [{"id": 1}], ["id; DROP TABLE events"]),
+            CollectionWriteBatch(
+                "events", [{"id": 1, "SELECT * FROM events": 2}], ["id"]
+            ),
+            CollectionWriteBatch("UPPER", [{"id": 1}], ["id"]),
+        )
+        for batch in unsafe:
+            with self.subTest(batch=batch):
+                session = self._session()
+                with self.assertRaisesRegex(ValueError, "identifier"):
+                    db.write_batches_in_session(session, [batch])
+                session.execute.assert_not_called()
+
+    def test_heterogeneous_schema_is_rejected_before_any_execute(self):
+        session = self._session()
+        batches = [
+            CollectionWriteBatch("events", [{"id": 1}, {"id": 2, "extra": 3}], ["id"])
+        ]
+
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            db.write_batches_in_session(session, batches)
+
+        session.execute.assert_not_called()
+
+    def test_conflict_column_missing_from_records_is_rejected_before_execution(self):
+        session = self._session()
+        batches = [
+            CollectionWriteBatch("events", [{"id": 1, "value": 2}], ["action_id"])
+        ]
+
+        with self.assertRaisesRegex(ValueError, "conflict column not present"):
+            db.write_batches_in_session(session, batches)
+
+        session.execute.assert_not_called()
+
+    def test_one_error_rolls_back_all_batches(self):
+        events = []
+        session = self._session()
+        session.execute.side_effect = [MagicMock(rowcount=1), ValueError("boom")]
+        batches = [
+            CollectionWriteBatch("events", [{"id": 1}], ["id"]),
+            CollectionWriteBatch(
+                "corporate_actions",
+                [{"action_id": "a"}],
+                ["action_id"],
+                insert_only=True,
+            ),
+        ]
+        with patch.object(
+            db, "get_session", return_value=_transaction(session, events, "multi")
+        ):
+            with self.assertRaises(db.BatchWriteError) as raised:
+                with db.get_session(CONFIG) as active:
+                    db.write_batches_in_session(active, batches)
+
+        self.assertEqual(raised.exception.batch_index, 1)
+        self.assertEqual(raised.exception.table_name, "corporate_actions")
+        self.assertEqual(raised.exception.error_type, "ValueError")
+        self.assertNotIn("boom", str(raised.exception))
+        self.assertEqual(session.execute.call_count, 2)
+        session.commit.assert_not_called()
+        session.rollback.assert_called_once_with()
+        self.assertEqual(events, ["multi:open", "multi:rollback", "multi:close"])
+
+    def test_empty_batches_return_empty_results_without_session_work(self):
+        session = self._session()
+        self.assertEqual(db.write_batches_in_session(session, []), [])
+        session.execute.assert_not_called()
+
+    def test_empty_records_batch_is_a_noop_with_zero_metrics(self):
+        session = self._session()
+        batches = [
+            CollectionWriteBatch("events", [], ["id"]),
+            CollectionWriteBatch(
+                "corporate_actions",
+                [{"action_id": "a"}],
+                ["action_id"],
+                insert_only=True,
+            ),
+        ]
+
+        results = db.write_batches_in_session(session, batches)
+
+        self.assertEqual(
+            results,
+            [db.WriteResult(0, 0, 0, ()), db.WriteResult(1, 1, 0, ())],
+        )
+        session.execute.assert_called_once()
+        self.assertIn(
+            "INSERT INTO corporate_actions", str(session.execute.call_args.args[0])
+        )
 
 
 class SessionCleanupBoundaryTests(unittest.TestCase):

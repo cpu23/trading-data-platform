@@ -45,6 +45,7 @@ from investment_observations import (
     aggregate_industry_history,
     upsert_report_observation,
 )
+from investment_universe import configured_region_counts, industry_for
 from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
 
@@ -158,6 +159,8 @@ def _run_ocr_subprocess(
         env=env,
     )
     return result.stdout or b""
+
+
 MAX_REDIRECTS = 4
 MODEL_ID = "openai/gpt-5.6-luna"
 REGIONS = frozenset({"US", "EU", "ASIA"})
@@ -236,6 +239,10 @@ def normalize_metadata(metadata: dict, *, default_filename: str = "report.txt") 
     industry = canonicalize_industry(metadata.get("industry"))
     if not company:
         raise ValueError("company is required")
+    if industry == "Unclassified":
+        # Checked-in issuer metadata fills gaps: a configured issuer is never
+        # left Unclassified just because the intake record omitted a label.
+        industry = industry_for(metadata.get("symbol"), company)
 
     region = _clean_text(metadata.get("region"), limit=16).upper()
     if region not in REGIONS:
@@ -310,9 +317,7 @@ def _extract_pdf(
     for line in info_out.decode("utf-8", errors="replace").splitlines():
         if line.startswith("Pages:"):
             try:
-                page_count = min(
-                    int(line.split(":", 1)[1].strip()), MAX_OCR_PAGES
-                )
+                page_count = min(int(line.split(":", 1)[1].strip()), MAX_OCR_PAGES)
             except ValueError:
                 pass
             break
@@ -550,6 +555,7 @@ def _ocr_pdf(
         if page_text
     )
 
+
 class _ReportTextHTMLParser(HTMLParser):
     _BLOCK_TAGS = frozenset(
         {
@@ -769,11 +775,15 @@ def extract_document_text_path(
         or suffix == ".docx"
     )
     if magic.startswith(b"%PDF-"):
-        extracted = _extract_pdf(path, page_budget=ocr_page_budget, wall_seconds=ocr_wall_seconds)
+        extracted = _extract_pdf(
+            path, page_budget=ocr_page_budget, wall_seconds=ocr_wall_seconds
+        )
     elif magic.startswith(b"PK\x03\x04"):
         extracted = _extract_docx(path) if is_docx else _extract_report_package(path)
     elif content_type == "application/pdf" or suffix == ".pdf":
-        extracted = _extract_pdf(path, page_budget=ocr_page_budget, wall_seconds=ocr_wall_seconds)
+        extracted = _extract_pdf(
+            path, page_budget=ocr_page_budget, wall_seconds=ocr_wall_seconds
+        )
     elif is_docx:
         extracted = _extract_docx(path)
     elif (
@@ -859,31 +869,409 @@ def extract_document_text(
         os.unlink(path)
 
 
-def build_analysis_excerpt(document_text: str) -> str:
-    if len(document_text) <= MAX_ANALYSIS_CHARS:
-        return document_text
+# ---------------------------------------------------------------------------
+# Analysis excerpt selection
+# ---------------------------------------------------------------------------
+# Annual-report narrative is ranked by section importance, then content
+# quality, before bounded windows are chosen: substantive narrative (Business,
+# MD&A / Operating and Financial Review, Risk Factors, Outlook, strategy)
+# outranks administrative noise (filing indexes, XBRL contexts,
+# certifications, compensation plans, insider-trading policies, subsidiary
+# lists, unrelated exhibits) so dense exhibit text cannot starve the real
+# report of budget.
+EXCERPT_PREFIX_CHARS = 24_000
+EXCERPT_SUFFIX_CHARS = 28_000
+EXCERPT_WINDOW_BEFORE = 1_600
+EXCERPT_WINDOW_AFTER = 3_400
+EXCERPT_SECTION_HEAD_CHARS = 4_000
+EXCERPT_SECTION_BUDGET = 14_000
 
-    prefix_end = 24_000
-    suffix_start = len(document_text) - 28_000
-    windows = [(0, prefix_end), (suffix_start, len(document_text))]
-    remaining = MAX_ANALYSIS_CHARS - 56_000
-    for match in _ANALYSIS_KEYWORDS.finditer(document_text):
-        if remaining <= 0:
-            break
-        start = max(prefix_end, match.start() - 1_600)
-        end = min(suffix_start, match.end() + 3_400)
-        if end <= start:
-            continue
-        length = min(end - start, remaining)
-        windows.append((start, start + length))
-        remaining -= length
+EXCERPT_TIER_SUBSTANTIVE = 3
+EXCERPT_TIER_FINANCIAL = 2
+EXCERPT_TIER_CONTEXT = 1
+EXCERPT_TIER_NOISE = -1
 
+_EXCERPT_HEADING_PATTERNS: tuple[tuple[int, re.Pattern[str]], ...] = (
+    # Substantive annual-report narrative.
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(
+            r"^\s*item\s+1\s*[.\-–—:)]*\s*(?:business|organization)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(
+            r"^\s*item\s+1a\s*[.\-–—:)]*\s*risk factors\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # 10-K Item 7 (MD&A) and 20-F Item 5 (Operating and Financial Review).
+    (EXCERPT_TIER_SUBSTANTIVE, re.compile(r"^\s*item\s+7\b", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(
+            r"^\s*item\s+5\s*[.\-–—:)]*\s*"
+            r"(?:operating and financial review|results of operations)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*management'?s?\s+discussion", re.IGNORECASE),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*operating and financial review\b", re.IGNORECASE),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*risk factors\b", re.IGNORECASE),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*forward[- ]looking statements?\b", re.IGNORECASE),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(
+            r"^\s*cautionary note regarding forward[- ]looking statements?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (EXCERPT_TIER_SUBSTANTIVE, re.compile(r"^\s*outlook\b", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*(?:business\s+)?strategy\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_SUBSTANTIVE, re.compile(r"^\s*business\s*$", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*results of operations\b", re.IGNORECASE),
+    ),
+    (
+        EXCERPT_TIER_SUBSTANTIVE,
+        re.compile(r"^\s*liquidity and capital resources\b", re.IGNORECASE),
+    ),
+    # Financial statements and notes.
+    (
+        EXCERPT_TIER_FINANCIAL,
+        re.compile(
+            r"^\s*(?:condensed\s+)?(?:consolidated\s+)?statements?\s+of\s+"
+            r"(?:income|comprehensive income|operations|financial position|"
+            r"cash flows|changes in (?:stockholders'|shareholders') equity)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_FINANCIAL,
+        re.compile(
+            r"^\s*(?:consolidated\s+)?(?:income statement|balance sheet|"
+            r"statement of (?:cash flows|financial position))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_FINANCIAL,
+        re.compile(
+            r"^\s*notes? to (?:the )?(?:consolidated )?financial statements?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_FINANCIAL,
+        re.compile(
+            r"^\s*(?:consolidated\s+)?financial statements?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # Broader report context.
+    (
+        EXCERPT_TIER_CONTEXT,
+        re.compile(
+            r"^\s*(?:critical )?accounting (?:estimates?|policies?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_CONTEXT,
+        re.compile(r"^\s*quantitative and qualitative disclosures?\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*market risk\b", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_CONTEXT,
+        re.compile(r"^\s*segment(?: information)?\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*competition\b", re.IGNORECASE)),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*employees?\b", re.IGNORECASE)),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*properties?\b", re.IGNORECASE)),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*legal proceedings\b", re.IGNORECASE)),
+    (EXCERPT_TIER_CONTEXT, re.compile(r"^\s*management\s*$", re.IGNORECASE)),
+    # Administrative noise: filing indexes, XBRL contexts, certifications,
+    # compensation plans, insider-trading policies, subsidiary lists, exhibits.
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*table of contents\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*(?:filing\s+)?index\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*xbrl\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*instance document\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*certifications?\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*sarbanes[\s\-]?oxley", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_NOISE,
+        re.compile(r"^\s*exhibits?\s*(?:index)?\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*ex\s*[- ]?\d", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*compensation\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*equity incentive plan\b", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_NOISE,
+        re.compile(
+            r"^\s*stock (?:option|incentive|appreciation) plans?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        EXCERPT_TIER_NOISE,
+        re.compile(r"^\s*employee stock purchase plans?\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*insider trading\b", re.IGNORECASE)),
+    (
+        EXCERPT_TIER_NOISE,
+        re.compile(r"^\s*trading (?:policy|plan|arrangement)s?\b", re.IGNORECASE),
+    ),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*10b5[- ]?1", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*subsidiari(?:es|y)s?\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*signatures?\b", re.IGNORECASE)),
+    (EXCERPT_TIER_NOISE, re.compile(r"^\s*power of attorney\b", re.IGNORECASE)),
+)
+
+# SEC bundle file markers (``===== filename =====``) carry the file name, which
+# identifies administrative files (exhibits, certifications, XBRL payloads).
+_EXCERPT_FILE_MARKER_RE = re.compile(r"^={5,}\s*(.+?)\s*={5,}$")
+_EXCERPT_NOISE_FILENAME_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:ex\d+|exhibit|ex[-_]|idx|index|certif|sarbanes|xbrl|"
+    r"subsidi|signature|consent)(?:[^a-z0-9]|$)",
+    re.IGNORECASE,
+)
+
+
+def _classify_excerpt_heading(line: str) -> int | None:
+    """Return the importance tier for a heading line, or None for body text."""
+    stripped = line.lstrip()
+    if not stripped or len(stripped) > 120:
+        return None
+    for tier, pattern in _EXCERPT_HEADING_PATTERNS:
+        if pattern.match(line):
+            return tier
+    return None
+
+
+def _preamble_excerpt_tier(document_text: str, start: int) -> int:
+    """Tier the unheaded document prefix; SEC bundle JSON manifests are noise."""
+    head = document_text[start : start + 1_000].lstrip()
+    if head.startswith("{"):
+        return EXCERPT_TIER_NOISE
+    return EXCERPT_TIER_CONTEXT
+
+
+def _iter_excerpt_sections(
+    document_text: str,
+) -> list[tuple[int, int, int]]:
+    """Split text into contiguous (start, end, tier) spans by heading lines and
+    SEC bundle file markers, so narrative windows can be ranked by section
+    importance instead of first keyword occurrence."""
+    boundaries: list[tuple[int, int]] = []
+    offset = 0
+    tier = EXCERPT_TIER_CONTEXT
+    for line in document_text.splitlines(keepends=True):
+        stripped = line.strip()
+        marker = _EXCERPT_FILE_MARKER_RE.match(stripped)
+        if marker:
+            filename = marker.group(1)
+            tier = (
+                EXCERPT_TIER_NOISE
+                if _EXCERPT_NOISE_FILENAME_RE.search(filename)
+                else EXCERPT_TIER_CONTEXT
+            )
+            boundaries.append((offset, tier))
+        else:
+            heading_tier = _classify_excerpt_heading(line)
+            if heading_tier is not None:
+                tier = heading_tier
+                boundaries.append((offset, tier))
+        offset += len(line)
+
+    if not boundaries:
+        return [(0, len(document_text), _preamble_excerpt_tier(document_text, 0))]
+
+    spans = [
+        (
+            start,
+            boundaries[index + 1][0]
+            if index + 1 < len(boundaries)
+            else len(document_text),
+            start_tier,
+        )
+        for index, (start, start_tier) in enumerate(boundaries)
+    ]
+    if boundaries[0][0] > 0:
+        spans.insert(
+            0,
+            (0, boundaries[0][0], _preamble_excerpt_tier(document_text, 0)),
+        )
+    return spans
+
+
+def _excerpt_section_index(sections: list[tuple[int, int, int]], offset: int) -> int:
+    """Index of the section span containing ``offset`` (sections partition text)."""
+    low, high = 0, len(sections)
+    while low < high:
+        mid = (low + high) // 2
+        if sections[mid][0] <= offset:
+            low = mid + 1
+        else:
+            high = mid
+    return max(low - 1, 0)
+
+
+def _excerpt_overlap_tier(
+    sections: list[tuple[int, int, int]], start: int, end: int
+) -> int:
+    """Weakest tier among sections overlapping ``[start, end)``."""
+    tiers = [tier for s, e, tier in sections if s < end and e > start]
+    return min(tiers) if tiers else EXCERPT_TIER_CONTEXT
+
+
+def _excerpt_section_quality(tier: int, keyword_count: int) -> int:
+    """Section score: tier dominates; keyword density breaks ties within tier."""
+    return tier * 100_000 + min(keyword_count, 100)
+
+
+def _merge_excerpt_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     merged: list[tuple[int, int]] = []
-    for start, end in sorted(windows):
+    for start, end in sorted(spans):
         if merged and start <= merged[-1][1] + 300:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
+    return merged
+
+
+def _excerpt_free_ranges(
+    chosen: list[tuple[int, int]], start: int, end: int
+) -> list[tuple[int, int]]:
+    """Sub-ranges of ``[start, end)`` not already covered by chosen spans, so
+    overlapping candidates (section windows vs. fixed head/tail context) do not
+    double-charge the budget."""
+    covered = sorted(chosen)
+    free: list[tuple[int, int]] = []
+    cursor = start
+    for covered_start, covered_end in covered:
+        if covered_end <= cursor or covered_start >= end:
+            continue
+        if covered_start > cursor:
+            free.append((cursor, min(covered_start, end)))
+        cursor = max(cursor, covered_end)
+        if cursor >= end:
+            break
+    if cursor < end:
+        free.append((cursor, end))
+    return free
+
+
+def build_analysis_excerpt(document_text: str) -> str:
+    if len(document_text) <= MAX_ANALYSIS_CHARS:
+        return document_text
+
+    sections = _iter_excerpt_sections(document_text)
+    prefix_end = min(EXCERPT_PREFIX_CHARS, len(document_text))
+    suffix_start = max(len(document_text) - EXCERPT_SUFFIX_CHARS, 0)
+
+    # Keyword windows, bucketed by the section they fall in.
+    windows_by_section: dict[int, list[tuple[int, int]]] = {}
+    keyword_counts: dict[int, int] = {}
+    for match in _ANALYSIS_KEYWORDS.finditer(document_text):
+        index = _excerpt_section_index(sections, match.start())
+        keyword_counts[index] = keyword_counts.get(index, 0) + 1
+        start = max(sections[index][0], match.start() - EXCERPT_WINDOW_BEFORE)
+        end = min(sections[index][1], match.end() + EXCERPT_WINDOW_AFTER)
+        if end > start:
+            windows_by_section.setdefault(index, []).append((start, end))
+
+    budget = MAX_ANALYSIS_CHARS
+    chosen: list[tuple[int, int]] = []
+    head_spent: dict[int, int] = {}
+
+    # Phase 1: every substantive/financial section head receives guaranteed
+    # bounded coverage before any keyword window, so no high-priority section
+    # is starved by earlier or denser sections when the budget is tight.
+    for index, (start, end, tier) in enumerate(sections):
+        if budget <= 0:
+            break
+        if tier not in (EXCERPT_TIER_SUBSTANTIVE, EXCERPT_TIER_FINANCIAL):
+            continue
+        head_end = min(start + EXCERPT_SECTION_HEAD_CHARS, end)
+        take = min(head_end - start, budget)
+        if take <= 0:
+            continue
+        chosen.append((start, start + take))
+        head_spent[index] = take
+        budget -= take
+
+    # Phase 2: bounded keyword windows ranked by section importance, then
+    # content quality. Fixed head/tail context windows inherit the weakest
+    # overlapping tier so bundles that open or close with administrative noise
+    # do not steal budget. Candidate groups: (quality, windows, section index).
+    candidates: list[tuple[int, list[tuple[int, int]], int | None]] = []
+    for index, (_start, _end, tier) in enumerate(sections):
+        windows = windows_by_section.get(index, ())
+        if windows:
+            candidates.append(
+                (
+                    _excerpt_section_quality(tier, keyword_counts.get(index, 0)),
+                    _merge_excerpt_spans(windows),
+                    index,
+                )
+            )
+    for span, tier in (
+        (
+            (0, prefix_end),
+            _excerpt_overlap_tier(sections, 0, prefix_end),
+        ),
+        (
+            (suffix_start, len(document_text)),
+            _excerpt_overlap_tier(sections, suffix_start, len(document_text)),
+        ),
+    ):
+        start, end = span
+        if end > start:
+            candidates.append((_excerpt_section_quality(tier, 0), [(start, end)], None))
+
+    for _quality, windows, index in sorted(
+        candidates,
+        key=lambda candidate: (-candidate[0], candidate[1][0][0]),
+    ):
+        if budget <= 0:
+            break
+        cap = (
+            budget
+            if index is None
+            else min(EXCERPT_SECTION_BUDGET - head_spent.get(index, 0), budget)
+        )
+        for start, end in windows:
+            if cap <= 0 or budget <= 0:
+                break
+            for free_start, free_end in _excerpt_free_ranges(chosen, start, end):
+                if cap <= 0 or budget <= 0:
+                    break
+                take = min(free_end - free_start, cap, budget)
+                if take <= 0:
+                    continue
+                chosen.append((free_start, free_start + take))
+                cap -= take
+                budget -= take
+
+    merged = _merge_excerpt_spans(chosen)
     return "\n\n".join(
         f"[Source characters {start}-{end}]\n{document_text[start:end]}"
         for start, end in merged
@@ -924,9 +1312,7 @@ def fetch_document_url_to_path(url: str) -> tuple[str, str, str, str]:
             ) as client:
                 for _ in range(MAX_REDIRECTS + 1):
                     if time.monotonic() - fetch_started >= FETCH_DEADLINE_SECONDS:
-                        raise ValueError(
-                            "source URL fetch exceeded the total deadline"
-                        )
+                        raise ValueError("source URL fetch exceeded the total deadline")
                     try:
                         with client.stream(
                             "GET",
@@ -972,16 +1358,12 @@ def fetch_document_url_to_path(url: str) -> tuple[str, str, str, str]:
                                     )
                                 total += len(chunk)
                                 if total > MAX_DOCUMENT_BYTES:
-                                    raise ValueError(
-                                        "remote document exceeds 20 MB"
-                                    )
+                                    raise ValueError("remote document exceeds 20 MB")
                                 handle.write(chunk)
                             content_type = response.headers.get(
                                 "content-type", "application/octet-stream"
                             )
-                            path_name = PurePath(
-                                unquote(urlsplit(current).path)
-                            ).name
+                            path_name = PurePath(unquote(urlsplit(current).path)).name
                             filename = path_name or "remote-report"
                             return temp_path, filename, content_type, current
                     except OutboundSecurityError as exc:
@@ -1030,9 +1412,7 @@ def _file_root(config: dict) -> Path:
     )
 
 
-def _persist_document_file(
-    source_path: str | Path, config: dict, digest: str
-) -> str:
+def _persist_document_file(source_path: str | Path, config: dict, digest: str) -> str:
     """Atomically copy an upload onto durable storage, content-addressed.
 
     The copy reads the source in bounded chunks (no full-file read), the
@@ -1128,7 +1508,9 @@ def store_document_path(
     memory and BYTEA columns.
     """
     normalized = normalize_metadata(metadata)
-    max_bytes = MAX_REGULATORY_DOCUMENT_BYTES if preserve_content else MAX_DOCUMENT_BYTES
+    max_bytes = (
+        MAX_REGULATORY_DOCUMENT_BYTES if preserve_content else MAX_DOCUMENT_BYTES
+    )
     size = os.path.getsize(path)
     if size > max_bytes:
         raise ValueError(f"document exceeds {max_bytes // 1_000_000} MB")
@@ -1394,6 +1776,10 @@ def _response_schema() -> dict:
 
 def _load_news_context(config: dict, metadata: dict) -> list[dict]:
     industry = canonicalize_industry(metadata.get("industry"))
+    if industry == "Unclassified":
+        # Deterministic issuer metadata keeps company-linked news relevance
+        # working even when the stored document predates the canonical labels.
+        industry = industry_for(metadata.get("symbol"), metadata.get("company"))
     symbol = str(metadata.get("symbol") or "").upper()
     company = str(metadata.get("company") or "").casefold()
     selected = []
@@ -1525,10 +1911,155 @@ def _ensure_extracted_text(
     return "regulatory_document"
 
 
+def _sec_primary_document_rank(name: str) -> int | None:
+    """Deterministic primary-document signal rank for an SEC directory entry.
+
+    Lower rank means a stronger signal; names carrying no signal return None so
+    the caller keeps the legacy largest-eligible-HTML fallback.
+    """
+    stem = name.casefold()
+    for suffix in (".htm", ".html"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    if not stem:
+        return None
+    # Explicit 10-K naming (``d753577d10k.htm``, ``form10-k.htm``,
+    # ``tv506844_10k.htm``, ``abc-10k_20241231.htm``).
+    if re.search(r"10-?k(?:$|[._-]\d{8}$)", stem):
+        return 0
+    # Registrant/ticker + report-date convention (``aapl-20240928.htm``).
+    if re.fullmatch(r"[a-z0-9]+-\d{8}", stem):
+        return 1
+    return None
+
+
+_SEC_ANNUAL_FORM_TYPES = frozenset({"10-k", "20-f", "40-f"})
+
+
+def _select_sec_primary_document(
+    candidates: list[tuple[int, str]],
+    known_primary: object = "",
+    document_types: Mapping[str, str] | None = None,
+) -> str | None:
+    """Select the regulator primary document from eligible SEC directory files.
+
+    Priority: exact known primary-document metadata, then the annual form
+    (10-K/20-F/40-F) row of the accession ``*-index.html`` Document Format
+    Files table (authoritative filing-detail metadata), then deterministic SEC
+    primary-document naming conventions, then the legacy largest-eligible
+    fallback. Ties are broken deterministically (larger file, then name).
+    """
+    known = PurePath(str(known_primary or "")).name
+    by_name = {name: size for size, name in candidates}
+    if known and known in by_name:
+        return known
+    if document_types:
+        annual = [
+            name
+            for name, doc_type in document_types.items()
+            if doc_type.casefold().split("/", 1)[0] in _SEC_ANNUAL_FORM_TYPES
+            and name in by_name
+        ]
+        if annual:
+            return min(
+                annual,
+                key=lambda name: (
+                    _sec_primary_document_rank(name) is None,
+                    _sec_primary_document_rank(name) or 0,
+                    -by_name[name],
+                    name.casefold(),
+                ),
+            )
+    ranked = [
+        (size, name)
+        for size, name in candidates
+        if _sec_primary_document_rank(name) is not None
+    ]
+    if ranked:
+        return min(
+            ranked,
+            key=lambda pair: (
+                _sec_primary_document_rank(pair[1]),
+                -pair[0],
+                pair[1].casefold(),
+            ),
+        )[1]
+    if candidates:
+        return max(candidates)[1]
+    return None
+
+
+def _parse_sec_index_document_types(markup: str) -> dict[str, str]:
+    """Map document file names to EDGAR document types from the accession
+    ``*-index.html`` Document Format Files table (``name -> type``)."""
+    soup = BeautifulSoup(markup, "html.parser")
+    document_types: dict[str, str] = {}
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        headers = [
+            cell.get_text(" ", strip=True).casefold() for cell in rows[0].find_all("th")
+        ]
+        if "document" not in headers or "type" not in headers:
+            continue
+        document_index = headers.index("document")
+        type_index = headers.index("type")
+        for row in rows[1:]:
+            cells = row.find_all("td")
+            if len(cells) <= max(document_index, type_index):
+                continue
+            link = cells[document_index].find("a")
+            if link is None or not link.get("href"):
+                continue
+            name = PurePath(str(link["href"])).name
+            doc_type = cells[type_index].get_text(" ", strip=True)
+            if name and doc_type and name not in document_types:
+                document_types[name] = doc_type
+    return document_types
+
+
+def _load_sec_index_document_types(
+    source_url: str, index_page_name: str, user_agent: str
+) -> dict[str, str] | None:
+    """Fetch and parse the accession ``*-index.html`` Document Format Files
+    table. Returns None when the page is missing or unparseable so the caller
+    falls back to deterministic naming heuristics."""
+    try:
+        page_url = _validate_public_url(source_url.rstrip("/") + "/" + index_page_name)
+        response = make_request(
+            "GET",
+            page_url,
+            headers={"User-Agent": user_agent, "Accept": "text/html"},
+            timeout=30.0,
+            max_retries=2,
+            client=get_shared_client(),
+            max_response_bytes=MAX_DOCUMENT_BYTES,
+        )
+        response.raise_for_status()
+        markup = response.content.decode("utf-8", errors="replace")
+        return _parse_sec_index_document_types(markup) or None
+    except Exception as exc:
+        logger.info(
+            "sec_index_document_types_unavailable",
+            error_type=type(exc).__name__,
+        )
+        return None
+
+
 def _load_report_excerpt(config: dict, document: dict) -> tuple[str, str]:
-    """Use the primary SEC filing for legacy bundles that lost file priority."""
+    """Use the primary SEC filing for legacy bundles that lost file priority.
+
+    For SEC source URLs the regulator primary document is recovered
+    authoritatively regardless of stored/raw-content quality: the accession
+    ``*-index.html`` Document Format Files table is consulted first (annual
+    form 10-K/20-F/40-F row), then deterministic primary-document naming
+    conventions, then the largest eligible HTML. URL/size bounds are strict
+    and the stored bundle excerpt is the fallback on any failure.
+    """
     existing = build_analysis_excerpt(document.get("extracted_text") or "")
-    if document.get("filing_source") != "sec_edgar" or document.get("raw_content"):
+    if document.get("filing_source") != "sec_edgar":
         return existing, "stored_document"
     source_url = str(document.get("source_url") or "")
     if not source_url.startswith("https://www.sec.gov/Archives/edgar/data/"):
@@ -1552,11 +2083,16 @@ def _load_report_excerpt(config: dict, document: dict) -> tuple[str, str]:
         index_response.raise_for_status()
         items = index_response.json().get("directory", {}).get("item", [])
         candidates = []
+        index_page_name = ""
         for item in items if isinstance(items, list) else []:
             name = PurePath(str(item.get("name") or "")).name
-            if not name.lower().endswith((".htm", ".html")):
-                continue
             lowered = name.lower()
+            if re.fullmatch(r".*-index\.html?", lowered):
+                if not index_page_name:
+                    index_page_name = name
+                continue
+            if not lowered.endswith((".htm", ".html")):
+                continue
             if (
                 "-index" in lowered
                 or re.fullmatch(r"r\d+\.html?", lowered)
@@ -1572,7 +2108,18 @@ def _load_report_excerpt(config: dict, document: dict) -> tuple[str, str]:
                 candidates.append((size, name))
         if not candidates:
             return existing, "stored_document"
-        _, primary_name = max(candidates)
+        document_types = (
+            _load_sec_index_document_types(source_url, index_page_name, user_agent)
+            if index_page_name
+            else None
+        )
+        primary_name = _select_sec_primary_document(
+            candidates,
+            document.get("primary_document"),
+            document_types,
+        )
+        if not primary_name:
+            return existing, "stored_document"
         primary_url = _validate_public_url(source_url.rstrip("/") + "/" + primary_name)
         response = make_request(
             "GET",
@@ -1581,10 +2128,9 @@ def _load_report_excerpt(config: dict, document: dict) -> tuple[str, str]:
             timeout=90.0,
             max_retries=2,
             client=get_shared_client(),
+            max_response_bytes=MAX_DOCUMENT_BYTES,
         )
         response.raise_for_status()
-        if len(response.content) > MAX_DOCUMENT_BYTES:
-            return existing, "stored_document"
         primary_text = extract_document_text(
             response.content,
             primary_name,
@@ -1819,6 +2365,52 @@ def _record_processing_log(
     )
 
 
+def _resolve_analysis_industry(document: dict, classification: dict) -> str:
+    """Resolve the canonical industry for a stored analysis.
+
+    Checked-in issuer metadata is authoritative for configured issuers and
+    wins over any model label. Otherwise a model label is trusted only when
+    it is concrete and not low-confidence; model ``Unclassified`` or
+    low-confidence output never overwrites the document's existing industry,
+    and truly unknown issuers fail closed to ``Unclassified``.
+    """
+    deterministic = industry_for(document.get("symbol"), document.get("company"))
+    if deterministic != "Unclassified":
+        return deterministic
+    model_industry = canonicalize_industry(classification.get("industry"))
+    if model_industry != "Unclassified" and classification.get("confidence") != "low":
+        return model_industry
+    return canonicalize_industry(document.get("industry"))
+
+
+def _apply_deterministic_industry(payload: dict) -> dict:
+    """Apply checked-in issuer metadata to a read-time document/analysis.
+
+    Legacy rows stored before the canonical mapping may carry an
+    Unclassified or model-derived industry. For configured issuers the
+    checked-in canonical industry overrides both the stored industry and any
+    nested analysis classification, without mutating the database. Unknown
+    issuers keep their stored label canonicalized as the fallback.
+    """
+    normalized = dict(payload)
+    classification = normalized.get("classification")
+    if isinstance(classification, dict):
+        classification = dict(classification)
+        normalized["classification"] = classification
+    resolved = industry_for(payload.get("symbol"), payload.get("company"))
+    if resolved != "Unclassified":
+        normalized["industry"] = resolved
+        if isinstance(classification, dict):
+            classification["industry"] = resolved
+        return normalized
+    normalized["industry"] = canonicalize_industry(payload.get("industry"))
+    if isinstance(classification, dict):
+        classification["industry"] = canonicalize_industry(
+            classification.get("industry")
+        )
+    return normalized
+
+
 def analyze_document(
     config: dict,
     document_id: str,
@@ -1913,9 +2505,7 @@ def analyze_document(
         )
 
         classification = facts["classification"]
-        classified_industry = canonicalize_industry(
-            classification.get("industry") or document.get("industry")
-        )
+        classified_industry = _resolve_analysis_industry(document, classification)
         classification["industry"] = classified_industry
         classification["region"] = document["region"]
         classification["document_type"] = document["document_type"]
@@ -2155,9 +2745,24 @@ def get_analysis(config: dict, analysis_id: str) -> dict | None:
                 SELECT a.analysis_id, a.document_id, a.previous_document_id,
                        a.facts, a.analysis, a.model, a.created_at, a.updated_at,
                        d.company, d.symbol, d.region, d.industry, d.document_type,
-                       d.report_date, d.source_url
+                       d.report_date, d.source_url,
+                       p.timestamp AS public_price_timestamp,
+                       p.close AS public_price_close,
+                       p.source AS public_price_source,
+                       p.metadata AS public_price_metadata,
+                       p.created_at AS public_price_created_at
                 FROM investment_analyses a
                 JOIN investment_documents d ON d.document_id = a.document_id
+                LEFT JOIN LATERAL (
+                    SELECT timestamp, close, source, metadata, created_at
+                    FROM market_data
+                    WHERE symbol = d.symbol
+                      AND source = 'public_equities'
+                      AND timeframe = '1d'
+                      AND close > 0
+                    ORDER BY timestamp DESC, created_at DESC
+                    LIMIT 1
+                ) p ON TRUE
                 WHERE a.analysis_id = :analysis_id
                 """
             ),
@@ -2171,7 +2776,8 @@ def get_analysis(config: dict, analysis_id: str) -> dict | None:
         _as_json_object(payload.pop("analysis", {})),
         facts,
     )
-    return {**payload, **analysis}
+    enriched = _attach_public_market_data({**payload, **analysis}, facts)
+    return _apply_deterministic_industry(_attach_analysis_quality(enriched))
 
 
 def _industry_stage(score: float) -> str:
@@ -2243,6 +2849,290 @@ def _finite_number(value: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _utc_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _currency_code(value: object) -> str | None:
+    normalized = str(value or "").strip().upper()
+    return next(
+        (
+            code
+            for code in ("USD", "GBP", "EUR", "CHF", "JPY", "CAD", "AUD", "SEK", "NOK")
+            if normalized.startswith(code)
+        ),
+        None,
+    )
+
+
+def _public_market_snapshot(payload: dict) -> dict:
+    close = _finite_number(payload.pop("public_price_close", None))
+    timestamp = _utc_datetime(payload.pop("public_price_timestamp", None))
+    source = str(payload.pop("public_price_source", "") or "public_equities")
+    created_at = _utc_datetime(payload.pop("public_price_created_at", None))
+    metadata = _as_json_object(payload.pop("public_price_metadata", {}))
+    if close is None or close <= 0 or timestamp is None:
+        return {
+            "status": "unavailable",
+            "reason": "public daily close unavailable",
+            "source": source,
+            "price": None,
+            "currency": None,
+            "timestamp": None,
+            "available_at": created_at.isoformat() if created_at else None,
+            "source_reference": metadata.get("source_reference"),
+        }
+
+    raw_currency = str(metadata.get("currency") or "").strip()
+    quote_scale = (
+        0.01 if raw_currency == "GBp" or raw_currency.upper() == "GBX" else 1.0
+    )
+    currency = "GBP" if quote_scale == 0.01 else _currency_code(raw_currency)
+    price = close * quote_scale
+    age_days = max(0.0, (datetime.now(UTC) - timestamp).total_seconds() / 86_400.0)
+    stale = age_days > 7
+    return {
+        "status": "stale" if stale else "current",
+        "reason": "public daily close is older than seven days" if stale else None,
+        "source": source,
+        "price": price,
+        "raw_price": close,
+        "currency": currency,
+        "raw_currency": raw_currency or None,
+        "quote_scale": quote_scale,
+        "timestamp": timestamp.isoformat(),
+        "available_at": created_at.isoformat() if created_at else None,
+        "age_days": round(age_days, 2),
+        "exchange": metadata.get("exchange_name"),
+        "provider_symbol": metadata.get("provider_symbol"),
+        "source_reference": metadata.get("source_reference"),
+        "adjusted": metadata.get("adjusted"),
+    }
+
+
+def _attach_public_market_data(payload: dict, facts: dict) -> dict:
+    """Attach a traceable public close and revalue only comparable currencies."""
+    enriched = dict(payload)
+    market = _public_market_snapshot(enriched)
+    valuation = _as_json_object(enriched.get("valuation"))
+    report_currency = _currency_code(
+        valuation.get("currency_unit")
+        or _as_json_object(valuation.get("dcf")).get("unit")
+    )
+    market["report_currency"] = report_currency
+    comparison_status = "comparable"
+    if market["status"] == "unavailable":
+        comparison_status = "price_unavailable"
+    elif market["status"] == "stale":
+        comparison_status = "price_stale"
+    elif report_currency is None:
+        comparison_status = "report_currency_unavailable"
+    elif market.get("currency") != report_currency:
+        comparison_status = "currency_mismatch"
+    market["comparison_status"] = comparison_status
+
+    if comparison_status == "comparable":
+        prior_metrics = facts.get("prior_metrics")
+        previous_facts = (
+            {"metrics": prior_metrics} if isinstance(prior_metrics, Mapping) else None
+        )
+        stored_metrics = _as_json_object(enriched.get("metrics"))
+        stored_dcf = _as_json_object(valuation.get("dcf"))
+        stored_assumptions = _as_json_object(
+            stored_dcf.get("assumptions") or valuation.get("assumptions")
+        )
+        market_inputs = {
+            "market_price": market["price"],
+            "market_price_source": market["source"],
+            "market_price_period": market["timestamp"],
+            "market_price_evidence": (
+                f"{enriched.get('symbol') or enriched.get('company')} "
+                f"unadjusted daily close {market['raw_price']} "
+                f"{market.get('raw_currency') or market.get('currency')}"
+            ),
+            "market_price_unit": f"{market['currency']}/share",
+        }
+        for name in ("shares_outstanding", "net_debt"):
+            metric = _as_json_object(stored_metrics.get(name))
+            value = _finite_number(stored_assumptions.get(name, metric.get("value")))
+            if value is None:
+                continue
+            market_inputs[name] = value
+            market_inputs[f"{name}_source"] = metric.get("source") or "report"
+            market_inputs[f"{name}_period"] = metric.get("period") or "filing"
+            market_inputs[f"{name}_evidence"] = metric.get("evidence") or (
+                f"{name} retained from stored filing analysis"
+            )
+            market_inputs[f"{name}_unit"] = metric.get("unit")
+        discount_rate = _finite_number(
+            stored_assumptions.get(
+                "discount_rate",
+                stored_assumptions.get("wacc"),
+            )
+        )
+        terminal_growth = _finite_number(stored_assumptions.get("terminal_growth"))
+        if discount_rate is not None:
+            market_inputs["discount_rate"] = discount_rate
+        if terminal_growth is not None:
+            market_inputs["terminal_growth"] = terminal_growth
+        rebuilt = build_deterministic_analysis(
+            facts,
+            previous_facts=previous_facts,
+            market_inputs=market_inputs,
+        )
+        stored_metrics["market_price"] = rebuilt["metrics"]["market_price"]
+        enriched["metrics"] = stored_metrics
+        valuation = _as_json_object(rebuilt.get("valuation"))
+    valuation["market_data"] = market
+    enriched["valuation"] = valuation
+    return enriched
+
+
+def _attach_analysis_quality(payload: dict) -> dict:
+    """Expose freshness and completeness facts without collapsing them to a score."""
+    enriched = dict(payload)
+    now = datetime.now(UTC)
+    report_date = None
+    raw_report_date = enriched.get("report_date")
+    if isinstance(raw_report_date, date):
+        report_date = raw_report_date
+    elif raw_report_date:
+        try:
+            report_date = date.fromisoformat(str(raw_report_date)[:10])
+        except ValueError:
+            report_date = None
+    report_age_days = (
+        max(0, (now.date() - report_date).days) if report_date is not None else None
+    )
+    report_status = (
+        "current"
+        if report_age_days is not None and report_age_days <= 550
+        else "stale"
+        if report_age_days is not None
+        else "unknown"
+    )
+
+    analysis_timestamp = _utc_datetime(
+        enriched.get("analysis_updated_at")
+        or enriched.get("updated_at")
+        or enriched.get("created_at")
+    )
+    analysis_age_days = (
+        max(0.0, (now - analysis_timestamp).total_seconds() / 86_400.0)
+        if analysis_timestamp is not None
+        else None
+    )
+    extraction = _as_json_object(enriched.get("extraction"))
+    extraction_status = str(extraction.get("status") or "unavailable").lower()
+    try:
+        deterministic_metric_count = int(
+            extraction.get("deterministic_metric_count") or 0
+        )
+    except (TypeError, ValueError):
+        deterministic_metric_count = 0
+    metrics = _as_json_object(enriched.get("metrics"))
+    populated_metric_count = sum(
+        isinstance(item, dict) and item.get("value") is not None
+        for item in metrics.values()
+    )
+    evidence = enriched.get("evidence")
+    evidence = evidence if isinstance(evidence, list) else []
+    evidence_quote_count = sum(
+        isinstance(item, dict) and bool(str(item.get("quote") or "").strip())
+        for item in evidence
+    )
+    valuation = _as_json_object(enriched.get("valuation"))
+    dcf = _as_json_object(valuation.get("dcf"))
+    sensitivity = _as_json_object(dcf.get("sensitivity"))
+    market = _as_json_object(valuation.get("market_data"))
+    peer = _as_json_object(enriched.get("peer_comparison"))
+
+    warnings: list[str] = []
+    if report_status == "unknown":
+        warnings.append("report_date_unavailable")
+    elif report_status == "stale":
+        warnings.append("annual_report_stale")
+    if extraction_status != "success":
+        warnings.append("deterministic_extraction_unavailable")
+    if evidence_quote_count == 0:
+        warnings.append("narrative_evidence_missing")
+    comparison_status = str(market.get("comparison_status") or "price_unavailable")
+    if comparison_status != "comparable":
+        warnings.append(f"market_{comparison_status}")
+    dcf_status = str(dcf.get("status") or "unavailable")
+    if dcf_status != "calculated":
+        warnings.append(f"dcf_{dcf_status}")
+    if "peer_comparison" in enriched and not peer.get("members"):
+        warnings.append("peer_group_unavailable")
+
+    if report_status == "stale":
+        status = "stale"
+    elif report_status == "unknown":
+        status = (
+            "partial"
+            if extraction_status == "success" or evidence_quote_count > 0
+            else "unavailable"
+        )
+    elif extraction_status == "success" and evidence_quote_count > 0:
+        status = "ready"
+    elif extraction_status == "success" or evidence_quote_count > 0:
+        status = "partial"
+    else:
+        status = "unavailable"
+    enriched["quality"] = {
+        "status": status,
+        "report": {
+            "status": report_status,
+            "report_date": report_date.isoformat() if report_date else None,
+            "age_days": report_age_days,
+            "source_url": enriched.get("source_url"),
+        },
+        "analysis": {
+            "completed_at": (
+                analysis_timestamp.isoformat() if analysis_timestamp else None
+            ),
+            "age_days": round(analysis_age_days, 2)
+            if analysis_age_days is not None
+            else None,
+        },
+        "deterministic": {
+            "status": extraction_status,
+            "metric_count": max(
+                deterministic_metric_count,
+                populated_metric_count,
+            ),
+        },
+        "narrative": {
+            "evidence_quote_count": evidence_quote_count,
+            "driver_count": len(enriched.get("drivers") or []),
+            "risk_count": len(enriched.get("risks") or []),
+        },
+        "market": market,
+        "valuation": {
+            "dcf_status": dcf_status,
+            "sensitivity_status": sensitivity.get("status") or "unavailable",
+            "market_relative_available": comparison_status == "comparable",
+        },
+        "peers": {
+            "selected_count": int(peer.get("company_count") or 0),
+            "available_count": int(peer.get("industry_company_count") or 0),
+        },
+        "warnings": warnings,
+    }
+    return enriched
 
 
 def _claim_label(value: object, *, risk: bool = False) -> str:
@@ -2462,20 +3352,31 @@ def _aggregate_industries(
 
 
 def _aggregate_regions(analyses: list[dict]) -> list[dict]:
-    grouped = {region: [] for region in ("US", "EU", "ASIA")}
+    configured_counts = configured_region_counts()
+    grouped = {region: [] for region in configured_counts}
     for payload in _latest_company_analyses(analyses):
         region = str(payload.get("region") or "").upper()
         if region in grouped:
             grouped[region].append(_analysis_score(payload))
     results = []
-    for region, scores in grouped.items():
-        score = round(sum(scores) / len(scores), 2) if scores else 0.0
+    for region, configured_company_count in configured_counts.items():
+        scores = grouped[region]
+        is_configured = configured_company_count > 0
+        score = (
+            round(sum(scores) / len(scores), 2)
+            if scores and is_configured
+            else (0.0 if is_configured else None)
+        )
         results.append(
             {
                 "code": region,
                 "company_count": len(scores),
+                "configured_company_count": configured_company_count,
+                "coverage_status": (
+                    "configured" if is_configured else "not_configured"
+                ),
                 "score": score,
-                "stage": _industry_stage(score),
+                "stage": _industry_stage(score) if score is not None else None,
             }
         )
     return results
@@ -2614,12 +3515,100 @@ def _peer_metric_value(payload: dict, name: str) -> float | None:
     if name == "revenue_growth_pct":
         metric = metrics.get("revenue")
         value = metric.get("change_pct") if isinstance(metric, dict) else None
+    elif name == "revenue_value":
+        metric = metrics.get("revenue")
+        value = metric.get("value") if isinstance(metric, dict) else None
     elif name == "fcf_margin_pct":
         metric = metrics.get("fcf_margin")
         value = metric.get("value") if isinstance(metric, dict) else None
     else:
         value = fundamentals.get(name)
     return _finite_number(value)
+
+
+def _peer_currency(payload: dict) -> str | None:
+    valuation = payload.get("valuation")
+    valuation = valuation if isinstance(valuation, dict) else {}
+    metrics = payload.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    revenue = metrics.get("revenue")
+    revenue = revenue if isinstance(revenue, dict) else {}
+    return _currency_code(valuation.get("currency_unit") or revenue.get("unit"))
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    return (
+        ordered[midpoint]
+        if len(ordered) % 2
+        else (ordered[midpoint - 1] + ordered[midpoint]) / 2
+    )
+
+
+def _peer_distance(subject: dict, candidate: dict) -> tuple[float, list[str]]:
+    components: list[float] = []
+    financial_components = 0
+    reasons = ["same canonical industry"]
+    subject_region = str(subject.get("region") or "").upper()
+    candidate_region = str(candidate.get("region") or "").upper()
+    if subject_region and candidate_region:
+        same_region = subject_region == candidate_region
+        components.append(0.0 if same_region else 0.5)
+        reasons.append(
+            f"{'same' if same_region else 'different'} reporting region "
+            f"({candidate_region})"
+        )
+
+    for name, floor in (
+        ("revenue_growth_pct", 10.0),
+        ("fcf_margin_pct", 10.0),
+        ("net_margin_pct", 10.0),
+        ("return_on_equity_pct", 15.0),
+        ("debt_to_equity", 1.0),
+        ("capex_to_revenue_pct", 10.0),
+    ):
+        subject_value = _peer_metric_value(subject, name)
+        candidate_value = _peer_metric_value(candidate, name)
+        if subject_value is None or candidate_value is None:
+            continue
+        scale = max(abs(subject_value), abs(candidate_value), floor)
+        components.append(min(2.0, abs(subject_value - candidate_value) / scale))
+        financial_components += 1
+        reasons.append(f"{name} {candidate_value:.2f} vs subject {subject_value:.2f}")
+
+    subject_revenue = _peer_metric_value(subject, "revenue_value")
+    candidate_revenue = _peer_metric_value(candidate, "revenue_value")
+    subject_currency = _peer_currency(subject)
+    candidate_currency = _peer_currency(candidate)
+    if (
+        subject_revenue is not None
+        and subject_revenue > 0
+        and candidate_revenue is not None
+        and candidate_revenue > 0
+        and subject_currency is not None
+        and subject_currency == candidate_currency
+    ):
+        ratio = max(subject_revenue, candidate_revenue) / min(
+            subject_revenue, candidate_revenue
+        )
+        components.append(min(2.0, abs(math.log10(ratio))))
+        financial_components += 1
+        reasons.append(f"revenue scale {ratio:.2f}x in {subject_currency}")
+
+    if financial_components < 3:
+        reasons.append(
+            f"limited comparable financial metrics ({financial_components}/7)"
+        )
+        return 10.0, reasons
+    missing_penalty = (7 - financial_components) * 0.15
+    if missing_penalty:
+        reasons.append(
+            f"missing-data penalty for {7 - financial_components} absent metrics"
+        )
+    return sum(components) / len(components) + missing_penalty, reasons
 
 
 def _peer_comparisons(analyses: list[dict]) -> dict[str, dict]:
@@ -2635,6 +3624,7 @@ def _peer_comparisons(analyses: list[dict]) -> dict[str, dict]:
         "net_margin_pct",
         "return_on_equity_pct",
         "debt_to_equity",
+        "capex_to_revenue_pct",
     )
     output: dict[str, dict] = {}
     for payload in latest:
@@ -2642,41 +3632,84 @@ def _peer_comparisons(analyses: list[dict]) -> dict[str, dict]:
             payload.get("symbol") or payload.get("company") or ""
         ).casefold()
         industry = canonicalize_industry(payload.get("industry"))
-        peers = grouped.get(industry, [])
+        pool = [
+            peer
+            for peer in grouped.get(industry, [])
+            if str(peer.get("symbol") or peer.get("company") or "").casefold()
+            != company_id
+        ]
+        ranked_peers = []
+        for peer in pool:
+            distance, reasons = _peer_distance(payload, peer)
+            ranked_peers.append(
+                (
+                    distance,
+                    str(peer.get("company") or "").casefold(),
+                    peer,
+                    reasons,
+                )
+            )
+        ranked_peers.sort(key=lambda item: (item[0], item[1]))
+        selected = ranked_peers[:8]
+
         metrics_output = {}
         for name in metric_names:
-            values = sorted(
+            values = [
                 value
-                for peer in peers
+                for _, _, peer, _ in selected
                 if (value := _peer_metric_value(peer, name)) is not None
-            )
+            ]
             sample_count = len(values)
             value = _peer_metric_value(payload, name)
-            median = (
-                (
-                    values[sample_count // 2]
-                    if sample_count % 2
-                    else (values[sample_count // 2 - 1] + values[sample_count // 2]) / 2
-                )
-                if values
-                else None
-            )
+            median = _median(values)
             delta = value - median if value is not None and median is not None else None
             percentile = None
             if value is not None and sample_count >= 2:
                 less = sum(peer_value < value for peer_value in values)
                 equal = sum(peer_value == value for peer_value in values)
                 percentile = round((less + equal * 0.5) / sample_count * 100, 1)
+            leave_one_out = (
+                [
+                    _median(values[:index] + values[index + 1 :])
+                    for index in range(sample_count)
+                ]
+                if sample_count >= 3
+                else []
+            )
+            leave_one_out = [item for item in leave_one_out if item is not None]
             metrics_output[name] = {
                 "value": value,
                 "median": median,
                 "delta": delta,
                 "percentile": percentile,
                 "sample_count": sample_count,
+                "median_leave_one_out_min": min(leave_one_out)
+                if leave_one_out
+                else None,
+                "median_leave_one_out_max": max(leave_one_out)
+                if leave_one_out
+                else None,
             }
         output[company_id] = {
             "industry": industry,
-            "company_count": len(peers),
+            "company_count": len(selected),
+            "industry_company_count": len(pool),
+            "excluded_count": max(0, len(pool) - len(selected)),
+            "construction": (
+                "Up to eight nearest same-industry issuers ranked by reporting "
+                "region, growth, profitability, leverage, capital intensity, "
+                "and same-currency revenue scale; the subject is excluded."
+            ),
+            "members": [
+                {
+                    "company": peer.get("company"),
+                    "symbol": peer.get("symbol"),
+                    "region": peer.get("region"),
+                    "distance": round(distance, 4),
+                    "reasons": reasons,
+                }
+                for distance, _, peer, reasons in selected
+            ],
             "metrics": metrics_output,
         }
     return output
@@ -2734,6 +3767,56 @@ def _attach_recent_updates(
     ]
 
 
+def _valuation_coverage(analyses: list[dict]) -> dict[str, int]:
+    counts = {
+        "dcf_calculated_count": 0,
+        "dcf_enterprise_value_only_count": 0,
+        "dcf_unavailable_count": 0,
+        "market_price_count": 0,
+        "pe_ratio_count": 0,
+        "margin_of_safety_count": 0,
+    }
+    for analysis in analyses:
+        valuation = analysis.get("valuation")
+        valuation = valuation if isinstance(valuation, dict) else {}
+        dcf = valuation.get("dcf")
+        dcf = dcf if isinstance(dcf, dict) else {}
+
+        per_share = _finite_number(dcf.get("per_share", valuation.get("dcf_per_share")))
+        enterprise_value = _finite_number(dcf.get("enterprise_value"))
+        status = str(dcf.get("status") or "").lower()
+        if status not in {"calculated", "enterprise_value_only", "unavailable"}:
+            status = (
+                "calculated"
+                if per_share is not None
+                else "enterprise_value_only"
+                if enterprise_value is not None
+                else "unavailable"
+            )
+        counts[f"dcf_{status}_count"] += 1
+
+        market_price = _finite_number(valuation.get("market_price"))
+        if market_price is None:
+            metrics = analysis.get("metrics")
+            metrics = metrics if isinstance(metrics, dict) else {}
+            price_metric = metrics.get("market_price")
+            if isinstance(price_metric, dict):
+                price_metric = price_metric.get("value")
+            market_price = _finite_number(price_metric)
+        has_market_price = market_price is not None and market_price > 0
+        if not has_market_price:
+            continue
+
+        counts["market_price_count"] += 1
+        pe_ratio = _finite_number(valuation.get("pe", valuation.get("pe_ratio")))
+        if pe_ratio is not None:
+            counts["pe_ratio_count"] += 1
+        margin_of_safety = _finite_number(valuation.get("margin_of_safety"))
+        if margin_of_safety is not None and per_share is not None and per_share > 0:
+            counts["margin_of_safety_count"] += 1
+    return counts
+
+
 def get_dashboard(config: dict) -> dict:
     with get_session(config) as session:
         document_rows = session.execute(
@@ -2762,10 +3845,26 @@ def get_dashboard(config: dict) -> dict:
                 """
                 SELECT a.analysis_id, a.document_id, a.facts, a.analysis, a.model,
                        a.tokens_input, a.tokens_output, a.cost_usd, a.duration_ms,
-                       a.created_at, d.company, d.symbol, d.region, d.industry,
-                       d.document_type, d.report_date, d.source_url
+                       a.created_at, a.updated_at AS analysis_updated_at,
+                       d.company, d.symbol, d.region, d.industry,
+                       d.document_type, d.report_date, d.source_url,
+                       p.timestamp AS public_price_timestamp,
+                       p.close AS public_price_close,
+                       p.source AS public_price_source,
+                       p.metadata AS public_price_metadata,
+                       p.created_at AS public_price_created_at
                 FROM investment_analyses a
                 JOIN investment_documents d ON d.document_id = a.document_id
+                LEFT JOIN LATERAL (
+                    SELECT timestamp, close, source, metadata, created_at
+                    FROM market_data
+                    WHERE symbol = d.symbol
+                      AND source = 'public_equities'
+                      AND timeframe = '1d'
+                      AND close > 0
+                    ORDER BY timestamp DESC, created_at DESC
+                    LIMIT 1
+                ) p ON TRUE
                 ORDER BY d.report_date DESC NULLS LAST, a.created_at DESC
                 """
             )
@@ -2783,7 +3882,10 @@ def get_dashboard(config: dict) -> dict:
             )
         ).fetchall()
 
-    documents = [_serialize_row(dict(row._mapping)) for row in document_rows]
+    documents = [
+        _apply_deterministic_industry(_serialize_row(dict(row._mapping)))
+        for row in document_rows
+    ]
     analyses = []
     for row in analysis_rows:
         base = _serialize_row(dict(row._mapping))
@@ -2792,7 +3894,8 @@ def get_dashboard(config: dict) -> dict:
             _as_json_object(base.pop("analysis", {})),
             facts,
         )
-        analyses.append({**base, **analysis})
+        enriched = _attach_public_market_data({**base, **analysis}, facts)
+        analyses.append(_apply_deterministic_industry(enriched))
     annual_analyses = [
         item for item in analyses if item.get("document_type") == "annual_report"
     ]
@@ -2812,7 +3915,10 @@ def get_dashboard(config: dict) -> dict:
     )
     for industry in industry_list:
         industry["news_count"] = news_by_industry.get(industry["name"], 0)
-    latest_annual = _attach_peer_comparisons(annual_analyses)[:300]
+    latest_annual = [
+        _attach_analysis_quality(item)
+        for item in _attach_peer_comparisons(annual_analyses)[:300]
+    ]
     latest_analyses = _attach_recent_updates(latest_annual, analyses)
     total_cost = sum(float(item.get("cost_usd") or 0) for item in annual_analyses)
     durations = [
@@ -2825,6 +3931,13 @@ def get_dashboard(config: dict) -> dict:
         for item in latest_annual
         if isinstance(item.get("extraction"), dict)
         and item["extraction"].get("status") == "success"
+    )
+    valuation_coverage = _valuation_coverage(latest_annual)
+    quality_by_status = dict(
+        Counter(
+            str(_as_json_object(item.get("quality")).get("status") or "unknown")
+            for item in latest_annual
+        )
     )
     observations = [dict(row._mapping) for row in observation_rows]
     industry_history = aggregate_industry_history(observations)
@@ -2856,6 +3969,8 @@ def get_dashboard(config: dict) -> dict:
             "average_duration_ms": (
                 round(sum(durations) / len(durations)) if durations else 0
             ),
+            "valuation_coverage": valuation_coverage,
+            "quality_by_status": quality_by_status,
         },
         "documents": documents,
         "analyses": latest_analyses,

@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.fred import FRED_OBSERVATIONS_URL, FRED_SERIES_URL, FredCollector
@@ -53,6 +55,29 @@ class FredMetadataPersistenceTests(unittest.TestCase):
 
         return query_latest
 
+    def test_vintage_response_preserves_initial_release_and_revisions(self):
+        outcome = FredCollector()._normalize_observations(
+            "PAYEMS",
+            "monthly",
+            {"units": "Thousands", "title": "Payrolls"},
+            (
+                {
+                    "date": "2026-05-01",
+                    "PAYEMS_20260702": "158927",
+                    "PAYEMS_20260807": "158861",
+                },
+            ),
+        )
+
+        self.assertIsNone(outcome.error_code)
+        self.assertEqual(len(outcome.records), 2)
+        initial, revision = outcome.records
+        self.assertIsNone(initial["released_at"])
+        self.assertIsNone(initial["revision_at"])
+        self.assertEqual(revision["value"], 158861.0)
+        self.assertEqual(revision["revision_at"], datetime(2026, 8, 7, tzinfo=UTC))
+        self.assertIsNone(revision["released_at"])
+
     @patch("collectors.fred.make_request")
     @patch("collectors.fred.query_latest")
     def test_fresh_persisted_metadata_skips_metadata_http_call(
@@ -74,6 +99,11 @@ class FredMetadataPersistenceTests(unittest.TestCase):
         self.assertEqual([record["series_id"] for record in result.records], ["GDP"])
         self.assertEqual(make_request.call_count, 1)
         self.assertEqual(make_request.call_args.kwargs["url"], FRED_OBSERVATIONS_URL)
+        self.assertEqual(make_request.call_args.kwargs["params"]["output_type"], 3)
+        self.assertEqual(
+            make_request.call_args.kwargs["params"]["realtime_start"],
+            make_request.call_args.kwargs["params"]["observation_start"],
+        )
 
     @patch("collectors.fred.get_session")
     @patch("collectors.fred.make_request")
@@ -769,6 +799,48 @@ class FredOrchestratorMetricTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["db_write_duration_ms"], 40)
         self.assertEqual(write_log.call_args.kwargs["api_calls_made"], 1)
         estimate.assert_not_called()
+
+
+class FredHealthCheckSentinelTests(unittest.TestCase):
+    def _config(self, api_key):
+        return {"collectors": {"fred": {"api_key": api_key}}}
+
+    @patch("collectors.fred.make_request")
+    def test_health_message_never_contains_api_key(self, make_request):
+        secret = "SENTINEL-FRED-KEY"
+        request = httpx.Request(
+            "GET",
+            FRED_SERIES_URL,
+            params={"series_id": "GDP", "api_key": secret, "file_type": "json"},
+        )
+        make_request.return_value = httpx.Response(401, request=request, content=b"")
+
+        result = FredCollector().health_check(self._config(secret))
+
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["message"], "FRED API returned status 401")
+        self.assertNotIn(secret, result["message"])
+
+    @patch("collectors.fred.make_request")
+    def test_health_exception_message_never_contains_api_key(self, make_request):
+        secret = "SENTINEL-FRED-KEY"
+        request = httpx.Request(
+            "GET",
+            FRED_SERIES_URL,
+            params={"series_id": "GDP", "api_key": secret, "file_type": "json"},
+        )
+        make_request.side_effect = httpx.HTTPStatusError(
+            f"401 Unauthorized for url '{request.url}'",
+            request=request,
+            response=httpx.Response(401, request=request, content=b""),
+        )
+
+        result = FredCollector().health_check(self._config(secret))
+
+        self.assertFalse(result["healthy"])
+        self.assertNotIn(secret, result["message"])
+        self.assertNotIn("api_key", result["message"])
+        self.assertIn("api.stlouisfed.org", result["message"])
 
 
 if __name__ == "__main__":

@@ -250,6 +250,25 @@ class AnalysisJobWorkerTests(unittest.TestCase):
             },
         )
 
+    def test_result_reference_keeps_autonomy_outcome_counts(self):
+        self.assertEqual(
+            AnalysisJobWorker._result_ref(
+                {
+                    "status": "completed",
+                    "cost_usd": 0.07,
+                    "promoted_count": 12,
+                    "falsification_runs": 4,
+                    "private_value": "not exposed",
+                }
+            ),
+            {
+                "status": "completed",
+                "cost_usd": 0.07,
+                "promoted_count": 12,
+                "falsification_runs": 4,
+            },
+        )
+
     def test_claimed_job_handler_failure_is_retried_without_sleeping(self):
         claimed = AnalysisJob.from_row(JOB_ROW)
         calls = []
@@ -520,6 +539,46 @@ class ResearchIntelligenceJobTests(unittest.TestCase):
         with patch("analysis_job_handlers._config", return_value={}):
             with self.assertRaisesRegex(ValueError, "requires a case id"):
                 route_job(object(), job)
+
+
+class ThesisAutonomyJobTests(unittest.TestCase):
+    def test_route_job_dispatches_thesis_autonomy_run_with_bounded_result(self):
+        job = SimpleNamespace(
+            job_type="thesis_autonomy_run",
+            payload={"as_of": "2026-08-15T09:30:00+00:00"},
+            correlation_id="corr-1",
+        )
+        with (
+            patch(
+                "analysis_job_handlers._config",
+                return_value={"thesis_autonomy": {"enabled": True}},
+            ),
+            patch(
+                "thesis_autonomy.run_autonomous_thesis_cycle",
+                return_value={
+                    "status": "completed",
+                    "error_count": 1,
+                    "cost_usd": 0.4,
+                    "promoted_count": 3,
+                    "falsification_runs": 2,
+                },
+            ) as cycle,
+        ):
+            result = route_job(FakeSession(), job)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["error_count"], 1)
+        self.assertEqual(result["cost_usd"], 0.4)
+        self.assertEqual(result["promoted_count"], 3)
+        self.assertEqual(result["falsification_runs"], 2)
+        cycle.assert_called_once()
+        self.assertEqual(cycle.call_args.kwargs["correlation_id"], "corr-1")
+        self.assertEqual(cycle.call_args.kwargs["as_of"], "2026-08-15T09:30:00+00:00")
+
+    def test_unsupported_job_type_is_rejected_without_leaking(self):
+        job = SimpleNamespace(job_type="mystery_job", payload={})
+        with self.assertRaisesRegex(ValueError, "unsupported analysis job type"):
+            route_job(FakeSession(), job)
 
 
 if __name__ == "__main__":

@@ -161,6 +161,19 @@ def _scheduled_research(config: dict) -> None:
         )
 
 
+def _scheduled_thesis_autonomy(config: dict) -> None:
+    """Enqueue one bounded autonomous thesis cycle on the durable queue."""
+    from thesis_autonomy import enqueue_thesis_autonomy_job
+
+    try:
+        enqueue_thesis_autonomy_job(config, triggered_by="scheduler")
+    except Exception as exc:
+        logger.error(
+            "scheduled_thesis_autonomy_enqueue_failed",
+            error_type=type(exc).__name__,
+        )
+
+
 def _try_acquire_leader_connection(config: dict):
     """Try to take the scheduler advisory leader lock; None when not leader.
 
@@ -234,6 +247,22 @@ def start_scheduler(config: dict) -> None:
             _build_cron_trigger(research_schedule),
             args=[config],
             id="research:discovery",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+    autonomy_config = config.get("thesis_autonomy", {})
+    autonomy_schedule = autonomy_config.get("schedule")
+    if (
+        autonomy_config.get("enabled", False)
+        and autonomy_config.get("schedule_enabled", False)
+        and autonomy_schedule
+    ):
+        _scheduler.add_job(
+            _scheduled_thesis_autonomy,
+            _build_cron_trigger(autonomy_schedule),
+            args=[config],
+            id="thesis-autonomy:run",
             replace_existing=True,
             coalesce=True,
             max_instances=1,

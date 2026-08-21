@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
+from investment_universe import ISSUER_ALIASES, industry_for
+
 MAX_FEED_BYTES = 2_000_000
 
 # Keep this taxonomy deterministic and shared by every investment endpoint.
@@ -479,11 +481,6 @@ def classify_news_item(
     supplied_symbols = {value.upper() for value in _values(item.get("symbols"))}
     text = " ".join((title, summary, *tags)).casefold()
 
-    industries = [
-        industry
-        for industry, phrases in INDUSTRY_RULES
-        if any(_contains(text, phrase) for phrase in phrases)
-    ]
     themes = [
         theme
         for theme, phrases in THEME_RULES
@@ -491,11 +488,17 @@ def classify_news_item(
     ]
     matched_companies: list[str] = []
     matched_symbols: list[str] = []
+    issuer_industries: list[str] = []
     seen = set()
     for company in companies:
         name = _clean(company.get("company"), 160)
         symbol = _clean(company.get("symbol"), 24).upper()
-        name_hit = len(name) >= 4 and name.casefold() in text
+        # Checked-in name variants (e.g. "Goldman" -> GS, "Alphabet" -> GOOG)
+        # match with word boundaries, never arbitrary first-token truncation.
+        aliases = ISSUER_ALIASES.get(symbol, ())
+        name_hit = (len(name) >= 4 and name.casefold() in text) or any(
+            _contains(text, alias) for alias in aliases
+        )
         symbol_hit = symbol in supplied_symbols or (
             len(symbol) >= 2
             and re.search(
@@ -512,9 +515,28 @@ def classify_news_item(
         matched_companies.append(name)
         if symbol:
             matched_symbols.append(symbol)
-        company_industry = canonicalize_industry(company.get("industry"))
-        if company_industry not in industries:
-            industries.append(company_industry)
+        # Checked-in issuer metadata is authoritative: resolve the canonical
+        # industry for a configured issuer first, then fall back to the
+        # company record's own label. Unclassified is never appended when a
+        # deterministic issuer industry exists.
+        company_industry = industry_for(symbol, name)
+        if company_industry == "Unclassified":
+            company_industry = canonicalize_industry(company.get("industry"))
+        if (
+            company_industry != "Unclassified"
+            and company_industry not in issuer_industries
+        ):
+            issuer_industries.append(company_industry)
+
+    # When a matched issuer resolves deterministically, its checked-in
+    # industry is the item's classification; keyword rules are only the
+    # fallback for items with no known issuer and never add a competing
+    # industry to company-linked news.
+    industries = issuer_industries or [
+        industry
+        for industry, phrases in INDUSTRY_RULES
+        if any(_contains(text, phrase) for phrase in phrases)
+    ]
 
     ambiguity = (
         "unclassified"

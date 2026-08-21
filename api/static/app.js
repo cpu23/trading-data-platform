@@ -853,6 +853,1255 @@
     initCharts(root);
     initTimezoneControl(root);
     initLiveSections();
+    initThesisViews(root);
+  }
+
+  /* Bounded thesis tournament views ----------------------------------------- */
+  var thesisUnknown = '\u2014';
+  var thesisDefaultMinimumScore = '0.25';
+  var thesisEligibilityBlockerLabels = {
+    status: 'status',
+    score: 'score',
+    scenarios: 'scenarios',
+    risks: 'risks',
+    evidence: 'evidence',
+    falsification: 'falsification',
+    actionability: 'actionability',
+    opposition: 'opposition'
+  };
+
+  function thesisValue(value) {
+    if (value === null || value === undefined || value === '') return thesisUnknown;
+    return String(value);
+  }
+
+  function thesisNumber(value, style) {
+    if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) {
+      return thesisUnknown;
+    }
+    var number = Number(value);
+    if (style === 'return') {
+      return (number > 0 ? '+' : '') + (number * 100).toFixed(1) + '%';
+    }
+    if (style === 'count') return String(Math.trunc(number));
+    return number.toFixed(2);
+  }
+
+  function thesisDate(value) {
+    if (!value) return thesisUnknown;
+    var parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return thesisUnknown;
+    return parsed.toLocaleString([], {
+      year: 'numeric', month: 'short', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    });
+  }
+
+  function thesisElement(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function thesisAppendText(parent, tag, className, text) {
+    var child = thesisElement(tag, className, text);
+    parent.appendChild(child);
+    return child;
+  }
+
+  function thesisArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function thesisFirstDefined() {
+    for (var index = 0; index < arguments.length; index += 1) {
+      if (arguments[index] !== null && arguments[index] !== undefined && arguments[index] !== '') {
+        return arguments[index];
+      }
+    }
+    return null;
+  }
+
+  function thesisObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function thesisFetch(url, options, signal) {
+    var requestOptions = options || {};
+    requestOptions.credentials = 'same-origin';
+    requestOptions.signal = signal;
+    return fetch(url, requestOptions).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        if (!response.ok) {
+          var error = new Error('Request unavailable');
+          error.status = response.status;
+          error.body = body;
+          throw error;
+        }
+        return body;
+      });
+    });
+  }
+
+  function thesisSetBusy(root, busy) {
+    root.querySelectorAll('[aria-busy]').forEach(function (node) {
+      node.setAttribute('aria-busy', busy ? 'true' : 'false');
+    });
+    root.querySelectorAll('[data-thesis-refresh], [data-thesis-run]').forEach(function (button) {
+      button.disabled = busy;
+      button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    });
+  }
+
+  function thesisMessage(root, text, kind) {
+    var node = root.querySelector('[data-thesis-message]');
+    if (!node) return;
+    node.textContent = text;
+    node.dataset.state = kind || 'ready';
+  }
+
+  function thesisStatusValue(root, key, value) {
+    var node = root.querySelector('[data-status-value="' + key + '"]');
+    if (node) node.textContent = thesisValue(value);
+  }
+
+  function thesisJobCounts(jobs) {
+    if (!Array.isArray(jobs)) return thesisUnknown;
+    var active = 0;
+    jobs.forEach(function (job) {
+      var state = String(job.state || '').toLowerCase();
+      if (['queued', 'leased', 'running', 'failed_retryable'].indexOf(state) >= 0) active += 1;
+    });
+    return active + ' active / ' + jobs.length + ' recent';
+  }
+
+  function thesisLatestCycleAt(status) {
+    status = thesisObject(status);
+    var latestValue = null;
+    var latestTime = -Infinity;
+    if (Array.isArray(status.autonomy_jobs)) {
+      status.autonomy_jobs.forEach(function (job) {
+        var value = thesisObject(job).completed_at;
+        var parsed = Date.parse(value || '');
+        if (Number.isFinite(parsed) && parsed > latestTime) {
+          latestValue = value;
+          latestTime = parsed;
+        }
+      });
+    }
+    return latestValue || status.latest_evaluation_at;
+  }
+
+  function thesisModelCost(status) {
+    var modelCost = thesisObject(thesisObject(status).model_cost);
+    var cost = 'cost unavailable';
+    if (
+      modelCost.today_usd !== null &&
+      modelCost.today_usd !== undefined &&
+      Number.isFinite(Number(modelCost.today_usd))
+    ) {
+      cost = '$' + Number(modelCost.today_usd).toFixed(2);
+    }
+    var text = cost + ' · ' + thesisNumber(modelCost.attempts, 'count') + ' calls';
+    var unknown = Number(modelCost.unknown_cost_attempts);
+    if (Number.isFinite(unknown) && unknown > 0) {
+      text += ' · ' + Math.trunc(unknown) + ' unknown';
+    }
+    return text;
+  }
+
+  function thesisCalibration(status) {
+    var calibration = thesisObject(thesisObject(status).calibration);
+    var count = Number(calibration.resolved_with_probability);
+    var brier = Number(calibration.brier_score);
+    if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(brier)) {
+      return 'Awaiting resolved forecasts';
+    }
+    return 'Brier ' + brier.toFixed(3) + ' · n=' + Math.trunc(count);
+  }
+
+  function thesisSourcesPartial(status) {
+    var sources = thesisObject(thesisObject(status).sources);
+    var names = Object.keys(sources);
+    if (!names.length) return false;
+    return names.some(function (name) {
+      var collectionStatus = String(
+        thesisObject(thesisObject(sources[name]).collection).status || ''
+      );
+      return collectionStatus !== 'success';
+    });
+  }
+
+  function renderThesisStatus(root, status, groups, opportunities) {
+    status = thesisObject(status);
+    if (status.available === false) {
+      ['last-cycle', 'model-cost', 'jobs', 'evidence', 'groups', 'positions', 'falsification', 'calibration', 'directions', 'top-opportunity'].forEach(function (key) {
+        thesisStatusValue(root, key, thesisUnknown);
+      });
+      return;
+    }
+    var groupStatus = thesisObject(thesisObject(status.groups).by_status);
+    var evidence = thesisObject(status.evidence);
+    var evidenceCount = evidence.total;
+    var sources = thesisObject(status.sources);
+    var sourceNames = Object.keys(sources);
+    var sourceDisplay = thesisUnknown;
+    if (sourceNames.length) {
+      var availableSources = sourceNames.filter(function (name) {
+        var source = thesisObject(sources[name]);
+        return thesisObject(source.data).available === true ||
+          ['success', 'partial'].indexOf(String(thesisObject(source.collection).status)) >= 0;
+      }).length;
+      sourceDisplay = availableSources + '/' + sourceNames.length;
+    } else if (status.source_count !== null && status.source_count !== undefined) {
+      sourceDisplay = thesisNumber(status.source_count, 'count');
+    }
+    thesisStatusValue(root, 'last-cycle', thesisDate(thesisLatestCycleAt(status)));
+    thesisStatusValue(root, 'jobs', thesisJobCounts(status.autonomy_jobs));
+    thesisStatusValue(root, 'model-cost', thesisModelCost(status));
+    thesisStatusValue(
+      root,
+      'evidence',
+      sourceDisplay + ' sources / ' + thesisNumber(evidenceCount, 'count') + ' evidence'
+    );
+    var activeGroups = groupStatus.active;
+    if (activeGroups === undefined && Array.isArray(groups)) {
+      activeGroups = groups.filter(function (group) {
+        return String(group.status || '').toLowerCase() === 'active';
+      }).length;
+    }
+    thesisStatusValue(root, 'groups', thesisNumber(activeGroups, 'count'));
+    thesisStatusValue(root, 'positions', thesisNumber(status.linked_theses, 'count'));
+    thesisStatusValue(
+      root,
+      'falsification',
+      status.latest_falsification_at ? 'last ' + thesisDate(status.latest_falsification_at) : thesisUnknown
+    );
+    thesisStatusValue(root, 'calibration', thesisCalibration(status));
+    if (root.dataset.thesisView === 'research-preview') {
+      var bull = null;
+      var bear = null;
+      var directionsComplete = Array.isArray(groups);
+      if (directionsComplete) {
+        bull = 0;
+        bear = 0;
+        groups.forEach(function (group) {
+          if (group.long_count === null || group.long_count === undefined ||
+              group.short_count === null || group.short_count === undefined) {
+            directionsComplete = false;
+            return;
+          }
+          bull += Number(group.long_count);
+          bear += Number(group.short_count);
+        });
+      }
+      if (!directionsComplete) {
+        bull = null;
+        bear = null;
+      }
+      thesisStatusValue(root, 'directions', bull === null ? thesisUnknown : bull + ' bull / ' + bear + ' bear');
+      var top = thesisArray(opportunities)[0];
+      thesisStatusValue(
+        root,
+        'top-opportunity',
+        top ? thesisValue(top.claim || top.company || top.symbol) + ' · ' + thesisNumber(top.opportunity_score) : thesisUnknown
+      );
+    }
+  }
+
+  function thesisStateRow(tbody, columns, text) {
+    tbody.textContent = '';
+    var row = thesisElement('tr');
+    var cell = thesisElement('td', 'thesis-state-cell', text);
+    cell.colSpan = columns;
+    row.appendChild(cell);
+    tbody.appendChild(row);
+  }
+
+  function thesisCollectionState(root, selector, columns, text) {
+    var target = root.querySelector(selector);
+    if (!target) return;
+    if (target.tagName === 'TBODY') {
+      thesisStateRow(target, columns, text);
+      return;
+    }
+    target.textContent = '';
+    target.appendChild(thesisElement('li', 'thesis-state-cell', text));
+  }
+
+  function thesisMarkDetailUnavailable(root, text) {
+    thesisField(root, 'claim', text);
+    thesisField(root, 'group', 'No values inferred');
+    thesisField(root, 'status', 'unavailable');
+    root.querySelectorAll('.thesis-state-cell').forEach(function (node) {
+      node.textContent = text;
+    });
+    var invalidations = root.querySelector('[data-thesis-invalidations]');
+    if (invalidations) {
+      invalidations.textContent = '';
+      invalidations.appendChild(thesisElement('li', 'thesis-state-cell', text));
+    }
+  }
+
+  function thesisCell(row, label, className, text) {
+    var cell = thesisElement('td', className, text);
+    cell.dataset.label = label;
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function thesisOpportunityEmptyMessage(minimumScore) {
+    return String(minimumScore) === '0'
+      ? 'No eligible or ineligible opportunities meet these filters.'
+      : 'No eligible opportunities meet these filters. Choose Any score to inspect ineligible theses.';
+  }
+
+  function thesisIneligibilityLabel(item) {
+    if (item.eligible !== false) return '';
+    var labels = [];
+    var seen = {};
+    var blockers = thesisArray(item.blockers);
+    for (var index = 0; index < blockers.length && labels.length < 8; index += 1) {
+      var blocker = String(blockers[index] || '').trim().toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(thesisEligibilityBlockerLabels, blocker) || seen[blocker]) continue;
+      seen[blocker] = true;
+      labels.push(thesisEligibilityBlockerLabels[blocker]);
+    }
+    return 'Not eligible' + (labels.length ? ' · ' + labels.join(', ') : '');
+  }
+
+  function renderThesisOpportunities(root, opportunities, minimumScore) {
+    var tbody = root.querySelector('[data-thesis-opportunities]');
+    if (!tbody) return;
+    tbody.textContent = '';
+    if (!opportunities.length) {
+      thesisStateRow(tbody, 8, thesisOpportunityEmptyMessage(minimumScore));
+      return;
+    }
+    opportunities.forEach(function (item, index) {
+      var row = thesisElement('tr');
+      var ineligibilityLabel = thesisIneligibilityLabel(item);
+      if (ineligibilityLabel) {
+        row.classList.add('thesis-opportunity-ineligible');
+        row.dataset.eligible = 'false';
+      }
+      var identity = thesisCell(row, 'Thesis / why now', 'thesis-opportunity-identity');
+      var heading = thesisElement('div', 'thesis-opportunity-heading');
+      thesisAppendText(heading, 'span', 'thesis-rank tabular', String(index + 1).padStart(2, '0'));
+      var link = thesisElement('a', 'thesis-opportunity-link', thesisValue(item.claim || item.company || item.symbol));
+      link.href = '/research/theses/' + encodeURIComponent(String(item.id || ''));
+      heading.appendChild(link);
+      identity.appendChild(heading);
+      thesisAppendText(
+        identity, 'span', 'thesis-opportunity-context',
+        thesisValue(item.group_name) + ' · ' + thesisValue(item.mechanism)
+      );
+      thesisAppendText(
+        identity, 'span', 'thesis-opportunity-catalyst',
+        'Variant: ' + thesisValue(item.direction) + ' / ' + thesisValue(item.horizon) +
+        ' · catalyst strength ' + thesisNumber(item.catalyst_score)
+      );
+      thesisCell(
+        row, 'Direction', 'thesis-direction',
+        thesisValue(item.direction) + ' · ' + thesisValue(item.horizon) + ' · ' + thesisValue(item.status)
+      );
+      var scoreCell = thesisCell(row, 'Score', 'thesis-primary-score tabular', thesisNumber(item.opportunity_score));
+      if (ineligibilityLabel) {
+        var eligibilityNote = thesisElement(
+          'strong',
+          'thesis-opportunity-catalyst thesis-ineligible-label',
+          ineligibilityLabel
+        );
+        eligibilityNote.setAttribute('role', 'note');
+        eligibilityNote.setAttribute('aria-label', 'Ranking eligibility: ' + ineligibilityLabel);
+        scoreCell.appendChild(eligibilityNote);
+      }
+      thesisCell(
+        row, 'EV / cost / downside', 'tabular',
+        thesisNumber(item.expected_value, 'return') + ' / ' +
+        thesisNumber(thesisFirstDefined(item.research_cost, item.expected_cost, item.cost)) + ' / ' +
+        thesisNumber(item.expected_shortfall, 'return')
+      );
+      thesisCell(row, 'Confidence', 'tabular', thesisNumber(item.confidence_score));
+      thesisCell(
+        row, 'Evidence / contradiction', 'tabular',
+        thesisNumber(item.evidence_strength) + ' / ' + thesisNumber(item.contradiction_strength)
+      );
+      thesisCell(
+        row, 'Catalyst / neglect', 'tabular',
+        thesisNumber(item.catalyst_score) + ' / ' + thesisNumber(item.neglect_score)
+      );
+      thesisCell(row, 'Evaluated', 'thesis-date tabular', thesisDate(item.last_evaluated_at));
+      tbody.appendChild(row);
+    });
+  }
+
+  function populateThesisGroupFilter(root, groups) {
+    var select = root.querySelector('[data-thesis-group-filter]');
+    if (!select) return;
+    var selected = select.value;
+    select.textContent = '';
+    var all = thesisElement('option', '', 'All groups');
+    all.value = '';
+    select.appendChild(all);
+    groups.forEach(function (group) {
+      var option = thesisElement('option', '', thesisValue(group.name));
+      option.value = thesisValue(group.id);
+      select.appendChild(option);
+    });
+    if (selected && groups.some(function (group) { return String(group.id) === selected; })) {
+      select.value = selected;
+    }
+  }
+
+  function renderThesisGroups(root, groups) {
+    var target = root.querySelector('[data-thesis-groups]');
+    if (!target) return;
+    target.textContent = '';
+    if (!groups.length) {
+      if (target.tagName === 'TBODY') thesisStateRow(target, 6, 'No tournament groups are available.');
+      else target.appendChild(thesisElement('li', 'thesis-state-cell', 'No active tournament groups are available.'));
+      return;
+    }
+    if (target.tagName !== 'TBODY') {
+      groups.slice(0, 4).forEach(function (group) {
+        var item = thesisElement('li', 'thesis-group-preview-row');
+        var heading = thesisElement('div', 'thesis-group-preview-heading');
+        thesisAppendText(heading, 'strong', '', thesisValue(group.name));
+        thesisAppendText(heading, 'span', 'inv-status-pill', thesisValue(group.status));
+        item.appendChild(heading);
+        thesisAppendText(item, 'p', '', thesisValue(group.description));
+        thesisAppendText(
+          item, 'span', 'thesis-group-counts tabular',
+          thesisNumber(group.long_count, 'count') + ' bull · ' +
+          thesisNumber(group.short_count, 'count') + ' bear · ' +
+          thesisNumber(group.neutral_count, 'count') + ' neutral · top ' +
+          thesisNumber(group.max_opportunity) + ' · contradiction ' +
+          thesisNumber(group.max_contradiction)
+        );
+        target.appendChild(item);
+      });
+      return;
+    }
+    groups.forEach(function (group) {
+      var row = thesisElement('tr');
+      var nameCell = thesisCell(row, 'Tournament', '');
+      thesisAppendText(nameCell, 'strong', 'thesis-group-name', thesisValue(group.name));
+      thesisAppendText(nameCell, 'span', 'thesis-group-description', thesisValue(group.description));
+      var filterButton = thesisElement('button', 'thesis-filter-link', 'Show opportunities');
+      filterButton.type = 'button';
+      filterButton.dataset.thesisSelectGroup = thesisValue(group.id);
+      nameCell.appendChild(filterButton);
+      thesisCell(row, 'Status', '', thesisValue(group.status));
+      thesisCell(
+        row, 'Bull / bear / neutral', 'tabular',
+        thesisNumber(group.long_count, 'count') + ' / ' +
+        thesisNumber(group.short_count, 'count') + ' / ' +
+        thesisNumber(group.neutral_count, 'count')
+      );
+      thesisCell(row, 'Top score', 'tabular', thesisNumber(group.max_opportunity));
+      thesisCell(row, 'Contradiction', 'tabular', thesisNumber(group.max_contradiction));
+      thesisCell(row, 'Last evaluated', 'thesis-date tabular', thesisDate(group.last_evaluation));
+      target.appendChild(row);
+    });
+  }
+
+  function renderThesisFalsificationQueue(root, jobs) {
+    var target = root.querySelector('[data-thesis-falsification-queue]');
+    if (!target) return;
+    target.textContent = '';
+    var falsificationJobs = thesisArray(jobs);
+    if (!falsificationJobs.length) {
+      target.appendChild(thesisElement(
+        'li', 'thesis-state-cell',
+        'No falsification jobs are queued. Absence of a run is not a pass; inspect dossier invalidation conditions.'
+      ));
+      return;
+    }
+    falsificationJobs.forEach(function (job) {
+      var item = thesisElement('li', 'thesis-falsification-row');
+      thesisAppendText(item, 'span', 'inv-status-pill', thesisValue(job.state));
+      thesisAppendText(item, 'strong', '', 'Evidence + falsification cycle');
+      thesisAppendText(item, 'span', 'thesis-date tabular', thesisDate(job.created_at));
+      thesisAppendText(
+        item, 'span', 'thesis-job-meta',
+        'attempt ' + thesisNumber(job.attempt_count, 'count') + ' / ' + thesisNumber(job.max_attempts, 'count')
+      );
+      target.appendChild(item);
+    });
+  }
+
+  function thesisLatestVersion(dossier) {
+    var versions = thesisArray(dossier.versions);
+    return versions.length ? thesisObject(versions[0]) : {};
+  }
+
+  function thesisField(root, key, value) {
+    var node = root.querySelector('[data-thesis-field="' + key + '"]');
+    if (node) node.textContent = thesisValue(value);
+  }
+
+  function renderThesisScenarios(root, scenarios) {
+    var target = root.querySelector('[data-thesis-scenarios]');
+    if (!target) return;
+    target.textContent = '';
+    var ordered = scenarios.slice().sort(function (left, right) {
+      function order(item) {
+        var name = String(item.name || '').toLowerCase();
+        if (name.indexOf('bull') >= 0) return 0;
+        if (item.is_base_case || name.indexOf('base') >= 0) return 1;
+        if (name.indexOf('bear') >= 0) return 2;
+        return 3;
+      }
+      return order(left) - order(right);
+    });
+    if (!ordered.length) {
+      thesisStateRow(target, 5, 'No scenarios are available. Probability and expected return remain unknown.');
+      return;
+    }
+    ordered.forEach(function (scenario) {
+      var row = thesisElement('tr');
+      thesisCell(row, 'Scenario', 'thesis-scenario-name', thesisValue(scenario.name));
+      thesisCell(row, 'Probability', 'tabular', thesisNumber(scenario.probability, 'return'));
+      thesisCell(row, 'Expected return', 'tabular', thesisNumber(scenario.expected_return, 'return'));
+      thesisCell(row, 'Path and assumptions', '', thesisValue(scenario.description || scenario.assumptions || scenario.path));
+      thesisCell(row, 'Version', 'tabular', thesisValue(scenario.version));
+      target.appendChild(row);
+    });
+  }
+
+  function normalizeEvidenceRelationship(value) {
+    var relationship = String(value || 'context').toLowerCase();
+    if (relationship.indexOf('support') >= 0) return 'supports';
+    if (relationship.indexOf('contradict') >= 0 || relationship.indexOf('counter') >= 0) return 'contradicts';
+    if (relationship.indexOf('invalid') >= 0 || relationship.indexOf('falsif') >= 0) return 'invalidation';
+    return 'context';
+  }
+
+  function renderThesisEvidence(root, evidence) {
+    var grouped = {supports: [], contradicts: [], invalidation: [], context: []};
+    evidence.forEach(function (item) {
+      grouped[normalizeEvidenceRelationship(item.relationship || item.evidence_role || item.role)].push(item);
+    });
+    Object.keys(grouped).forEach(function (relationship) {
+      var section = root.querySelector('[data-evidence-relationship="' + relationship + '"]');
+      if (!section) return;
+      var count = section.querySelector('[data-evidence-count]');
+      var list = section.querySelector('[data-evidence-list]');
+      if (count) count.textContent = String(grouped[relationship].length);
+      if (!list) return;
+      list.textContent = '';
+      if (!grouped[relationship].length) {
+        list.appendChild(thesisElement('li', 'thesis-state-cell', 'No ' + relationship + ' evidence recorded.'));
+        return;
+      }
+      grouped[relationship].forEach(function (item) {
+        var entry = thesisElement('li', 'thesis-evidence-entry');
+        thesisAppendText(
+          entry, 'p', 'thesis-evidence-claim',
+          thesisValue(thesisFirstDefined(item.claim, item.text, item.summary, item.excerpt, item.description))
+        );
+        var sourceAt = thesisFirstDefined(
+          item.source_timestamp, item.published_at, item.observed_at, item.created_at
+        );
+        thesisAppendText(
+          entry, 'span', 'thesis-evidence-meta tabular',
+          'source ' + thesisDate(sourceAt) +
+          ' · available ' + thesisDate(item.available_at) +
+          ' · weight ' + thesisNumber(thesisFirstDefined(item.effective_weight, item.strength, item.weight)) +
+          ' · quality ' + thesisNumber(item.quality_score) +
+          ' · entailment ' + thesisNumber(item.entailment_score) +
+          ' · freshness ' + thesisNumber(item.freshness_score)
+        );
+        var reference = thesisFirstDefined(
+          item.provenance_ref,
+          item.origin_key,
+          item.source_ref,
+          item.evidence_fingerprint,
+          item.evidence_id,
+          item.source_id,
+          item.document_id,
+          item.id
+        );
+        thesisAppendText(
+          entry, 'span', 'thesis-provenance-ref',
+          thesisValue(item.source_family) +
+          ' · independent source ' + thesisValue(item.independence_key) +
+          ' · provenance ' + thesisValue(reference)
+        );
+        list.appendChild(entry);
+      });
+    });
+  }
+
+  function renderThesisEventList(target, items, emptyText, kind) {
+    if (!target) return;
+    target.textContent = '';
+    if (!items.length) {
+      target.appendChild(thesisElement('p', 'thesis-state-cell', emptyText));
+      return;
+    }
+    items.forEach(function (item) {
+      var row = thesisElement('article', 'thesis-timeline-row');
+      thesisAppendText(
+        row, 'strong', '',
+        thesisValue(thesisFirstDefined(item.forecast_key, item.name, item.metric, item.forecast, item.title, item.status, kind))
+      );
+      thesisAppendText(
+        row, 'span', 'thesis-date tabular',
+        thesisDate(thesisFirstDefined(item.measured_at, item.resolved_at, item.evaluated_at, item.target_date, item.as_of, item.created_at))
+      );
+      thesisAppendText(
+        row, 'p', '',
+        thesisValue(thesisFirstDefined(item.description, item.notes, item.outcome, item.result, item.actual_value, item.target_value, item.value, item.expected_value))
+      );
+      target.appendChild(row);
+    });
+  }
+
+  function renderThesisRisks(root, risks) {
+    var target = root.querySelector('[data-thesis-risks]');
+    if (!target) return;
+    target.textContent = '';
+    var rows = thesisArray(risks).slice(0, 50);
+    if (!rows.length) {
+      target.appendChild(thesisElement('li', 'thesis-state-cell', 'No structured risks recorded.'));
+      return;
+    }
+    rows.forEach(function (risk) {
+      var item = thesisElement('li', 'thesis-risk-row');
+      var riskKind = thesisFirstDefined(risk.kind, risk.risk_type, risk.category, 'risk');
+      var severity = risk.severity;
+      var riskLabel = thesisValue(riskKind);
+      if (severity !== null && severity !== undefined && severity !== '') {
+        riskLabel += ' · ' + thesisValue(severity);
+      }
+      thesisAppendText(item, 'strong', '', riskLabel);
+      thesisAppendText(
+        item,
+        'span',
+        '',
+        thesisValue(thesisFirstDefined(risk.description, risk.condition, risk.name))
+      );
+      target.appendChild(item);
+    });
+  }
+
+  function renderThesisInvalidations(root, dossier, core, version) {
+    var list = root.querySelector('[data-thesis-invalidations]');
+    var risks = thesisArray(dossier.risks);
+    var conditions = thesisArray(
+      version.invalidation_conditions || core.invalidation_conditions || core.invalidation_criteria
+    );
+    risks.forEach(function (risk) {
+      if (String(risk.kind || risk.risk_type || '').toLowerCase().indexOf('invalid') >= 0) {
+        conditions.push(risk.description || risk.condition || risk.name);
+      }
+    });
+    if (list) {
+      list.textContent = '';
+      if (!conditions.length) list.appendChild(thesisElement('li', '', 'No invalidation conditions recorded.'));
+      conditions.forEach(function (condition) {
+        var value = typeof condition === 'object'
+          ? condition.description || condition.condition || condition.name
+          : condition;
+        list.appendChild(thesisElement('li', '', thesisValue(value)));
+      });
+    }
+    var latest = thesisArray(dossier.falsification_runs)[0];
+    var state = root.querySelector('[data-thesis-invalidation-state]');
+    if (state) {
+      state.textContent = latest
+        ? thesisValue(latest.status || latest.result) + ' · ' + thesisDate(latest.completed_at || latest.created_at)
+        : 'Not yet tested';
+    }
+  }
+
+  function thesisStructuredFindings(value) {
+    if (Array.isArray(value)) return value.slice(0, 20);
+    if (value && typeof value === 'object') return [value];
+    if (typeof value === 'string') {
+      try {
+        var parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.slice(0, 20) : [parsed];
+      } catch (error) {
+        return value.trim() ? [value] : [];
+      }
+    }
+    return [];
+  }
+
+  function thesisFindingLines(finding) {
+    if (!finding || typeof finding !== 'object') return [thesisValue(finding)];
+    var lines = [];
+    thesisArray(finding.invalidation_ids).forEach(function (value) {
+      lines.push('Invalidating evidence: ' + thesisValue(value));
+    });
+    thesisArray(finding.breached_condition_ids).forEach(function (value) {
+      lines.push('Breached condition: ' + thesisValue(value));
+    });
+    thesisArray(finding.runner_findings).forEach(function (value) {
+      value = thesisObject(value);
+      lines.push(
+        thesisValue(value.kind) + ': ' + thesisValue(value.statement) +
+        (thesisArray(value.citations).length
+          ? ' · citations ' + thesisArray(value.citations).join(', ')
+          : '')
+      );
+    });
+    thesisArray(finding.citation_failures).forEach(function (value) {
+      value = thesisObject(value);
+      lines.push(
+        'Citation ' + thesisValue(value.reason) +
+        (value.claim_id ? ' · claim ' + thesisValue(value.claim_id) : '') +
+        (thesisArray(value.refs).length ? ' · refs ' + thesisArray(value.refs).join(', ') : '')
+      );
+    });
+    thesisArray(finding.required_data).forEach(function (value) {
+      value = thesisObject(value);
+      lines.push('Required ' + thesisValue(value.kind) + ': ' + thesisValue(value.detail));
+    });
+    if (finding.runner_error) lines.push('Runner error: ' + thesisValue(finding.runner_error));
+    return lines;
+  }
+
+  function renderThesisFalsification(root, runs) {
+    var target = root.querySelector('[data-thesis-falsification]');
+    if (!target) return;
+    target.textContent = '';
+    if (!runs.length) {
+      target.appendChild(thesisElement('li', 'thesis-state-cell', 'No challenge or falsification runs recorded.'));
+      return;
+    }
+    runs.forEach(function (run) {
+      var item = thesisElement('li', 'thesis-challenge-row');
+      thesisAppendText(item, 'time', 'thesis-date tabular', thesisDate(run.completed_at || run.started_at || run.created_at));
+      thesisAppendText(item, 'strong', '', thesisValue(run.challenge_type || run.run_type || run.status));
+      var summary = thesisFirstDefined(run.summary, run.result, run.challenge);
+      if (summary !== null && summary !== undefined && summary !== '') {
+        thesisAppendText(item, 'p', '', thesisValue(summary));
+      }
+      var findings = thesisStructuredFindings(run.findings);
+      if (!findings.length && (summary === null || summary === undefined || summary === '')) {
+        thesisAppendText(item, 'p', '', thesisValue(run.status));
+      }
+      findings.forEach(function (finding) {
+        if (!finding || typeof finding !== 'object') {
+          thesisAppendText(item, 'p', 'thesis-finding-summary', thesisValue(finding));
+          return;
+        }
+        var findingBlock = thesisElement('div', 'thesis-finding');
+        thesisAppendText(
+          findingBlock,
+          'strong',
+          'thesis-finding-summary',
+          thesisValue(finding.state) + ' · priority ' +
+            thesisValue(finding.recommended_priority) + ' · contradiction ' +
+            thesisNumber(finding.contradiction_strength)
+        );
+        var lines = thesisFindingLines(finding);
+        if (lines.length) {
+          var list = thesisElement('ul', 'rs-invalidation-list');
+          lines.forEach(function (line) {
+            list.appendChild(thesisElement('li', '', line));
+          });
+          findingBlock.appendChild(list);
+        }
+        item.appendChild(findingBlock);
+      });
+      target.appendChild(item);
+    });
+  }
+
+  function renderThesisPositions(root, positions) {
+    var target = root.querySelector('[data-thesis-positions]');
+    if (!target) return;
+    target.textContent = '';
+    if (!positions.length) {
+      target.appendChild(thesisElement('li', 'thesis-state-cell', 'No linked positions. This dossier remains research-only.'));
+      return;
+    }
+    positions.forEach(function (position) {
+      var item = thesisElement('li', 'thesis-position-row');
+      var symbol = position.symbol || position.asset_symbol || position.instrument;
+      if (symbol) {
+        var link = thesisElement('a', '', thesisValue(symbol));
+        link.href = '/assets/' + encodeURIComponent(String(symbol));
+        item.appendChild(link);
+      } else {
+        thesisAppendText(item, 'span', 'tabular', thesisValue(position.position_id || position.name || position.id));
+      }
+      thesisAppendText(
+        item, 'span', 'thesis-job-meta',
+        thesisValue(position.link_type || position.status || position.relationship || position.position_type)
+      );
+      target.appendChild(item);
+    });
+  }
+
+  function renderThesisCatalysts(root, catalysts) {
+    var target = root.querySelector('[data-thesis-catalysts]');
+    if (!target) return;
+    target.textContent = '';
+    if (!catalysts.length) {
+      target.appendChild(thesisElement('li', 'thesis-state-cell', 'No dated catalysts recorded.'));
+      return;
+    }
+    catalysts.forEach(function (catalyst) {
+      var item = thesisElement('li', 'thesis-catalyst-row');
+      thesisAppendText(item, 'span', 'inv-status-pill', thesisValue(catalyst.state));
+      thesisAppendText(item, 'span', '', thesisValue(catalyst.description));
+      thesisAppendText(item, 'time', 'thesis-date tabular', thesisDate(catalyst.expected_at));
+      target.appendChild(item);
+    });
+  }
+
+  function renderThesisScoreHistory(root, snapshots) {
+    var target = root.querySelector('[data-thesis-score-history]');
+    if (!target) return;
+    target.textContent = '';
+    if (!snapshots.length) {
+      target.appendChild(thesisElement('p', 'thesis-state-cell', 'No prior score snapshots recorded.'));
+      return;
+    }
+    snapshots.slice(0, 8).forEach(function (snapshot) {
+      var row = thesisElement('div', 'thesis-score-history-row');
+      thesisAppendText(row, 'time', 'thesis-date tabular', thesisDate(snapshot.captured_at));
+      thesisAppendText(row, 'span', 'tabular', 'score ' + thesisNumber(snapshot.opportunity_score));
+      thesisAppendText(
+        row, 'span', 'tabular',
+        'EV ' + thesisNumber(snapshot.expected_value, 'return') +
+        ' / downside ' + thesisNumber(snapshot.expected_shortfall, 'return')
+      );
+      target.appendChild(row);
+    });
+  }
+
+  function renderThesisVersions(root, versions) {
+    var target = root.querySelector('[data-thesis-versions]');
+    if (!target) return;
+    target.textContent = '';
+    if (!versions.length) {
+      target.appendChild(thesisElement('li', 'thesis-state-cell', 'No version history recorded.'));
+      return;
+    }
+    versions.forEach(function (version) {
+      var item = thesisElement('li', 'thesis-version-row');
+      thesisAppendText(item, 'strong', 'tabular', 'v' + thesisValue(version.version));
+      thesisAppendText(item, 'time', 'thesis-date tabular', thesisDate(version.created_at));
+      thesisAppendText(item, 'p', '', thesisValue(version.claim));
+      thesisAppendText(item, 'span', 'thesis-job-meta', thesisValue(version.rationale) + ' · ' + thesisValue(version.changed_by));
+      target.appendChild(item);
+    });
+  }
+
+  function renderPlaybookConditions(parent, label, values) {
+    var group = thesisElement('div', 'thesis-playbook-condition');
+    thesisAppendText(group, 'dt', '', label);
+    var detail = thesisElement('dd');
+    var items = thesisArray(values);
+    if (!items.length) {
+      detail.textContent = thesisUnknown;
+    } else {
+      var list = thesisElement('ul');
+      items.forEach(function (value) {
+        list.appendChild(thesisElement('li', '', thesisValue(value)));
+      });
+      detail.appendChild(list);
+    }
+    group.appendChild(detail);
+    parent.appendChild(group);
+  }
+
+  function renderPlaybookScenario(parent, label, scenario) {
+    var row = thesisElement('div', 'thesis-playbook-scenario');
+    var values = thesisObject(scenario);
+    thesisAppendText(row, 'dt', '', label);
+    thesisAppendText(
+      row,
+      'dd',
+      'tabular',
+      'probability ' + thesisNumber(values.probability, 'return') +
+      ' · fractional return ' + thesisNumber(values.expected_return)
+    );
+    parent.appendChild(row);
+  }
+
+  function renderThesisPlaybooks(root, playbooks) {
+    var target = root.querySelector('[data-thesis-playbooks]');
+    if (!target) return;
+    target.textContent = '';
+    if (!playbooks.length) {
+      target.appendChild(thesisElement(
+        'p',
+        'thesis-state-cell',
+        'No catalyst playbooks are attached to this thesis.'
+      ));
+      return;
+    }
+    playbooks.forEach(function (playbook) {
+      var entry = thesisElement('details', 'thesis-playbook-entry');
+      if (playbook.superseded_at === null || playbook.superseded_at === undefined) {
+        entry.open = true;
+      }
+      var summary = thesisElement('summary');
+      var summaryText = thesisElement('span', 'thesis-playbook-summary');
+      thesisAppendText(summaryText, 'strong', '', thesisValue(playbook.catalyst));
+      thesisAppendText(
+        summaryText,
+        'span',
+        'thesis-playbook-meta tabular',
+        thesisValue(playbook.horizon) + ' · expected ' + thesisDate(playbook.expected_at)
+      );
+      summary.appendChild(summaryText);
+      thesisAppendText(
+        summary,
+        'span',
+        'inv-status-pill',
+        playbook.superseded_at ? 'superseded' : 'active'
+      );
+      entry.appendChild(summary);
+
+      var body = thesisElement('div', 'thesis-playbook-body');
+      var identity = thesisElement('div', 'thesis-playbook-identity tabular');
+      thesisAppendText(identity, 'span', '', 'playbook v' + thesisValue(playbook.version));
+      thesisAppendText(identity, 'span', '', 'thesis v' + thesisValue(playbook.thesis_version));
+      thesisAppendText(identity, 'span', '', 'created ' + thesisDate(playbook.created_at));
+      if (playbook.superseded_at) {
+        thesisAppendText(identity, 'span', '', 'superseded ' + thesisDate(playbook.superseded_at));
+      }
+      body.appendChild(identity);
+
+      var eventTypes = thesisElement('div', 'thesis-playbook-event-types');
+      thesisAppendText(eventTypes, 'span', 'label', 'Event types');
+      thesisAppendText(
+        eventTypes,
+        'span',
+        '',
+        thesisArray(playbook.event_types).length
+          ? thesisArray(playbook.event_types).join(' · ')
+          : thesisUnknown
+      );
+      body.appendChild(eventTypes);
+
+      var conditions = thesisElement('dl', 'thesis-playbook-conditions');
+      renderPlaybookConditions(conditions, 'Trigger', playbook.trigger_conditions);
+      renderPlaybookConditions(conditions, 'Confirmation', playbook.confirmation_conditions);
+      renderPlaybookConditions(conditions, 'Invalidation', playbook.invalidation_conditions);
+      body.appendChild(conditions);
+
+      var scenarios = thesisElement('dl', 'thesis-playbook-scenarios');
+      renderPlaybookScenario(scenarios, 'Bull', playbook.bull_scenario);
+      renderPlaybookScenario(scenarios, 'Base', playbook.base_scenario);
+      renderPlaybookScenario(scenarios, 'Bear', playbook.bear_scenario);
+      body.appendChild(scenarios);
+
+      var references = thesisElement('div', 'thesis-playbook-refs');
+      thesisAppendText(references, 'span', 'label', 'Cited evidence');
+      var cited = thesisArray(playbook.cited_evidence_refs);
+      thesisAppendText(references, 'span', '', cited.length ? cited.join(' · ') : thesisUnknown);
+      body.appendChild(references);
+      entry.appendChild(body);
+      target.appendChild(entry);
+    });
+  }
+
+  function playbookAssessmentText(value) {
+    if (typeof value === 'string') return thesisValue(value);
+    var assessment = thesisObject(value);
+    var preferred = thesisFirstDefined(
+      assessment.summary,
+      assessment.assessment,
+      assessment.rationale,
+      assessment.verdict
+    );
+    if (preferred !== null) return thesisValue(preferred);
+    if (!Object.keys(assessment).length) return thesisUnknown;
+    try {
+      return JSON.stringify(assessment);
+    } catch (_error) {
+      return thesisUnknown;
+    }
+  }
+
+  function renderThesisPlaybookMatches(root, matches) {
+    var target = root.querySelector('[data-thesis-playbook-matches]');
+    if (!target) return;
+    target.textContent = '';
+    if (!matches.length) {
+      thesisStateRow(target, 5, 'No events have been matched to these playbooks.');
+      return;
+    }
+    matches.forEach(function (match) {
+      var row = thesisElement('tr');
+      var eventCell = thesisCell(
+        row,
+        'Event type',
+        'thesis-playbook-event',
+        thesisValue(match.event_type)
+      );
+      thesisAppendText(
+        eventCell,
+        'span',
+        'thesis-provenance-ref tabular',
+        'event ' + thesisValue(match.event_id)
+      );
+      thesisCell(row, 'Source', '', thesisValue(match.source));
+      thesisCell(row, 'Observed', 'thesis-date tabular', thesisDate(match.observed_at));
+      thesisCell(row, 'Assigned kind', '', thesisValue(match.kind));
+      var assessmentCell = thesisCell(
+        row,
+        'Assessment / cited refs',
+        '',
+        playbookAssessmentText(match.assessment)
+      );
+      thesisAppendText(
+        assessmentCell,
+        'span',
+        'thesis-provenance-ref',
+        'Cited refs ' +
+          (thesisArray(match.evidence_refs).length
+            ? thesisArray(match.evidence_refs).join(' · ')
+            : thesisUnknown)
+      );
+      target.appendChild(row);
+    });
+  }
+
+  function renderThesisCitationMap(root, citationMap) {
+    var target = root.querySelector('[data-thesis-citation-map]');
+    if (!target) return;
+    target.textContent = '';
+    citationMap = thesisObject(citationMap);
+    var fields = ['claim', 'consensus', 'variant_perception', 'mechanism', 'catalyst', 'trend', 'valuation', 'sentiment'];
+    fields.forEach(function (field) {
+      var refs = thesisArray(citationMap[field]);
+      var item = thesisElement('li');
+      thesisAppendText(item, 'strong', '', field.replace(/_/g, ' ') + ': ');
+      thesisAppendText(
+        item,
+        'span',
+        refs.length ? 'thesis-provenance-ref tabular' : 'thesis-state-cell',
+        refs.length ? refs.join(' · ') : 'missing'
+      );
+      target.appendChild(item);
+    });
+  }
+
+  function renderThesisDetail(root, response) {
+    var dossier = thesisObject(response.thesis);
+    var core = thesisObject(dossier.thesis);
+    var version = thesisLatestVersion(dossier);
+    thesisField(root, 'claim', core.claim || core.thesis || core.title || core.name);
+    thesisField(root, 'group', thesisArray(dossier.groups).map(function (group) { return group.name; }).join(' · ') || 'Ungrouped thesis');
+    thesisField(root, 'status', core.status);
+    thesisField(root, 'id', core.id || root.dataset.thesisId);
+    thesisField(root, 'version', version.version || core.current_version);
+    thesisField(root, 'direction', core.direction);
+    thesisField(root, 'horizon', core.horizon);
+    thesisField(root, 'evaluated', thesisDate(core.last_evaluated_at || version.created_at));
+    thesisField(root, 'mechanism', core.mechanism);
+    thesisField(root, 'variant', version.variant_perception || core.variant_perception || core.direction);
+    thesisField(root, 'origin', core.origin);
+    thesisField(root, 'catalyst-summary', core.catalyst_summary);
+    thesisField(root, 'trend-context', version.trend_context || core.trend_context);
+    thesisField(root, 'valuation-context', version.valuation_context || core.valuation_context);
+    thesisField(root, 'sentiment-context', version.sentiment_context || core.sentiment_context);
+    renderThesisCitationMap(root, version.citation_map || core.citation_map);
+    root.querySelectorAll('[data-score]').forEach(function (node) {
+      var key = node.dataset.score;
+      var value = core[key];
+      if (value === undefined) value = version[key];
+      node.textContent = thesisNumber(value, key === 'expected_value' || key === 'expected_shortfall' ? 'return' : '');
+    });
+    renderThesisScenarios(root, thesisArray(dossier.scenarios));
+    renderThesisPlaybooks(root, thesisArray(dossier.playbooks));
+    renderThesisPlaybookMatches(root, thesisArray(dossier.playbook_matches));
+    renderThesisEvidence(root, thesisArray(dossier.evidence));
+    renderThesisEventList(
+      root.querySelector('[data-thesis-forecasts]'),
+      thesisArray(dossier.forecasts),
+      'No forecasts recorded.',
+      'forecast'
+    );
+    renderThesisEventList(
+      root.querySelector('[data-thesis-outcomes]'),
+      thesisArray(dossier.outcomes),
+      'No outcomes resolved.',
+      'outcome'
+    );
+    renderThesisCatalysts(root, thesisArray(dossier.catalysts));
+    renderThesisScoreHistory(root, thesisArray(dossier.opportunity_snapshots));
+    renderThesisVersions(root, thesisArray(dossier.versions));
+    renderThesisInvalidations(root, dossier, core, version);
+    renderThesisRisks(root, thesisArray(dossier.risks));
+    renderThesisFalsification(root, thesisArray(dossier.falsification_runs));
+    renderThesisPositions(root, thesisArray(dossier.positions));
+  }
+
+  function thesisRunMessage(error) {
+    if (error.status === 429) return 'A research cycle is already bounded or rate-limited. Refresh the desk before retrying.';
+    if (error.status === 503) return 'Research infrastructure is unavailable. No cycle was queued.';
+    return 'The research cycle could not be queued.';
+  }
+
+  function initThesisView(root) {
+    if (root.dataset.thesisInitialized === 'true') return;
+    root.dataset.thesisInitialized = 'true';
+    var controller = null;
+    var boundedRefreshTimer = null;
+
+    function filters() {
+      var group = root.querySelector('[data-thesis-group-filter]');
+      var score = root.querySelector('[data-thesis-score-filter]');
+      var status = root.querySelector('[data-thesis-status-filter]');
+      return {
+        group: group ? group.value : '',
+        score: score ? score.value : thesisDefaultMinimumScore,
+        status: status ? status.value : ''
+      };
+    }
+
+    function refresh() {
+      if (controller) controller.abort();
+      controller = new AbortController();
+      var signal = controller.signal;
+      thesisSetBusy(root, true);
+      thesisMessage(root, root.dataset.thesisView === 'detail' ? 'Loading dossier…' : 'Refreshing bounded research data…', 'loading');
+      if (root.dataset.thesisView === 'detail') {
+        thesisFetch(
+          '/api/research/theses/' + encodeURIComponent(root.dataset.thesisId),
+          {},
+          signal
+        ).then(function (body) {
+          renderThesisDetail(root, body);
+          thesisMessage(root, 'Dossier loaded. Evidence and history are bounded to the API response.', 'ready');
+        }).catch(function (error) {
+          if (error.name === 'AbortError') return;
+          thesisMarkDetailUnavailable(
+            root,
+            error.status === 404 ? 'Thesis not found.' : 'Thesis dossier unavailable.'
+          );
+          thesisMessage(
+            root,
+            error.status === 404 ? 'Thesis not found.' : 'Thesis dossier unavailable. No score or missing value has been inferred.',
+            'unavailable'
+          );
+        }).finally(function () {
+          if (controller && controller.signal === signal) thesisSetBusy(root, false);
+        });
+        return;
+      }
+
+      var selected = filters();
+      var opportunityQuery = new URLSearchParams({limit: root.dataset.thesisView === 'research-preview' ? '3' : '50'});
+      if (selected.group) opportunityQuery.set('group_id', selected.group);
+      opportunityQuery.set('minimum_score', selected.score);
+      if (selected.score === '0') opportunityQuery.set('include_ineligible', 'true');
+      var groupQuery = new URLSearchParams({limit: root.dataset.thesisView === 'research-preview' ? '4' : '50'});
+      if (root.dataset.thesisView === 'research-preview') {
+        groupQuery.set('status', 'active');
+      } else if (selected.status) {
+        groupQuery.set('status', selected.status);
+      }
+      Promise.allSettled([
+        thesisFetch('/api/research/theses/status', {}, signal),
+        thesisFetch('/api/research/theses/groups?' + groupQuery.toString(), {}, signal),
+        thesisFetch('/api/research/theses/opportunities?' + opportunityQuery.toString(), {}, signal)
+      ]).then(function (results) {
+        if (signal.aborted) return;
+        var status = results[0].status === 'fulfilled' ? results[0].value : {};
+        var groups = results[1].status === 'fulfilled' ? thesisArray(results[1].value.groups) : null;
+        var opportunities = results[2].status === 'fulfilled' ? thesisArray(results[2].value.opportunities) : null;
+        var failures = results.filter(function (result) { return result.status === 'rejected'; }).length;
+        renderThesisStatus(root, status, groups, opportunities);
+        var groupRows = thesisArray(groups);
+        var opportunityRows = thesisArray(opportunities);
+        populateThesisGroupFilter(root, groupRows);
+        renderThesisGroups(root, groupRows);
+        renderThesisOpportunities(root, opportunityRows, selected.score);
+        renderThesisFalsificationQueue(root, status.autonomy_jobs);
+        if (results[0].status === 'rejected') {
+          thesisCollectionState(root, '[data-thesis-falsification-queue]', 1, 'Falsification state unavailable.');
+        }
+        if (results[1].status === 'rejected') {
+          thesisCollectionState(root, '[data-thesis-groups]', 6, 'Tournament groups unavailable.');
+        }
+        if (results[2].status === 'rejected') {
+          thesisCollectionState(root, '[data-thesis-opportunities]', 8, 'Ranked opportunities unavailable.');
+        }
+        if (failures === 3 || status.available === false) {
+          thesisMessage(root, 'Research desk unavailable. Existing filing and research workspaces remain available.', 'unavailable');
+          root.querySelectorAll('.thesis-state-cell').forEach(function (node) {
+            node.textContent = 'Research desk unavailable.';
+          });
+        } else if (failures) {
+          thesisMessage(root, 'Partial research data. Available sections are shown; unknown values remain \u2014.', 'partial');
+        } else if (thesisSourcesPartial(status)) {
+          thesisMessage(root, 'Research data loaded with partial or unavailable source feeds. Unknown values remain \u2014.', 'partial');
+        } else if (!opportunityRows.length) {
+          thesisMessage(root, thesisOpportunityEmptyMessage(selected.score), 'empty');
+        } else {
+          thesisMessage(root, 'Research desk current as of this refresh.', 'ready');
+        }
+      }).finally(function () {
+        if (controller && controller.signal === signal) thesisSetBusy(root, false);
+      });
+    }
+
+    root.addEventListener('change', function (event) {
+      if (event.target.matches('[data-thesis-group-filter], [data-thesis-score-filter], [data-thesis-status-filter]')) refresh();
+    });
+    root.addEventListener('click', function (event) {
+      var refreshButton = event.target.closest('[data-thesis-refresh]');
+      if (refreshButton) {
+        refresh();
+        return;
+      }
+      var groupButton = event.target.closest('[data-thesis-select-group]');
+      if (groupButton) {
+        var select = root.querySelector('[data-thesis-group-filter]');
+        if (select) {
+          select.value = groupButton.dataset.thesisSelectGroup;
+          select.focus();
+          refresh();
+        }
+        return;
+      }
+      var runButton = event.target.closest('[data-thesis-run]');
+      if (!runButton) return;
+      runButton.disabled = true;
+      runButton.setAttribute('aria-busy', 'true');
+      thesisMessage(root, 'Queueing one bounded research cycle…', 'loading');
+      thesisFetch('/api/research/theses/run', {
+        method: 'POST',
+        headers: csrfHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({force: false})
+      }).then(function (body) {
+        thesisMessage(
+          root,
+          body.status === 'already_queued'
+            ? 'A bounded research cycle is already queued. No duplicate was created.'
+            : 'Research cycle queued for analysis only. The desk will refresh once.',
+          'queued'
+        );
+        window.clearTimeout(boundedRefreshTimer);
+        boundedRefreshTimer = window.setTimeout(refresh, 2500);
+      }).catch(function (error) {
+        thesisMessage(root, thesisRunMessage(error), 'unavailable');
+      }).finally(function () {
+        runButton.disabled = false;
+        runButton.setAttribute('aria-busy', 'false');
+      });
+    });
+    refresh();
+  }
+
+  function initThesisViews(root) {
+    var scope = root || document;
+    if (scope.matches && scope.matches('[data-thesis-view]')) initThesisView(scope);
+    scope.querySelectorAll('[data-thesis-view]').forEach(initThesisView);
   }
 
   /* Boot --------------------------------------------------------------------- */
@@ -880,6 +2129,7 @@
     initTimezoneControl(document);
     initLiveSections();
     initSinceLastView();
+    initThesisViews(document);
   });
 
   ['htmx:afterSwap', 'htmx:afterSettle'].forEach(function (eventName) {

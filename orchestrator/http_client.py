@@ -8,9 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 import httpx
 
+from contracts.outbound_security import (
+    parse_origin,
+    resolve_redirect_url,
+)
 from contracts.outbound_transport import PublicOnlyHTTPTransport
 from logging_config import get_logger
 
@@ -27,12 +32,36 @@ DEFAULT_DEADLINE_SECONDS = 60.0
 # Methods whose replay cannot create duplicate side effects on the server.
 _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
 _IDEMPOTENCY_HEADER = "Idempotency-Key"
+# Headers that carry credentials but are NOT stripped by httpx on cross-origin
+# redirects (httpx only strips ``Authorization``).  Following a redirect with
+# one of these set would replay the credential to a new origin, so
+# ``make_request`` refuses ``follow_redirects=True`` when one is present.
+_REDIRECT_CREDENTIAL_HEADERS = frozenset(
+    {
+        "x-api-key",
+        "api-key",
+        "apikey",
+        "x-auth-token",
+        "x-access-token",
+        "proxy-authorization",
+        "cookie",
+    }
+)
+# Redirect hops followed when a response byte cap is set. httpx's native
+# follow_redirects materializes every intermediate redirect body before any
+# cap can be enforced, so capped requests follow redirects manually, one
+# bounded hop at a time, and give up after this many hops.
+MAX_REDIRECT_HOPS = 5
 _shared_clients: dict[int, httpx.Client] = {}
 _shared_client_lock = threading.Lock()
 
 
 class RequestDeadlineExceeded(httpx.TimeoutException):
     """Raised when the total request budget (attempts plus retry sleeps) runs out."""
+
+
+class ResponseBodyTooLarge(httpx.RequestError):
+    """Raised while streaming when a response exceeds its caller-owned cap."""
 
 
 def get_shared_client() -> httpx.Client:
@@ -106,6 +135,32 @@ def _has_idempotency_header(headers: dict | None) -> bool:
     return any(str(key).lower() == _IDEMPOTENCY_HEADER.lower() for key in headers)
 
 
+def _reject_credentialed_redirects(url: str, headers: dict | None) -> None:
+    """Fail closed when a request that follows redirects carries credentials.
+
+    httpx strips ``Authorization`` on cross-origin redirects, so header-based
+    auth stays with its origin.  URL-embedded userinfo and non-standard
+    credential headers are NOT stripped by httpx and would be replayed to
+    (or surfaced for) a different origin; refuse to follow redirects for
+    those requests instead.
+    """
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        parts = None
+    if parts is not None and "@" in (parts.netloc or ""):
+        raise ValueError(
+            "refusing to follow redirects for a request whose URL embeds "
+            "credentials (userinfo)"
+        )
+    for key, _value in (headers or {}).items():
+        if str(key).strip().lower().replace("_", "-") in _REDIRECT_CREDENTIAL_HEADERS:
+            raise ValueError(
+                "refusing to follow redirects for a request carrying a "
+                f"credential header ({key}) that httpx would not strip"
+            )
+
+
 def _backoff_cap(attempt: int) -> float:
     return min(_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), _MAX_BACKOFF_SECONDS)
 
@@ -177,10 +232,144 @@ def _close_timed_out_client(client) -> None:
         client.close()
 
 
+def _redirect_method(method: str, status_code: int) -> str:
+    """RFC/browser-compatible method rewrite for one redirect hop."""
+    if status_code == 303 and method != "HEAD":
+        return "GET"
+    if status_code == 302 and method != "HEAD":
+        return "GET"
+    if status_code == 301 and method == "POST":
+        return "GET"
+    return method
+
+
+def _redirect_target(current: str, location: str) -> str:
+    """Resolve one redirect hop under the outbound policy.
+
+    The target must be a well-formed http(s) URL (https by default, no
+    downgrade, no embedded credentials). DNS and public-routability are
+    re-validated at send time by the shared resolve-and-pin transport, which
+    every hop re-enters.
+    """
+    return resolve_redirect_url(current, location)
+
+
+def _same_origin(current: str, target: str) -> bool:
+    current_origin = parse_origin(current)
+    target_origin = parse_origin(target)
+    return (current_origin.scheme, current_origin.host, current_origin.port) == (
+        target_origin.scheme,
+        target_origin.host,
+        target_origin.port,
+    )
+
+
+def _strip_credentials_for_hop(kwargs: dict) -> None:
+    """Drop auth (argument or Authorization header) for a cross-origin hop.
+
+    httpx strips ``Authorization`` when a redirect leaves the origin; the
+    manual loop reproduces that so a credential is never forwarded across
+    origins. The ``auth`` argument must be dropped too: httpx would otherwise
+    re-derive and re-attach the header on the new origin.
+    """
+    kwargs.pop("auth", None)
+    headers = kwargs.get("headers")
+    if headers:
+        kwargs["headers"] = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() != "authorization"
+        }
+
+
+def _stream_bounded_response(
+    client,
+    *,
+    max_response_bytes: int,
+    **kwargs,
+) -> httpx.Response:
+    follow_redirects = bool(kwargs.pop("follow_redirects", False))
+    max_redirects = int(kwargs.pop("max_redirects", MAX_REDIRECT_HOPS))
+    history: list[httpx.Response] = []
+    method = str(kwargs.get("method", "GET")).upper()
+    for _hop in range(max_redirects + 1):
+        with client.stream(follow_redirects=False, **kwargs) as response:
+            declared = response.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > max_response_bytes:
+                        raise ResponseBodyTooLarge(
+                            f"response exceeds {max_response_bytes} bytes",
+                            request=response.request,
+                        )
+                except ValueError:
+                    pass
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > max_response_bytes:
+                    raise ResponseBodyTooLarge(
+                        f"response exceeds {max_response_bytes} bytes",
+                        request=response.request,
+                    )
+            hop = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+                extensions=dict(response.extensions),
+                history=list(history),
+            )
+        if not (follow_redirects and hop.has_redirect_location):
+            return hop
+        if method not in _IDEMPOTENT_METHODS:
+            # A redirect must never silently replay a non-idempotent request
+            # (307/308 would re-send its body); return the bounded redirect
+            # response and let the caller decide.
+            return hop
+        location = hop.headers.get("location")
+        if not location or not str(location).strip():
+            return hop
+        current = str(hop.request.url)
+        target = _redirect_target(current, str(location))
+        # Defense in depth: the same non-strippable-credential policy that
+        # make_request enforces up front applies to every hop.
+        _reject_credentialed_redirects(target, kwargs.get("headers"))
+        if not _same_origin(current, target):
+            _strip_credentials_for_hop(kwargs)
+        history.append(hop)
+        next_method = _redirect_method(method, hop.status_code)
+        kwargs["url"] = target
+        kwargs["method"] = next_method
+        if next_method != method:
+            kwargs.pop("json", None)
+        # Redirect targets already carry their own query string; never
+        # re-apply the original request params.
+        kwargs.pop("params", None)
+        method = next_method
+    raise httpx.TooManyRedirects(
+        f"exceeded {max_redirects} redirect hops",
+        request=httpx.Request(
+            method,
+            str(kwargs.get("url", "")),
+            headers=kwargs.get("headers"),
+        ),
+    )
+
+
 def _request_with_deadline(client, remaining: float, **kwargs) -> httpx.Response:
     """Run one synchronous send behind a hard wall-clock cancellation point."""
+    max_response_bytes = kwargs.pop("max_response_bytes", None)
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bounded-http")
-    future = executor.submit(client.request, **kwargs)
+    if max_response_bytes is None:
+        future = executor.submit(client.request, **kwargs)
+    else:
+        future = executor.submit(
+            _stream_bounded_response,
+            client,
+            max_response_bytes=max_response_bytes,
+            **kwargs,
+        )
     try:
         return future.result(timeout=remaining)
     except FutureTimeoutError as exc:
@@ -211,11 +400,13 @@ def make_request(
     follow_redirects: bool = False,
     *,
     client: httpx.Client | None = None,
+    auth: httpx.Auth | tuple[str, str] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    max_response_bytes: int | None = None,
 ) -> httpx.Response:
     """Make an HTTP request, with ``max_retries`` interpreted as total attempts.
 
@@ -231,6 +422,28 @@ def make_request(
     default (``DEFAULT_DEADLINE_SECONDS``), and each per-attempt timeout is
     clamped so a single attempt cannot run past the remaining budget.
     Exceeding the deadline raises :class:`RequestDeadlineExceeded`.
+
+    ``max_response_bytes`` bounds the response body incrementally while it
+    streams: an oversized declared ``Content-Length`` is rejected before any
+    bytes are read, actual bytes are counted per chunk (so missing or
+    false-small ``Content-Length`` and chunked bodies are covered), and the
+    stream is closed as soon as the cap is exceeded by raising
+    :class:`ResponseBodyTooLarge`.
+
+    Credentialed redirects fail closed: requests that follow redirects must
+    not embed credentials in the URL (userinfo) or carry credential headers
+    that httpx would replay to a different origin (anything other than
+    ``Authorization``, which httpx strips on cross-origin redirects).
+
+    When ``follow_redirects`` is combined with ``max_response_bytes``,
+    redirects are followed manually instead of by httpx: every hop —
+    including intermediate redirect responses — is streamed under the byte
+    cap, the hop count is bounded by :data:`MAX_REDIRECT_HOPS`, each target
+    is shape-validated (https-only, no downgrade) and re-validated against
+    DNS and pinned by the shared public-only transport at send time, and
+    ``Authorization``/``auth`` is stripped before any cross-origin hop so a
+    credential never leaves its origin. Non-idempotent requests are never
+    replayed by redirect following.
     """
     if max_retries < 1:
         raise ValueError(
@@ -238,9 +451,13 @@ def make_request(
         )
     if deadline_seconds is not None and deadline_seconds <= 0:
         raise ValueError("deadline_seconds must be positive")
+    if max_response_bytes is not None and max_response_bytes <= 0:
+        raise ValueError("max_response_bytes must be positive")
 
     started_at = clock()
     request_method = method.upper()
+    if follow_redirects:
+        _reject_credentialed_redirects(url, headers)
     total_budget = (
         float(deadline_seconds)
         if deadline_seconds is not None
@@ -285,9 +502,11 @@ def make_request(
                 url=url,
                 params=params,
                 headers=request_headers,
+                auth=auth,
                 json=json_body,
                 timeout=attempt_timeout,
                 follow_redirects=follow_redirects,
+                max_response_bytes=max_response_bytes,
             )
             if clock() - started_at >= total_budget:
                 response.close()

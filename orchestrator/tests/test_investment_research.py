@@ -8,6 +8,7 @@ from investment_engine import build_deterministic_analysis
 from investment_facts import extract_sec_facts
 from investment_news import ALL_INDUSTRIES, canonicalize_industry, classify_news_item
 from investment_service import _news_monitoring, _trend_series
+from investment_universe import industry_for, top_us_uk_eu_companies
 
 ACCESSION = "0000789019-26-000042"
 
@@ -197,6 +198,191 @@ class InvestmentNewsTests(unittest.TestCase):
         self.assertNotIn("Lowe's", result["companies"])
         self.assertNotIn("Aerospace & Defence", result["industries"])
         self.assertIn("Energy & Utilities", result["industries"])
+
+    def test_checked_in_issuer_industry_lookup_prefers_symbol_then_company(self):
+        self.assertEqual(industry_for("MU"), "Semiconductors & Compute")
+        self.assertEqual(industry_for("mu"), "Semiconductors & Compute")
+        # Symbol wins even when the company identity disagrees.
+        self.assertEqual(industry_for("MU", "Not Micron"), "Semiconductors & Compute")
+        self.assertEqual(
+            industry_for(None, "Micron Technology"), "Semiconductors & Compute"
+        )
+        self.assertEqual(industry_for("STM"), "Semiconductors & Compute")
+        self.assertEqual(industry_for("GS"), "Financials & Real Estate")
+        self.assertEqual(industry_for("CVX"), "Energy & Utilities")
+        self.assertEqual(industry_for("SPCX"), "Aerospace & Defence")
+        self.assertEqual(industry_for("ARGX"), "Healthcare")
+        self.assertEqual(industry_for("UNH"), "Healthcare")
+        self.assertEqual(industry_for("TSLA"), "Consumer")
+        self.assertEqual(industry_for("UBER"), "Consumer")
+        self.assertEqual(industry_for("MCD"), "Consumer")
+        # Amazon has one checked-in mapping, applied consistently by either key.
+        self.assertEqual(industry_for("AMZN"), "Software, Cloud & Communications")
+        self.assertEqual(industry_for("AMZN"), industry_for(None, "Amazon"))
+        self.assertEqual(industry_for(None, "McDonald's"), "Consumer")
+        # Truly unknown issuers fail closed.
+        self.assertEqual(industry_for("ZZZZ"), "Unclassified")
+        self.assertEqual(industry_for(None, "Not A Configured Issuer"), "Unclassified")
+
+    def test_every_configured_issuer_resolves_to_a_concrete_industry(self):
+        concrete = set(ALL_INDUSTRIES) - {"Unclassified"}
+        universe = top_us_uk_eu_companies()
+        self.assertEqual(len(universe), 300)
+        unresolved = [
+            (company.get("symbol"), company.get("company"), industry)
+            for company in universe
+            if (industry := industry_for(company.get("symbol"), company.get("company")))
+            not in concrete
+        ]
+        self.assertEqual(unresolved, [])
+
+    def test_configured_issuer_industry_samples_are_canonical(self):
+        cases = {
+            "SYK": "Healthcare",
+            "MU": "Semiconductors & Compute",
+            "STM": "Semiconductors & Compute",
+            "ARM": "Semiconductors & Compute",
+            "ASML": "Semiconductors & Compute",
+            "NXPI": "Semiconductors & Compute",
+            "IFNNY": "Semiconductors & Compute",
+            "ASMIY": "Semiconductors & Compute",
+            "SAP": "Software, Cloud & Communications",
+            "NOK": "Software, Cloud & Communications",
+            "NBIS": "Software, Cloud & Communications",
+            "GS": "Financials & Real Estate",
+            "CVX": "Energy & Utilities",
+            "SPCX": "Aerospace & Defence",
+            "ARGX": "Healthcare",
+            "UNH": "Healthcare",
+            "AMZN": "Software, Cloud & Communications",
+            "BA.L": "Aerospace & Defence",
+            "SHEL": "Energy & Utilities",
+            "HSBC": "Financials & Real Estate",
+            "NVO": "Healthcare",
+        }
+        for symbol, expected in cases.items():
+            with self.subTest(symbol=symbol):
+                self.assertEqual(industry_for(symbol), expected)
+
+    def test_news_matches_checked_in_name_variants_for_configured_issuers(self):
+        item = {
+            "id": "alphabet1",
+            "source": "reuters",
+            "title": "Alphabet and Berkshire report results as Google parent shines",
+            "summary": "",
+            "symbols": [],
+            "tags": [],
+        }
+        result = classify_news_item(item, top_us_uk_eu_companies())
+        self.assertIn("Alphabet (Google)", result["companies"])
+        self.assertIn("Berkshire Hathaway", result["companies"])
+        self.assertIn("Software, Cloud & Communications", result["industries"])
+        self.assertIn("Financials & Real Estate", result["industries"])
+
+        item = {
+            "id": "goldman1",
+            "source": "reuters",
+            "title": "Goldman lifts NVIDIA price target on AI demand",
+            "summary": "",
+            "symbols": [],
+            "tags": [],
+        }
+        result = classify_news_item(item, top_us_uk_eu_companies())
+        self.assertIn("Goldman Sachs", result["companies"])
+        self.assertIn("NVIDIA", result["companies"])
+        self.assertEqual(
+            set(result["industries"]),
+            {"Financials & Real Estate", "Semiconductors & Compute"},
+        )
+        self.assertEqual(len(result["companies"]), 2)
+        self.assertNotIn("Unclassified", result["industries"])
+
+    def test_news_uses_checked_in_issuer_industry_over_keyword_fallback(self):
+        item = {
+            "id": "mu1",
+            "source": "reuters",
+            "source_label": "Reuters",
+            "title": "Micron lifts capex on AI data-centre demand",
+            "summary": "The chipmaker guides capital spending higher.",
+            "url": "https://example.test/mu",
+            "published": "2026-08-01T08:00:00Z",
+            "symbols": ["MU"],
+            "tags": [],
+        }
+        result = classify_news_item(item, top_us_uk_eu_companies())
+        self.assertEqual(result["companies"], ["Micron Technology"])
+        self.assertEqual(result["industries"], ["Semiconductors & Compute"])
+        # Keyword noise ("data centre") must not add a competing industry to
+        # company-linked news, and Unclassified is never appended.
+        self.assertNotIn("Software, Cloud & Communications", result["industries"])
+        self.assertNotIn("Unclassified", result["industries"])
+        # Themes still classify independently of the issuer industry.
+        self.assertIn("capital_spending", result["themes"])
+        self.assertTrue(result["macro_relevant"])
+
+    def test_news_industry_ignores_stale_record_label_for_configured_issuer(self):
+        item = {
+            "id": "stm1",
+            "source": "reuters",
+            "title": "STMicroelectronics wins automotive chip orders",
+            "summary": "The foundry expands manufacturing capacity.",
+            "symbols": ["STM"],
+            "tags": [],
+        }
+        result = classify_news_item(
+            item,
+            [
+                {
+                    "company": "STMicroelectronics",
+                    "symbol": "STM",
+                    "industry": "Information Technology",
+                }
+            ],
+        )
+        # The checked-in mapping wins over the legacy record label.
+        self.assertEqual(result["industries"], ["Semiconductors & Compute"])
+
+    def test_news_never_appends_unclassified_for_known_issuer(self):
+        item = {
+            "id": "cvx1",
+            "source": "reuters",
+            "title": "Chevron hikes dividend as buyback accelerates",
+            "summary": "Shareholders receive a higher quarterly payout.",
+            "symbols": ["CVX"],
+            "tags": [],
+        }
+        # The company record carries no industry label at all.
+        result = classify_news_item(item, [{"company": "Chevron", "symbol": "CVX"}])
+        self.assertEqual(result["industries"], ["Energy & Utilities"])
+        self.assertNotIn("Unclassified", result["industries"])
+
+    def test_unknown_issuer_news_falls_back_to_keywords_and_fails_closed(self):
+        item = {
+            "id": "copper1",
+            "source": "reuters",
+            "title": "Copper mining output rises on new capacity",
+            "summary": "",
+            "symbols": [],
+            "tags": [],
+        }
+        # No known issuer: keyword fallback still applies.
+        result = classify_news_item(item, top_us_uk_eu_companies())
+        self.assertEqual(result["industries"], ["Industrials & Materials"])
+
+        # No known issuer and no keyword: the item stays unclassified and no
+        # Unclassified label is appended to the industry list.
+        item = {
+            "id": "quiet1",
+            "source": "reuters",
+            "title": "Markets steady as traders await data",
+            "summary": "",
+            "symbols": [],
+            "tags": [],
+        }
+        result = classify_news_item(item, top_us_uk_eu_companies())
+        self.assertEqual(result["industries"], [])
+        self.assertNotIn("Unclassified", result["industries"])
+        self.assertEqual(result["ambiguity"], "unclassified")
 
     def test_report_and_news_trends_are_aggregated_without_model_output(self):
         analyses = [

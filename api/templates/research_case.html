@@ -25,12 +25,12 @@
       </p>
       <p class="rs-theme-definition">{{ research_case.definition }}</p>
       <dl class="rs-component-list">
-        <dt>Economic significance</dt><dd>{{ research_case.economic_significance or 'unknown' }}</dd>
-        <dt>Market sensitivity</dt><dd>{{ research_case.market_sensitivity or 'unknown' }}</dd>
-        <dt>Persistence</dt><dd>{{ research_case.persistence or 'unknown' }}</dd>
-        <dt>Breadth</dt><dd>{{ research_case.breadth or 'unknown' }}</dd>
-        <dt>Investability</dt><dd>{{ research_case.investability or 'unknown' }}</dd>
-        <dt>Evidence strength</dt><dd>{{ research_case.evidence_strength or 'unknown' }}</dd>
+        <dt>Economic significance</dt><dd>{{ research_case.economic_significance or '—' }}</dd>
+        <dt>Market sensitivity</dt><dd>{{ research_case.market_sensitivity or '—' }}</dd>
+        <dt>Persistence</dt><dd>{{ research_case.persistence or '—' }}</dd>
+        <dt>Breadth</dt><dd>{{ research_case.breadth or '—' }}</dd>
+        <dt>Investability</dt><dd>{{ research_case.investability or '—' }}</dd>
+        <dt>Evidence strength</dt><dd>{{ research_case.evidence_strength or '—' }}</dd>
       </dl>
     </section>
 
@@ -134,12 +134,12 @@
               {% for item in detail.value_capture %}
                 <tr>
                   <td><strong>{{ item.node_name }}</strong><br><span class="rs-theme-meta">{{ item.node_type }}</span></td>
-                  <td>{{ item.demand_impulse or 'unknown' }}</td>
-                  <td>{{ item.scarcity or 'unknown' }}</td>
-                  <td>{{ item.pricing_power or 'unknown' }}</td>
-                  <td>{{ item.margin_sensitivity or 'unknown' }}</td>
-                  <td>{{ item.supply_responsiveness or 'unknown' }}</td>
-                  <td>{{ item.public_market_investability or 'unknown' }}</td>
+                  <td>{{ item.demand_impulse or '—' }}</td>
+                  <td>{{ item.scarcity or '—' }}</td>
+                  <td>{{ item.pricing_power or '—' }}</td>
+                  <td>{{ item.margin_sensitivity or '—' }}</td>
+                  <td>{{ item.supply_responsiveness or '—' }}</td>
+                  <td>{{ item.public_market_investability or '—' }}</td>
                 </tr>
               {% endfor %}
             </tbody>

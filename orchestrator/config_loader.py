@@ -47,7 +47,7 @@ _store = ConfigStore()
 
 
 def _demo_mode_enabled() -> bool:
-    return demo_mode_enabled()
+    return cast(bool, demo_mode_enabled())
 
 
 def _parse_yaml(path: str) -> object:
@@ -62,7 +62,7 @@ def _demo_transform(raw: ConfigMap) -> None:
 
 def _missing_env_fallback(var_name: str) -> str | None:
     """Demo mode resolves missing environment references to a placeholder."""
-    return demo_missing_env_fallback(var_name)
+    return cast(str | None, demo_missing_env_fallback(var_name))
 
 
 def _resolve_config_path(config_path: str | None) -> str:

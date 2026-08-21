@@ -1318,7 +1318,17 @@ class SetupTokenBoundaryTests(unittest.TestCase):
             directory=Path(__file__).resolve().parents[1] / "templates"
         )
         app.include_router(setup_view.router)
-        with patch.object(setup_view, "setup_complete", return_value=False):
+        with (
+            patch.object(setup_view, "setup_complete", return_value=False),
+            # Pin a production deployment: the setup form must render there,
+            # while demo deployments with configured credentials redirect the
+            # setup page to the root Basic challenge (never show the form).
+            patch.dict(
+                os.environ,
+                {"DEPLOYMENT_MODE": "production", "LEGACY_BASIC_AUTH": ""},
+                clear=False,
+            ),
+        ):
             response = TestClient(app).get("/setup")
 
         self.assertEqual(response.status_code, 200)

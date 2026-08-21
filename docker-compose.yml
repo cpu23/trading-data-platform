@@ -1,3 +1,12 @@
+# Bounded container log growth: the json-file driver is unbounded by default,
+# and an unsupervised production host eventually fills its disk. Application
+# logs still flow to the logsdata volume; this caps the docker-side copy only.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     build:
@@ -5,6 +14,7 @@ services:
       dockerfile: Dockerfile
       target: production
     image: trading-data-postgres:0.1.0
+    logging: *default-logging
     pids_limit: 256
     mem_limit: 768m
     environment:
@@ -26,6 +36,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 64
     mem_limit: 256m
     security_opt: ["no-new-privileges:true"]
@@ -44,6 +55,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 128
     mem_limit: 1g
     security_opt: ["no-new-privileges:true"]
@@ -72,6 +84,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 64
     mem_limit: 256m
     security_opt: ["no-new-privileges:true"]
@@ -89,7 +102,7 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "scheduler"]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 5
       start_period: 20s
@@ -99,12 +112,19 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 128
-    mem_limit: 1g
+    # 2g: faster-whisper small.en transcription runs in-process on the
+    # worker and needs headroom over the CPU int8 baseline (CPU-only; no
+    # CUDA/device contract in this compose).
+    mem_limit: 2g
     security_opt: ["no-new-privileges:true"]
     working_dir: /app/orchestrator
     command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "worker"]
     env_file: .env
+    environment:
+      HF_HOME: /var/lib/trading-data/news/models/huggingface
+      XDG_CACHE_HOME: /var/lib/trading-data/news/.cache
     volumes:
       - newsdata:/var/lib/trading-data/news
       - logsdata:/var/log/trading-data
@@ -119,7 +139,7 @@ services:
     stop_grace_period: 30m
     healthcheck:
       test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "worker"]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 5
       start_period: 20s
@@ -129,6 +149,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 64
     mem_limit: 256m
     security_opt: ["no-new-privileges:true"]
@@ -144,9 +165,13 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    # Let an in-flight dispatch reach its completion or lease-release boundary
+    # (outbox leases are 30s with bounded retry backoff) before SIGKILL; an
+    # expired lease would otherwise re-dispatch the event elsewhere.
+    stop_grace_period: 60s
     healthcheck:
       test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "outbox"]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 5
       start_period: 20s
@@ -156,6 +181,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 64
     mem_limit: 512m
     security_opt: ["no-new-privileges:true"]
@@ -183,6 +209,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
+    logging: *default-logging
     pids_limit: 128
     mem_limit: 512m
     security_opt: ["no-new-privileges:true"]

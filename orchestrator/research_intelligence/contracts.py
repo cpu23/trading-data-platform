@@ -469,6 +469,324 @@ def reject_embedded_evidence_references(value: Any) -> None:
         raise ValueError("evidence references must use dedicated fields")
 
 
+THESIS_RELATIONSHIPS = frozenset(
+    relationship.value for relationship in EvidenceRelationship
+)
+MAX_ABS_RETURN = 100.0
+_FINGERPRINT_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+def _bounded_optional(value: Any, maximum: int) -> str | None:
+    text_value = " ".join(str(value or "").split())
+    return text_value[:maximum] if text_value else None
+
+
+def _bounded_score(value: Any, name: str) -> float | None:
+    """Return a finite 0..1 score or None; NaN/inf/out-of-range raise."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or isinstance(value, str):
+        raise ValueError(f"{name} must be a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite")
+    if not 0.0 <= parsed <= 1.0:
+        raise ValueError(f"{name} must be within [0, 1]")
+    return parsed
+
+
+def _evidence_score(value: Any, name: str) -> float | None:
+    """Score for one evidence dimension; 0.0 (persistence default for
+    unscored manual evidence) normalizes to None so manual theses keep
+    neutral defaults instead of being crushed to zero mass."""
+    parsed = _bounded_score(value, name)
+    if parsed == 0.0:
+        return None
+    return parsed
+
+
+def _finite_return(value: Any, name: str) -> float:
+    """Return a finite, magnitude-bounded return or raise."""
+    if value is None or isinstance(value, bool) or isinstance(value, str):
+        raise ValueError(f"{name} must be a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite")
+    if abs(parsed) > MAX_ABS_RETURN:
+        raise ValueError(f"{name} must be within +/-{MAX_ABS_RETURN:g}")
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSignal:
+    """One thesis evidence row as input to deterministic scoring.
+
+    Identity is ``evidence_fingerprint`` (SHA-256 of canonical content);
+    identical content observed by any number of agents or syndicated sources
+    is the same evidence and scores once. Agent/role identifiers never appear
+    in this contract and ``provenance`` is excluded from every calculation:
+    agreement between agents or models is not evidence. Scores are finite
+    0..1 values or None (None means unknown, never invented). A stored 0.0
+    is the persistence default for unscored manual evidence and normalizes
+    to None (neutral), so manual theses keep neutral defaults.
+    """
+
+    evidence_id: str
+    evidence_type: str
+    relationship: str
+    source_name: str
+    source_family: str | None
+    origin_key: str | None
+    independence_key: str | None
+    evidence_fingerprint: str
+    source_timestamp: datetime
+    available_at: datetime
+    quality_score: float | None
+    entailment_score: float | None
+    freshness_score: float | None
+    effective_weight: float | None
+    provenance: Mapping[str, Any]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        evidence_id: Any,
+        evidence_type: Any = "source_claim",
+        relationship: Any = "supports",
+        source_name: Any,
+        source_family: Any = None,
+        origin_key: Any = None,
+        independence_key: Any = None,
+        evidence_fingerprint: Any = None,
+        content: Any = None,
+        source_timestamp: datetime | str,
+        available_at: datetime | str | None = None,
+        quality_score: Any = None,
+        entailment_score: Any = None,
+        freshness_score: Any = None,
+        effective_weight: Any = None,
+        provenance: Mapping[str, Any] | None = None,
+    ) -> EvidenceSignal:
+        identifier = _bounded_text(evidence_id, 240, required=True)
+        if not _ID_RE.fullmatch(identifier):
+            raise ValueError("evidence id contains unsupported characters")
+        kind = _bounded_text(evidence_type, 60, required=True)
+        relation = _bounded_text(relationship, 40, required=True)
+        if relation not in THESIS_RELATIONSHIPS:
+            raise ValueError("unsupported evidence relationship")
+        source = _bounded_text(source_name, 120, required=True)
+        family = _bounded_optional(source_family, 120)
+        origin = _bounded_optional(origin_key, 240)
+        independent = _bounded_optional(independence_key, 240)
+        observed = _utc(source_timestamp)
+        if observed is None:
+            raise ValueError("source timestamp is required")
+        availability = _utc(available_at) or observed
+        fingerprint = (
+            " ".join(str(evidence_fingerprint or "").split()).casefold()
+            if evidence_fingerprint is not None
+            else None
+        )
+        if content is not None:
+            # Fingerprint is content identity only: observation provenance
+            # (source, family, origin) must never split identical content, so
+            # syndicated or re-reported evidence scores once.
+            computed = canonical_fingerprint(
+                {
+                    "evidence_type": kind,
+                    "content": _json_value(content),
+                }
+            )
+            if fingerprint is not None and fingerprint != computed:
+                raise ValueError("evidence fingerprint does not match content")
+            fingerprint = computed
+        if not _FINGERPRINT_RE.fullmatch(fingerprint or ""):
+            raise ValueError("evidence fingerprint or content is required")
+        quality = _evidence_score(quality_score, "quality_score")
+        entailment = _evidence_score(entailment_score, "entailment_score")
+        freshness = _evidence_score(freshness_score, "freshness_score")
+        weight = _evidence_score(effective_weight, "effective_weight")
+        return cls(
+            evidence_id=identifier,
+            evidence_type=kind,
+            relationship=relation,
+            source_name=source,
+            source_family=family,
+            origin_key=origin,
+            independence_key=independent,
+            evidence_fingerprint=fingerprint,
+            source_timestamp=observed,
+            available_at=availability,
+            quality_score=quality,
+            entailment_score=entailment,
+            freshness_score=freshness,
+            effective_weight=weight,
+            provenance=MappingProxyType(_json_value(dict(provenance or {}))),
+        )
+
+    @property
+    def ref(self) -> str:
+        return f"{self.evidence_type}:{self.evidence_id}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "evidence_type": self.evidence_type,
+            "evidence_ref": self.ref,
+            "relationship": self.relationship,
+            "source_name": self.source_name,
+            "source_family": self.source_family,
+            "origin_key": self.origin_key,
+            "independence_key": self.independence_key,
+            "evidence_fingerprint": self.evidence_fingerprint,
+            "source_timestamp": self.source_timestamp.isoformat(),
+            "available_at": self.available_at.isoformat(),
+            "quality_score": self.quality_score,
+            "entailment_score": self.entailment_score,
+            "freshness_score": self.freshness_score,
+            "effective_weight": self.effective_weight,
+            "provenance": dict(self.provenance),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Scenario:
+    """One scenario leg of a thesis forecast.
+
+    ``probability`` is a finite 0..1 value or None (unknown). Missing
+    probabilities are never defaulted to conviction; valuation reports them
+    explicitly and never renormalizes. ``expected_return`` is a finite,
+    magnitude-bounded fractional return (positive or negative).
+    """
+
+    label: str
+    probability: float | None
+    expected_return: float
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        label: Any,
+        probability: Any = None,
+        expected_return: Any,
+    ) -> Scenario:
+        name = _bounded_text(label, 200, required=True)
+        prob = _bounded_score(probability, "probability")
+        ret = _finite_return(expected_return, "expected_return")
+        return cls(label=name, probability=prob, expected_return=ret)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "probability": self.probability,
+            "expected_return": self.expected_return,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScore:
+    """Deterministic evidence assessment for one thesis.
+
+    Masses use 1 - exp(-adjusted weight): bounded in [0, 1) with diminishing
+    returns. Correlated evidence (shared independence_key, or source_family
+    when independence_key is absent) contributes decay**position per member.
+    Context and invalidation evidence never add directional mass; they are
+    counted explicitly. ``confidence`` is None when no directional evidence
+    exists; otherwise a calibrated blend of support mass, mean
+    quality/freshness/entailment, and diversity, damped by contradiction
+    mass.
+    """
+
+    evidence_input_count: int
+    unique_evidence_count: int
+    support_count: int
+    contradiction_count: int
+    context_count: int
+    invalidation_count: int
+    independent_group_count: int
+    support_mass: float
+    contradiction_mass: float
+    average_quality: float | None
+    average_freshness: float | None
+    average_entailment: float | None
+    diversity: float
+    confidence: float | None
+    dropped_duplicate_ids: tuple[str, ...]
+    support_evidence_ids: tuple[str, ...]
+    contradiction_evidence_ids: tuple[str, ...]
+    missing_quality_count: int
+    missing_freshness_count: int
+    missing_entailment_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_input_count": self.evidence_input_count,
+            "unique_evidence_count": self.unique_evidence_count,
+            "support_count": self.support_count,
+            "contradiction_count": self.contradiction_count,
+            "context_count": self.context_count,
+            "invalidation_count": self.invalidation_count,
+            "independent_group_count": self.independent_group_count,
+            "support_mass": self.support_mass,
+            "contradiction_mass": self.contradiction_mass,
+            "average_quality": self.average_quality,
+            "average_freshness": self.average_freshness,
+            "average_entailment": self.average_entailment,
+            "diversity": self.diversity,
+            "confidence": self.confidence,
+            "dropped_duplicate_ids": list(self.dropped_duplicate_ids),
+            "support_evidence_ids": list(self.support_evidence_ids),
+            "contradiction_evidence_ids": list(self.contradiction_evidence_ids),
+            "missing_quality_count": self.missing_quality_count,
+            "missing_freshness_count": self.missing_freshness_count,
+            "missing_entailment_count": self.missing_entailment_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityScore:
+    """Gated opportunity assessment with explicit missing/blocked states.
+
+    ``opportunity`` is a weighted 0..1 blend of the favorable components when
+    every gate passes, otherwise exactly 0.0 with ``blocked_by`` naming the
+    failed gates (including components whose value is None, which also appear
+    in ``missing``). ``gates`` maps each component to its pass/fail state.
+    """
+
+    opportunity: float
+    evidence_strength: float | None
+    confidence: float | None
+    neglect: float | None
+    catalyst_ready: float | None
+    liquidity: float | None
+    downside: float | None
+    gates: Mapping[str, bool]
+    missing: tuple[str, ...]
+    blocked_by: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "opportunity": self.opportunity,
+            "evidence_strength": self.evidence_strength,
+            "confidence": self.confidence,
+            "neglect": self.neglect,
+            "catalyst_ready": self.catalyst_ready,
+            "liquidity": self.liquidity,
+            "downside": self.downside,
+            "gates": dict(self.gates),
+            "missing": list(self.missing),
+            "blocked_by": list(self.blocked_by),
+        }
+
+
 __all__ = [
     "CandidateGroup",
     "CaseLifecycle",
@@ -478,15 +796,21 @@ __all__ = [
     "DriverDirection",
     "EpistemicState",
     "EvidenceRelationship",
+    "EvidenceScore",
+    "EvidenceSignal",
     "FactorState",
     "FactorTransmissionDraft",
     "EvidenceType",
     "Horizon",
     "MarketDriverDraft",
+    "MAX_ABS_RETURN",
     "ModelProvenance",
     "NormalizedEntity",
     "NormalizedEvidence",
+    "OpportunityScore",
+    "Scenario",
     "Strength",
+    "THESIS_RELATIONSHIPS",
     "VALUE_CAPTURE_DIMENSIONS",
     "ValueCaptureDraft",
     "canonical_fingerprint",

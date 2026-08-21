@@ -56,6 +56,231 @@ def _event_at(event: Any) -> datetime | None:
     return None
 
 
+def _event_ingested_at(event: Any) -> datetime | None:
+    """Return the canonical acquisition time used for work coalescing."""
+    value = _event_value(event, "ingested_at")
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        return None
+    return value.astimezone(UTC)
+
+
+def _ingestion_bucket(event: Any, minutes: int) -> str:
+    """Floor canonical acquisition time for bounded downstream work."""
+    bounded = max(1, min(1440, int(minutes)))
+    event_at = _event_ingested_at(event) or datetime.now(UTC)
+    bucket_seconds = bounded * 60
+    floored = datetime.fromtimestamp(
+        int(event_at.timestamp()) // bucket_seconds * bucket_seconds, tz=UTC
+    )
+    return floored.strftime("%Y-%m-%dT%H:%M:00")
+
+
+#: Material source event types that trigger the bounded autonomous
+#: thesis-fusion desk: filings, transcripts, issuer news, macro,
+#: price/corporate action, options, and positioning.
+THESIS_AUTONOMY_EVENT_TYPES = frozenset(
+    {
+        "regulatory_filing_published",
+        "filing_ingested",
+        "transcript_published",
+        "headline_published",
+        "story_updated",
+        "macro_release",
+        "macro_revision",
+        "central_bank_communication",
+        "price_tick",
+        "price_bar_closed",
+        "corporate_action_published",
+        "option_chain_published",
+        "volatility_state_changed",
+        "positioning_report_published",
+    }
+)
+
+
+def _thesis_autonomy_bucket(event: Any, config: Mapping[str, Any]) -> str | None:
+    """Deterministic UTC ingestion bucket for one event, or None when disabled.
+
+    Acquisition time, rather than the event's economic timestamp, coalesces
+    historical backfills into one bounded cycle instead of replaying one model
+    run per historical release or market bar.
+    """
+    settings = config.get("thesis_autonomy", {})
+    if not isinstance(settings, Mapping) or not settings.get("enabled", False):
+        return None
+    try:
+        debounce = max(1, min(1440, int(settings.get("event_debounce_minutes", 60))))
+    except (TypeError, ValueError, OverflowError):
+        debounce = 60
+    return _ingestion_bucket(event, debounce)
+
+
+def _thesis_event_run_limit_reached(
+    session: Any,
+    config: Mapping[str, Any],
+    *,
+    as_of: datetime,
+) -> bool:
+    """Return whether the UTC-day event-cycle quota has been consumed."""
+    settings = config.get("thesis_autonomy", {})
+    if not isinstance(settings, Mapping):
+        return True
+    configured = settings.get("maximum_event_runs_per_day")
+    if configured is None:
+        # Raw mapping fakes and legacy validated snapshots predate the quota.
+        return False
+    try:
+        limit = max(0, min(24, int(configured)))
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if limit == 0:
+        return True
+    from sqlalchemy import text
+
+    day_start = as_of.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    # Serialize the daily count+enqueue decision inside the caller's
+    # transaction. Without this lock, workers handling different debounce
+    # buckets could both observe one remaining slot and exceed the hard quota.
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:quota_key, 0))"),
+        {"quota_key": f"thesis-autonomy:event:{day_start.date().isoformat()}"},
+    )
+    row = (
+        session.execute(
+            text(
+                """SELECT COUNT(*) AS count
+                   FROM analysis_jobs
+                   WHERE job_type = 'thesis_autonomy_run'
+                     AND dedupe_key LIKE 'thesis-autonomy:event:%'
+                     AND created_at >= :day_start
+                     AND created_at < :day_end"""
+            ),
+            {"day_start": day_start, "day_end": day_end},
+        )
+        .mappings()
+        .first()
+    )
+    return int((row or {}).get("count") or 0) >= limit
+
+
+def _enqueue_thesis_autonomy_job(
+    session: Any,
+    event: Any,
+    config: Mapping[str, Any],
+    *,
+    event_hash: str,
+    correlation_id: Any,
+    source_event_id: Any,
+) -> list[Any]:
+    """Enqueue at most one autonomy job per deterministic debounce bucket."""
+    from analysis_jobs import enqueue_job
+
+    bucket = _thesis_autonomy_bucket(event, config)
+    if bucket is None:
+        return []
+    as_of = _event_ingested_at(event) or datetime.now(UTC)
+    if _thesis_event_run_limit_reached(session, config, as_of=as_of):
+        return []
+    return [
+        enqueue_job(
+            session,
+            job_type="thesis_autonomy_run",
+            dedupe_key=f"thesis-autonomy:event:{bucket}",
+            input_fingerprint=f"bucket:{bucket}",
+            payload={
+                "source": str(_event_value(event, "source", "unknown")).strip().lower(),
+                "event_type": _event_type(event),
+                "event_content_hash": event_hash,
+                "bucket": bucket,
+                "as_of": as_of.isoformat(),
+            },
+            correlation_id=correlation_id,
+            source_event_id=source_event_id,
+            priority=700,
+        )
+    ]
+
+
+def _match_due_playbooks(
+    session: Any,
+    event: Any,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Append one bounded ``context`` match per due playbook that overlaps.
+
+    Pure overlap only (event type + normalized symbol/company entities);
+    no confirmation/invalidation is ever inferred here — the falsification
+    challenger decides semantics later.  Matches are appended exactly once
+    per (playbook, event, kind) inside the caller's transaction.  The
+    ledger is best-effort: a failure is reported bounded and never blocks
+    the autonomy job enqueue or the event itself.
+    """
+    from thesis_playbooks import (
+        event_matches_playbook,
+        list_due_playbooks,
+        record_event_match,
+    )
+
+    settings = config.get("thesis_autonomy", {})
+    if not isinstance(settings, Mapping) or not settings.get("enabled", False):
+        return {"playbooks_loaded": 0, "matches_recorded": 0, "thesis_ids": []}
+    try:
+        due = list_due_playbooks(session, reference=datetime.now(UTC), limit=100)
+    except Exception as exc:
+        return {
+            "playbooks_loaded": 0,
+            "matches_recorded": 0,
+            "thesis_ids": [],
+            "error": type(exc).__name__,
+        }
+    event_type = _event_type(event)
+    source = str(_event_value(event, "source", "unknown")).strip().lower()
+    observed_at = _event_at(event)
+    recorded = 0
+    thesis_ids: list[str] = []
+    for row in due[:100]:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            match = event_matches_playbook(event, row, entity_keys=())
+        except Exception:
+            continue
+        if not match.matched:
+            continue
+        try:
+            changed = record_event_match(
+                session,
+                playbook_id=row.get("id"),
+                market_event_id=str(_event_value(event, "event_id", "")),
+                match_kind="context",
+                evidence_refs=row.get("cited_evidence_refs") or (),
+                observed_at=observed_at,
+                assessment={"event_type": event_type, "source": source},
+            )
+        except Exception:
+            continue
+        if changed:
+            recorded += 1
+        thesis_id = row.get("thesis_id")
+        if thesis_id and str(thesis_id) not in thesis_ids:
+            thesis_ids.append(str(thesis_id))
+    return {
+        "playbooks_loaded": len(due),
+        "matches_recorded": recorded,
+        "thesis_ids": thesis_ids[:20],
+    }
+
+
 def _enqueue_section_jobs(
     session: Any,
     event: Any,
@@ -67,10 +292,12 @@ def _enqueue_section_jobs(
 ) -> list[Any]:
     from analysis_jobs import enqueue_job
 
+    bucket = _ingestion_bucket(event, 1)
     payload = {
         "source": source,
         "event_content_hash": event_hash,
         "event_type": _event_type(event),
+        "ingestion_bucket": bucket,
     }
     jobs = []
     for job_type, section in (
@@ -82,7 +309,7 @@ def _enqueue_section_jobs(
                 session,
                 job_type=job_type,
                 dedupe_key=f"{section}:global",
-                input_fingerprint=event_hash,
+                input_fingerprint=f"ingestion:{bucket}:source:{source}",
                 payload=payload,
                 correlation_id=correlation_id,
                 source_event_id=source_event_id,
@@ -274,10 +501,29 @@ def initial_handler(session: Any, event: MarketEvent) -> dict[str, Any]:
         isinstance(story_settings, Mapping) and story_settings.get("enabled") is True
     )
     result: dict[str, Any] = {"freshness": freshness, "jobs": jobs}
+    event_type = _event_type(event)
+    # The autonomous desk runs on material source event types, coalesced to
+    # at most one job per deterministic UTC debounce bucket.  Enqueued
+    # before the fast-path early returns so bursts of market events still
+    # reach the bounded cycle.
+    if event_type in THESIS_AUTONOMY_EVENT_TYPES:
+        jobs.extend(
+            _enqueue_thesis_autonomy_job(
+                session,
+                event,
+                config,
+                event_hash=event_hash,
+                correlation_id=correlation_id,
+                source_event_id=source_event_id,
+            )
+        )
+        # Bounded context-match ledger for due playbooks, before the
+        # fast-path early returns; the autonomy job enqueue above stays
+        # fail-closed and transactional.
+        result["playbook_matches"] = _match_due_playbooks(session, event, config)
     if not phase5_enabled and not story_enabled:
         return result
 
-    event_type = _event_type(event)
     from materiality import assess_event_materiality
 
     decision = assess_event_materiality(session, event, config, job_type="event_atom")

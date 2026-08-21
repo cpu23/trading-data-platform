@@ -12,6 +12,55 @@
 </header>
 
 <main aria-label="Investment research dashboard" id="inv-main">
+  <section class="section thesis-desk thesis-desk-investment" data-thesis-view="investment" aria-labelledby="inv-opportunity-title">
+    <div class="thesis-desk-heading">
+      <div>
+        <p class="thesis-eyebrow">Autonomous opportunity inbox</p>
+        <h1 class="thesis-page-title" id="inv-opportunity-title">What needs investigation now</h1>
+        <p class="thesis-operator-copy">Deterministically ranked research gaps. Score is a triage signal, not a trade recommendation.</p>
+      </div>
+      <div class="thesis-actions" aria-label="Opportunity inbox controls">
+        <button class="btn" type="button" data-thesis-refresh>Refresh</button>
+        <button class="btn btn-secondary" type="button" data-thesis-run>Run research cycle</button>
+      </div>
+    </div>
+    <p class="thesis-run-note">Analysis only · no orders, allocations, or execution</p>
+
+    <div class="thesis-status-strip" data-thesis-status-strip aria-label="Research operating status" aria-busy="true">
+      <div class="thesis-status-cell"><span>Last cycle</span><strong data-status-value="last-cycle">—</strong></div>
+      <div class="thesis-status-cell"><span>Model today</span><strong data-status-value="model-cost">—</strong></div>
+      <div class="thesis-status-cell"><span>Jobs</span><strong data-status-value="jobs">—</strong></div>
+      <div class="thesis-status-cell"><span>Sources / evidence</span><strong data-status-value="evidence">—</strong></div>
+      <div class="thesis-status-cell"><span>Active groups</span><strong data-status-value="groups">—</strong></div>
+      <div class="thesis-status-cell"><span>Linked theses</span><strong data-status-value="positions">—</strong></div>
+      <div class="thesis-status-cell"><span>Calibration</span><strong data-status-value="calibration">—</strong></div>
+    </div>
+
+    <div class="thesis-toolbar" aria-label="Opportunity filters">
+      <label><span>Group</span><select class="compact-select" data-thesis-group-filter><option value="">All groups</option></select></label>
+      <label><span>Minimum score</span>
+        <select class="compact-select" data-thesis-score-filter>
+          <option value="0">Any score</option>
+          <option value="0.25" selected>0.25</option>
+          <option value="0.5">0.50</option>
+          <option value="0.75">0.75</option>
+        </select>
+      </label>
+      <a class="thesis-desk-link" href="/research/theses">Open full thesis tournament <span aria-hidden="true">→</span></a>
+    </div>
+
+    <div class="thesis-view-status" data-thesis-message role="status" aria-live="polite">Loading ranked opportunities…</div>
+    <div class="thesis-table-wrap" data-thesis-opportunity-region aria-busy="true">
+      <table class="thesis-table">
+        <caption class="sr-only">Ranked autonomous research opportunities</caption>
+        <thead><tr><th scope="col">Thesis / why now</th><th scope="col">Direction</th><th scope="col">Score</th><th scope="col">EV / cost / downside</th><th scope="col">Confidence</th><th scope="col">Evidence / contradiction</th><th scope="col">Catalyst / neglect</th><th scope="col">Evaluated</th></tr></thead>
+        <tbody data-thesis-opportunities>
+          <tr><td colspan="8" class="thesis-state-cell">Loading opportunities…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- Regional coverage strip -->
   <section class="section" aria-labelledby="inv-regions-title">
     <div class="section-heading"><span class="label" id="inv-regions-title">Regional coverage</span></div>
@@ -25,7 +74,7 @@
   <section class="section" aria-labelledby="inv-research-title">
     <div class="section-heading">
       <span class="label" id="inv-research-title">Research coverage</span>
-      <span class="section-note">Deterministic annual-report facts first; model narrative and classified news are kept separate.</span>
+      <span class="section-note">Deterministic annual-report facts first. Free public daily closes are used only when fresh and currency-comparable; DCF remains a scenario model.</span>
     </div>
     <p class="inv-legend dim" id="inv-legend" aria-label="How to read this dashboard">
       <span class="inv-legend-item"><span class="tabular" aria-hidden="true">&mdash;</span> missing data</span>
@@ -210,9 +259,9 @@
 
   <!-- Valuation overrides -->
   <section class="section" aria-labelledby="inv-valuation-title">
-    <div class="section-heading"><span class="label" id="inv-valuation-title">Valuation overrides</span><span class="section-note">Applied only when finite; engine normalizes percentages.</span></div>
+    <div class="section-heading"><span class="label" id="inv-valuation-title">Valuation overrides</span><span class="section-note">Market price is an optional manual input and is never fetched; finite rates are normalized.</span></div>
     <div class="inv-valuation-grid">
-      <label class="inv-field"><span class="inv-field-label">Market price (per share)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-mp" name="market_price" placeholder="auto"></label>
+      <label class="inv-field"><span class="inv-field-label">Manual market price (per share)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-mp" name="market_price" placeholder="not supplied"></label>
       <label class="inv-field"><span class="inv-field-label">Shares outstanding (report scale)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-shares" name="shares_outstanding" placeholder="auto"></label>
       <label class="inv-field"><span class="inv-field-label">Net debt (report currency)</span><input type="number" step="any" inputmode="decimal" id="inv-netdebt" name="net_debt" placeholder="auto"></label>
       <label class="inv-field"><span class="inv-field-label">WACC / discount rate (%)</span><input type="number" step="any" min="0" inputmode="decimal" id="inv-wacc" name="discount_rate" placeholder="auto"></label>
@@ -297,7 +346,7 @@
   }
   function signedTextEl(value, cls, isPct) {
     var node = el('span', cls + ' tabular');
-    if (value == null || value === '') { node.className = cls + ' dim tabular'; node.textContent = '—'; node.setAttribute('aria-label', 'no change'); return node; }
+    if (value == null || value === '') { node.className = cls + ' dim tabular'; node.textContent = '—'; node.setAttribute('aria-label', 'missing data'); return node; }
     var n = Number(value);
     if (!isFinite(n)) { node.textContent = String(value); return node; }
     var up = n > 0, down = n < 0;
@@ -335,14 +384,6 @@
     if (!isFinite(n)) return '—';
     if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
     return n.toLocaleString(undefined, { maximumFractionDigits: (digits == null ? 2 : digits) });
-  }
-  function fmtPct(value) {
-    if (value === null || value === undefined || value === '') return '—';
-    var n = Number(value);
-    if (!isFinite(n)) return '—';
-    // Accept decimal (0.05) or percent (5) — engine normalizes; show as percent-ish.
-    if (Math.abs(n) > 0 && Math.abs(n) < 1 && n !== 0) n = n * 100;
-    return n.toLocaleString(undefined, { maximumFractionDigits: 2 }) + '%';
   }
   function fmtCompact(value) {
     if (value === null || value === undefined || value === '') return '—';
@@ -389,19 +430,29 @@
     }
     REGION_CODES.forEach(function (code) {
       var r = map[code.toUpperCase()] || {};
+      var configuredCount = Number(r.configured_company_count);
+      var isConfigured = r.coverage_status !== 'not_configured' &&
+        Number.isFinite(configuredCount) && configuredCount > 0;
       var card = el('div', 'inv-region');
       card.setAttribute('data-region', code);
+      card.setAttribute('data-coverage-status', isConfigured ? 'configured' : 'not-configured');
       var codeSpan = el('span', 'inv-region-code tabular'); codeSpan.textContent = code;
       card.appendChild(codeSpan);
       var meta = el('div', 'inv-region-meta');
-      var count = (r.company_count != null ? r.company_count : 0);
-      var hasState = !!r.state || !!r.stage;
       var stateLine = el('div', 'inv-region-state');
-      stateLine.textContent = (r.state || r.stage || 'monitor');
-      meta.appendChild(stateLine);
-      var countLine = el('div', 'inv-region-count dim tabular');
-      countLine.textContent = count + (count === 1 ? ' company' : ' companies');
-      meta.appendChild(countLine);
+      if (!isConfigured) {
+        stateLine.textContent = 'not configured';
+        meta.appendChild(stateLine);
+      } else {
+        stateLine.textContent = r.state || r.stage || '—';
+        if (!r.state && !r.stage) stateLine.setAttribute('aria-label', 'stage unavailable');
+        meta.appendChild(stateLine);
+        var analyzedCount = Number(r.company_count);
+        analyzedCount = Number.isFinite(analyzedCount) && analyzedCount >= 0 ? analyzedCount : 0;
+        var countLine = el('div', 'inv-region-count dim tabular');
+        countLine.textContent = analyzedCount + ' of ' + configuredCount + ' analyzed';
+        meta.appendChild(countLine);
+      }
       card.appendChild(meta);
       host.appendChild(card);
     });
@@ -464,10 +515,11 @@
     row.dataset.industry = name;
     var hasCoverage = Number(ind.company_count || 0) > 0;
 
-    var stage = String(ind.stage || ind.state || (hasCoverage ? 'monitor' : 'none')).toLowerCase();
+    var rawStage = ind.stage || ind.state;
+    var stage = rawStage ? String(rawStage).toLowerCase() : 'none';
     var nameCell = el('span', 'inv-col-name');
     var nm = el('span', 'inv-industry-name'); nm.textContent = name; nameCell.appendChild(nm);
-    var stg = el('span', 'inv-industry-stage inv-stage-' + stage.replace(/[^a-z-]/g, '')); stg.textContent = stage; nameCell.appendChild(stg);
+    var stg = el('span', 'inv-industry-stage inv-stage-' + stage.replace(/[^a-z-]/g, '')); stg.textContent = rawStage ? stage : '—'; nameCell.appendChild(stg);
     row.appendChild(nameCell);
 
     var scoreCell = el('span', 'inv-col-score tabular');
@@ -587,6 +639,15 @@
       : String(detCount) + (companyCount == null ? '' : ' / ' + String(companyCount));
     host.appendChild(stat(coverageValue, 'Verified filing coverage', coveragePct == null ? null : coveragePct + '% of companies', true));
     host.appendChild(stat(missing == null ? '—' : String(missing), 'Missing filing facts', missing != null && missing > 0 ? 'awaiting deterministic extraction' : 'complete', true));
+    var qualityCounts = s.quality_by_status && typeof s.quality_by_status === 'object' ? s.quality_by_status : {};
+    host.appendChild(stat(
+      String(Number(qualityCounts.ready || 0)) + ' / ' + (companyCount == null ? '—' : String(companyCount)),
+      'Analysis quality ready',
+      Number(qualityCounts.partial || 0) + ' partial · ' +
+        Number(qualityCounts.stale || 0) + ' stale · ' +
+        Number(qualityCounts.unavailable || 0) + ' unavailable',
+      true
+    ));
     host.appendChild(stat(
       s.history_point_count == null ? '—' : String(s.history_point_count),
       'Dated research history',
@@ -600,14 +661,54 @@
       s.average_duration_ms != null ? fmtNum(Number(s.average_duration_ms) / 1000, 1) + 's average end-to-end' : null,
       true
     ));
+    var valuationCoverage = s.valuation_coverage && typeof s.valuation_coverage === 'object' ? s.valuation_coverage : {};
+    var priceCount = valuationCoverage.market_price_count;
+    var noPriceNote = priceCount == null ? 'market-price coverage unknown' : priceCount === 0 ? 'no fresh currency-comparable public close' : 'fresh public close required';
+    host.appendChild(stat(
+      valuationCoverage.dcf_calculated_count == null ? '—' : String(valuationCoverage.dcf_calculated_count),
+      'DCF scenario / share calculated',
+      'deterministic model output; not a quoted value',
+      true
+    ));
+    host.appendChild(stat(
+      valuationCoverage.dcf_enterprise_value_only_count == null ? '—' : String(valuationCoverage.dcf_enterprise_value_only_count),
+      'DCF enterprise value only',
+      'per-share bridge inputs unavailable',
+      true
+    ));
+    host.appendChild(stat(
+      valuationCoverage.dcf_unavailable_count == null ? '—' : String(valuationCoverage.dcf_unavailable_count),
+      'DCF unavailable',
+      'required model inputs unavailable',
+      true
+    ));
+    host.appendChild(stat(
+      priceCount == null ? '—' : String(priceCount),
+      'Comparable market inputs',
+      priceCount == null ? 'coverage unknown' : priceCount === 0 ? 'none fresh and currency-comparable' : 'public daily close or explicit manual input',
+      true
+    ));
+    host.appendChild(stat(
+      valuationCoverage.pe_ratio_count == null ? '—' : String(valuationCoverage.pe_ratio_count),
+      'P/E with market price',
+      noPriceNote,
+      true
+    ));
+    host.appendChild(stat(
+      valuationCoverage.margin_of_safety_count == null ? '—' : String(valuationCoverage.margin_of_safety_count),
+      'Margin of safety with market price',
+      noPriceNote,
+      true
+    ));
   }
 
   function renderTrendRow(trend) {
     var row = el('div', 'inv-trend-row');
     var name = el('span', 'inv-trend-name'); name.textContent = trend.label || '—'; row.appendChild(name);
     var scope = el('span', 'dim'); scope.textContent = trend.scope || 'theme'; row.appendChild(scope);
-    var momentum = el('span', 'tabular'); var n = Number(trend.momentum || 0);
-    momentum.textContent = (n > 0 ? '+' : '') + n + ' · ' + (trend.stage || 'stable'); row.appendChild(momentum);
+    var momentum = el('span', 'tabular'); var n = trend.momentum == null ? null : Number(trend.momentum);
+    var momentumText = n != null && isFinite(n) ? (n > 0 ? '+' : '') + n : '—';
+    momentum.textContent = momentumText + ' · ' + (trend.stage || '—'); row.appendChild(momentum);
     return row;
   }
   function renderTrendPointRow(industry, p) {
@@ -834,11 +935,11 @@
     var nameText = el('span', 'inv-co-name-text'); nameText.textContent = (a.company || '—') + (a.symbol ? ' · ' + a.symbol : ''); name.appendChild(nameText);
     summary.appendChild(name);
 
-    var stateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
-    stateValue = String(stateValue || 'monitor').toLowerCase();
+    var rawStateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
+    var stateValue = rawStateValue ? String(rawStateValue).toLowerCase() : 'none';
     var stageCell = el('span', 'inv-co-stage');
     var stg = el('span', 'inv-stage inv-stage-' + stateValue.replace(/[^a-z-]/g, ''));
-    stg.textContent = stateValue; stageCell.appendChild(stg);
+    stg.textContent = rawStateValue ? stateValue : '—'; stageCell.appendChild(stg);
     var stateScore = a.state && typeof a.state === 'object' ? a.state.score : a.score;
     if (stateScore != null) { var sc = el('span', 'inv-co-score tabular'); sc.textContent = Number(stateScore).toFixed(1); stageCell.appendChild(sc); }
     summary.appendChild(stageCell);
@@ -913,10 +1014,10 @@
     head.appendChild(titleRow);
 
     var stageRow = el('div', 'inv-stage-row');
-    var stateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
-    stateValue = String(stateValue || 'monitor').toLowerCase();
+    var rawStateValue = a.state && typeof a.state === 'object' ? a.state.stage : a.state;
+    var stateValue = rawStateValue ? String(rawStateValue).toLowerCase() : 'none';
     var stage = el('span', 'inv-stage inv-stage-' + stateValue.replace(/[^a-z-]/g, ''));
-    stage.textContent = stateValue;
+    stage.textContent = rawStateValue ? stateValue : '—';
     stageRow.appendChild(stage);
     var stateScore = a.state && typeof a.state === 'object' ? a.state.score : a.score;
     if (stateScore != null) {
@@ -925,18 +1026,24 @@
       var sl = el('span', 'dim'); sl.textContent = 'score';
       stageRow.appendChild(score); stageRow.appendChild(sl);
     }
+    var quality = a.quality && typeof a.quality === 'object' ? a.quality : {};
+    var qualityStatus = String(quality.status || 'unknown').toLowerCase();
+    var qualityPill = el('span', 'inv-status-pill');
+    qualityPill.dataset.qualityStatus = qualityStatus;
+    qualityPill.textContent = 'quality ' + qualityStatus;
+    stageRow.appendChild(qualityPill);
     head.appendChild(stageRow);
     card.appendChild(head);
 
     // --- Report fundamentals (deterministic) ---
     var detGroup = el('div', 'inv-group inv-group-det');
-    detGroup.appendChild(groupHeading('Report fundamentals', 'det', 'All values come from deterministic filing extraction or deterministic derived calculations; missing data stays blank.'));
+    detGroup.appendChild(groupHeading('Report fundamentals', 'det', 'All values come from deterministic filing extraction or deterministic derived calculations unless explicitly labeled as a recorded market input; missing data stays unavailable.'));
     var metricBlock = el('div', 'inv-metrics-block');
     var mLabel = el('div', 'section-heading'); var mlSpan = el('span', 'label'); mlSpan.textContent = 'Key metrics'; mLabel.appendChild(mlSpan); metricBlock.appendChild(mLabel);
     var metricGrid = el('div', 'inv-metric-grid');
     var metrics = a.metrics && typeof a.metrics === 'object' ? a.metrics : {};
-    var order = ['revenue', 'operating_cash_flow', 'free_cash_flow', 'fcf', 'capex', 'net_income', 'diluted_eps', 'shares_outstanding', 'market_price', 'net_debt', 'gross_margin', 'inventory', 'backlog'];
-    var seen = {};
+    var order = ['revenue', 'operating_cash_flow', 'free_cash_flow', 'fcf', 'capex', 'net_income', 'diluted_eps', 'shares_outstanding', 'net_debt', 'gross_margin', 'inventory', 'backlog'];
+    var seen = { market_price: true };
     order.forEach(function (name) {
       if (seen[name] || metrics[name] == null && !(name in metrics)) return;
       seen[name] = true;
@@ -949,22 +1056,140 @@
     });
     metricBlock.appendChild(metricGrid);
     var val = a.valuation && typeof a.valuation === 'object' ? a.valuation : {};
-    var valStrip = el('div', 'inv-valuation-strip');
-    var vLabel = el('div', 'section-heading'); var vl = el('span', 'label'); vl.textContent = 'Valuation'; vLabel.appendChild(vl); valStrip.appendChild(vLabel);
-    var vGrid = el('div', 'inv-valuation-grid');
-    vGrid.appendChild(valCell('P/E', val.pe != null ? val.pe : val.pe_ratio));
-    var fcfRecord = val.fcf != null ? val.fcf : (metrics.free_cash_flow != null ? metrics.free_cash_flow : (metrics.fcf != null ? metrics.fcf : metrics.fcf_margin));
-    var fcfValue = fcfRecord && typeof fcfRecord === 'object' ? fcfRecord.value : fcfRecord;
+    var dcf = val.dcf && typeof val.dcf === 'object' ? val.dcf : {};
+    var marketData = val.market_data && typeof val.market_data === 'object' ? val.market_data : {};
+    var sensitivity = dcf.sensitivity && typeof dcf.sensitivity === 'object' ? dcf.sensitivity : {};
+    var assumptions = dcf.assumptions && typeof dcf.assumptions === 'object'
+      ? dcf.assumptions
+      : (val.assumptions && typeof val.assumptions === 'object' ? val.assumptions : {});
+    var dcfPerShare = finiteValue(dcf.per_share != null ? dcf.per_share : val.dcf_per_share);
+    var dcfEnterpriseValue = finiteValue(dcf.enterprise_value);
+    var declaredDcfStatus = String(dcf.status || '').toLowerCase();
+    var outputDcfStatus = dcfPerShare != null
+      ? 'calculated'
+      : (dcfEnterpriseValue != null ? 'enterprise_value_only' : 'unavailable');
+    var dcfStatus = ['calculated', 'enterprise_value_only', 'unavailable'].indexOf(declaredDcfStatus) >= 0 && declaredDcfStatus === outputDcfStatus
+      ? declaredDcfStatus
+      : outputDcfStatus;
+    var dcfReason = dcf.reason;
+    if (!dcfReason && dcfStatus === 'calculated') dcfReason = 'Per-share output calculated from the assumptions below.';
+    if (!dcfReason && dcfStatus === 'enterprise_value_only') dcfReason = 'Net debt and positive shares are required for a per-share output.';
+    if (!dcfReason && dcfStatus === 'unavailable') dcfReason = 'Required DCF inputs are unavailable.';
+
+    var marketMetric = metrics.market_price && typeof metrics.market_price === 'object'
+      ? metrics.market_price
+      : {};
+    var rawMarketPrice = val.market_price;
+    if (rawMarketPrice == null) {
+      rawMarketPrice = marketMetric.value != null ? marketMetric.value : metrics.market_price;
+    }
+    var marketPrice = finiteValue(rawMarketPrice);
+    var quotedMarketPrice = finiteValue(marketData.price);
+    var manualMarketPrice = String(marketMetric.source || '') === 'manual_input';
+    var marketComparison = String(
+      marketData.comparison_status ||
+      (manualMarketPrice ? 'manual_input' : 'price_unavailable')
+    );
+    var hasMarketPrice = marketPrice != null && marketPrice > 0 &&
+      (marketComparison === 'comparable' || marketComparison === 'manual_input');
+    var pe = hasMarketPrice ? finiteValue(val.pe != null ? val.pe : val.pe_ratio) : null;
+    var marginOfSafety = hasMarketPrice && dcfPerShare != null && dcfPerShare > 0 ? finiteValue(val.margin_of_safety) : null;
+    if (marginOfSafety != null) marginOfSafety *= 100;
+
+    var fcfRecord = val.fcf != null ? val.fcf : (metrics.free_cash_flow != null ? metrics.free_cash_flow : metrics.fcf);
     var fcfUnit = fcfRecord && typeof fcfRecord === 'object' && fcfRecord.unit ? fcfRecord.unit : val.currency_unit;
-    vGrid.appendChild(valCell('FCF', fcfValue, fcfUnit));
-    vGrid.appendChild(valCell('DCF / share', val.dcf_per_share != null ? val.dcf_per_share : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
-    vGrid.appendChild(valCell('Intrinsic / share', val.intrinsic_value != null ? val.intrinsic_value : (val.dcf ? val.dcf.per_share : null), val.per_share_unit));
-    var marketPrice = metrics.market_price && typeof metrics.market_price === 'object' ? metrics.market_price.value : metrics.market_price;
-    var intrinsicValue = val.dcf && val.dcf.per_share != null ? Number(val.dcf.per_share) : null;
-    var mos = marketPrice != null && intrinsicValue > 0 ? 1 - Number(marketPrice) / intrinsicValue : null;
-    if (val.margin_of_safety != null) mos = val.margin_of_safety;
-    vGrid.appendChild(valCell('Margin of safety', mos, null, true));
+    var dcfUnit = dcf.unit || val.currency_unit;
+    var valStrip = el('div', 'inv-valuation-strip');
+    var vLabel = el('div', 'section-heading');
+    var vl = el('span', 'label'); vl.textContent = 'DCF scenario / model output'; vLabel.appendChild(vl);
+    var vNote = el('span', 'section-note dim');
+    vNote.textContent = 'Deterministic five-year scenario. Market-relative measures use only a fresh public close in the report currency.';
+    vLabel.appendChild(vNote);
+    valStrip.appendChild(vLabel);
+    var vGrid = el('div', 'inv-valuation-grid');
+    var marketDescription = marketComparison === 'comparable'
+      ? 'Fresh keyless public daily close; currency matches the filing.'
+      : marketComparison === 'manual_input'
+      ? 'Explicit manual valuation input; no public-source freshness claim is made.'
+      : prettyName(marketComparison) + '. ' + String(marketData.reason || 'The quote is displayed but excluded from market-relative calculations.');
+    var marketUnit = marketData.currency ? String(marketData.currency) + '/share' : (marketMetric.unit || val.per_share_unit);
+    var marketLabel = manualMarketPrice ? 'Manual market price' : 'Public market close';
+    var marketSource = manualMarketPrice ? 'manual_input' : marketData.source;
+    var marketCapture = manualMarketPrice ? marketMetric.period : marketData.timestamp;
+    vGrid.appendChild(valCell('DCF status', prettyName(dcfStatus), null, false, dcfReason));
+    vGrid.appendChild(valCell('DCF enterprise value', dcfEnterpriseValue, dcfUnit, false, 'Scenario enterprise-value output.'));
+    vGrid.appendChild(valCell('DCF scenario / share', dcfPerShare, val.per_share_unit, false, 'Scenario output; not a quoted market value.'));
+    vGrid.appendChild(valCell(marketLabel, quotedMarketPrice != null ? quotedMarketPrice : marketPrice, marketUnit, false, marketDescription));
+    vGrid.appendChild(valCell('Market source', marketSource || null, null, false, manualMarketPrice ? 'Operator supplied.' : (marketData.source_reference || 'Source reference unavailable.')));
+    vGrid.appendChild(valCell('Market capture', marketCapture || null, null, false, manualMarketPrice ? 'Recorded valuation input.' : (marketData.status ? prettyName(marketData.status) : 'Unavailable.')));
+    vGrid.appendChild(valCell('P/E (market-relative)', pe, null, false, hasMarketPrice ? (pe == null ? 'Unavailable because positive earnings inputs are missing.' : 'Calculated against the accepted market input.') : 'Unavailable without a fresh currency-comparable public close or explicit manual input.'));
+    vGrid.appendChild(valCell('Margin of safety (market-relative)', marginOfSafety, null, true, hasMarketPrice ? (marginOfSafety == null ? 'Unavailable without a calculated per-share DCF output.' : 'Compares the accepted market input with the DCF scenario output.') : 'Unavailable without a fresh currency-comparable public close or explicit manual input.'));
     valStrip.appendChild(vGrid);
+
+    var assumptionLabel = el('div', 'section-heading');
+    var assumptionTitle = el('span', 'label'); assumptionTitle.textContent = 'DCF assumptions'; assumptionLabel.appendChild(assumptionTitle);
+    var assumptionNote = el('span', 'section-note dim'); assumptionNote.textContent = 'Growth is bounded by the displayed ceiling; missing bridge inputs remain unavailable.'; assumptionLabel.appendChild(assumptionNote);
+    valStrip.appendChild(assumptionLabel);
+    var assumptionGrid = el('div', 'inv-valuation-grid');
+    var startingFcf = finiteValue(assumptions.starting_fcf);
+    var inferredGrowth = ratePercentage(assumptions.inferred_growth);
+    var growthCap = ratePercentage(assumptions.growth_cap);
+    var wacc = ratePercentage(assumptions.wacc != null ? assumptions.wacc : assumptions.discount_rate);
+    var terminalGrowth = ratePercentage(assumptions.terminal_growth);
+    var forecastYears = finiteValue(assumptions.forecast_years);
+    var shares = finiteValue(assumptions.shares_outstanding);
+    var netDebt = finiteValue(assumptions.net_debt);
+    assumptionGrid.appendChild(valCell('Starting FCF', startingFcf, fcfUnit, false, startingFcf == null ? 'Unavailable; a DCF scenario cannot be calculated.' : 'Year-zero free cash flow used by the scenario.'));
+    assumptionGrid.appendChild(valCell('Inferred annual growth', inferredGrowth, null, true, inferredGrowth == null ? 'Unavailable without comparable filing-period growth.' : (growthCap == null ? 'Derived from comparable filing periods.' : 'Derived from filing periods and capped at ' + growthCap.toFixed(1) + '%.')));
+    assumptionGrid.appendChild(valCell('WACC', wacc, null, true, wacc == null ? 'Unavailable; a DCF scenario cannot be calculated.' : 'Scenario discount rate.'));
+    assumptionGrid.appendChild(valCell('Terminal growth', terminalGrowth, null, true, terminalGrowth == null ? 'Unavailable; a DCF scenario cannot be calculated.' : 'Must remain below WACC.'));
+    assumptionGrid.appendChild(valCell('Growth ceiling', growthCap, null, true, growthCap == null ? 'Unavailable.' : 'Upper bound on inferred annual growth.'));
+    assumptionGrid.appendChild(valCell('Forecast years', forecastYears, null, false, forecastYears == null ? 'Unavailable.' : 'Explicit projection horizon.'));
+    assumptionGrid.appendChild(valCell('Shares outstanding', shares, null, false, shares == null ? 'Unavailable; per-share DCF cannot be calculated.' : 'Available for the per-share bridge.'));
+    assumptionGrid.appendChild(valCell('Net debt', netDebt, dcfUnit, false, netDebt == null ? 'Unavailable; per-share DCF cannot be calculated.' : 'Available for the equity-value bridge.'));
+    valStrip.appendChild(assumptionGrid);
+    var sensitivityLabel = el('div', 'section-heading');
+    var sensitivityTitle = el('span', 'label'); sensitivityTitle.textContent = 'DCF sensitivity'; sensitivityLabel.appendChild(sensitivityTitle);
+    var sensitivityNote = el('span', 'section-note dim');
+    sensitivityNote.textContent = sensitivity.method || sensitivity.reason || 'Sensitivity unavailable without a valid base DCF.';
+    sensitivityLabel.appendChild(sensitivityNote);
+    valStrip.appendChild(sensitivityLabel);
+    var sensitivityGrid = el('div', 'inv-valuation-grid');
+    var sensitivityRange = sensitivity.range && typeof sensitivity.range === 'object' ? sensitivity.range : {};
+    sensitivityGrid.appendChild(valCell('Sensitivity status', prettyName(sensitivity.status || 'unavailable'), null, false, sensitivity.reason || null));
+    sensitivityGrid.appendChild(valCell('Enterprise value low', finiteValue(sensitivityRange.enterprise_value_min), dcfUnit, false, 'Lowest valid bounded sensitivity case.'));
+    sensitivityGrid.appendChild(valCell('Enterprise value high', finiteValue(sensitivityRange.enterprise_value_max), dcfUnit, false, 'Highest valid bounded sensitivity case.'));
+    sensitivityGrid.appendChild(valCell('Per-share low', finiteValue(sensitivityRange.per_share_min), val.per_share_unit, false, 'Lowest valid case with a complete equity bridge.'));
+    sensitivityGrid.appendChild(valCell('Per-share high', finiteValue(sensitivityRange.per_share_max), val.per_share_unit, false, 'Highest valid case with a complete equity bridge.'));
+    sensitivityGrid.appendChild(valCell('Largest range driver', sensitivity.largest_range_driver ? prettyName(sensitivity.largest_range_driver) : null, null, false, 'Largest enterprise-value spread when each driver varies independently.'));
+    var sensitivityDrivers = sensitivity.drivers && typeof sensitivity.drivers === 'object' ? sensitivity.drivers : {};
+    [
+      ['starting_fcf', 'Starting FCF range'],
+      ['annual_growth', 'Annual growth range'],
+      ['discount_rate', 'Discount-rate range'],
+      ['terminal_growth', 'Terminal-growth range']
+    ].forEach(function (entry) {
+      var cases = Array.isArray(sensitivityDrivers[entry[0]]) ? sensitivityDrivers[entry[0]] : [];
+      var values = cases.map(function (item) { return finiteValue(item.per_share); }).filter(function (item) { return item != null; });
+      if (!values.length) values = cases.map(function (item) { return finiteValue(item.enterprise_value); }).filter(function (item) { return item != null; });
+      var rangeText = values.length ? fmtCompact(Math.min.apply(null, values)) + ' \u2192 ' + fmtCompact(Math.max.apply(null, values)) : null;
+      sensitivityGrid.appendChild(valCell(entry[1], rangeText, null, false, values.length ? 'Per-share range when available; otherwise enterprise-value range.' : 'Unavailable.'));
+    });
+    (Array.isArray(sensitivity.wacc_terminal_grid) ? sensitivity.wacc_terminal_grid : []).forEach(function (item) {
+      var waccValue = ratePercentage(item.discount_rate);
+      var terminalValue = ratePercentage(item.terminal_growth);
+      var output = finiteValue(item.per_share);
+      var outputUnit = val.per_share_unit;
+      if (output == null) { output = finiteValue(item.enterprise_value); outputUnit = dcfUnit; }
+      sensitivityGrid.appendChild(valCell(
+        'WACC ' + (waccValue == null ? '—' : waccValue.toFixed(1) + '%') + ' / terminal ' + (terminalValue == null ? '—' : terminalValue.toFixed(1) + '%'),
+        output,
+        outputUnit,
+        false,
+        item.per_share == null ? 'Enterprise value; per-share bridge unavailable.' : 'Per-share sensitivity case.'
+      ));
+    });
+    valStrip.appendChild(sensitivityGrid);
     var fundamentals = a.fundamentals && typeof a.fundamentals === 'object' ? a.fundamentals : {};
     if (Object.keys(fundamentals).length) {
       var fLabel = el('div', 'section-heading'); var fl = el('span', 'label'); fl.textContent = 'Ratios'; fLabel.appendChild(fl); valStrip.appendChild(fLabel);
@@ -1015,6 +1240,7 @@
     addSection(card, 'inv-watch', 'Watch items', a.watch_items);
 
     // --- Detailed evidence and peer comparison behind nested expandable sections ---
+    addQualitySection(card, a.quality);
     addEvidenceSection(card, a.evidence);
     addPeerComparisonSection(card, a.peer_comparison);
 
@@ -1053,7 +1279,7 @@
     } else {
       var n = Number(value);
       if (!isFinite(n)) sval = String(value);
-      else if (isPct) sval = fmtCompact(Math.abs(n) < 1 && n !== 0 ? n * 100 : n) + '%';
+      else if (isPct) sval = fmtCompact(n) + '%';
       else {
         var scaledUnit = /m$|bn$|\bmillion\b|\bbillion\b/i.test(unit);
         var formatted = scaledUnit ? fmtNum(n, 2) : fmtCompact(n);
@@ -1087,18 +1313,34 @@
     return out;
   }
 
-  function valCell(label, value, unit, isPct) {
+  function finiteValue(value) {
+    if (value == null || value === '') return null;
+    var number = Number(value);
+    return isFinite(number) ? number : null;
+  }
+
+  function ratePercentage(value) {
+    var number = finiteValue(value);
+    return number == null ? null : number * 100;
+  }
+
+  function valCell(label, value, unit, isPct, note) {
     var node = el('div', 'inv-valuation-cell');
     var lab = el('span', 'inv-valuation-label label'); lab.textContent = label; node.appendChild(lab);
     var v = el('span', 'inv-valuation-value tabular');
-    if (value == null || value === '') v.textContent = '—';
+    if (value == null || value === '') v.textContent = note ? 'Unavailable' : '—';
     else {
       var n = Number(value);
       if (!isFinite(n)) v.textContent = String(value);
-      else if (isPct) { if (Math.abs(n) > 0 && Math.abs(n) < 1 && n !== 0) n = n * 100; v.textContent = (n >= 0 ? '' : '') + n.toFixed(1) + '%'; }
+      else if (isPct) v.textContent = n.toFixed(1) + '%';
       else { v.textContent = (unit === '$' ? '$' : '') + fmtCompact(n) + (unit && unit !== '$' ? ' ' + unit : ''); }
     }
     node.appendChild(v);
+    if (note) {
+      var noteNode = el('span', 'inv-research-sub dim');
+      noteNode.textContent = note;
+      node.appendChild(noteNode);
+    }
     return node;
   }
 
@@ -1177,11 +1419,7 @@
       score.textContent = isFinite(scoreValue) ? (scoreValue > 0 ? '+' : '') + scoreValue : '—'; row.appendChild(score);
       var deltaCell = el('span', 'inv-signal-delta tabular');
       if (signal.change != null || signal.change_pct != null) {
-        var dParts = [];
-        if (signal.change != null) dParts.push(signedNum(signal.change, 2));
-        if (signal.change_pct != null) dParts.push(signedNum(signal.change_pct, 1) + '%');
         deltaCell.appendChild(signedTextEl(signal.change_pct != null ? signal.change_pct : signal.change, 'inv-co-delta', signal.change_pct != null));
-        var dmeta = el('span', 'dim'); dmeta.textContent = ' (' + dParts.join(' · ') + ')'; deltaCell.appendChild(dmeta);
       } else { deltaCell.className += ' dim'; deltaCell.textContent = '—'; }
       row.appendChild(deltaCell);
       var basisCell = el('span', 'inv-signal-basis dim tabular');
@@ -1245,6 +1483,43 @@
     parent.appendChild(block);
   }
 
+  function addQualitySection(parent, quality) {
+    if (!quality || typeof quality !== 'object') return;
+    var det = el('details', 'inv-subsection inv-quality inv-detail-block');
+    if (quality.status && quality.status !== 'ready') det.open = true;
+    var summary = el('summary', 'inv-detail-summary');
+    var label = el('span', 'label'); label.textContent = 'Quality & freshness'; summary.appendChild(label);
+    var status = el('span', 'section-note dim'); status.textContent = prettyName(quality.status || 'unknown'); summary.appendChild(status);
+    det.appendChild(summary);
+    var report = quality.report && typeof quality.report === 'object' ? quality.report : {};
+    var analysis = quality.analysis && typeof quality.analysis === 'object' ? quality.analysis : {};
+    var deterministic = quality.deterministic && typeof quality.deterministic === 'object' ? quality.deterministic : {};
+    var narrative = quality.narrative && typeof quality.narrative === 'object' ? quality.narrative : {};
+    var market = quality.market && typeof quality.market === 'object' ? quality.market : {};
+    var valuation = quality.valuation && typeof quality.valuation === 'object' ? quality.valuation : {};
+    var peers = quality.peers && typeof quality.peers === 'object' ? quality.peers : {};
+    var list = el('ul', 'inv-evidence-list');
+    [
+      'Report: ' + prettyName(report.status || 'unknown') + ' · ' + String(report.report_date || 'date unavailable') + ' · age ' + (report.age_days == null ? '—' : report.age_days + 'd'),
+      'Analysis: ' + String(analysis.completed_at || 'completion unavailable') + ' · age ' + (analysis.age_days == null ? '—' : fmtNum(analysis.age_days, 1) + 'd'),
+      'Deterministic extraction: ' + prettyName(deterministic.status || 'unavailable') + ' · ' + String(deterministic.metric_count || 0) + ' metrics',
+      'Narrative evidence: ' + String(narrative.evidence_quote_count || 0) + ' quotes · ' + String(narrative.driver_count || 0) + ' drivers · ' + String(narrative.risk_count || 0) + ' risks',
+      'Market: ' + prettyName(market.status || 'unavailable') + ' · ' + prettyName(market.comparison_status || 'price unavailable') + ' · ' + String(market.timestamp || 'capture unavailable') + ' · ' + String(market.source || 'source unavailable'),
+      'Valuation: DCF ' + prettyName(valuation.dcf_status || 'unavailable') + ' · sensitivity ' + prettyName(valuation.sensitivity_status || 'unavailable'),
+      'Peers: ' + String(peers.selected_count || 0) + ' selected of ' + String(peers.available_count || 0) + ' available'
+    ].forEach(function (text) {
+      var item = el('li', 'inv-evidence-item'); item.textContent = text; list.appendChild(item);
+    });
+    var warnings = Array.isArray(quality.warnings) ? quality.warnings : [];
+    warnings.forEach(function (warning) {
+      var item = el('li', 'inv-evidence-item inv-quality-warning');
+      item.textContent = 'Warning: ' + prettyName(warning);
+      list.appendChild(item);
+    });
+    det.appendChild(list);
+    parent.appendChild(det);
+  }
+
   function addEvidenceSection(parent, evidence) {
     if (!evidence || (Array.isArray(evidence) && !evidence.length)) return;
     var det = el('details', 'inv-subsection inv-evidence inv-detail-block');
@@ -1274,24 +1549,43 @@
     fcf_margin_pct: 'FCF margin',
     net_margin_pct: 'Net margin',
     return_on_equity_pct: 'ROE',
-    debt_to_equity: 'Debt / equity'
+    debt_to_equity: 'Debt / equity',
+    capex_to_revenue_pct: 'Capex / revenue'
   };
   function addPeerComparisonSection(parent, peer) {
     if (!peer || typeof peer !== 'object') return;
     var metrics = peer.metrics && typeof peer.metrics === 'object' ? peer.metrics : {};
+    var members = Array.isArray(peer.members) ? peer.members : [];
     var observedNames = Object.keys(PEER_METRIC_LABELS).filter(function (name) {
       var m = metrics[name] && typeof metrics[name] === 'object' ? metrics[name] : null;
       return m && m.sample_count > 0 && (m.value != null || m.median != null);
     });
-    if (!observedNames.length) return;
+    if (!observedNames.length && !members.length) return;
     var det = el('details', 'inv-subsection inv-peer-comparison inv-detail-block');
     var hEl = el('summary', 'inv-detail-summary');
     var l = el('span', 'label'); l.textContent = 'Peer comparison'; hEl.appendChild(l);
     var note = el('span', 'section-note dim'); note.textContent = peer.industry ? (peer.industry + (peer.company_count != null ? ' · ' + peer.company_count + ' peers' : '')) : 'expand to compare'; hEl.appendChild(note);
     det.appendChild(hEl);
+    var construction = el('p', 'section-note dim');
+    construction.textContent = String(peer.construction || 'Peer construction unavailable') +
+      ' · selected ' + String(peer.company_count || 0) +
+      ' of ' + String(peer.industry_company_count || 0) + ' available';
+    det.appendChild(construction);
+    if (members.length) {
+      var memberList = el('ul', 'inv-evidence-list');
+      members.forEach(function (member) {
+        var memberItem = el('li', 'inv-evidence-item');
+        var identity = String(member.company || member.symbol || 'Unknown peer');
+        if (member.symbol) identity += ' (' + String(member.symbol) + ')';
+        var reasons = Array.isArray(member.reasons) ? member.reasons.join('; ') : 'selection rationale unavailable';
+        memberItem.textContent = identity + ' · distance ' + fmtNum(member.distance, 3) + ' · ' + reasons;
+        memberList.appendChild(memberItem);
+      });
+      det.appendChild(memberList);
+    }
     var ledger = el('div', 'inv-peer-ledger');
     var header = el('div', 'inv-peer-row inv-peer-row-head');
-    ['Metric', 'Company', 'Industry median', '\u0394 vs median', 'Percentile', 'Sample'].forEach(function (c) {
+    ['Metric', 'Company', 'Selected-peer median', '\u0394 vs median', 'Percentile', 'Sample'].forEach(function (c) {
       var cell = el('span', 'dim'); cell.textContent = c; header.appendChild(cell);
     });
     ledger.appendChild(header);
@@ -1304,6 +1598,13 @@
       row.appendChild(companyCell);
       var medianCell = el('span', 'inv-peer-median tabular');
       medianCell.appendChild(signedTextEl(m.median, 'inv-ledger-value', /pct|margin|roe|equity/i.test(name) && m.median != null));
+      if (m.median_leave_one_out_min != null && m.median_leave_one_out_max != null) {
+        medianCell.setAttribute(
+          'title',
+          'leave-one-out median range ' + fmtNum(m.median_leave_one_out_min, 2) +
+          ' to ' + fmtNum(m.median_leave_one_out_max, 2)
+        );
+      }
       row.appendChild(medianCell);
       var deltaCell = el('span', 'inv-peer-delta tabular');
       if (m.delta != null) { deltaCell.appendChild(signedTextEl(m.delta, 'inv-co-delta', /pct|margin|roe|equity/i.test(name))); }
@@ -1554,6 +1855,46 @@
       header.appendChild(lastSpan);
     }
     host.appendChild(header);
+
+    var coverage = data.coverage && typeof data.coverage === 'object' ? data.coverage : {};
+    var byStatus = coverage.by_status && typeof coverage.by_status === 'object' ? coverage.by_status : {};
+    var coverageHeader = el('div', 'inv-filing-header');
+    var currentCount = Number(byStatus.analysis_current || 0);
+    var totalCount = Number(coverage.total || data.companies_configured || 0);
+    coverageHeader.textContent = currentCount + ' / ' + totalCount + ' current analyses' +
+      ' · ' + Number(byStatus.analysis_stale || 0) + ' stale' +
+      ' · ' + Number(byStatus.document_awaiting_analysis || 0) + ' awaiting analysis' +
+      ' · ' + Number(byStatus.document_failed || 0) + ' failed' +
+      ' · ' + Number(byStatus.missing_filing || 0) + ' missing' +
+      ' · ' + Number(byStatus.source_unconfigured || 0) + ' source unavailable';
+    host.appendChild(coverageHeader);
+
+    var gaps = Array.isArray(coverage.issuers) ? coverage.issuers.filter(function (issuer) {
+      return issuer && issuer.status !== 'analysis_current';
+    }) : [];
+    if (gaps.length) {
+      var gapList = el('div', 'inv-filing-source-list');
+      gaps.slice(0, 12).forEach(function (issuer) {
+        var gap = el('div', 'inv-filing-source-row');
+        gap.dataset.coverageStatus = String(issuer.status || 'unknown');
+        var gapName = el('span', 'inv-filing-source-name');
+        gapName.textContent = String(issuer.company || issuer.symbol || 'Unknown issuer');
+        gap.appendChild(gapName);
+        var gapStatus = el('span', 'inv-filing-badge-off');
+        gapStatus.textContent = prettyName(issuer.status || 'unknown');
+        gap.appendChild(gapStatus);
+        var gapReason = el('span', 'dim');
+        gapReason.textContent = ' · ' + String(issuer.reason || 'reason unavailable');
+        gap.appendChild(gapReason);
+        gapList.appendChild(gap);
+      });
+      if (gaps.length > 12) {
+        var remainder = el('div', 'dim tabular');
+        remainder.textContent = String(gaps.length - 12) + ' additional issuer gaps';
+        gapList.appendChild(remainder);
+      }
+      host.appendChild(gapList);
+    }
 
     var srcList = el('div', 'inv-filing-source-list');
     (data.sources || []).forEach(function (src) {

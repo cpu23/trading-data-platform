@@ -6,7 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from investment_facts import extract_ixbrl_facts, extract_report_text_facts
+from investment_facts import (
+    _parse_number,
+    _parse_number_pair,
+    extract_ixbrl_facts,
+    extract_report_text_facts,
+)
 
 
 class InvestmentFactsTest(unittest.TestCase):
@@ -112,6 +117,93 @@ Profit for the year    499 x 494 | 459 7 452
         self.assertEqual(current["revenue"]["value"], 10_106)
         self.assertEqual(prior["net_income"]["value"], 452)
         self.assertEqual(current["revenue"]["unit"], "report_millions")
+
+    def test_parse_number_rejects_truncated_thousands_group(self):
+        self.assertIsNone(_parse_number("1,30"))
+        self.assertEqual(_parse_number("2,200"), 2_200.0)
+        self.assertEqual(_parse_number("(3,340)"), -3_340.0)
+        self.assertEqual(_parse_number("2,071.3"), 2_071.3)
+        self.assertEqual(_parse_number("3.870"), 3.87)
+
+    def test_parse_number_pair_recovers_ocr_separator_loss(self):
+        # GSK-style: a comma misread as a dot is recovered from the aligned peer.
+        self.assertEqual(_parse_number_pair("3,397", "3.870"), (3_397.0, 3_870.0))
+        # Antofagasta-style: separator loss plus trailing OCR padding.
+        self.assertEqual(_parse_number_pair("6,184.5", "5.66390"), (6_184.5, 5_663.9))
+        # St James-style: valid aligned decimals are preserved untouched.
+        self.assertEqual(_parse_number_pair("2,071.3", "1,316.0"), (2_071.3, 1_316.0))
+        self.assertEqual(_parse_number_pair("12.5", "10.0"), (12.5, 10.0))
+        # Negatives survive recovery.
+        self.assertEqual(_parse_number_pair("(3,397)", "(3.870)"), (-3_397.0, -3_870.0))
+        # Antofagasta-style: a pure integer peer that lost both separators
+        # ('1,316.0' -> '13160') is recovered from the decimal-precision peer.
+        self.assertEqual(_parse_number_pair("2,071.3", "13160"), (2_071.3, 1_316.0))
+        # A small ungrouped decimal peer never triggers integer recovery:
+        # '25' next to '2.5' stays a genuine large value, not a flattened 2.5.
+        self.assertEqual(_parse_number_pair("2.5", "25"), (2.5, 25.0))
+        # Diageo-style truncation is irrecoverable: fail closed.
+        self.assertIsNone(_parse_number_pair("2,200", "1,30"))
+        # A genuine implausible decimal pair is ambiguous, never fabricated:
+        # a misplaced decimal point is only thousands when the aligned peer
+        # formatting and magnitude both agree on exactly one reading.
+        self.assertIsNone(_parse_number_pair("0.025", "2.500"))
+        self.assertIsNone(_parse_number_pair("1.234", "5.5"))
+
+    def test_layout_text_recovers_antofagasta_style_separator_loss(self):
+        text = """CONSOLIDATED INCOME STATEMENT
+US$ million 2024 2023
+Revenue                         6,184.5     5.66390
+"""
+        current, prior, metadata = extract_report_text_facts(text)
+        self.assertEqual(metadata["status"], "success")
+        self.assertEqual(current["revenue"]["value"], 6_184.5)
+        self.assertEqual(prior["revenue"]["value"], 5_663.9)
+        self.assertEqual(current["revenue"]["unit"], "USDm")
+
+    def test_layout_text_recovers_gsk_style_separator_loss(self):
+        text = """CONSOLIDATED INCOME STATEMENT
+£ million 2024 2023
+Profit for the year             3,397       3.870
+"""
+        current, prior, metadata = extract_report_text_facts(text)
+        self.assertEqual(metadata["status"], "success")
+        self.assertEqual(current["net_income"]["value"], 3_397)
+        self.assertEqual(prior["net_income"]["value"], 3_870)
+        self.assertEqual(current["net_income"]["unit"], "GBPm")
+
+    def test_layout_text_preserves_st_james_style_decimals(self):
+        text = """CONSOLIDATED INCOME STATEMENT
+£ million 2024 2023
+Revenue                         2,071.3     1,316.0
+"""
+        current, prior, metadata = extract_report_text_facts(text)
+        self.assertEqual(metadata["status"], "success")
+        self.assertEqual(current["revenue"]["value"], 2_071.3)
+        self.assertEqual(prior["revenue"]["value"], 1_316.0)
+        self.assertEqual(current["revenue"]["unit"], "GBPm")
+
+    def test_layout_text_recovers_separator_free_integer_peer(self):
+        text = """CONSOLIDATED INCOME STATEMENT
+£ million 2024 2023
+Revenue                         2,071.3 | 13160
+"""
+        current, prior, metadata = extract_report_text_facts(text)
+        self.assertEqual(metadata["status"], "success")
+        self.assertEqual(current["revenue"]["value"], 2_071.3)
+        self.assertEqual(prior["revenue"]["value"], 1_316.0)
+        self.assertEqual(current["revenue"]["unit"], "GBPm")
+
+    def test_layout_text_omits_irrecoverable_truncated_comparative_row(self):
+        text = """CONSOLIDATED INCOME STATEMENT
+£ million 2024 2023
+Revenue                         2,200 | 1,30
+Gross profit                    1,100       700
+"""
+        current, prior, metadata = extract_report_text_facts(text)
+        self.assertNotIn("revenue", current)
+        self.assertNotIn("revenue", prior)
+        self.assertEqual(current["gross_profit"]["value"], 1_100)
+        self.assertEqual(prior["gross_profit"]["value"], 700)
 
 
 if __name__ == "__main__":

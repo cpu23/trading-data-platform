@@ -4,6 +4,9 @@ import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import httpx
+
+import http_client
 import investment_filings as filings
 
 
@@ -298,8 +301,9 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
         self.assertEqual(kwargs["params"]["category"], "accounts")
         self.assertEqual(kwargs["auth"], ("stream-key", ""))
 
+    @patch("investment_filings.make_request")
     @patch("investment_filings.get_shared_client")
-    def test_downloads_document_api_content(self, mock_client):
+    def test_downloads_document_api_content(self, mock_client, mock_request):
         metadata_response = MagicMock()
         metadata_response.json.return_value = {
             "resources": {
@@ -310,10 +314,8 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
             content=b"%PDF-" + b"statutory accounts evidence " * 10,
             headers={"content-type": "application/pdf"},
         )
-        mock_client.return_value.get.side_effect = [
-            metadata_response,
-            content_response,
-        ]
+        mock_client.return_value.get.return_value = metadata_response
+        mock_request.return_value = content_response
 
         content, filename, mime_type = filings._fetch_companies_house_document(
             {
@@ -326,18 +328,25 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
         self.assertTrue(content.startswith(b"%PDF-"))
         self.assertEqual(filename, "transaction-1.pdf")
         self.assertEqual(mime_type, "application/pdf")
-        url = mock_client.return_value.get.call_args_list[1].args[0]
         self.assertEqual(
-            url,
+            mock_request.call_args.args[1],
             "https://document-api.company-information.service.gov.uk/"
             "document/company-accounts-1/content",
         )
-        self.assertTrue(
-            mock_client.return_value.get.call_args.kwargs["follow_redirects"]
+        self.assertEqual(mock_request.call_args.kwargs["auth"], ("api-key", ""))
+        self.assertTrue(mock_request.call_args.kwargs["follow_redirects"])
+        self.assertEqual(
+            mock_request.call_args.kwargs["max_response_bytes"],
+            filings.MAX_COMPANIES_HOUSE_DOCUMENT_BYTES,
+        )
+        self.assertEqual(
+            mock_request.call_args.kwargs["client"],
+            mock_client.return_value,
         )
 
+    @patch("investment_filings.make_request")
     @patch("investment_filings.get_shared_client")
-    def test_prefers_machine_readable_xhtml_resource(self, mock_client):
+    def test_prefers_machine_readable_xhtml_resource(self, mock_client, mock_request):
         metadata_response = MagicMock()
         metadata_response.json.return_value = {
             "resources": {
@@ -349,10 +358,8 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
             content=b"<html><body>accounts</body></html>",
             headers={"content-type": "application/xhtml+xml"},
         )
-        mock_client.return_value.get.side_effect = [
-            metadata_response,
-            content_response,
-        ]
+        mock_client.return_value.get.return_value = metadata_response
+        mock_request.return_value = content_response
 
         _, filename, mime_type = filings._fetch_companies_house_document(
             {
@@ -362,16 +369,16 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
             "api-key",
         )
 
-        content_call = mock_client.return_value.get.call_args_list[1]
         self.assertEqual(
-            content_call.kwargs["headers"]["Accept"],
+            mock_request.call_args.kwargs["headers"]["Accept"],
             "application/xhtml+xml",
         )
         self.assertEqual(filename, "transaction-1.html")
         self.assertEqual(mime_type, "application/xhtml+xml")
 
+    @patch("investment_filings.make_request")
     @patch("investment_filings.get_shared_client")
-    def test_downloads_zip_when_it_is_the_only_resource(self, mock_client):
+    def test_downloads_zip_when_it_is_the_only_resource(self, mock_client, mock_request):
         metadata_response = MagicMock()
         metadata_response.json.return_value = {
             "resources": {
@@ -382,10 +389,8 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
             content=b"PK-regulatory-archive",
             headers={"content-type": "application/zip"},
         )
-        mock_client.return_value.get.side_effect = [
-            metadata_response,
-            content_response,
-        ]
+        mock_client.return_value.get.return_value = metadata_response
+        mock_request.return_value = content_response
 
         _, filename, mime_type = filings._fetch_companies_house_document(
             {
@@ -395,10 +400,229 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
             "api-key",
         )
 
-        content_call = mock_client.return_value.get.call_args_list[1]
-        self.assertEqual(content_call.kwargs["headers"]["Accept"], "application/zip")
+        self.assertEqual(
+            mock_request.call_args.kwargs["headers"]["Accept"], "application/zip"
+        )
         self.assertEqual(filename, "transaction-1.zip")
         self.assertEqual(mime_type, "application/zip")
+
+    @patch("investment_filings.make_request")
+    @patch("investment_filings.get_shared_client")
+    def test_rejects_declared_oversized_document_before_any_download(
+        self, mock_client, mock_request
+    ):
+        metadata_response = MagicMock()
+        metadata_response.json.return_value = {
+            "resources": {
+                "application/pdf": {
+                    "content_length": filings.MAX_COMPANIES_HOUSE_DOCUMENT_BYTES + 1,
+                },
+            }
+        }
+        mock_client.return_value.get.return_value = metadata_response
+
+        with self.assertRaises(ValueError) as raised:
+            filings._fetch_companies_house_document(
+                {
+                    "document_metadata_url": "/document/company-accounts-1",
+                    "filename": "transaction-1.pdf",
+                },
+                "api-key",
+            )
+        self.assertIn("exceeds 100 MB", str(raised.exception))
+        mock_request.assert_not_called()
+
+    @patch("investment_filings.make_request")
+    @patch("investment_filings.get_shared_client")
+    def test_streaming_oversize_is_reported_as_oversized_document(
+        self, mock_client, mock_request
+    ):
+        metadata_response = MagicMock()
+        metadata_response.json.return_value = {
+            "resources": {
+                "application/pdf": {"content_length": 1_024},
+            }
+        }
+        request = httpx.Request(
+            "GET",
+            "https://document-api.company-information.service.gov.uk/document/company-accounts-1/content",
+        )
+        mock_client.return_value.get.return_value = metadata_response
+        mock_request.side_effect = http_client.ResponseBodyTooLarge(
+            "response exceeds 100 MB", request=request
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            filings._fetch_companies_house_document(
+                {
+                    "document_metadata_url": "/document/company-accounts-1",
+                    "filename": "transaction-1.pdf",
+                },
+                "api-key",
+            )
+        self.assertIn("exceeds 100 MB", str(raised.exception))
+
+
+class CompaniesHouseDocumentRedirectTests(unittest.TestCase):
+    """The credentialed document download follows redirects through the
+    bounded manual loop: an oversized intermediate body aborts before the
+    next request, same-origin hops keep the API key, and the API key is
+    stripped before any cross-origin hop."""
+
+    def _scripted_client(self, handler):
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def _filing(self):
+        # Production discovery always emits absolute metadata URLs.
+        return {
+            "document_metadata_url": (
+                "https://document-api.company-information.service.gov.uk/"
+                "document/company-accounts-1"
+            ),
+            "filename": "transaction-1.pdf",
+        }
+
+    @patch.object(filings, "MAX_COMPANIES_HOUSE_DOCUMENT_BYTES", 1024)
+    @patch("investment_filings._sleep_for_companies_house")
+    @patch("investment_filings.get_shared_client")
+    def test_oversized_redirect_body_aborts_before_downloading(
+        self, mock_client, mock_sleep
+    ):
+        """A 302 whose body exceeds the document cap raises before the
+        redirect target is requested or the body materialized."""
+        requested = []
+
+        def handler(request):
+            requested.append(request.url.path)
+            if request.url.path == "/document/company-accounts-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "resources": {
+                            "application/pdf": {"content_length": 1000}
+                        }
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                302,
+                headers={"location": "/document/company-accounts-1/final"},
+                content=b"x" * 4096,
+                request=request,
+            )
+
+        mock_client.return_value = self._scripted_client(handler)
+
+        with self.assertRaises(ValueError) as raised:
+            filings._fetch_companies_house_document(self._filing(), "api-key")
+        self.assertIn("exceeds 100 MB", str(raised.exception))
+        self.assertNotIn("/document/company-accounts-1/final", requested)
+
+    @patch.object(filings, "MAX_COMPANIES_HOUSE_DOCUMENT_BYTES", 1024)
+    @patch("investment_filings._sleep_for_companies_house")
+    @patch("investment_filings.get_shared_client")
+    def test_same_origin_redirect_downloads_document_with_credentials(
+        self, mock_client, mock_sleep
+    ):
+        """A normal same-origin redirect is followed and the API key is
+        carried on every hop."""
+        auth_headers = []
+
+        def handler(request):
+            auth_headers.append(request.headers.get("authorization"))
+            if request.url.path == "/document/company-accounts-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "resources": {
+                            "application/pdf": {"content_length": 1000}
+                        }
+                    },
+                    request=request,
+                )
+            if request.url.path == "/document/company-accounts-1/content":
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": "/document/company-accounts-1/content-final"
+                    },
+                    content=b"",
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-same-origin",
+                request=request,
+            )
+
+        mock_client.return_value = self._scripted_client(handler)
+
+        content, filename, mime_type = filings._fetch_companies_house_document(
+            self._filing(), "api-key"
+        )
+
+        self.assertEqual(content, b"%PDF-same-origin")
+        self.assertEqual(filename, "transaction-1.pdf")
+        self.assertEqual(mime_type, "application/pdf")
+        # Metadata plus both document hops all carried the credential.
+        self.assertEqual(len(auth_headers), 3)
+        self.assertTrue(all(header is not None for header in auth_headers))
+
+    @patch.object(filings, "MAX_COMPANIES_HOUSE_DOCUMENT_BYTES", 1024)
+    @patch("investment_filings._sleep_for_companies_house")
+    @patch("investment_filings.get_shared_client")
+    def test_cross_origin_redirect_strips_credentials_from_foreign_hop(
+        self, mock_client, mock_sleep
+    ):
+        """A cross-origin redirect never carries the API key: the hop is
+        followed uncredentialed, so the credential cannot leak."""
+        requested = []
+
+        def handler(request):
+            requested.append(
+                (request.url.host + request.url.path, request.headers.get("authorization"))
+            )
+            if request.url.path == "/document/company-accounts-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "resources": {
+                            "application/pdf": {"content_length": 1000}
+                        }
+                    },
+                    request=request,
+                )
+            if request.url.host == "evil.example.test":
+                # The uncredentialed hop serves the document: the flow
+                # completes, proving the credential was stripped, not used.
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/pdf"},
+                    content=b"%PDF-same-origin",
+                    request=request,
+                )
+            return httpx.Response(
+                302,
+                headers={"location": "https://evil.example.test/steal"},
+                content=b"",
+                request=request,
+            )
+
+        mock_client.return_value = self._scripted_client(handler)
+
+        # The uncredentialed hop returns a document, so the flow completes.
+        content, filename, _mime = filings._fetch_companies_house_document(
+            self._filing(), "api-key"
+        )
+        self.assertEqual(content, b"%PDF-same-origin")
+        self.assertEqual(filename, "transaction-1.pdf")
+        foreign = [
+            entry for entry in requested if entry[0].startswith("evil.example.test")
+        ]
+        self.assertEqual(len(foreign), 1)
+        # The API key never crossed the origin boundary.
+        self.assertIsNone(foreign[0][1])
 
 
 class OpenDartDiscoveryTests(unittest.TestCase):
@@ -450,6 +674,35 @@ class OpenDartDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["document_type"], "annual_report")
         self.assertEqual(results[1]["document_type"], "quarterly_report")
+
+    @patch("investment_filings.get_shared_client")
+    def test_opendart_failure_log_never_contains_crtfc_key(self, mock_client):
+        secret = "SENTINEL-DART-KEY"
+        request = httpx.Request(
+            "GET",
+            filings.OPENDART_LIST_URL,
+            params={
+                "crtfc_key": secret,
+                "corp_code": "00126380",
+                "bgn_de": "20260101",
+                "page_count": "100",
+            },
+        )
+        mock_client.return_value.get.return_value = httpx.Response(
+            401, request=request, content=b""
+        )
+
+        with patch.object(filings, "logger") as mock_logger:
+            results = filings._fetch_opendart_list(secret, "00126380", "20260101")
+
+        self.assertEqual(results, [])
+        self.assertEqual(
+            mock_logger.warning.call_args.args[0], "opendart_list_failed"
+        )
+        error = mock_logger.warning.call_args.kwargs["error"]
+        self.assertNotIn(secret, error)
+        self.assertNotIn("crtfc_key", error)
+        self.assertIn("opendart.fss.or.kr", error)
 
 
 class FilingCollectionTests(unittest.TestCase):
@@ -644,6 +897,69 @@ class FilingSourceStatusTests(unittest.TestCase):
         )
         self.assertFalse(eu_esef["enabled"])
         self.assertEqual(eu_esef["companies"], 1)
+
+    def test_issuer_coverage_exposes_current_stale_missing_and_source_gaps(self):
+        companies = [
+            {"company": "Current", "symbol": "CUR", "region": "US", "cik": "1"},
+            {"company": "Stale", "symbol": "OLD", "region": "US", "cik": "2"},
+            {"company": "Queued", "symbol": "QUE", "region": "US", "cik": "3"},
+            {
+                "company": "UK Missing Key",
+                "symbol": "UK.L",
+                "region": "EU",
+                "company_number": "01234567",
+            },
+            {"company": "EU Missing", "symbol": "EU", "region": "EU"},
+        ]
+        rows = [
+            {
+                "company": "Current",
+                "symbol": "CUR",
+                "document_id": "doc-current",
+                "analysis_id": "analysis-current",
+                "document_status": "analyzed",
+                "report_date": date(2025, 12, 31),
+            },
+            {
+                "company": "Stale",
+                "symbol": "OLD",
+                "document_id": "doc-old",
+                "analysis_id": "analysis-old",
+                "document_status": "analyzed",
+                "report_date": date(2023, 12, 31),
+            },
+            {
+                "company": "Queued",
+                "symbol": "QUE",
+                "document_id": "doc-queued",
+                "analysis_id": None,
+                "document_status": "stored",
+                "report_date": date(2025, 12, 31),
+            },
+        ]
+
+        coverage = filings._filing_coverage(
+            companies,
+            rows,
+            companies_house_key_configured=False,
+            today=date(2026, 8, 20),
+        )
+
+        self.assertEqual(
+            coverage["by_status"],
+            {
+                "analysis_current": 1,
+                "analysis_stale": 1,
+                "document_awaiting_analysis": 1,
+                "document_failed": 0,
+                "missing_filing": 0,
+                "source_unconfigured": 2,
+            },
+        )
+        issuers = {item["symbol"]: item for item in coverage["issuers"]}
+        self.assertEqual(issuers["UK.L"]["expected_source"], "companies_house")
+        self.assertIn("key", issuers["UK.L"]["reason"])
+        self.assertEqual(issuers["EU"]["expected_source"], "eu_esef")
 
     @patch("investment_filings.get_session")
     def test_status_reads_latest_durable_filings_run(self, get_session):

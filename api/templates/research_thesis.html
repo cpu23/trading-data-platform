@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Thesis dossier — Trading data{% endblock %}
+{% block content %}
+<header class="page-header thesis-page-header">
+  <div class="page-header-left">
+    {% include "partials/navigation.html" %}
+    <a class="rs-back-link" href="/research/theses">← Thesis tournament</a>
+  </div>
+  <span class="control-status" role="status" aria-live="polite" data-thesis-header-status></span>
+</header>
+
+<main class="thesis-workspace thesis-detail" data-thesis-view="detail" data-thesis-id="{{ thesis_id }}" aria-labelledby="thesis-detail-title">
+  <section class="section thesis-identity" aria-labelledby="thesis-detail-title">
+    <p class="thesis-eyebrow">Immutable thesis dossier</p>
+    <div class="thesis-identity-heading">
+      <div>
+        <h1 class="thesis-page-title" id="thesis-detail-title" data-thesis-field="claim">Loading thesis…</h1>
+        <p class="thesis-operator-copy" data-thesis-field="group">Tournament —</p>
+      </div>
+      <span class="inv-status-pill" data-thesis-field="status">—</span>
+    </div>
+    <dl class="thesis-identity-ledger">
+      <div><dt>Thesis ID</dt><dd class="tabular" data-thesis-field="id">{{ thesis_id }}</dd></div>
+      <div><dt>Version</dt><dd class="tabular" data-thesis-field="version">—</dd></div>
+      <div><dt>Direction</dt><dd data-thesis-field="direction">—</dd></div>
+      <div><dt>Horizon</dt><dd data-thesis-field="horizon">—</dd></div>
+      <div><dt>Last evaluated</dt><dd class="tabular" data-thesis-field="evaluated">—</dd></div>
+    </dl>
+    <div class="thesis-view-status" data-thesis-message role="status" aria-live="polite">Loading evidence, scenarios, and history…</div>
+  </section>
+
+  <div class="thesis-detail-grid">
+    <section class="section thesis-mechanism" aria-labelledby="thesis-mechanism-title">
+      <div class="section-heading"><span class="label" id="thesis-mechanism-title">Mechanism &amp; variant</span></div>
+      <p class="thesis-detail-copy" data-thesis-field="mechanism">—</p>
+      <dl class="rs-kv-list" data-thesis-variant-ledger>
+        <dt>Variant / perception</dt><dd data-thesis-field="variant">—</dd>
+        <dt>Origin</dt><dd data-thesis-field="origin">—</dd>
+        <dt>Catalyst mechanism</dt><dd data-thesis-field="catalyst-summary">—</dd>
+      </dl>
+      <ul class="thesis-catalyst-ledger" data-thesis-catalysts><li class="thesis-state-cell">Loading catalyst context…</li></ul>
+    </section>
+
+    <section class="section" aria-labelledby="thesis-score-title">
+      <div class="section-heading"><span class="label" id="thesis-score-title">Score decomposition</span><span class="section-note">Independent inputs; unknown is never zero.</span></div>
+      <dl class="thesis-score-grid" data-thesis-score-decomposition>
+        <div><dt>Opportunity</dt><dd data-score="opportunity_score">—</dd></div>
+        <div><dt>Expected value</dt><dd data-score="expected_value">—</dd></div>
+        <div><dt>Research cost</dt><dd data-score="research_cost">—</dd></div>
+        <div><dt>Expected shortfall</dt><dd data-score="expected_shortfall">—</dd></div>
+        <div><dt>Confidence</dt><dd data-score="confidence_score">—</dd></div>
+        <div><dt>Evidence strength</dt><dd data-score="evidence_strength">—</dd></div>
+        <div><dt>Contradiction</dt><dd data-score="contradiction_strength">—</dd></div>
+        <div><dt>Catalyst</dt><dd data-score="catalyst_score">—</dd></div>
+        <div><dt>Neglect</dt><dd data-score="neglect_score">—</dd></div>
+      </dl>
+      <div class="thesis-score-history" data-thesis-score-history aria-busy="true"><p class="thesis-state-cell">Loading score history…</p></div>
+    </section>
+  </div>
+
+  <section class="section" aria-labelledby="thesis-actionable-context-title">
+    <div class="section-heading">
+      <span class="label" id="thesis-actionable-context-title">Actionable context &amp; field citations</span>
+      <span class="section-note">Measured trend, valuation, and sentiment remain source-linked and independently auditable.</span>
+    </div>
+    <dl class="rs-kv-list">
+      <dt>Quantified trend</dt><dd data-thesis-field="trend-context">—</dd>
+      <dt>Valuation context</dt><dd data-thesis-field="valuation-context">—</dd>
+      <dt>Measured sentiment</dt><dd data-thesis-field="sentiment-context">—</dd>
+    </dl>
+    <ul class="thesis-catalyst-ledger" data-thesis-citation-map>
+      <li class="thesis-state-cell">Loading field-level citations…</li>
+    </ul>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-scenarios-title">
+    <div class="section-heading"><span class="label" id="thesis-scenarios-title">Scenario book</span><span class="section-note">Probability and expected return are separate observations.</span></div>
+    <div class="thesis-table-wrap" aria-busy="true" data-thesis-scenario-region>
+      <table class="thesis-table thesis-scenario-table">
+        <caption class="sr-only">Bull, base, and bear thesis scenarios</caption>
+        <thead><tr><th scope="col">Scenario</th><th scope="col">Probability</th><th scope="col">Expected return</th><th scope="col">Path and assumptions</th><th scope="col">Version</th></tr></thead>
+        <tbody data-thesis-scenarios><tr><td colspan="5" class="thesis-state-cell">Loading scenarios…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section thesis-playbook-section" aria-labelledby="thesis-playbook-title">
+    <div class="section-heading">
+      <span class="label" id="thesis-playbook-title">Catalyst playbook ledger</span>
+      <span class="section-note">Immutable monitored scenarios; matches are caller-assigned observations, not trade signals.</span>
+    </div>
+    <div class="thesis-playbook-list" data-thesis-playbooks aria-busy="true">
+      <p class="thesis-state-cell">Loading catalyst playbooks…</p>
+    </div>
+
+    <div class="section-heading thesis-match-heading">
+      <span class="label" id="thesis-playbook-matches-title">Observed playbook matches</span>
+      <span class="section-note">Event facts and caller assessment remain separate.</span>
+    </div>
+    <div class="thesis-table-wrap" data-thesis-playbook-match-region aria-busy="true">
+      <table class="thesis-table thesis-match-table" aria-labelledby="thesis-playbook-matches-title">
+        <thead><tr><th scope="col">Event type</th><th scope="col">Source</th><th scope="col">Observed</th><th scope="col">Assigned kind</th><th scope="col">Assessment / cited refs</th></tr></thead>
+        <tbody data-thesis-playbook-matches><tr><td colspan="5" class="thesis-state-cell">Loading observed matches…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-evidence-title">
+    <div class="section-heading"><span class="label" id="thesis-evidence-title">Evidence ledger</span><span class="section-note">Strength and contradiction remain separate; timestamps and provenance stay attached.</span></div>
+    <div class="thesis-evidence-groups" data-thesis-evidence aria-busy="true">
+      {% for relationship, label in [('supports', 'Supports'), ('contradicts', 'Contradicts'), ('invalidation', 'Invalidation'), ('context', 'Context')] %}
+      <details class="thesis-evidence-group" data-evidence-relationship="{{ relationship }}" open>
+        <summary><span>{{ label }}</span><span class="thesis-count" data-evidence-count>—</span></summary>
+        <ol class="thesis-evidence-list" data-evidence-list><li class="thesis-state-cell">Loading evidence…</li></ol>
+      </details>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="thesis-detail-grid">
+    <section class="section" aria-labelledby="thesis-forecast-title">
+      <div class="section-heading"><span class="label" id="thesis-forecast-title">Forecasts &amp; outcomes</span></div>
+      <div data-thesis-forecasts class="thesis-timeline" aria-busy="true"><p class="thesis-state-cell">Loading forecasts…</p></div>
+      <div data-thesis-outcomes class="thesis-outcome-list" aria-busy="true"></div>
+      <details class="thesis-version-history">
+        <summary>Immutable version history</summary>
+        <ol data-thesis-versions><li class="thesis-state-cell">Loading versions…</li></ol>
+      </details>
+    </section>
+
+    <section class="section" aria-labelledby="thesis-invalidation-title">
+      <div class="section-heading"><span class="label" id="thesis-invalidation-title">Invalidation state</span></div>
+      <div class="thesis-invalidation-state" data-thesis-invalidation-state>—</div>
+      <ul class="rs-invalidation-list" data-thesis-invalidations><li>Loading invalidation conditions…</li></ul>
+      <div class="section-heading thesis-match-heading">
+        <span class="label" id="thesis-risk-title">Risk register</span>
+        <span class="section-note">Structured downside, execution, and invalidation risks remain distinct.</span>
+      </div>
+      <ul class="rs-invalidation-list" data-thesis-risks aria-labelledby="thesis-risk-title"><li class="thesis-state-cell">Loading structured risks…</li></ul>
+    </section>
+  </div>
+
+  <section class="section" aria-labelledby="thesis-challenge-title">
+    <div class="section-heading"><span class="label" id="thesis-challenge-title">Challenge &amp; falsification timeline</span><span class="section-note">A challenge records what was tested, when, and what changed.</span></div>
+    <ol class="thesis-challenge-timeline" data-thesis-falsification aria-busy="true"><li class="thesis-state-cell">Loading challenge history…</li></ol>
+  </section>
+
+  <section class="section" aria-labelledby="thesis-position-title">
+    <div class="section-heading"><span class="label" id="thesis-position-title">Linked positions</span><span class="section-note">Context only; no execution controls.</span></div>
+    <ul class="thesis-position-list" data-thesis-positions aria-busy="true"><li class="thesis-state-cell">Loading position links…</li></ul>
+  </section>
+</main>
+<noscript><div class="error-block" role="alert">This dossier requires JavaScript to load bounded thesis data.</div></noscript>
+{% endblock %}

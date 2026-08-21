@@ -31,11 +31,32 @@ EVIDENCE_TYPES = (
     "filing_delta",
     "document",
 )
-RELATIONSHIPS = ("supports", "contradicts", "context")
+RELATIONSHIPS = ("supports", "contradicts", "context", "invalidation")
 CATALYST_STATES = ("pending", "confirmed", "missed", "expired")
 RISK_KINDS = ("counter_thesis", "execution", "external")
 RISK_SEVERITIES = ("low", "moderate", "high")
 HOLDING_SOURCES = ("manual", "import")
+
+# Evidence keys that belong to the autonomous thesis-fusion desk
+# (orchestrator/thesis_fusion.py).  When any row carries one of these keys,
+# add_thesis_evidence delegates to the desk repository so provenance,
+# fingerprint, and weight metadata are validated and stored consistently.
+_DESK_EVIDENCE_KEYS = frozenset(
+    {
+        "source_name",
+        "source_family",
+        "origin_key",
+        "independence_key",
+        "evidence_fingerprint",
+        "content",
+        "source_timestamp",
+        "available_at",
+        "quality_score",
+        "entailment_score",
+        "freshness_score",
+        "effective_weight",
+    }
+)
 
 _MAX_LIST_THEMES = 100
 _MAX_THEME_THESES = 20
@@ -430,6 +451,17 @@ def add_thesis_evidence(
 ) -> int:
     if evidence is None:
         evidence = []
+    # Narrow compatibility delegation: desk evidence (provenance, fingerprint,
+    # or weight metadata) is handled by the thesis-fusion repository, which
+    # owns the desk columns on investment_thesis_evidence.
+    if any(
+        isinstance(item, Mapping) and _DESK_EVIDENCE_KEYS & item.keys()
+        for item in evidence
+    ):
+        from thesis_fusion import attach_evidence
+
+        result = attach_evidence(session, thesis_id, evidence=list(evidence))
+        return int(result.get("attached") or 0)
     """Attach evidence rows; unknown types or relationships raise ValueError
     before any database access or insert."""
     thesis_id = _uuid(thesis_id, "thesis_id")

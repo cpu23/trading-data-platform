@@ -39,6 +39,15 @@ _REPORT_UPSERT = text(
         updated_at = NOW()
     """
 )
+_REPORT_STALE_DELETE = text(
+    """
+    DELETE FROM investment_research_observations
+    WHERE source_kind = 'report'
+      AND source_id = :source_id
+      AND industry <> :industry
+    """
+)
+
 
 _NEWS_UPSERT = text(
     """
@@ -61,6 +70,61 @@ _NEWS_UPSERT = text(
         updated_at = NOW()
     """
 )
+_FINANCIAL_REPORT_TYPES = frozenset(
+    {"annual_report", "quarterly_report", "earnings_release"}
+)
+
+
+def _observation_metrics(
+    facts: dict[str, Any], analysis: dict[str, Any]
+) -> dict[str, Any]:
+    """Flatten deterministic report, ratio, and valuation history."""
+    analysis_metrics = analysis.get("metrics")
+    fact_metrics = facts.get("metrics")
+    metrics = dict(
+        analysis_metrics
+        if isinstance(analysis_metrics, dict)
+        else fact_metrics
+        if isinstance(fact_metrics, dict)
+        else {}
+    )
+
+    fundamentals = analysis.get("fundamentals")
+    if isinstance(fundamentals, dict):
+        for name, raw in fundamentals.items():
+            value = _finite(raw)
+            if value is None:
+                continue
+            metrics[f"fundamental_{name}"] = {
+                "value": value,
+                "unit": "percent" if str(name).endswith("_pct") else "ratio",
+                "source": "deterministic_analysis",
+            }
+
+    valuation = analysis.get("valuation")
+    if isinstance(valuation, dict):
+        valuation_fields = {
+            "pe_ratio": ("ratio", valuation.get("pe_ratio", valuation.get("pe"))),
+            "fcf": ("currency", valuation.get("fcf")),
+            "market_cap": ("currency", valuation.get("market_cap")),
+            "market_price": ("currency_per_share", valuation.get("market_price")),
+            "dcf_per_share": ("currency_per_share", valuation.get("dcf_per_share")),
+            "intrinsic_value": (
+                "currency_per_share",
+                valuation.get("intrinsic_value"),
+            ),
+            "margin_of_safety": ("ratio", valuation.get("margin_of_safety")),
+        }
+        for name, (unit, raw) in valuation_fields.items():
+            value = _finite(raw)
+            if value is None:
+                continue
+            metrics[f"valuation_{name}"] = {
+                "value": value,
+                "unit": unit,
+                "source": "deterministic_analysis",
+            }
+    return metrics
 
 
 def _finite(value: Any) -> float | None:
@@ -79,8 +143,8 @@ def upsert_report_observation(
     *,
     model: str,
 ) -> None:
-    """Write the annual filing observation in the analysis transaction."""
-    if document.get("document_type") != "annual_report":
+    """Write one normalized financial-report observation transactionally."""
+    if document.get("document_type") not in _FINANCIAL_REPORT_TYPES:
         return
     report_date = document.get("report_date")
     observed_at = (
@@ -93,18 +157,21 @@ def upsert_report_observation(
         state = (
             analysis.get("stage") if isinstance(analysis.get("stage"), str) else None
         )
+    industry = str(document.get("industry") or "Unclassified")
+    session.execute(
+        _REPORT_STALE_DELETE,
+        {"source_id": str(document["document_id"]), "industry": industry},
+    )
     session.execute(
         _REPORT_UPSERT,
         {
             "source_id": str(document["document_id"]),
             "observed_at": observed_at,
-            "industry": str(document.get("industry") or "Unclassified"),
+            "industry": industry,
             "company": document.get("company"),
             "symbol": document.get("symbol"),
             "region": document.get("region"),
-            "metrics": json.dumps(
-                facts.get("metrics") if isinstance(facts.get("metrics"), dict) else {}
-            ),
+            "metrics": json.dumps(_observation_metrics(facts, analysis)),
             "narrative": json.dumps(
                 {
                     "summary": analysis.get("summary"),
