@@ -929,6 +929,30 @@ def research_evaluation_page(request: Request):
     )
 
 
+@router.get("/research/theses")
+def research_theses_page(request: Request):
+    """Render the bounded thesis-tournament desk shell."""
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_theses.html",
+        {"request": request},
+    )
+
+
+@router.get("/research/theses/{thesis_id}")
+def research_thesis_page(request: Request, thesis_id: str):
+    """Render one dossier only after validating its immutable identifier."""
+    try:
+        normalized = str(UUID(thesis_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Thesis not found") from exc
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_thesis.html",
+        {"request": request, "thesis_id": normalized},
+    )
+
+
 @router.get("/research/cases/{case_id}")
 def research_case_page(request: Request, case_id: str):
     try:

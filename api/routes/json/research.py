@@ -81,6 +81,20 @@ except ImportError:  # pragma: no cover - api-only environment
         _research = None
         ENTITY_TYPES = EVIDENCE_TYPES = RELATIONSHIPS = ()
         CATALYST_STATES = RISK_KINDS = RISK_SEVERITIES = HOLDING_SOURCES = ()
+
+
+try:  # orchestrator directory on PYTHONPATH (deployment wiring)
+    import thesis_fusion as _thesis_fusion
+
+    THESIS_GROUP_STATUSES = _thesis_fusion.GROUP_STATUSES
+except ImportError:  # pragma: no cover - api-only environment
+    try:
+        from orchestrator import thesis_fusion as _thesis_fusion
+
+        THESIS_GROUP_STATUSES = _thesis_fusion.GROUP_STATUSES
+    except ImportError:  # pragma: no cover - deployment wiring reconciles
+        _thesis_fusion = None
+        THESIS_GROUP_STATUSES = ()
 finally:
     if _orchestrator_path_added:
         sys.path.remove(_orchestrator_path)
@@ -91,6 +105,13 @@ def _helpers() -> Any:
     if _research is None:
         raise RuntimeError("research helpers unavailable")
     return _research
+
+
+def _thesis_desk_helpers() -> Any:
+    """Return the thesis-desk repository module or fail soft with 503."""
+    if _thesis_fusion is None:
+        raise RuntimeError("thesis desk helpers unavailable")
+    return _thesis_fusion
 
 
 def _annotation_helper() -> Any:
@@ -603,6 +624,144 @@ def upsert_holdings(body: dict = Body(...)):
     return {"holdings": count}
 
 
+@router.get("/theses/opportunities")
+def list_desk_opportunities(
+    limit: int = Query(default=50, ge=1, le=_LIST_LIMIT),
+    minimum_score: float = Query(default=0.0, ge=0.0, le=1.0),
+    group_id: str | None = Query(default=None),
+    include_ineligible: bool = Query(default=False),
+):
+    try:
+        helpers = _thesis_desk_helpers()
+        parsed_group = _uuid(group_id, "group_id") if group_id is not None else None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            rows = helpers.list_ranked_opportunities(
+                session,
+                limit=limit,
+                minimum_score=minimum_score,
+                group_id=parsed_group,
+                include_ineligible=include_ineligible,
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return {
+        "opportunities": _jsonable(rows),
+        "limit": limit,
+        "minimum_score": minimum_score,
+        "include_ineligible": include_ineligible,
+    }
+
+
+@router.get("/theses/groups")
+def list_desk_groups(
+    limit: int = Query(default=50, ge=1, le=_LIST_LIMIT),
+    status: str | None = Query(default=None),
+):
+    try:
+        helpers = _thesis_desk_helpers()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    if status is not None and status not in THESIS_GROUP_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported group status:{str(status)[:32]}",
+        )
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            rows = helpers.list_thesis_groups(session, limit=limit, status=status)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return {"groups": _jsonable(rows), "limit": limit}
+
+
+@router.get("/theses/groups/{group_id}")
+def desk_group_detail(group_id: str):
+    try:
+        helpers = _thesis_desk_helpers()
+        parsed = _uuid(group_id, "group_id")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            tournament = helpers.load_group_tournament(session, parsed)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    if tournament is None:
+        raise HTTPException(status_code=404, detail="Thesis group not found")
+    return _jsonable(tournament)
+
+
+@router.get("/theses/status")
+def desk_status(limit: int = Query(default=20, ge=1, le=100)):
+    try:
+        helpers = _thesis_desk_helpers()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            status = helpers.thesis_desk_status(session, limit=limit)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return _jsonable(status)
+
+
+@router.get("/theses/{thesis_id}")
+def desk_thesis_detail(thesis_id: str):
+    try:
+        helpers = _thesis_desk_helpers()
+        parsed = _uuid(thesis_id, "thesis_id")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    config = load_config()
+    try:
+        with get_session(config) as session:
+            detail = helpers.load_thesis_detail(session, parsed)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Thesis not found")
+    return {"thesis": _jsonable(detail)}
+
+
+@router.post("/theses/run", status_code=202)
+async def run_thesis_desk(request: Request, body: dict | None = Body(default=None)):
+    try:
+        force = _run_body(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _enforce_api_budget(None)
+    return await _research_orchestrator_post(
+        request, "/research/theses/run", {"force": force}
+    )
+
+
 def _intelligence_helpers():
     if _research_queries is None:
         raise RuntimeError("research intelligence helpers unavailable")
@@ -634,7 +793,11 @@ async def _research_orchestrator_post(
     except (httpx.TransportError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
     if response.status_code != 202:
-        status = response.status_code if response.status_code in {404, 409, 422, 429, 503} else 502
+        status = (
+            response.status_code
+            if response.status_code in {404, 409, 422, 429, 503}
+            else 502
+        )
         raise HTTPException(
             status_code=status,
             detail="Research job could not be queued",
@@ -742,9 +905,7 @@ def intelligence_benchmarks():
                     "synthetic": item.synthetic,
                     "episode_kind": item.episode_kind,
                     "description": item.description,
-                    "replay_dates": [
-                        value.isoformat() for value in item.replay_dates
-                    ],
+                    "replay_dates": [value.isoformat() for value in item.replay_dates],
                     "evidence_count": len(item.evidence),
                 }
                 for item in episodes
@@ -785,9 +946,7 @@ def intelligence_replay_detail(
         helpers = _intelligence_helpers()
         parsed = _uuid(replay_run_id, "replay_run_id")
         with get_session(load_config()) as session:
-            result = helpers.get_replay_run(
-                session, parsed, detail_limit=detail_limit
-            )
+            result = helpers.get_replay_run(session, parsed, detail_limit=detail_limit)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
@@ -844,8 +1003,6 @@ def annotate_intelligence_replay(
         return JSONResponse(status_code=503, content={"status": "unavailable"})
 
 
-
-
 @router.get("/metrics")
 def intelligence_quality_metrics(
     metric_scope: str | None = Query(default=None),
@@ -893,17 +1050,13 @@ def intelligence_status(limit: int = Query(default=20, ge=1, le=100)):
 
 
 @router.post("/run", status_code=202)
-async def run_intelligence(
-    request: Request, body: dict | None = Body(default=None)
-):
+async def run_intelligence(request: Request, body: dict | None = Body(default=None)):
     try:
         force = _run_body(body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _enforce_api_budget(None)
-    return await _research_orchestrator_post(
-        request, "/research/run", {"force": force}
-    )
+    return await _research_orchestrator_post(request, "/research/run", {"force": force})
 
 
 @router.post("/cases/{case_id}/run", status_code=202)
@@ -938,6 +1091,4 @@ async def retry_intelligence_job(job_id: str, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _enforce_api_budget(None)
-    return await _research_orchestrator_post(
-        request, f"/research/jobs/{parsed}/retry"
-    )
+    return await _research_orchestrator_post(request, f"/research/jobs/{parsed}/retry")

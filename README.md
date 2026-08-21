@@ -53,7 +53,7 @@ flowchart LR
         FilingIntake["Scheduled filing intake"]
         Investment["Investment fact extraction<br/>and deterministic engine"]
         Intelligence["Regime, event, and<br/>briefing processors"]
-        ResearchEngine["Evidence adapters, dynamic cases,<br/>causal graph and market drivers"]
+        ResearchEngine["Evidence adapters, dynamic cases,<br/>competing theses and falsification"]
         Quality["Data-quality checks<br/>30-second health snapshot"]
     end
 
@@ -61,7 +61,7 @@ flowchart LR
         Raw["Raw time-series and events"]
         Reports["Report documents and analyses"]
         Derived["Derived market intelligence"]
-        Cases["Versioned research cases,<br/>edges, evidence and requests"]
+        Cases["Versioned cases and theses,<br/>forecasts, playbooks and evidence"]
         Operations["Run history, logs, costs"]
     end
 
@@ -71,7 +71,7 @@ flowchart LR
         Markets["Markets `/markets` — lazy shell:<br/>cross-asset, catalysts, macro releases,<br/>regime, indicators, calendar"]
         News["News `/news` — change feed,<br/>story monitor, source controls"]
         Investments["Investment research view"]
-        Research["Research case workspace"]
+        Research["Research case and thesis desks"]
         Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
         Heartbeat["Browser `marketRefresh` heartbeat:<br/>one timer; SSE sections never poll"]
@@ -121,10 +121,12 @@ derived outputs inspectable without mixing raw source data with analysis.
 
 ## Engineering Highlights
 
-- **Configuration-driven collectors:** FRED and OECD macro series, ECB and
-  Bank of England data, EIA energy balances, CFTC positioning, central-bank
-  communications, economic-calendar events, OANDA price snapshots, and their
-  intended schedules are defined in YAML rather than hard-coded.
+- **Configuration-driven collectors:** revision-aware FRED and OECD macro
+  series, ECB and Bank of England data, EIA energy balances, CFTC and FINRA
+  positioning, central-bank communications, economic-calendar events, OANDA
+  prices, historical option surfaces, issuer filings/news/transcripts, and
+  point-in-time company expectations, catalysts, institutional ownership, and
+  short interest are defined in YAML rather than hard-coded.
 - **Dependency-aware processing:** processors run only after their required
   collectors or upstream processors succeed.
 - **Traceable LLM usage:** processing logs capture model, prompt version, token
@@ -154,7 +156,13 @@ derived outputs inspectable without mixing raw source data with analysis.
   multidimensional value-capture review, counterevidence, cold-data requests,
   evidence-linked major-market drivers, and point-in-time replay with
   version-controlled benchmark episodes and model/prompt variant comparison.
-  See [docs/research-intelligence.md](docs/research-intelligence.md).
+  A separate bounded thesis tournament generates competing, citation-audited
+  candidates; deduplicates them by deterministic identity; continuously
+  challenges active theses; publishes scenario, catalyst, playbook, and
+  opportunity views; and records point-in-time forecast outcomes for
+  calibration. See
+  [docs/research-intelligence.md](docs/research-intelligence.md) and
+  [docs/investment-research.md](docs/investment-research.md).
 - **News feed** — CLI commands poll Reuters news sitemaps and TwitterAPI.io for
   Kobeissi posts, then publish a normalized, deduplicated feed for the read-only
   FastAPI news endpoints. See
