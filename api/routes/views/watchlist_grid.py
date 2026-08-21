@@ -12,6 +12,7 @@ generic message, never leaking SQL or exception text).
 """
 
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -101,23 +102,38 @@ def _market_symbol(value: str) -> str:
 def _watchlist_symbols(config: dict) -> set[str]:
     symbols: set[str] = set()
     groups = config.get("watchlist")
-    if not isinstance(groups, dict):
-        return symbols
-    for group in groups.values():
-        if isinstance(group, dict):
-            for nested in group.get("watchlists") or []:
-                if isinstance(nested, dict):
-                    for value in nested.get("symbols") or []:
-                        if isinstance(value, str):
-                            symbols.add(_market_symbol(value))
-        elif isinstance(group, list):
+    if isinstance(groups, Mapping):
+        group_values = groups.values()
+    else:
+        group_values = (
+            getattr(groups, "trading", None),
+            getattr(groups, "investing", None),
+        )
+    for group in group_values:
+        if isinstance(group, list):
             for item in group:
-                if isinstance(item, dict):
+                if isinstance(item, Mapping):
                     value = item.get("symbol")
-                    if isinstance(value, str):
-                        symbols.add(_market_symbol(value))
                 elif isinstance(item, str):
-                    symbols.add(_market_symbol(item))
+                    value = item
+                else:
+                    value = getattr(item, "symbol", None)
+                if isinstance(value, str):
+                    symbols.add(_market_symbol(value))
+            continue
+
+        if isinstance(group, Mapping):
+            watchlists = group.get("watchlists") or []
+        else:
+            watchlists = getattr(group, "watchlists", None) or []
+        for nested in watchlists:
+            if isinstance(nested, Mapping):
+                nested_symbols = nested.get("symbols") or []
+            else:
+                nested_symbols = getattr(nested, "symbols", None) or []
+            for value in nested_symbols:
+                if isinstance(value, str):
+                    symbols.add(_market_symbol(value))
     return symbols
 
 

@@ -120,6 +120,28 @@ MARKETS_HEARTBEAT_PARTIALS = {
     "events_section": "/partials/markets/events",
 }
 
+MARKET_PARTIAL_CONTEXTS = {
+    "cross_asset": {"cross_asset": {"available": False, "panels": []}},
+    "catalysts": {
+        "catalysts": {"available": False, "days": 7, "catalysts": []}
+    },
+    "macro_release_cards": {"macro_releases": {"error": None, "cards": []}},
+    "regime_section": {"regime": {}},
+    "indicators_section": {
+        "dots": {"indicators": None},
+        "error": None,
+        "indicators_error": None,
+        "indicators": [],
+    },
+    "events_section": {
+        "current_timezone": "Europe/London",
+        "events_data": {},
+        "filtered_events": [],
+        "grouped": {},
+        "catalysts": [],
+    },
+}
+
 
 class LeanDashboardTemplateContracts(unittest.TestCase):
     @classmethod
@@ -207,7 +229,9 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         for partial, canonical in all_partials.items():
             with self.subTest(partial=partial):
                 source = self.render(
-                    f"partials/{partial}.html", live_updates_enabled=False
+                    f"partials/{partial}.html",
+                    live_updates_enabled=False,
+                    **MARKET_PARTIAL_CONTEXTS[partial],
                 )
                 self.assertIn(f'hx-get="{canonical}"', source)
                 self.assertIn('hx-trigger="marketRefresh from:body', source)
@@ -221,7 +245,9 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         for partial, canonical in MARKETS_SSE_PARTIALS.items():
             with self.subTest(partial=partial):
                 source = self.render(
-                    f"partials/{partial}.html", live_updates_enabled=True
+                    f"partials/{partial}.html",
+                    live_updates_enabled=True,
+                    **MARKET_PARTIAL_CONTEXTS[partial],
                 )
                 self.assertIn("data-live-section", source)
                 self.assertIn(f'data-live-url="{canonical}"', source)
@@ -236,7 +262,9 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         for partial in MARKETS_HEARTBEAT_PARTIALS:
             with self.subTest(partial=partial):
                 source = self.render(
-                    f"partials/{partial}.html", live_updates_enabled=True
+                    f"partials/{partial}.html",
+                    live_updates_enabled=True,
+                    **MARKET_PARTIAL_CONTEXTS[partial],
                 )
                 self.assertNotIn("data-live-section", source)
                 self.assertIn('hx-trigger="marketRefresh from:body', source)

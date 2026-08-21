@@ -151,6 +151,36 @@ class WatchlistGridQueryTests(unittest.TestCase):
         self.assertEqual(payload["rows"], [])
         self.assertNotIn("secret sql", str(payload))
 
+    def test_runtime_config_watchlist_models_resolve_dashboard_symbols(self):
+        from contracts.runtime_config import WatchlistConfig
+        from routes.views.watchlist_grid import load_watchlist_grid
+
+        config = {
+            "watchlist": WatchlistConfig.model_validate(
+                {
+                    "trading": [{"symbol": "EURUSD", "type": "forex"}],
+                    "investing": {
+                        "watchlists": [{"name": "funds", "symbols": ["SPY"]}]
+                    },
+                }
+            )
+        }
+        with (
+            patch(
+                "routes.views.watchlist_grid.query_many",
+                side_effect=[[market_row("EURUSD"), market_row("SPY")], [], []],
+            ),
+            patch(
+                "routes.views.watchlist_grid.load_atom_context",
+                return_value={"status": "published", "atoms": []},
+            ),
+        ):
+            payload = load_watchlist_grid(config)
+
+        self.assertEqual(
+            {row["symbol"] for row in payload["rows"]}, {"EURUSD", "SPY"}
+        )
+
     def test_grid_renders_one_row_per_symbol_with_moves_and_vol(self):
         from routes.views.watchlist_grid import load_watchlist_grid
 
