@@ -40,25 +40,22 @@
       {% endfor %}
     </ul>
   {% endif %}
-  {% if feed.has_earlier and feed.oldest_observed_at %}
+  {% if feed.has_earlier and feed.oldest_observed_at and feed.oldest_event_id %}
     <button type="button" class="feed-load-earlier"
-            hx-get="/partials/news/change-feed?before={{ feed.oldest_observed_at | urlencode }}&amp;limit={{ feed.limit }}"
-            hx-swap="afterend"
+            hx-get="/partials/news/change-feed?before={{ feed.oldest_observed_at | urlencode }}&amp;before_id={{ feed.oldest_event_id | urlencode }}&amp;limit={{ feed.limit }}"
+            hx-swap="outerHTML"
             hx-target="this">Load earlier</button>
   {% endif %}
 {% endmacro %}
 {% if append %}
   {{ change_feed_rows(feed) }}
 {% else %}
-<section class="section change-feed-section" id="change-feed"
-         {% if live_updates_enabled %}data-live-section="change_feed"
-         data-live-event="section_changed"
-         data-live-url="/partials/news/change-feed"{% else %}
+<section class="section change-feed-section" id="change-feed" aria-labelledby="change-feed-title"
          hx-get="/partials/news/change-feed"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
-    <span class="label">Change feed</span>
+    <span class="label" id="change-feed-title" role="heading" aria-level="2">Change feed</span>
     {% if news_page %}
       <a class="quiet-link" href="#story-monitor-title">Canonical story monitor</a>
     {% else %}

@@ -526,7 +526,9 @@ class RouteTests(unittest.TestCase):
         self.assertIn("FOMC decision", response.text)
         self.assertIn("in 3h 0m", response.text)
         self.assertIn("DXY", response.text)
-        self.assertIn('data-live-section="catalysts"', response.text)
+        self.assertIn('hx-get="/partials/markets/catalysts"', response.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
+        self.assertNotIn("data-live-section", response.text)
 
     def test_briefing_delta_route_renders(self):
         from fastapi.testclient import TestClient

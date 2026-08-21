@@ -1,10 +1,10 @@
-<section class="section events-section" id="events-section"
+<section class="section events-section" id="events-section" aria-labelledby="markets-events-title"
          hx-get="/partials/markets/events"
          hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="calendar-toolbar section-heading">
     <span class="calendar-title-group">
-      <span class="label">Economic calendar</span>
+      <span class="label" id="markets-events-title" role="heading" aria-level="2">Economic calendar</span>
       <span class="calendar-timezone tabular">Times shown in {{ current_timezone }}</span>
     </span>
     <div class="impact-legend" aria-label="Impact severity legend">

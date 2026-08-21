@@ -1,10 +1,7 @@
 <section class="section top-strip-section" id="top-strip" aria-labelledby="top-strip-title"
-         {% if live_updates_enabled %}data-live-section="top_strip"
-         data-live-event="section_changed"
-         data-live-url="/partials/dashboard/top-strip"{% else %}
          hx-get="/partials/dashboard/top-strip"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label" id="top-strip-title">Session snapshot</span>
   </div>
@@ -14,18 +11,18 @@
     <div class="top-strip-grid">
       <div class="strip-cell">
         <span class="strip-label">Current session</span>
-        <span class="strip-value tabular">{{ strip.session_label or '—' }}</span>
+        <span class="strip-value tabular">{% if strip.session_available is sameas false %}Unavailable{% else %}{{ strip.session_label or '—' }}{% endif %}</span>
       </div>
       <div class="strip-cell">
         <span class="strip-label">Current regime</span>
-        <span class="strip-value">{{ strip.regime.regime if strip.regime and strip.regime.regime else '—' }}</span>
+        <span class="strip-value">{% if strip.regime_available is sameas false %}Unavailable{% elif strip.regime and strip.regime.regime %}{{ strip.regime.regime }}{% else %}No current regime{% endif %}</span>
         {% if strip.regime and strip.regime.sub_regime %}
           <span class="strip-detail">{{ strip.regime.sub_regime }}{% if strip.regime.confidence %} · {{ strip.regime.confidence }}{% endif %}</span>
         {% endif %}
       </div>
       <div class="strip-cell">
         <span class="strip-label">Next catalyst</span>
-        <span class="strip-value">{{ strip.next_catalyst.event_name if strip.next_catalyst else '—' }}</span>
+        <span class="strip-value">{% if strip.next_catalyst_available is sameas false %}Unavailable{% elif strip.next_catalyst %}{{ strip.next_catalyst.event_name }}{% else %}No upcoming high-impact catalyst{% endif %}</span>
         {% if strip.next_catalyst %}
           <span class="strip-detail">{% if strip.next_catalyst.countdown_display %}in {{ strip.next_catalyst.countdown_display }}{% endif %}{% if strip.next_catalyst.country %} · {{ strip.next_catalyst.country }}{% endif %}</span>
         {% endif %}

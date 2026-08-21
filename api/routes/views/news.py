@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -334,8 +335,6 @@ def load_source_states(config: dict) -> list[dict]:
     return states
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +400,15 @@ _CHANGE_FEED_SQL = """
           AND status IN ('validated', 'published')
         LIMIT 1
     ) atom ON TRUE
-    WHERE (:before IS NULL OR routed.observed_at < :before)
+    WHERE (
+        :before IS NULL
+        OR routed.observed_at < :before
+        OR (
+            :before_id IS NOT NULL
+            AND routed.observed_at = :before
+            AND routed.event_id < :before_id
+        )
+    )
     ORDER BY routed.observed_at DESC, routed.event_id DESC
     LIMIT :limit
 """
@@ -541,20 +548,36 @@ def _feed_row(raw: dict) -> dict:
     }
 
 
-def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
+def load_change_feed(
+    config: dict, *, before=None, before_id=None, limit: int = 30
+) -> dict:
     """Latest routed market events, newest first, bounded by ``limit``.
 
-    ``before`` is validated strictly (ISO-8601, timezone-aware) and rejected
-    with a 422 before any database access.  ``limit`` is clamped to
+    ``before`` and ``before_id`` form the full ordering cursor. Both are
+    validated before database access. ``limit`` is clamped to
     ``CHANGE_FEED_MAX_LIMIT``; an extra row is fetched to signal
     ``has_earlier`` for the "Load earlier" control.
     """
     bounded_limit = max(1, min(CHANGE_FEED_MAX_LIMIT, int(limit)))
     before_dt = _validate_before(before)
+    before_event_id = None
+    if before_id is not None:
+        if before_dt is None:
+            raise HTTPException(status_code=422, detail="before_id requires before.")
+        try:
+            before_event_id = UUID(str(before_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=422, detail="Invalid before_id; expected UUID."
+            ) from exc
     try:
         rows = query_many(
             _CHANGE_FEED_SQL,
-            params={"before": before_dt, "limit": bounded_limit + 1},
+            params={
+                "before": before_dt,
+                "before_id": before_event_id,
+                "limit": bounded_limit + 1,
+            },
             config=config,
         )
     except Exception:
@@ -564,6 +587,7 @@ def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
             "has_earlier": False,
             "limit": bounded_limit,
             "oldest_observed_at": None,
+            "oldest_event_id": None,
         }
     has_earlier = len(rows) > bounded_limit
     feed_rows = [_feed_row(raw) for raw in rows[:bounded_limit]]
@@ -573,6 +597,7 @@ def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
         "has_earlier": has_earlier,
         "limit": bounded_limit,
         "oldest_observed_at": feed_rows[-1]["observed_at"] if feed_rows else None,
+        "oldest_event_id": feed_rows[-1]["event_id"] if feed_rows else None,
     }
 
 
@@ -581,6 +606,7 @@ def load_change_feed(config: dict, *, before=None, limit: int = 30) -> dict:
 def partial_news_change_feed(
     request: Request,
     before: str | None = Query(default=None),
+    before_id: str | None = Query(default=None, max_length=36),
     limit: int = Query(default=30, ge=1, le=CHANGE_FEED_MAX_LIMIT),
 ):
     """Canonical continuous material change feed partial for /news.
@@ -590,7 +616,9 @@ def partial_news_change_feed(
     ``news_page``), so both surfaces keep their exact contracts.
     """
     config = load_config()
-    feed = load_change_feed(config, before=before, limit=limit)
+    feed = load_change_feed(
+        config, before=before, before_id=before_id, limit=limit
+    )
     return request.app.state.templates.TemplateResponse(
         request,
         "partials/change_feed.html",
@@ -598,7 +626,6 @@ def partial_news_change_feed(
             "request": request,
             "feed": feed,
             "append": before is not None,
-            "live_updates_enabled": _live_updates_enabled(config),
             "news_page": request.url.path == "/partials/news/change-feed",
         },
     )

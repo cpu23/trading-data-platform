@@ -210,7 +210,6 @@ class SlimDashboardTests(unittest.TestCase):
             "briefing",
             "briefing_sections",
             "briefing_delta",
-            "live_updates_enabled",
             "data_status",
             "current_time",
         }
@@ -252,6 +251,35 @@ class SlimDashboardTests(unittest.TestCase):
 
 
         self.assertFalse(hasattr(dashboard_module, "_load_research_intelligence"))
+
+    def test_legacy_briefing_uses_fixed_headings_without_inventing_invalidation(self):
+        from routes.views.dashboard import _briefing_sections
+
+        sections = _briefing_sections(
+            {
+                "sections": {
+                    "macro_trend": "Controlled expansion.",
+                    "today": "Dollar softened after payrolls.",
+                    "this_week": "ECB decision is the next catalyst.",
+                }
+            }
+        )
+
+        self.assertEqual(
+            [section["label"] for section in sections],
+            [
+                "What changed",
+                "Current interpretation",
+                "What would invalidate this",
+            ],
+        )
+        self.assertEqual(sections[0]["body"], "Dollar softened after payrolls.")
+        self.assertEqual(
+            sections[1]["body"],
+            "Controlled expansion. ECB decision is the next catalyst.",
+        )
+        self.assertEqual(sections[2]["body"], "Not stated in this briefing.")
+
 
     def test_slim_dashboard_strip_is_compact_only(self):
         """The strip context never carries price/event/chip/source/budget data."""
@@ -523,7 +551,7 @@ class MergedBriefingTests(unittest.TestCase):
             self.assertEqual(context["briefing_delta"], BRIEFING_DELTA)
             self.assertEqual(context["briefing_delta"]["bullets"], BRIEFING_DELTA["bullets"])
             self.assertEqual(context["briefing_delta"]["atoms"], BRIEFING_DELTA["atoms"])
-            self.assertIn("live_updates_enabled", context)
+            self.assertNotIn("live_updates_enabled", context)
 
 
 if __name__ == "__main__":

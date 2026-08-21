@@ -1,9 +1,9 @@
-<section class="section regime-section" id="regime-section"
+<section class="section regime-section" id="regime-section" aria-labelledby="markets-regime-title"
          hx-get="/partials/markets/regime"
          hx-trigger="marketRefresh from:body, cycleComplete from:body"
          hx-swap="outerHTML">
   <div class="section-heading">
-    <span class="label">Global macro regime</span>
+    <span class="label" id="markets-regime-title" role="heading" aria-level="2">Global macro regime</span>
   </div>
   {% if regime is mapping and regime.get('error') %}
     <div class="error-block">{{ regime.error }}</div>

@@ -196,15 +196,11 @@ def markets_page(request: Request):
     canonical ``/partials/markets/...`` URL so a degraded dataset degrades
     only its own section.
     """
-    config = app_config.load_config()
     templates = _get_templates(request)
     return templates.TemplateResponse(
         request,
         "markets.html",
-        {
-            "request": request,
-            "live_updates_enabled": _live_updates_enabled(config),
-        },
+        {"request": request},
     )
 
 
@@ -218,7 +214,6 @@ def partial_markets_cross_asset(request: Request):
         {
             "request": request,
             "cross_asset": load_cross_asset(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 
@@ -233,7 +228,6 @@ def partial_markets_catalysts(request: Request):
         {
             "request": request,
             "catalysts": load_catalysts(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 

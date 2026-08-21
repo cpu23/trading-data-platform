@@ -910,8 +910,6 @@ def load_briefing_delta(config: dict, latest=_MISSING) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
 @router.get("/partials/dashboard/cross-asset")
@@ -924,7 +922,6 @@ def partial_cross_asset(request: Request):
         {
             "request": request,
             "cross_asset": load_cross_asset(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 
@@ -939,7 +936,6 @@ def partial_catalysts(request: Request):
         {
             "request": request,
             "catalysts": load_catalysts(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )
 
@@ -954,6 +950,5 @@ def partial_briefing_delta(request: Request):
         {
             "request": request,
             "briefing_delta": load_briefing_delta(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )

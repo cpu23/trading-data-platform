@@ -999,6 +999,5 @@ def partial_asset_drawer(request: Request, symbol: str):
         {
             "request": request,
             "drawer": drawer,
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )

@@ -575,8 +575,8 @@ class WatchlistGridRouteTests(unittest.TestCase):
             ),
         ):
             live = TestClient(app).get("/partials/dashboard/watchlist-grid")
-        self.assertIn('data-live-section="watchlist_grid"', live.text)
-        self.assertIn('data-live-event="section_changed"', live.text)
+        self.assertIn('data-live-section="watchlist"', live.text)
+        self.assertIn('data-live-event="watchlist_changed"', live.text)
         self.assertIn('data-live-url="/partials/dashboard/watchlist-grid"', live.text)
         # SSE sections declare only data-live attributes: no self-fetch and
         # no marketRefresh/poll trigger on the section.
@@ -601,7 +601,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         self.assertIn('hx-get="/partials/dashboard/watchlist-grid"', polling.text)
         self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
         self.assertNotIn("every 90s", polling.text)
-        self.assertNotIn('data-live-section="watchlist_grid"', polling.text)
+        self.assertNotIn('data-live-section="watchlist"', polling.text)
 
     def test_grid_renders_one_row_per_symbol_with_keyboard_asset_buttons(self):
         from fastapi.testclient import TestClient

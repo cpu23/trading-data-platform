@@ -1,6 +1,6 @@
 <section class="section watchlist-grid-section" id="watchlist-grid-section"
-         {% if live_updates_enabled %}data-live-section="watchlist_grid"
-         data-live-event="section_changed"
+         {% if live_updates_enabled %}data-live-section="watchlist"
+         data-live-event="watchlist_changed"
          data-live-url="/partials/dashboard/watchlist-grid"{% else %}
          hx-get="/partials/dashboard/watchlist-grid"
          hx-trigger="marketRefresh from:body"

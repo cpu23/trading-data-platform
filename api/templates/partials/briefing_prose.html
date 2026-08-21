@@ -1,12 +1,11 @@
 <section class="section briefing-section" id="briefing-section" aria-labelledby="briefing-title"
-         {% if live_updates_enabled %}data-live-section="briefing"
-         data-live-event="section_changed"
-         data-live-url="/partials/briefing"{% else %}
          hx-get="/partials/briefing"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
+  {% set opinion_id = briefing.opinion_ids[-1] if briefing and briefing.opinion_ids else none %}
+  {% set delta_atoms = briefing_delta.atoms if briefing_delta and briefing_delta.available and briefing_delta.atoms else [] %}
   <div class="section-heading">
-    <span class="label" id="briefing-title">Briefing</span>
+    <span class="label" id="briefing-title" role="heading" aria-level="2">Briefing</span>
     {% if briefing_delta and briefing_delta.available and briefing_delta.latest_date %}
       <span class="section-note tabular">As of {{ briefing_delta.latest_date }}</span>
     {% endif %}
@@ -28,17 +27,19 @@
         </ul>
       </div>
     {% endif %}
-    <details class="provenance-details" {% if briefing.opinion_ids %}data-opinion-id="{{ briefing.opinion_ids[-1] }}"{% endif %}>
-      <summary>Briefing sources &amp; claims</summary>
-      {% if briefing_delta and briefing_delta.available and briefing_delta.atoms %}
-        <div class="atom-counts">
-          {% for atom in briefing_delta.atoms %}
-            <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
-          {% endfor %}
-        </div>
-      {% endif %}
-      <div class="evidence-view" data-evidence-target></div>
-    </details>
+    {% if opinion_id or delta_atoms %}
+      <details class="provenance-details"{% if opinion_id %} data-opinion-id="{{ opinion_id }}"{% endif %}>
+        <summary>Briefing sources &amp; claims</summary>
+        {% if delta_atoms %}
+          <div class="atom-counts">
+            {% for atom in delta_atoms %}
+              <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if opinion_id %}<div class="evidence-view" data-evidence-target></div>{% endif %}
+      </details>
+    {% endif %}
   {% elif briefing_delta and briefing_delta.available %}
     {% if briefing_delta.bullets %}
       <div class="briefing-delta">
@@ -48,12 +49,18 @@
         </ul>
       </div>
     {% endif %}
-    {% if briefing_delta.atoms %}
-      <div class="atom-counts">
-        {% for atom in briefing_delta.atoms %}
-          <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
-        {% endfor %}
-      </div>
+    {% if delta_atoms %}
+      <details class="provenance-details">
+        <summary>Briefing sources &amp; claims</summary>
+        <div class="atom-counts">
+          {% for atom in delta_atoms %}
+            <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
+          {% endfor %}
+        </div>
+      </details>
+    {% endif %}
+    {% if not briefing_delta.bullets and not delta_atoms %}
+      <div class="empty-state">No current briefing prose or changes are available.</div>
     {% endif %}
   {% else %}
     <div class="empty-state">No briefing has been generated yet. Run a cycle to create one.</div>

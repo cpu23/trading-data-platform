@@ -1,6 +1,6 @@
 <header class="page-header" id="header"
         hx-get="/partials/header"
-        hx-trigger="cycleComplete from:body"
+        hx-trigger="marketRefresh from:body, cycleComplete from:body"
         hx-swap="outerHTML">
   <div class="page-header-left">
     {% include "partials/navigation.html" %}

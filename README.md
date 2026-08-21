@@ -200,6 +200,15 @@ regime, key macro indicators, and the economic calendar. The page itself
 renders no dataset; each section swaps in its partial, which then owns its
 refresh contract.
 
+Existing integrations may continue to call the former market partial URLs:
+`/partials/dashboard/cross-asset`, `/partials/dashboard/catalysts`,
+`/partials/dashboard/macro-releases`, `/partials/regime`,
+`/partials/indicators`, and `/partials/events`. Each is an alias on the
+canonical Markets handler, not a second loader. The former dashboard Change
+Feed URL, `/partials/dashboard/change-feed`, similarly aliases the News-owned
+handler. These low-cost aliases are retained for compatibility; the page
+templates use only destination-owned canonical URLs.
+
 ### News (`/news`)
 
 Owns the continuous material change feed (with load-earlier pagination), the

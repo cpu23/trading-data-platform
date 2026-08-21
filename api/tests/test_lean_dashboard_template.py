@@ -10,8 +10,8 @@ Focused, template-level contracts for the lean dashboard refactor:
   in contract order; each shell section loads its canonical partial once and
   never polls or registers SSE on the shell.
 * The six market partials refresh through the single ``marketRefresh``
-  heartbeat; the SSE-capable ones expose only ``data-live-*`` attributes when
-  live updates are enabled, never pairing the stream with self-refresh.
+  heartbeat except macro releases, whose producer-backed SSE identity replaces
+  fallback refresh while live updates are enabled.
 * ``partials/top_strip.html`` renders exactly three cells (Current session,
   Current regime, Next catalyst) with truthful unavailable placeholders and a
   ``marketRefresh``-only refresh contract.
@@ -63,12 +63,15 @@ PROHIBITED_DASHBOARD_MARKERS = (
 
 STRIP = {
     "available": True,
+    "session_available": True,
     "session_label": "London",
+    "regime_available": True,
     "regime": {
         "regime": "Risk-on",
         "sub_regime": "broad-based",
         "confidence": "medium",
     },
+    "next_catalyst_available": True,
     "next_catalyst": {
         "event_name": "US nonfarm payrolls",
         "countdown_display": "2d 04h",
@@ -106,15 +109,15 @@ MARKETS_LAZY_SECTIONS = (
     ("/partials/markets/events", "Economic calendar"),
 )
 
-# Partials that register as SSE live sections when live updates are enabled.
+# Only macro releases have a matching production invalidation publisher.
 MARKETS_SSE_PARTIALS = {
-    "cross_asset": "/partials/markets/cross-asset",
-    "catalysts": "/partials/markets/catalysts",
     "macro_release_cards": "/partials/markets/macro-releases",
 }
 
-# Partials that are always heartbeat-driven and never register as SSE.
+# These partials have no matching publisher and always use the heartbeat.
 MARKETS_HEARTBEAT_PARTIALS = {
+    "cross_asset": "/partials/markets/cross-asset",
+    "catalysts": "/partials/markets/catalysts",
     "regime_section": "/partials/markets/regime",
     "indicators_section": "/partials/markets/indicators",
     "events_section": "/partials/markets/events",
@@ -312,8 +315,11 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
     def test_top_strip_truthful_placeholders_when_values_missing(self):
         bare = {
             "available": True,
+            "session_available": False,
             "session_label": None,
+            "regime_available": False,
             "regime": None,
+            "next_catalyst_available": False,
             "next_catalyst": None,
         }
         rendered = self.render(
@@ -321,7 +327,7 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         )
         self.assertEqual(rendered.count('class="strip-cell"'), 3)
         self.assertNotIn("Session snapshot unavailable.", rendered)
-        self.assertEqual(rendered.count("—"), 3)
+        self.assertEqual(rendered.count("Unavailable"), 3)
 
     def test_top_strip_unavailable_is_truthful(self):
         rendered = self.render(
@@ -338,23 +344,21 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         self.assertIn('id="top-strip-title"', rendered)
 
     def test_top_strip_refresh_contract(self):
-        non_sse = self.render(
-            "partials/top_strip.html", strip=STRIP, live_updates_enabled=False
-        )
-        self.assertIn('hx-get="/partials/dashboard/top-strip"', non_sse)
-        self.assertIn('hx-trigger="marketRefresh from:body"', non_sse)
-        self.assertNotIn("every 90s", non_sse)
-        self.assertNotIn("data-live-section", non_sse)
-
-        sse = self.render(
-            "partials/top_strip.html", strip=STRIP, live_updates_enabled=True
-        )
-        self.assertIn('data-live-section="top_strip"', sse)
-        self.assertIn('data-live-event="section_changed"', sse)
-        self.assertIn('data-live-url="/partials/dashboard/top-strip"', sse)
-        self.assertNotIn("hx-get=", sse)
-        self.assertNotIn("hx-trigger=", sse)
-        self.assertNotIn("every 90s", sse)
+        for live in (False, True):
+            with self.subTest(live=live):
+                rendered = self.render(
+                    "partials/top_strip.html",
+                    strip=STRIP,
+                    live_updates_enabled=live,
+                )
+                self.assertIn(
+                    'hx-get="/partials/dashboard/top-strip"', rendered
+                )
+                self.assertIn(
+                    'hx-trigger="marketRefresh from:body"', rendered
+                )
+                self.assertNotIn("every 90s", rendered)
+                self.assertNotIn("data-live-section", rendered)
 
     # ── merged briefing surface ──────────────────────────────────────────────
 
@@ -401,20 +405,16 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         self.assertIn('data-opinion-id="op-1"', disclosure)
 
     def test_briefing_refresh_contract(self):
-        non_sse = self._render_briefing(live=False)
-        self.assertIn('hx-get="/partials/briefing"', non_sse)
-        self.assertIn('hx-trigger="marketRefresh from:body"', non_sse)
-        self.assertNotIn("every 90s", non_sse)
-        self.assertNotIn("cycleComplete", non_sse)
-        self.assertNotIn("data-live-section", non_sse)
-
-        sse = self._render_briefing(live=True)
-        self.assertIn('data-live-section="briefing"', sse)
-        self.assertIn('data-live-event="section_changed"', sse)
-        self.assertIn('data-live-url="/partials/briefing"', sse)
-        self.assertNotIn("hx-get=", sse)
-        self.assertNotIn("hx-trigger=", sse)
-        self.assertNotIn("every 90s", sse)
+        for live in (False, True):
+            with self.subTest(live=live):
+                rendered = self._render_briefing(live=live)
+                self.assertIn('hx-get="/partials/briefing"', rendered)
+                self.assertIn(
+                    'hx-trigger="marketRefresh from:body"', rendered
+                )
+                self.assertNotIn("every 90s", rendered)
+                self.assertNotIn("cycleComplete", rendered)
+                self.assertNotIn("data-live-section", rendered)
 
     def test_briefing_degrades_without_delta_context(self):
         # /partials/briefing route context today has no briefing_delta.
@@ -445,28 +445,24 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
     # ── briefing_delta.html compatibility target ─────────────────────────────
 
     def test_briefing_delta_remains_compatible_presentation_target(self):
-        non_sse = self.render(
-            "partials/briefing_delta.html",
-            briefing_delta=BRIEFING_DELTA,
-            live_updates_enabled=False,
-        )
-        self.assertIn("Briefing delta", non_sse)
-        self.assertIn("Changed section: interpretation", non_sse)
-        self.assertIn('class="atom-counts"', non_sse)
-        self.assertIn('hx-get="/partials/dashboard/briefing-delta"', non_sse)
-        self.assertIn('hx-trigger="marketRefresh from:body"', non_sse)
-        self.assertNotIn("every 90s", non_sse)
-
-        sse = self.render(
-            "partials/briefing_delta.html",
-            briefing_delta=BRIEFING_DELTA,
-            live_updates_enabled=True,
-        )
-        self.assertIn('data-live-section="briefing_delta"', sse)
-        self.assertIn('data-live-url="/partials/dashboard/briefing-delta"', sse)
-        self.assertNotIn("hx-get=", sse)
-        self.assertNotIn("hx-trigger=", sse)
-        self.assertNotIn("every 90s", sse)
+        for live in (False, True):
+            with self.subTest(live=live):
+                rendered = self.render(
+                    "partials/briefing_delta.html",
+                    briefing_delta=BRIEFING_DELTA,
+                    live_updates_enabled=live,
+                )
+                self.assertIn("Briefing delta", rendered)
+                self.assertIn("Changed section: interpretation", rendered)
+                self.assertIn('class="atom-counts"', rendered)
+                self.assertIn(
+                    'hx-get="/partials/dashboard/briefing-delta"', rendered
+                )
+                self.assertIn(
+                    'hx-trigger="marketRefresh from:body"', rendered
+                )
+                self.assertNotIn("data-live-section", rendered)
+                self.assertNotIn("every 90s", rendered)
 
     def test_briefing_delta_unavailable_is_truthful(self):
         rendered = self.render(

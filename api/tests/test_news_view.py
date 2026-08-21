@@ -208,6 +208,7 @@ class NewsStoryRouteTests(unittest.TestCase):
 
 def change_feed_row():
     return {
+        "event_id": "22222222-2222-4222-8222-222222222222",
         "title": "Fed holds rates",
         "state": "confirmed",
         "state_class": "bullish",
@@ -237,6 +238,7 @@ def change_feed_payload(*, has_earlier=True, limit=30):
         "has_earlier": has_earlier,
         "limit": limit,
         "oldest_observed_at": NOW.isoformat(),
+        "oldest_event_id": "22222222-2222-4222-8222-222222222222",
     }
 
 
@@ -309,6 +311,37 @@ class NewsChangeFeedQueryTests(unittest.TestCase):
                 load_change_feed(CONFIG, before="2026-08-06T12:00:00")
         self.assertEqual(caught.exception.status_code, 422)
         query.assert_not_called()
+
+    def test_validates_and_binds_full_ordering_cursor(self):
+        from fastapi import HTTPException
+
+        from routes.views.news import load_change_feed
+
+        cursor_id = UUID("22222222-2222-4222-8222-222222222222")
+        with patch("routes.views.news.query_many") as query:
+            with self.assertRaises(HTTPException) as caught:
+                load_change_feed(CONFIG, before_id=str(cursor_id))
+        self.assertEqual(caught.exception.status_code, 422)
+        query.assert_not_called()
+
+        with patch("routes.views.news.query_many") as query:
+            with self.assertRaises(HTTPException) as caught:
+                load_change_feed(CONFIG, before=NOW.isoformat(), before_id="not-a-uuid")
+        self.assertEqual(caught.exception.status_code, 422)
+        query.assert_not_called()
+
+        with patch("routes.views.news.query_many", return_value=[]) as query:
+            load_change_feed(
+                CONFIG,
+                before=NOW.isoformat(),
+                before_id=str(cursor_id),
+            )
+        self.assertEqual(query.call_args.kwargs["params"]["before"], NOW)
+        self.assertEqual(query.call_args.kwargs["params"]["before_id"], cursor_id)
+        self.assertIn(
+            "routed.event_id < :before_id",
+            query.call_args.args[0],
+        )
 
     def test_bounds_limit_and_signals_has_earlier(self):
         from routes.views.news import load_change_feed
@@ -477,6 +510,7 @@ class NewsChangeFeedTests(unittest.TestCase):
         loader.assert_called_once()
         self.assertEqual(loader.call_args.kwargs["limit"], 30)
         self.assertIsNone(loader.call_args.kwargs["before"])
+        self.assertIsNone(loader.call_args.kwargs["before_id"])
         self.assertIn("Fed holds rates", response.text)
 
     def test_canonical_partial_bounds_limit_and_validates_before_pre_db(self):
@@ -514,15 +548,21 @@ class NewsChangeFeedTests(unittest.TestCase):
             response = client.get(
                 "/partials/news/change-feed?before="
                 + quote(NOW.isoformat(), safe="")
+                + "&before_id=22222222-2222-4222-8222-222222222222"
             )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("<section", response.text)
         self.assertIn("Fed holds rates", response.text)
         self.assertIn('hx-get="/partials/news/change-feed?before=', response.text)
+        self.assertIn("&amp;before_id=22222222-2222-4222-8222-222222222222", response.text)
         self.assertIn("&amp;limit=30", response.text)
-        self.assertIn('hx-swap="afterend"', response.text)
+        self.assertIn('hx-swap="outerHTML"', response.text)
         self.assertIn("Load earlier", response.text)
         self.assertEqual(loader.call_args.kwargs["before"], NOW.isoformat())
+        self.assertEqual(
+            loader.call_args.kwargs["before_id"],
+            "22222222-2222-4222-8222-222222222222",
+        )
         self.assertEqual(loader.call_args.kwargs["limit"], 30)
 
     def test_compat_dashboard_change_feed_url_still_serves_partial(self):
@@ -547,34 +587,30 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertIn("Canonical story monitor", canonical.text)
         self.assertIn('href="#story-monitor-title"', canonical.text)
 
-    def test_compat_url_live_attrs_and_polling_fallback(self):
-        """The legacy dashboard URL keeps SSE attrs and the hx fallback."""
+    def test_compat_url_uses_heartbeat_without_unpublished_sse_identity(self):
         from routes.views.news import router
 
         client = self.make_client(router)
-        live_config = {"event_pipeline": {"sse": {"enabled": True}}}
-        with (
-            patch("routes.views.news.load_config", return_value=live_config),
-            patch(
-                "routes.views.news.load_change_feed",
-                return_value=change_feed_payload(),
-            ),
+        for config in (
+            {"event_pipeline": {"sse": {"enabled": True}}},
+            {},
         ):
-            live = client.get("/partials/dashboard/change-feed")
-        self.assertIn('data-live-section="change_feed"', live.text)
-        self.assertIn('data-live-event="section_changed"', live.text)
-        self.assertIn('data-live-url="/partials/news/change-feed"', live.text)
-        with (
-            patch("routes.views.news.load_config", return_value={}),
-            patch(
-                "routes.views.news.load_change_feed",
-                return_value=change_feed_payload(),
-            ),
-        ):
-            polling = client.get("/partials/dashboard/change-feed")
-        self.assertIn('hx-get="/partials/news/change-feed"', polling.text)
-        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
-        self.assertNotIn("data-live-section", polling.text)
+            with (
+                self.subTest(config=config),
+                patch("routes.views.news.load_config", return_value=config),
+                patch(
+                    "routes.views.news.load_change_feed",
+                    return_value=change_feed_payload(),
+                ),
+            ):
+                response = client.get("/partials/dashboard/change-feed")
+            self.assertIn(
+                'hx-get="/partials/news/change-feed"', response.text
+            )
+            self.assertIn(
+                'hx-trigger="marketRefresh from:body"', response.text
+            )
+            self.assertNotIn("data-live-section", response.text)
 
     def test_change_feed_renders_reaction_windows_and_load_earlier(self):
         from urllib.parse import quote
@@ -594,8 +630,12 @@ class NewsChangeFeedTests(unittest.TestCase):
         self.assertIn("confirmed", response.text)
         self.assertIn("interpretation", response.text)
         self.assertIn("Load earlier", response.text)
-        self.assertIn('hx-swap="afterend"', response.text)
+        self.assertIn('hx-swap="outerHTML"', response.text)
         self.assertIn("before=" + quote(NOW.isoformat(), safe=""), response.text)
+        self.assertIn(
+            "before_id=22222222-2222-4222-8222-222222222222",
+            response.text,
+        )
 
         feed["has_earlier"] = False
         with (
@@ -605,38 +645,32 @@ class NewsChangeFeedTests(unittest.TestCase):
             response = client.get("/partials/news/change-feed")
         self.assertNotIn("Load earlier", response.text)
 
-    def test_refresh_is_exclusive_sse_or_market_refresh_no_polling(self):
+    def test_change_feed_always_uses_market_refresh_without_polling(self):
         from routes.views.news import router
 
         client = self.make_client(router)
-        live_config = {"event_pipeline": {"sse": {"enabled": True}}}
-        with (
-            patch("routes.views.news.load_config", return_value=live_config),
-            patch(
-                "routes.views.news.load_change_feed",
-                return_value=change_feed_payload(),
-            ),
+        for config in (
+            {"event_pipeline": {"sse": {"enabled": True}}},
+            {},
         ):
-            live = client.get("/partials/news/change-feed")
-        self.assertIn('data-live-section="change_feed"', live.text)
-        self.assertIn('data-live-event="section_changed"', live.text)
-        self.assertIn('data-live-url="/partials/news/change-feed"', live.text)
-        self.assertNotIn("hx-trigger", live.text)
-        self.assertNotIn("marketRefresh", live.text)
-        self.assertNotIn("every 90s", live.text)
-        with (
-            patch("routes.views.news.load_config", return_value={}),
-            patch(
-                "routes.views.news.load_change_feed",
-                return_value=change_feed_payload(),
-            ),
-        ):
-            polling = client.get("/partials/news/change-feed")
-        self.assertIn('hx-get="/partials/news/change-feed"', polling.text)
-        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
-        self.assertIn('hx-swap="outerHTML"', polling.text)
-        self.assertNotIn("data-live-section", polling.text)
-        self.assertNotIn("every 90s", polling.text)
+            with (
+                self.subTest(config=config),
+                patch("routes.views.news.load_config", return_value=config),
+                patch(
+                    "routes.views.news.load_change_feed",
+                    return_value=change_feed_payload(),
+                ),
+            ):
+                response = client.get("/partials/news/change-feed")
+            self.assertIn(
+                'hx-get="/partials/news/change-feed"', response.text
+            )
+            self.assertIn(
+                'hx-trigger="marketRefresh from:body"', response.text
+            )
+            self.assertIn('hx-swap="outerHTML"', response.text)
+            self.assertNotIn("data-live-section", response.text)
+            self.assertNotIn("every 90s", response.text)
 
 
 if __name__ == "__main__":

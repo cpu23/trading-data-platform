@@ -86,12 +86,10 @@ def _section_text(value) -> str:
 
 
 def _briefing_sections(briefing: dict | None) -> list[dict]:
-    """Three fixed briefing sections: what changed / interpretation / invalidation.
-
-    Falls back to legacy v3 keys (macro_trend/today/this_week) for briefings
-    generated before the three-section schema.
-    """
-    sections = briefing.get("sections", {}) if briefing else {}
+    """Return the three fixed briefing sections with truthful legacy fallbacks."""
+    if not briefing:
+        return []
+    sections = briefing.get("sections", {})
     if not isinstance(sections, dict):
         return []
 
@@ -99,27 +97,36 @@ def _briefing_sections(briefing: dict | None) -> list[dict]:
     interpretation = _section_text(sections.get("interpretation"))
     invalidation = _section_text(sections.get("invalidation"))
 
-    if not any([what_changed, interpretation, invalidation]):
-        legacy = [
-            (
-                "Macro trend",
-                sections.get("macro_trend") or sections.get("macro_summary"),
-            ),
-            ("Today", sections.get("today")),
-            ("This week", sections.get("this_week") or sections.get("upcoming_events")),
-        ]
-        return [
-            {"label": label, "body": _section_text(value)}
-            for label, value in legacy
-            if _section_text(value)
-        ]
+    if not any((what_changed, interpretation, invalidation)):
+        # Older records predate the fixed three-section contract. Preserve their
+        # decision context under the closest current headings, but never present
+        # an upcoming event as an invalidation condition.
+        what_changed = _section_text(sections.get("today"))
+        interpretation = " ".join(
+            text
+            for text in (
+                _section_text(
+                    sections.get("macro_trend") or sections.get("macro_summary")
+                ),
+                _section_text(
+                    sections.get("this_week") or sections.get("upcoming_events")
+                ),
+            )
+            if text
+        )
 
-    defs = [
-        ("What changed", what_changed),
-        ("Current interpretation", interpretation),
-        ("What would invalidate this", invalidation),
+    unavailable = "Not stated in this briefing."
+    return [
+        {"label": "What changed", "body": what_changed or unavailable},
+        {
+            "label": "Current interpretation",
+            "body": interpretation or unavailable,
+        },
+        {
+            "label": "What would invalidate this",
+            "body": invalidation or unavailable,
+        },
     ]
-    return [{"label": label, "body": body} for label, body in defs if body]
 
 
 def _asset_drivers(note: dict, limit: int = 4) -> list[str]:
@@ -249,7 +256,6 @@ async def dashboard(request: Request):
         "request": request,
         "current_time": now,
         "data_status": _data_status(system_health),
-        "live_updates_enabled": _live_updates_enabled(config),
         "strip": {} if isinstance(strip_result, Exception) else strip_result,
         "since_last_view": (
             {"available": False, "marker": None, "sections": [], "counts": {}}
@@ -417,6 +423,5 @@ def partial_briefing(request: Request):
             "briefing": briefing,
             "briefing_sections": _briefing_sections(briefing),
             "briefing_delta": briefing_delta,
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )

@@ -1,12 +1,10 @@
 <section class="section cross-asset-section" id="cross-asset"
-         {% if live_updates_enabled %}data-live-section="cross_asset"
-         data-live-event="section_changed"
-         data-live-url="/partials/markets/cross-asset"{% else %}
+         aria-labelledby="markets-cross-asset-title"
          hx-get="/partials/markets/cross-asset"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
-    <span class="label">Cross-asset panels</span>
+    <span class="label" id="markets-cross-asset-title" role="heading" aria-level="2">Cross-asset panels</span>
   </div>
   {% if not cross_asset.available %}
     <div class="empty-state">No cross-asset data available.</div>

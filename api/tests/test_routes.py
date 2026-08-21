@@ -1065,8 +1065,8 @@ class TestLiveViewPartials(unittest.TestCase):
         )
         self.assertNotIn('hx-get="/partials/dashboard/watchlist"', initial.text)
         self.assertIn("Watchlist grid", partial.text)
-        self.assertIn('data-live-section="watchlist_grid"', partial.text)
-        self.assertIn('data-live-event="section_changed"', partial.text)
+        self.assertIn('data-live-section="watchlist"', partial.text)
+        self.assertIn('data-live-event="watchlist_changed"', partial.text)
         self.assertIn(
             'data-live-url="/partials/dashboard/watchlist-grid"',
             partial.text,

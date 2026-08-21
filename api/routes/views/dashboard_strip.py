@@ -21,9 +21,11 @@ from fastapi import APIRouter, Request
 
 import config as app_config
 from db import query_one
+from logging_config import get_logger
 from routes.json.regime import get_regime_current
 
 router = APIRouter()
+logger = get_logger("dashboard.strip")
 
 _NEXT_CATALYST_SQL = """
     SELECT event_id, event_name, country, scheduled_at, source, metadata
@@ -91,8 +93,6 @@ def countdown_display(minutes) -> str | None:
     return f"{minutes // 60}h {minutes % 60}m"
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
 def load_compact_strip(config: dict) -> dict:
@@ -104,17 +104,24 @@ def load_compact_strip(config: dict) -> dict:
     sub-fetch is isolated fail-soft.
     """
     strip: dict = {
-        "available": True,
+        "available": False,
+        "session_available": False,
         "session_label": None,
+        "regime_available": False,
         "regime": None,
+        "next_catalyst_available": False,
         "next_catalyst": None,
     }
     try:
         strip["session_label"] = session_label_for_hour(
             datetime.now(primary_zone(config)).hour
         )
-    except Exception:
-        pass
+        strip["session_available"] = True
+    except Exception as exc:
+        logger.warning(
+            "dashboard_strip_session_unavailable",
+            error_type=type(exc).__name__,
+        )
 
     try:
         regime = get_regime_current()
@@ -125,8 +132,12 @@ def load_compact_strip(config: dict) -> dict:
                 "confidence": regime.get("confidence"),
                 "created_at": regime.get("created_at"),
             }
-    except Exception:
-        pass
+        strip["regime_available"] = True
+    except Exception as exc:
+        logger.warning(
+            "dashboard_strip_regime_unavailable",
+            error_type=type(exc).__name__,
+        )
 
     try:
         now = datetime.now(UTC)
@@ -145,9 +156,21 @@ def load_compact_strip(config: dict) -> dict:
                 "countdown_minutes": minutes,
                 "countdown_display": countdown_display(minutes),
             }
-    except Exception:
-        pass
+        strip["next_catalyst_available"] = True
+    except Exception as exc:
+        logger.warning(
+            "dashboard_strip_catalyst_unavailable",
+            error_type=type(exc).__name__,
+        )
 
+    strip["available"] = any(
+        strip[key]
+        for key in (
+            "session_available",
+            "regime_available",
+            "next_catalyst_available",
+        )
+    )
     return strip
 
 
@@ -161,6 +184,5 @@ def partial_top_strip(request: Request):
         {
             "request": request,
             "strip": load_compact_strip(config),
-            "live_updates_enabled": _live_updates_enabled(config),
         },
     )

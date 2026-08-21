@@ -251,10 +251,6 @@ def partial_since_last_view(request: Request):
         {
             "request": request,
             "since_last_view": summary,
-            "live_updates_enabled": config.get("event_pipeline", {})
-            .get("sse", {})
-            .get("enabled")
-            is True,
         },
     )
 
