@@ -202,7 +202,8 @@ class NewsStoryRouteTests(unittest.TestCase):
         ):
             polling = TestClient(app).get("/partials/dashboard/news")
         self.assertIn('hx-get="/partials/dashboard/news"', polling.text)
-        self.assertIn('hx-trigger="every 90s"', polling.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
+        self.assertNotIn("every 90s", polling.text)
 
 
 def change_feed_row():
