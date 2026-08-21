@@ -3,7 +3,7 @@
          data-live-event="section_changed"
          data-live-url="/partials/dashboard/briefing-delta"{% else %}
          hx-get="/partials/dashboard/briefing-delta"
-         hx-trigger="every 90s"
+         hx-trigger="marketRefresh from:body"
          hx-swap="outerHTML"{% endif %}>
   <div class="section-heading">
     <span class="label">Briefing delta</span>

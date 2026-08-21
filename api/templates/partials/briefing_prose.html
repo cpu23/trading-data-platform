@@ -1,11 +1,17 @@
-<section class="section briefing-section" id="briefing-section"
+<section class="section briefing-section" id="briefing-section" aria-labelledby="briefing-title"
+         {% if live_updates_enabled %}data-live-section="briefing"
+         data-live-event="section_changed"
+         data-live-url="/partials/briefing"{% else %}
          hx-get="/partials/briefing"
-         hx-trigger="cycleComplete from:body"
-         hx-swap="outerHTML">
+         hx-trigger="marketRefresh from:body"
+         hx-swap="outerHTML"{% endif %}>
+  <div class="section-heading">
+    <span class="label" id="briefing-title">Briefing</span>
+    {% if briefing_delta and briefing_delta.available and briefing_delta.latest_date %}
+      <span class="section-note tabular">As of {{ briefing_delta.latest_date }}</span>
+    {% endif %}
+  </div>
   {% if briefing_sections %}
-    <div class="section-heading">
-      <span class="label">Briefing</span>
-    </div>
     <div class="briefing-prose">
       {% for section in briefing_sections %}
         <div class="briefing-block">
@@ -14,11 +20,42 @@
         </div>
       {% endfor %}
     </div>
-    {% if briefing.opinion_ids %}
-      <details class="provenance-details" data-opinion-id="{{ briefing.opinion_ids[-1] }}">
-        <summary>Briefing sources</summary>
-        <div class="evidence-view" data-evidence-target></div>
-      </details>
+    {% if briefing_delta and briefing_delta.available and briefing_delta.bullets %}
+      <div class="briefing-delta">
+        <h3 class="briefing-label">Changed since previous briefing</h3>
+        <ul class="delta-bullets">
+          {% for bullet in briefing_delta.bullets %}<li class="delta-bullet">{{ bullet }}</li>{% endfor %}
+        </ul>
+      </div>
     {% endif %}
+    <details class="provenance-details" {% if briefing.opinion_ids %}data-opinion-id="{{ briefing.opinion_ids[-1] }}"{% endif %}>
+      <summary>Briefing sources &amp; claims</summary>
+      {% if briefing_delta and briefing_delta.available and briefing_delta.atoms %}
+        <div class="atom-counts">
+          {% for atom in briefing_delta.atoms %}
+            <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      <div class="evidence-view" data-evidence-target></div>
+    </details>
+  {% elif briefing_delta and briefing_delta.available %}
+    {% if briefing_delta.bullets %}
+      <div class="briefing-delta">
+        <h3 class="briefing-label">Changed since previous briefing</h3>
+        <ul class="delta-bullets">
+          {% for bullet in briefing_delta.bullets %}<li class="delta-bullet">{{ bullet }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+    {% if briefing_delta.atoms %}
+      <div class="atom-counts">
+        {% for atom in briefing_delta.atoms %}
+          <span class="atom-count"><span class="atom-count-type">{{ atom.claim_type }}</span>: {{ atom.count }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="empty-state">No briefing has been generated yet. Run a cycle to create one.</div>
   {% endif %}
 </section>
