@@ -9,6 +9,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import http_client
 from collectors.cboe_options import (
     DEFAULT_BASE_URL,
     FEATURE_TABLE,
@@ -691,10 +692,39 @@ class CboeOptionsCollectorTests(unittest.TestCase):
     @patch("collectors.cboe_options._utc_now", return_value=PINNED_CAPTURED_AT)
     @patch("collectors.cboe_options._sleep")
     @patch("collectors.cboe_options.make_request")
-    def test_byte_bound_via_body_size(self, make_request, sleep, utc_now):
-        make_request.return_value = self._response(_spy_chain_payload())
-        with self.assertRaises(InvalidSourceData):
+    def test_byte_bound_is_enforced_via_streaming_cap(self, make_request, sleep, utc_now):
+        # The body cap is enforced while the response streams inside
+        # make_request; the collector must hand the bound over. A declared
+        # Content-Length under the cap is accepted here because the
+        # incremental byte count belongs to make_request.
+        make_request.return_value = self._response(
+            _spy_chain_payload(), headers={"content-length": "800"}
+        )
+        result = CboeOptionsCollector().collect(
+            self._config(max_response_bytes=1024), correlation_id="cid"
+        )
+        self.assertEqual(len(result.records), 15)
+        self.assertEqual(make_request.call_args.kwargs["max_response_bytes"], 1024)
+        self.assertEqual(
+            make_request.call_args.kwargs["deadline_seconds"],
+            60.0,
+        )
+
+    @patch("collectors.cboe_options._utc_now", return_value=PINNED_CAPTURED_AT)
+    @patch("collectors.cboe_options._sleep")
+    @patch("collectors.cboe_options.make_request")
+    def test_streaming_oversize_is_reported_as_invalid_source_data(
+        self, make_request, sleep, utc_now
+    ):
+        request = httpx.Request(
+            "GET", f"{DEFAULT_BASE_URL.rstrip('/')}/SPY.json"
+        )
+        make_request.side_effect = http_client.ResponseBodyTooLarge(
+            "response exceeds 1024 bytes", request=request
+        )
+        with self.assertRaises(InvalidSourceData) as raised:
             self._collect(make_request, config=self._config(max_response_bytes=1024))
+        self.assertIn("byte bound", str(raised.exception))
 
     @patch("collectors.cboe_options._utc_now", return_value=PINNED_CAPTURED_AT)
     @patch("collectors.cboe_options._sleep")

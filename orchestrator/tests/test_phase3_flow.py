@@ -522,7 +522,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         }
 
     def _session(self, *, symbol="ACME", company=None):
-        from tests.test_thesis_autonomy import (
+        from test_thesis_autonomy import (
             EXISTING_ID,
             MemorySession,
         )
@@ -539,8 +539,9 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         return session, playbook
 
     def test_context_match_recorded_once_per_event(self):
+        from test_thesis_autonomy import EXISTING_ID
+
         from events.routing import _match_due_playbooks
-        from tests.test_thesis_autonomy import EXISTING_ID
 
         session, playbook = self._session()
         event = self._event()
@@ -566,8 +567,9 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_no_due_playbooks_record_nothing(self):
+        from test_thesis_autonomy import MemorySession
+
         from events.routing import _match_due_playbooks
-        from tests.test_thesis_autonomy import MemorySession
 
         session = MemorySession()
         session.market_events.add(self.EVENT_ID)
@@ -584,8 +586,9 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_initial_handler_records_ledger_before_early_return(self):
+        from test_thesis_autonomy import EXISTING_ID
+
         from events.routing import initial_handler
-        from tests.test_thesis_autonomy import EXISTING_ID
 
         session, _playbook = self._session()
         event = self._event()

@@ -29,7 +29,10 @@ def llm_config(processor_id: str) -> dict:
             "stage_timeout_seconds": 90,
             "validation_retries": 1,
         },
-        "budgets": {"daily_llm_usd": 2.0},
+        "budgets": {
+            "daily_llm_usd": 2.0,
+            "reservation_estimate_usd": 0.05,
+        },
         "watchlist": {"trading": []},
     }
 

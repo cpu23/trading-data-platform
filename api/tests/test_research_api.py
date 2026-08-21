@@ -141,6 +141,67 @@ class ThesisDeskReadRoutesTests(unittest.TestCase):
         self.assertEqual(kwargs["group_id"], str(GROUP_ID))
         self.assertIs(kwargs["include_ineligible"], False)
 
+    def test_opportunities_serialize_unknown_scores_as_null_not_zero(self):
+        # A never-evaluated thesis (migration 057) carries NULL metrics.
+        # The API must emit JSON null, never a fabricated zero: unknown
+        # and evaluated-zero must stay distinguishable on the wire.
+        helpers = MagicMock()
+        row = _opportunity_row()
+        row["evidence_strength"] = None
+        row["contradiction_strength"] = None
+        row["neglect_score"] = None
+        row["catalyst_score"] = None
+        row["confidence_score"] = None
+        row["expected_value"] = None
+        row["expected_shortfall"] = None
+        row["opportunity_score"] = None
+        row["last_evaluated_at"] = None
+        helpers.list_ranked_opportunities.return_value = [row]
+        with (
+            patch("routes.json.research._thesis_fusion", helpers),
+            patch("routes.json.research.get_session"),
+        ):
+            response = client.get(
+                "/api/research/theses/opportunities?include_ineligible=true",
+                headers=AUTH,
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        serialized = payload["opportunities"][0]
+        for column in (
+            "evidence_strength",
+            "contradiction_strength",
+            "neglect_score",
+            "catalyst_score",
+            "confidence_score",
+            "expected_value",
+            "expected_shortfall",
+            "opportunity_score",
+            "last_evaluated_at",
+        ):
+            with self.subTest(column=column):
+                self.assertIsNone(serialized[column], f"{column} must be JSON null")
+        # Raw text proves the wire bytes carry null, not 0.
+        self.assertIn('"opportunity_score":null', response.text)
+        self.assertNotIn('"opportunity_score":0', response.text)
+        self.assertIn('"neglect_score":null', response.text)
+
+    def test_jsonable_passes_none_through_as_json_null(self):
+        # The route serializer preserves None (-> JSON null) verbatim:
+        # never a zero, never a string, so ranking consumers can
+        # distinguish "unknown" from a measured 0.
+        import json
+
+        from routes.json.research import _jsonable
+
+        self.assertIsNone(_jsonable(None))
+        self.assertIsNone(_jsonable({"opportunity_score": None})["opportunity_score"])
+        self.assertIsNone(_jsonable([None, 0])[0])
+        self.assertEqual(
+            json.loads(json.dumps(_jsonable({"score": None, "zero": 0}))),
+            {"score": None, "zero": 0},
+        )
+
     def test_opportunities_expose_ineligible_opt_in_truthfully(self):
         # The explicit bounded opt-in is passed through and reflected in
         # the response metadata; rows keep the loader's eligibility marks.

@@ -12,6 +12,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import http_client
+from contracts.outbound_security import OutboundSecurityError
 
 
 class ScriptedClient:
@@ -816,6 +817,499 @@ class SharedClientLifecycleTests(unittest.TestCase):
         self.assertIsInstance(errors[0], http_client.RequestDeadlineExceeded)
         slow.close.assert_called_once()
         peer.close.assert_not_called()
+
+
+class BoundedStreamConsumptionTests(unittest.TestCase):
+    """The body cap is enforced while bytes stream, never after materialization."""
+
+    class CountingStream(httpx.SyncByteStream):
+        def __init__(self, body, chunk_size):
+            self.chunks = [
+                body[index : index + chunk_size]
+                for index in range(0, len(body), chunk_size)
+            ]
+            self.bytes_read = 0
+
+        def __iter__(self):
+            for chunk in self.chunks:
+                self.bytes_read += len(chunk)
+                yield chunk
+
+        def close(self):
+            pass
+
+    def _stream_client(self, body, headers, chunk_size=32):
+        stream = self.CountingStream(body, chunk_size)
+
+        def handler(request):
+            return httpx.Response(200, headers=headers, stream=stream, request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        return stream, client
+
+    def test_oversized_declared_content_length_rejected_before_any_bytes(self):
+        stream, client = self._stream_client(
+            b"x" * 5000, {"content-length": "5000"}
+        )
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/resource",
+                client=client,
+                max_retries=1,
+                max_response_bytes=100,
+            )
+        self.assertEqual(stream.bytes_read, 0)
+
+    def test_false_small_content_length_stops_incrementally(self):
+        stream, client = self._stream_client(
+            b"x" * 5000, {"content-length": "10"}
+        )
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/resource",
+                client=client,
+                max_retries=1,
+                max_response_bytes=100,
+            )
+        # Only the chunks up to the cap were pulled from the stream: the
+        # lying Content-Length never let the full body be consumed.
+        self.assertLess(stream.bytes_read, 1000)
+        self.assertGreater(stream.bytes_read, 100)
+
+    def test_missing_content_length_chunked_overflow_stops_incrementally(self):
+        stream, client = self._stream_client(b"x" * 5000, {})
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/resource",
+                client=client,
+                max_retries=1,
+                max_response_bytes=100,
+            )
+        self.assertLess(stream.bytes_read, 1000)
+        self.assertGreater(stream.bytes_read, 100)
+
+    def test_bounded_body_is_returned_fully(self):
+        stream, client = self._stream_client(
+            b"bounded body", {"content-length": "12"}
+        )
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/resource",
+            client=client,
+            max_retries=1,
+            max_response_bytes=100,
+        )
+        self.assertEqual(result.content, b"bounded body")
+        self.assertEqual(stream.bytes_read, 12)
+
+
+class CredentialedRedirectTests(unittest.TestCase):
+    def test_userinfo_url_with_redirects_fails_closed(self):
+        with self.assertRaises(ValueError) as raised:
+            http_client.make_request(
+                "GET",
+                "https://user:secret@example.test/resource",
+                follow_redirects=True,
+                max_retries=1,
+            )
+        self.assertIn("userinfo", str(raised.exception))
+
+    def test_credential_header_with_redirects_fails_closed(self):
+        for header in ({"X-API-KEY": "secret"}, {"Cookie": "session=secret"}):
+            with self.subTest(header=header):
+                with self.assertRaises(ValueError) as raised:
+                    http_client.make_request(
+                        "GET",
+                        "https://example.test/resource",
+                        headers=header,
+                        follow_redirects=True,
+                        max_retries=1,
+                    )
+                self.assertIn("credential header", str(raised.exception))
+
+    def test_authorization_header_with_redirects_is_allowed(self):
+        # httpx strips Authorization on cross-origin redirects, so this
+        # credentialed redirect is not blocked by the guard.
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request)
+            )
+        )
+        self.addCleanup(client.close)
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/resource",
+            headers={"Authorization": "Bearer token"},
+            follow_redirects=True,
+            max_retries=1,
+            client=client,
+        )
+        self.assertEqual(result.status_code, 200)
+
+    def test_redirects_without_credentials_are_allowed(self):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request)
+            )
+        )
+        self.addCleanup(client.close)
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/resource",
+            follow_redirects=True,
+            max_retries=1,
+            client=client,
+        )
+        self.assertEqual(result.status_code, 200)
+
+    def test_auth_tuple_is_forwarded_to_the_client(self):
+        captured = {}
+
+        class RecordingClient(ScriptedClient):
+            def request(self, **kwargs):
+                captured.update(kwargs)
+                return super().request(**kwargs)
+
+        client = RecordingClient([response(200)])
+        http_client.make_request(
+            "GET",
+            "https://example.test/resource",
+            auth=("api-key", ""),
+            max_retries=1,
+            client=client,
+        )
+        self.assertEqual(captured["auth"], ("api-key", ""))
+
+
+class BoundedRedirectTests(unittest.TestCase):
+    """Manual bounded redirect following replaces httpx's native
+    follow_redirects whenever a byte cap is set, so every hop body is
+    streamed under the cap, hops are origin-validated, and credentials never
+    cross origins."""
+
+    def _client(self, handler):
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        return client
+
+    def test_oversized_redirect_body_aborts_before_following(self):
+        """A redirect hop whose body exceeds the cap aborts mid-stream: the
+        target is never requested and the hop body is never materialized."""
+        requested = []
+
+        def handler(request):
+            requested.append(request.url.path)
+            if request.url.path == "/first":
+                return httpx.Response(
+                    302,
+                    headers={"location": "/final"},
+                    content=b"x" * 512,
+                    request=request,
+                )
+            return httpx.Response(200, content=b"small", request=request)
+
+        client = self._client(handler)
+
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/first",
+                client=client,
+                max_retries=1,
+                follow_redirects=True,
+                max_response_bytes=256,
+            )
+
+        self.assertEqual(requested, ["/first"])
+
+    def test_redirect_hop_declared_length_over_cap_aborts_preemptively(self):
+        requested = []
+
+        def handler(request):
+            requested.append(request.url.path)
+            return httpx.Response(
+                302,
+                headers={"location": "/final", "content-length": "4096"},
+                content=b"x" * 512,
+                request=request,
+            )
+
+        client = self._client(handler)
+
+        with self.assertRaises(http_client.ResponseBodyTooLarge):
+            http_client.make_request(
+                "GET",
+                "https://example.test/first",
+                client=client,
+                max_retries=1,
+                follow_redirects=True,
+                max_response_bytes=1024,
+            )
+
+        self.assertEqual(requested, ["/first"])
+
+    def test_same_origin_redirects_are_followed_with_bounded_bodies(self):
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            if request.url.path == "/first":
+                return httpx.Response(
+                    302,
+                    headers={"location": "/next"},
+                    content=b"",
+                    request=request,
+                )
+            if request.url.path == "/next":
+                return httpx.Response(
+                    302,
+                    headers={"location": "/final"},
+                    content=b"",
+                    request=request,
+                )
+            return httpx.Response(200, content=b"payload", request=request)
+
+        client = self._client(handler)
+
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/first",
+            client=client,
+            max_retries=1,
+            follow_redirects=True,
+            max_response_bytes=1024,
+        )
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.content, b"payload")
+        self.assertEqual(len(result.history), 2)
+        self.assertEqual(
+            requested,
+            [
+                "https://example.test/first",
+                "https://example.test/next",
+                "https://example.test/final",
+            ],
+        )
+
+    def test_cross_origin_redirect_strips_authorization_header(self):
+        """httpx parity: an Authorization header is stripped before a
+        cross-origin hop, so the credential never leaves its origin (the
+        hop proceeds uncredentialed)."""
+        requested = []
+
+        def handler(request):
+            requested.append(
+                (str(request.url), request.headers.get("authorization"))
+            )
+            if request.url.path == "/first":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://other.example.test/data"},
+                    content=b"",
+                    request=request,
+                )
+            return httpx.Response(200, content=b"public", request=request)
+
+        client = self._client(handler)
+
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/first",
+            headers={"Authorization": "Bearer secret"},
+            client=client,
+            max_retries=1,
+            follow_redirects=True,
+            max_response_bytes=1024,
+        )
+
+        self.assertEqual(result.content, b"public")
+        self.assertEqual(len(requested), 2)
+        self.assertEqual(requested[0][1], "Bearer secret")
+        # The credential never crossed the origin boundary.
+        self.assertIsNone(requested[1][1])
+
+    def test_cross_origin_redirect_strips_auth_argument(self):
+        """The ``auth`` argument is dropped on a cross-origin hop too:
+        httpx would otherwise re-derive the header on the new origin."""
+        requested = []
+
+        def handler(request):
+            requested.append(
+                (str(request.url), request.headers.get("authorization"))
+            )
+            if request.url.path == "/first":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://other.example.test/data"},
+                    content=b"",
+                    request=request,
+                )
+            return httpx.Response(200, content=b"public", request=request)
+
+        client = self._client(handler)
+
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/first",
+            auth=("api-key", ""),
+            client=client,
+            max_retries=1,
+            follow_redirects=True,
+            max_response_bytes=1024,
+        )
+
+        self.assertEqual(result.content, b"public")
+        self.assertEqual(len(requested), 2)
+        self.assertIsNotNone(requested[0][1])
+        self.assertIsNone(requested[1][1])
+
+    def test_cross_origin_redirect_without_credentials_is_followed(self):
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            if request.url.path == "/first":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://other.example.test/data"},
+                    content=b"",
+                    request=request,
+                )
+            return httpx.Response(200, content=b"public", request=request)
+
+        client = self._client(handler)
+
+        result = http_client.make_request(
+            "GET",
+            "https://example.test/first",
+            client=client,
+            max_retries=1,
+            follow_redirects=True,
+            max_response_bytes=1024,
+        )
+
+        self.assertEqual(result.content, b"public")
+        self.assertEqual(
+            requested,
+            ["https://example.test/first", "https://other.example.test/data"],
+        )
+
+    def test_redirect_scheme_downgrade_is_rejected_on_any_hop(self):
+        """Every hop is shape-validated (https-only) even without
+        credentials: an https-to-http downgrade fails closed."""
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            return httpx.Response(
+                302,
+                headers={"location": "http://example.test/plain"},
+                content=b"",
+                request=request,
+            )
+
+        client = self._client(handler)
+
+        with self.assertRaises(OutboundSecurityError):
+            http_client.make_request(
+                "GET",
+                "https://example.test/first",
+                client=client,
+                max_retries=1,
+                follow_redirects=True,
+                max_response_bytes=1024,
+            )
+
+        self.assertEqual(requested, ["https://example.test/first"])
+
+    def test_non_strippable_credential_header_is_rejected_before_any_hop(self):
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            return httpx.Response(
+                302,
+                headers={"location": "/final"},
+                content=b"",
+                request=request,
+            )
+
+        client = self._client(handler)
+
+        with self.assertRaises(ValueError) as raised:
+            http_client.make_request(
+                "GET",
+                "https://example.test/first",
+                headers={"X-API-KEY": "secret"},
+                client=client,
+                max_retries=1,
+                follow_redirects=True,
+                max_response_bytes=1024,
+            )
+        self.assertIn("credential header", str(raised.exception))
+        self.assertEqual(requested, [])
+
+    def test_redirect_chain_is_hop_bounded(self):
+        requested = []
+
+        def handler(request):
+            requested.append(request.url.path)
+            return httpx.Response(
+                302,
+                headers={"location": "/next"},
+                content=b"",
+                request=request,
+            )
+
+        client = self._client(handler)
+
+        with self.assertRaises(httpx.TooManyRedirects):
+            http_client.make_request(
+                "GET",
+                "https://example.test/first",
+                client=client,
+                max_retries=1,
+                follow_redirects=True,
+                max_response_bytes=1024,
+            )
+
+        # The bound allows MAX_REDIRECT_HOPS hops, not one more.
+        self.assertEqual(len(requested), http_client.MAX_REDIRECT_HOPS + 1)
+
+    def test_non_idempotent_request_never_replayed_by_redirect_following(self):
+        """A redirect must not silently re-send a non-idempotent request
+        (307/308 would replay its body); the bounded redirect response is
+        returned instead."""
+        requested = []
+
+        def handler(request):
+            requested.append((request.method, str(request.url)))
+            return httpx.Response(
+                307,
+                headers={"location": "/final"},
+                content=b"",
+                request=request,
+            )
+
+        client = self._client(handler)
+
+        result = http_client.make_request(
+            "POST",
+            "https://example.test/first",
+            json_body={"op": "create"},
+            client=client,
+            max_retries=1,
+            follow_redirects=True,
+            max_response_bytes=1024,
+        )
+
+        self.assertEqual(result.status_code, 307)
+        self.assertEqual(requested, [("POST", "https://example.test/first")])
 
 
 if __name__ == "__main__":

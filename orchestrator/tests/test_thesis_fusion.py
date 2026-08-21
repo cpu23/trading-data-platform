@@ -2758,6 +2758,45 @@ class OpportunitySnapshotTests(unittest.TestCase):
         self.assertIsInstance(captured, datetime)
         self.assertIsNotNone(captured.tzinfo)
 
+    def test_unknown_submetrics_persist_as_null_in_snapshot(self):
+        # Unknown sub-metrics (migration 057) are stored as NULL, never
+        # coerced to favorable zeros: an absent neglect input, catalyst
+        # set, or directional evidence is unknown, while the gated
+        # opportunity_score is always numeric.
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(first=None),  # no prior snapshot
+                Result(first={"id": LINK_ID}),  # INSERT won
+            ]
+        )
+        appended = append_opportunity_snapshot(
+            session,
+            str(THESIS_ID),
+            snapshot_key="eval:2026-08-06",
+            opportunity_score=0.0,
+            expected_value=None,
+            expected_shortfall=None,
+            confidence_score=None,
+            neglect_score=None,
+            catalyst_score=None,
+            evidence_strength=None,
+            contradiction_strength=None,
+        )
+        self.assertTrue(appended)
+        params = session.calls[2][1]
+        self.assertIsNone(params["expected_value"])
+        self.assertIsNone(params["expected_shortfall"])
+        self.assertIsNone(params["confidence_score"])
+        self.assertIsNone(params["neglect_score"])
+        self.assertIsNone(params["catalyst_score"])
+        self.assertIsNone(params["evidence_strength"])
+        self.assertIsNone(params["contradiction_strength"])
+        # The gated score is a real evaluation: a frozen zero opportunity
+        # is preserved as the numeric zero it is.
+        self.assertEqual(params["opportunity_score"], 0.0)
+        session.commit.assert_not_called()
+
 
 class FalsificationRunTests(unittest.TestCase):
     def test_record_run_is_idempotent(self):
@@ -3181,6 +3220,39 @@ class EvaluateThesisTests(unittest.TestCase):
         self.assertAlmostEqual(result["valuation"]["expected_value"], 0.2)
         session.commit.assert_not_called()
 
+    def test_unknown_submetrics_persist_as_null_not_favorable_zero(self):
+        # No directional evidence, no catalyst set, no attention/crowding
+        # inputs: neglect, catalyst readiness, and confidence are unknown.
+        # evaluate_thesis must persist them as NULL (migration 057) — never
+        # as favorable zeros — while measured masses (0.0 support and
+        # contradiction) and the gated opportunity score stay numeric.
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(rows=[]),  # no evidence
+                Result(rows=[]),  # no catalysts
+                Result(rows=[{"name": "Base", "probability": 1.0}]),  # one scenario
+                Result(rows=[]),  # no market bars; liquidity stays unknown
+                Result(),  # UPDATE thesis score columns
+            ]
+        )
+        result = evaluate_thesis(session, str(THESIS_ID), as_of=NOW)
+        # The evaluation result itself carries the unknowns, not zeros.
+        self.assertIsNone(result["neglect"]["neglect"])
+        self.assertIsNone(result["catalyst"]["readiness"])
+        self.assertIsNone(result["evidence"]["confidence"])
+        update_params = session.calls[5][1]
+        self.assertIsNone(update_params["neglect_score"])
+        self.assertIsNone(update_params["catalyst_score"])
+        self.assertIsNone(update_params["confidence_score"])
+        # Measured values stay numeric: an empty directional set scores a
+        # real 0.0 mass, and the failed gate yields a numeric 0.0
+        # opportunity — both are evaluations, not unknowns.
+        self.assertEqual(update_params["evidence_strength"], 0.0)
+        self.assertEqual(update_params["contradiction_strength"], 0.0)
+        self.assertEqual(update_params["opportunity_score"], 0.0)
+        session.commit.assert_not_called()
+
     def test_replay_cutoff_bounds_every_persisted_input_query(self):
         # Re-evaluating an older accepted cutoff: later evidence, derived
         # versions, and backfilled bars must be excluded at the SQL
@@ -3430,6 +3502,12 @@ class EvaluateThesisTests(unittest.TestCase):
         snapshot_sql, snapshot_params = session.calls[8]
         self.assertIn("INSERT INTO investment_opportunity_snapshots", snapshot_sql)
         self.assertEqual(snapshot_params["snapshot_key"], "eval:2026-08-06")
+        self.assertIsNone(snapshot_params["neglect_score"])
+        self.assertIsNone(snapshot_params["catalyst_score"])
+        self.assertIsNone(snapshot_params["confidence_score"])
+        self.assertEqual(snapshot_params["evidence_strength"], 0.0)
+        self.assertEqual(snapshot_params["contradiction_strength"], 0.0)
+        self.assertEqual(snapshot_params["opportunity_score"], 0.0)
         session.commit.assert_not_called()
 
     def test_future_mutated_legacy_catalyst_excluded_from_older_cutoff(self):
@@ -3913,13 +3991,15 @@ class RankedOpportunitiesTests(unittest.TestCase):
         # then by expected value, opportunity score, confidence, catalyst,
         # neglect, recency, and id.
         self.assertIn("AND eligibility.eligible", sql)
-        self.assertIn("ORDER BY (t.opportunity_score > 0) DESC,", sql)
-        self.assertIn("eligibility.eligible DESC,", sql)
-        self.assertIn("t.expected_value DESC", sql)
-        self.assertIn("t.opportunity_score DESC", sql)
-        self.assertIn("t.confidence_score DESC", sql)
-        self.assertIn("t.catalyst_score DESC", sql)
-        self.assertIn("t.neglect_score DESC", sql)
+        # Every DESC rank metric pins NULLS LAST: an unknown metric ranks
+        # after every measured value, including zero.
+        self.assertIn("ORDER BY (t.opportunity_score > 0) DESC NULLS LAST", sql)
+        self.assertIn("eligibility.eligible DESC NULLS LAST", sql)
+        self.assertIn("t.expected_value DESC NULLS LAST", sql)
+        self.assertIn("t.opportunity_score DESC NULLS LAST", sql)
+        self.assertIn("t.confidence_score DESC NULLS LAST", sql)
+        self.assertIn("t.catalyst_score DESC NULLS LAST", sql)
+        self.assertIn("t.neglect_score DESC NULLS LAST", sql)
         self.assertIn("t.last_evaluated_at DESC NULLS LAST, t.id", sql)
         self.assertIn("LIMIT :limit", sql)
         self.assertNotIn("t.group_id =", sql)
@@ -3999,6 +4079,40 @@ class RankedOpportunitiesTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in included], ["zero-score"])
         self.assertFalse(included[0]["eligible"])
         self.assertEqual(included[0]["blockers"], ["score"])
+
+    def test_null_score_rows_require_explicit_opt_in_and_never_rank_as_zero(self):
+        # A never-evaluated thesis has a NULL opportunity score.  It is
+        # absent from DEFAULT results, and the eligibility gate fails
+        # truthfully ("score") instead of treating NULL as a favorable
+        # zero — the opt-in reveals it marked ineligible.
+        row = self._eligible_row(id="never-evaluated", opportunity_score=None)
+        row["eligibility_score"] = False
+        session = Session([Result(rows=[row])])
+        self.assertEqual(list_ranked_opportunities(session), [])
+        default_sql = session.calls[0][0]
+        # The default filter admits only measured scores: NULL is never
+        # coerced (no COALESCE) and never admitted as a zero.
+        self.assertIn("t.opportunity_score >= :minimum_score", default_sql)
+        self.assertNotIn("COALESCE(t.opportunity_score", default_sql)
+        self.assertNotIn("OR t.opportunity_score IS NULL", default_sql)
+
+        session = Session([Result(rows=[row])])
+        included = list_ranked_opportunities(session, include_ineligible=True)
+        self.assertEqual([item["id"] for item in included], ["never-evaluated"])
+        self.assertFalse(included[0]["eligible"])
+        self.assertEqual(included[0]["blockers"], ["score"])
+        include_sql = session.calls[0][0]
+        # The opt-in admits the NULL-score row explicitly, and every rank
+        # metric pins NULLS LAST so an unknown always ranks after every
+        # measured value, including zero.
+        self.assertIn("OR t.opportunity_score IS NULL", include_sql)
+        self.assertIn("ORDER BY (t.opportunity_score > 0) DESC NULLS LAST", include_sql)
+        self.assertIn("t.expected_value DESC NULLS LAST", include_sql)
+        self.assertIn("t.opportunity_score DESC NULLS LAST", include_sql)
+        self.assertIn("t.confidence_score DESC NULLS LAST", include_sql)
+        self.assertIn("t.catalyst_score DESC NULLS LAST", include_sql)
+        self.assertIn("t.neglect_score DESC NULLS LAST", include_sql)
+        session.commit.assert_not_called()
 
     def test_superseded_scenarios_cannot_satisfy_the_scenario_gate(self):
         # The scenario gate reads ACTIVE legs only (superseded_at IS NULL);

@@ -4,8 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import collectors.central_banks as central_banks
+import collectors.official_macro as official_macro
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from collectors.central_banks import CentralBanksCollector
 from collectors.cftc import CftcCollector
@@ -112,6 +116,129 @@ class OfficialCollectorTests(unittest.TestCase):
             headers=headers,
             correlation_id="corr",
         )
+
+    @patch("collectors.central_banks.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_central_bank_success_scrubs_credentialed_feed_url_from_metadata(
+        self, _dns, request
+    ):
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = f"https://example.test/feed?token={query_secret}&lang=en"
+        response = Mock()
+        response.content = b"""
+            <rss><channel><item>
+              <title>Policy update</title>
+              <pubDate>Fri, 07 Aug 2026 12:00:00 +0000</pubDate>
+              <link>https://example.test/update</link>
+              <description>Published source text.</description>
+            </item></channel></rss>
+        """
+        response.raise_for_status.return_value = None
+        request.return_value = response
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [
+                        {
+                            "institution": "boe",
+                            "url": raw_feed_url,
+                            "headers": {"User-Agent": "research-client"},
+                        }
+                    ]
+                }
+            }
+        }
+
+        records = CentralBanksCollector().collect(config, "corr")
+
+        # The intended raw URL (query included) still goes outbound.
+        request.assert_called_once_with(
+            "GET",
+            raw_feed_url,
+            headers={"User-Agent": "research-client"},
+            correlation_id="corr",
+        )
+        metadata_feed = records[0]["metadata"]["feed"]
+        self.assertEqual(metadata_feed, "https://example.test/feed")
+        self.assertNotIn(query_secret, metadata_feed)
+        self.assertNotIn("token=", metadata_feed)
+        self.assertNotIn("lang=en", metadata_feed)
+        # No credential material anywhere in the persisted record payload.
+        self.assertNotIn(query_secret, " ".join(str(records).split()))
+
+    def test_central_bank_failure_scrubs_userinfo_and_query_from_payload_and_log(self):
+        user = "SENTINEL-USER"
+        password = "SENTINEL-PASSWORD"
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = (
+            f"https://{user}:{password}@example.test/feed"
+            f"?token={query_secret}&lang=en"
+        )
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [{"institution": "boe", "url": raw_feed_url}]
+                }
+            }
+        }
+
+        with patch.object(central_banks, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                CentralBanksCollector().collect(config, "corr")
+
+        failed = raised.exception.metadata["failed_feeds"][0]
+        self.assertEqual(failed["feed"], "https://example.test/feed")
+        for secret in (user, password, query_secret):
+            self.assertNotIn(secret, failed["feed"])
+            self.assertNotIn(secret, failed["error"])
+        self.assertEqual(
+            mock_logger.error.call_args.args[0], "central_bank_feed_failed"
+        )
+        log_feed = mock_logger.error.call_args.kwargs["feed"]
+        self.assertEqual(log_feed, "https://example.test/feed")
+        self.assertNotIn(user, log_feed)
+        self.assertNotIn(password, log_feed)
+        self.assertNotIn(query_secret, log_feed)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(user, log_error)
+        self.assertNotIn(password, log_error)
+        self.assertNotIn(query_secret, log_error)
+
+    @patch("collectors.central_banks.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_central_bank_failure_scrubs_query_from_error_and_log(self, _dns, request):
+        query_secret = "SENTINEL-QUERY-TOKEN"
+        raw_feed_url = f"https://example.test/feed?token={query_secret}&lang=en"
+        request.side_effect = httpx.HTTPStatusError(
+            f"401 Client Error: Unauthorized for url '{raw_feed_url}'",
+            request=httpx.Request("GET", raw_feed_url),
+            response=httpx.Response(
+                401, request=httpx.Request("GET", raw_feed_url), content=b""
+            ),
+        )
+        config = {
+            "collectors": {
+                "central_banks": {
+                    "feeds": [{"institution": "boe", "url": raw_feed_url}]
+                }
+            }
+        }
+
+        with patch.object(central_banks, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                CentralBanksCollector().collect(config, "corr")
+
+        failed = raised.exception.metadata["failed_feeds"][0]
+        self.assertEqual(failed["feed"], "https://example.test/feed")
+        self.assertNotIn(query_secret, failed["error"])
+        self.assertNotIn("token=", failed["error"])
+        self.assertNotIn("lang=en", failed["error"])
+        self.assertIn("example.test", failed["error"])
+        log_feed = mock_logger.error.call_args.kwargs["feed"]
+        self.assertEqual(log_feed, "https://example.test/feed")
+        self.assertNotIn(query_secret, log_feed)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(query_secret, log_error)
 
     @patch("collectors.cftc.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
@@ -696,6 +823,85 @@ class OfficialCollectorTests(unittest.TestCase):
             collector.last_result_metadata["series_failed"][0]["series_id"],
             "CLI_GB",
         )
+
+    @patch("collectors.official_macro.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_eia_failure_metadata_and_log_never_contain_api_key(self, _dns, request):
+        secret = "SENTINEL-EIA-KEY"
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": secret,
+                    "api_key_param": "api_key",
+                    "series": [
+                        {
+                            "id": "BRENT",
+                            "url": "https://example.test",
+                            "records_path": ["response", "data"],
+                            "date_field": "period",
+                            "value_field": "value",
+                        }
+                    ],
+                }
+            }
+        }
+        request.return_value = httpx.Response(
+            401,
+            request=httpx.Request(
+                "GET",
+                "https://example.test",
+                params={"api_key": secret, "frequency": "monthly"},
+            ),
+            content=b"",
+        )
+        with patch.object(official_macro, "logger") as mock_logger:
+            with self.assertRaises(CollectorNoData) as raised:
+                EiaCollector().collect(config, "corr")
+
+        error = raised.exception.metadata["failed_series"][0]["error"]
+        self.assertNotIn(secret, error)
+        self.assertNotIn("api_key=", error)
+        self.assertNotIn("frequency", error)
+        self.assertIn("example.test", error)
+        log_error = mock_logger.error.call_args.kwargs["error"]
+        self.assertNotIn(secret, log_error)
+        self.assertEqual(
+            mock_logger.error.call_args.args[0], "official_series_failed"
+        )
+
+    @patch("collectors.official_macro.make_request")
+    @patch("socket.getaddrinfo", side_effect=_public_dns)
+    def test_eia_health_message_never_contains_api_key(self, _dns, request):
+        secret = "SENTINEL-EIA-KEY"
+        config = {
+            "collectors": {
+                "eia": {
+                    "requires_api_key": True,
+                    "api_key": secret,
+                    "api_key_param": "api_key",
+                    "series": [
+                        {
+                            "id": "BRENT",
+                            "url": "https://example.test",
+                            "records_path": ["response", "data"],
+                            "date_field": "period",
+                            "value_field": "value",
+                        }
+                    ],
+                }
+            }
+        }
+        request.side_effect = RuntimeError(
+            f"401 Unauthorized for url 'https://example.test/?api_key={secret}'"
+        )
+
+        result = EiaCollector().health_check(config)
+
+        self.assertFalse(result["healthy"])
+        self.assertNotIn(secret, result["message"])
+        self.assertNotIn("api_key", result["message"])
+        self.assertIn("example.test", result["message"])
 
 
 if __name__ == "__main__":

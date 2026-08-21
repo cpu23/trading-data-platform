@@ -1800,14 +1800,16 @@ def append_opportunity_snapshot(
                 "thesis_id": thesis_id,
                 "snapshot_key": key,
                 "input_fingerprint": _text(input_fingerprint, 200),
+                # Unknown sub-metrics stay NULL (migration 057) so a frozen
+                # snapshot never turns an absent input into a favorable zero.
                 "opportunity_score": scores["opportunity_score"],
-                "expected_value": expected["expected_value"] or 0.0,
-                "expected_shortfall": expected["expected_shortfall"] or 0.0,
-                "confidence_score": scores["confidence_score"] or 0.0,
-                "neglect_score": scores["neglect_score"] or 0.0,
-                "catalyst_score": scores["catalyst_score"] or 0.0,
-                "evidence_strength": scores["evidence_strength"] or 0.0,
-                "contradiction_strength": scores["contradiction_strength"] or 0.0,
+                "expected_value": expected["expected_value"],
+                "expected_shortfall": expected["expected_shortfall"],
+                "confidence_score": scores["confidence_score"],
+                "neglect_score": scores["neglect_score"],
+                "catalyst_score": scores["catalyst_score"],
+                "evidence_strength": scores["evidence_strength"],
+                "contradiction_strength": scores["contradiction_strength"],
                 "captured_at": captured,
             },
         )
@@ -2453,9 +2455,14 @@ def evaluate_thesis(
             "as_of": reference,
             "evidence_strength": evidence_score.support_mass,
             "contradiction_strength": evidence_score.contradiction_mass,
-            "neglect_score": neglect.neglect or 0.0,
-            "catalyst_score": catalyst.readiness or 0.0,
-            "confidence_score": evidence_score.confidence or 0.0,
+            # Unknown sub-metrics persist as NULL (migration 057): an absent
+            # neglect input, catalyst set, or directional evidence is
+            # unknown, never a favorable zero.  Evaluated zeros — empty
+            # support/contradiction mass, a zero expected value or a gated
+            # zero opportunity — remain numeric.
+            "neglect_score": neglect.neglect,
+            "catalyst_score": catalyst.readiness,
+            "confidence_score": evidence_score.confidence,
             "expected_value": valuation.expected_value,
             "expected_shortfall": valuation.expected_shortfall,
             "opportunity_score": opportunity.opportunity,
@@ -2483,9 +2490,9 @@ def evaluate_thesis(
             opportunity_score=opportunity.opportunity,
             expected_value=valuation.expected_value,
             expected_shortfall=valuation.expected_shortfall,
-            confidence_score=evidence_score.confidence or 0.0,
-            neglect_score=neglect.neglect or 0.0,
-            catalyst_score=catalyst.readiness or 0.0,
+            confidence_score=evidence_score.confidence,
+            neglect_score=neglect.neglect,
+            catalyst_score=catalyst.readiness,
             evidence_strength=evidence_score.support_mass,
             contradiction_strength=evidence_score.contradiction_mass,
             input_fingerprint=evidence_input_fingerprint,
@@ -2534,13 +2541,27 @@ def list_ranked_opportunities(
     well; every returned row then (and, for a uniform truthful response,
     by default too) carries ``eligible`` (bool) and ``blockers`` (the
     bounded failing gate codes from ``_ELIGIBILITY_GATES``).  Zero-score
-    rows are reachable only through this explicit opt-in; they are always
-    marked ineligible.
+    and never-evaluated (NULL-score) rows are reachable only through this
+    explicit opt-in; they are always marked ineligible, and NULL scores
+    rank after every measured value (including zero) because the ordering
+    pins ``NULLS LAST`` on every metric column.
     """
     bounded = _bounded(limit, 50, _MAX_RANKED_OPPORTUNITIES)
     threshold = _score(minimum_score, "minimum_score") or 0.0
     include_all = bool(include_ineligible)
-    conditions = ["t.opportunity_score >= :minimum_score"]
+    # A never-evaluated thesis has a NULL opportunity score.  It is never
+    # rank-eligible and, by default, never listed; the explicit bounded
+    # opt-in reveals it (marked ineligible) so operators can see the gap.
+    # NULL is never treated as a zero observation: the eligibility gate
+    # ``opportunity_score > 0`` fails for NULL and the ORDER BY places
+    # NULL rows last.
+    if include_all:
+        conditions = [
+            "(t.opportunity_score >= :minimum_score "
+            "OR t.opportunity_score IS NULL)"
+        ]
+    else:
+        conditions = ["t.opportunity_score >= :minimum_score"]
     params: dict[str, Any] = {
         "minimum_score": threshold,
         "limit": min(_MAX_RANKED_OPPORTUNITIES, bounded * 4),
@@ -2767,11 +2788,16 @@ def list_ranked_opportunities(
                    ) g ON TRUE
                    WHERE """
                 + " AND ".join(conditions)
-                + """ ORDER BY (t.opportunity_score > 0) DESC,
-                          eligibility.eligible DESC,
-                          t.expected_value DESC, t.opportunity_score DESC,
-                          t.confidence_score DESC, t.catalyst_score DESC,
-                          t.neglect_score DESC,
+                # Every DESC column pins NULLS LAST explicitly: an unknown
+                # metric (NULL) must rank after every measured value,
+                # including zero, and can never be a favorable zero rank.
+                + """ ORDER BY (t.opportunity_score > 0) DESC NULLS LAST,
+                          eligibility.eligible DESC NULLS LAST,
+                          t.expected_value DESC NULLS LAST,
+                          t.opportunity_score DESC NULLS LAST,
+                          t.confidence_score DESC NULLS LAST,
+                          t.catalyst_score DESC NULLS LAST,
+                          t.neglect_score DESC NULLS LAST,
                           t.last_evaluated_at DESC NULLS LAST, t.id
                    LIMIT :limit"""
             ),

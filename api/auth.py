@@ -174,6 +174,31 @@ def auth_disabled() -> bool:
     return raw.lower() in {"1", "true", "yes"} and is_demo_or_test()
 
 
+def legacy_basic_auth_enabled() -> bool:
+    """True when the operator opted into the legacy HTTP Basic credential path."""
+    raw = os.environ.get("LEGACY_BASIC_AUTH", "")
+    return raw.lower() in {"1", "true", "yes"}
+
+
+def demo_basic_auth_configured() -> bool:
+    """True when this demo/test deployment authenticates through configured
+    HTTP Basic credentials (LEGACY_BASIC_AUTH plus both DASHBOARD_* vars).
+
+    Demo bootstrap: a fresh volume has no committed setup state, and the demo
+    Compose file supplies non-secret demo credentials instead of the setup
+    form. When they are configured, the browser receives the native Basic
+    challenge at the root (sign in with demo/demo) and never the setup
+    bootstrap. This is explicitly demo/test-only; production (the default)
+    keeps the fail-closed setup bootstrap even when legacy auth is enabled.
+    """
+    return (
+        is_demo_or_test()
+        and legacy_basic_auth_enabled()
+        and bool(os.environ.get(DASHBOARD_USER_VAR, ""))
+        and bool(os.environ.get(DASHBOARD_PASSWORD_VAR, ""))
+    )
+
+
 def verify_credentials(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
@@ -195,7 +220,11 @@ def verify_credentials(
     if request.url.path in public_paths or request.url.path.startswith("/static/"):
         return "bootstrap"
     if request.url.path == "/" and not setup_complete():
-        return "bootstrap"
+        # A fresh root shows the setup bootstrap only when no demo credentials
+        # are configured; demo deployments challenge HTTP Basic instead so a
+        # brand-new volume can sign in with demo/demo and never sees /setup.
+        if not demo_basic_auth_configured():
+            return "bootstrap"
     session = (
         request.scope.get("session", {})
         if hasattr(request, "scope")
@@ -210,17 +239,15 @@ def verify_credentials(
 
     expected_user = os.environ.get("DASHBOARD_USER", "")
     expected_pass = os.environ.get("DASHBOARD_PASSWORD", "")
-    legacy_enabled = os.environ.get("LEGACY_BASIC_AUTH", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    legacy_enabled = legacy_basic_auth_enabled()
     if legacy_enabled and credentials and expected_user and expected_pass:
         if secrets.compare_digest(
             credentials.username, expected_user
         ) and secrets.compare_digest(credentials.password, expected_pass):
             return credentials.username
-    if is_html_request(request):
+    if is_html_request(request) and not (
+        request.url.path == "/" and demo_basic_auth_configured()
+    ):
         raise login_redirect(request)
     headers = {"WWW-Authenticate": "Basic"} if legacy_enabled else None
     raise HTTPException(

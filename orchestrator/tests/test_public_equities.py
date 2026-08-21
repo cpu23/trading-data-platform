@@ -504,7 +504,7 @@ class PublicEquitiesParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(make_request.call_count, 3)
-        self.assertEqual(
+        self.assertCountEqual(
             [call.kwargs["url"] for call in make_request.call_args_list],
             [
                 f"{DEFAULT_CHART_URL}/AAPL",
@@ -564,6 +564,7 @@ class PublicEquitiesParsingTests(unittest.TestCase):
 
         self.assertEqual(result.successful_series, 0)
         self.assertEqual(result.errors[0]["error_class"], "invalid_source_data")
+        response.json.assert_not_called()
 
     @patch("collectors.public_equities.make_request")
     def test_only_missing_symbols_use_bootstrap_range(self, make_request):

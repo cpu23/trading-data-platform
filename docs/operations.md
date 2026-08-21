@@ -41,6 +41,10 @@ docker compose -f docker-compose.demo.yml up --build
 # http://127.0.0.1:8000 — demo / demo
 ```
 
+A fresh demo volume has no setup state, so the browser receives the native
+HTTP Basic prompt at the root (sign in with `demo` / `demo`); the demo never
+shows the setup form and needs no `SETUP_TOKEN`.
+
 Demo mode disables external collectors, provider quote streams, and paid
 inference. `demo-live` instead publishes four bounded fictional prices and a
 real watchlist invalidation every five seconds. The browser receives the event

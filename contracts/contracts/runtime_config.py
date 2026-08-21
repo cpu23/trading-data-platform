@@ -1224,8 +1224,11 @@ class ReadinessConfig(FrozenModel):
 class BudgetsConfig(FrozenModel):
     daily_llm_usd: float = Field(default=2.0, ge=0.0)
     warn_at_pct: float = Field(default=80.0, ge=0.0, le=100.0)
-    # Reservation-policy keys (budget-enforcement workstream).
-    reservation_estimate_usd: float = Field(default=0.05, gt=0.0)
+    # Reservation-policy keys (budget-enforcement workstream). There is NO
+    # default per-call estimate: the orchestrator never guesses pricing for a
+    # paid model, so an absent reservation_estimate_usd stays None and the
+    # paid admission fails closed until pricing is explicitly configured.
+    reservation_estimate_usd: float | None = Field(default=None, gt=0.0)
     estimates: dict[str, float] = Field(default_factory=dict)
     reservation_ttl_seconds: float = Field(default=600.0, gt=0.0)
 

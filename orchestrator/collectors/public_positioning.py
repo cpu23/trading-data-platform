@@ -41,7 +41,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import PurePosixPath
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
-from http_client import make_request
+from http_client import ResponseBodyTooLarge, make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 
@@ -114,17 +115,19 @@ def _decimal_string(value: Decimal) -> str:
 
 
 def _size_exceeds(response, limit: int) -> bool:
-    """Bound a payload before it is consumed; Content-Length is authoritative."""
+    """Early Content-Length bound before the body is consumed.
+
+    The actual byte count is enforced incrementally while the response
+    streams (``max_response_bytes`` on the request), so this helper only
+    rejects an already-declared size; it never materializes the body.
+    """
     raw_length = response.headers.get("Content-Length")
     if raw_length is not None:
         try:
             return int(raw_length) > limit
         except (TypeError, ValueError):
             pass
-    try:
-        return len(getattr(response, "content", b"")) > limit
-    except TypeError:  # content not measurable on this response object
-        return False
+    return False
 
 
 def _normalize_cik(value) -> str:
@@ -351,12 +354,16 @@ class SecForm4Collector:
         symbol = str(issuer.get("symbol") or "").strip() or None
         try:
             _pace_requests(_SEC_PACE_STATE, _SEC_PACE_LOCK, interval)
-            response = make_request(
-                "GET",
-                submissions_url.format(cik=_pad_cik(cik)),
-                headers={"User-Agent": user_agent, "Accept": "application/json"},
-                correlation_id=correlation_id,
-            )
+            try:
+                response = make_request(
+                    "GET",
+                    submissions_url.format(cik=_pad_cik(cik)),
+                    headers={"User-Agent": user_agent, "Accept": "application/json"},
+                    correlation_id=correlation_id,
+                    max_response_bytes=max_submissions_bytes,
+                )
+            except ResponseBodyTooLarge as exc:
+                raise ValueError("SEC submissions payload exceeds configured bound") from exc
             response.raise_for_status()
             if _size_exceeds(response, max_submissions_bytes):
                 raise ValueError("SEC submissions payload exceeds configured bound")
@@ -528,12 +535,16 @@ class SecForm4Collector:
             document=document_name,
         )
         _pace_requests(_SEC_PACE_STATE, _SEC_PACE_LOCK, interval)
-        response = make_request(
-            "GET",
-            url,
-            headers={"User-Agent": user_agent, "Accept": "application/xml"},
-            correlation_id=correlation_id,
-        )
+        try:
+            response = make_request(
+                "GET",
+                url,
+                headers={"User-Agent": user_agent, "Accept": "application/xml"},
+                correlation_id=correlation_id,
+                max_response_bytes=max_bytes,
+            )
+        except ResponseBodyTooLarge as exc:
+            raise ValueError("SEC document exceeds configured size bound") from exc
         response.raise_for_status()
         if _size_exceeds(response, max_bytes):
             raise ValueError("SEC document exceeds configured size bound")
@@ -836,7 +847,7 @@ class SecForm4Collector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": str(exc),
+                "message": safe_error_message(exc, provider="sec_form4"),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 
@@ -910,7 +921,15 @@ class FinraShortVolumeCollector:
             url = f"{base_url.rstrip('/')}/{file_name}"
             try:
                 _pace_requests(_FINRA_PACE_STATE, _FINRA_PACE_LOCK, interval)
-                response = make_request("GET", url, correlation_id=correlation_id)
+                try:
+                    response = make_request(
+                        "GET",
+                        url,
+                        correlation_id=correlation_id,
+                        max_response_bytes=max_file_bytes,
+                    )
+                except ResponseBodyTooLarge as exc:
+                    raise ValueError("FINRA file exceeds configured size bound") from exc
                 if response.status_code == 404:
                     # Non-trading days and not-yet-published files carry no
                     # data; absence is a valid empty outcome, not a failure.
@@ -1192,7 +1211,7 @@ class FinraShortVolumeCollector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": str(exc),
+                "message": safe_error_message(exc, provider="finra_short_volume"),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 

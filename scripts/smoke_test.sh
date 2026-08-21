@@ -114,6 +114,25 @@ unauthenticated_status=$(curl --silent --output /dev/null --write-out '%{http_co
 [[ "$unauthenticated_status" == "401" ]] ||
   fail_with_logs "protected API returned $unauthenticated_status without authentication"
 
+# A fresh demo volume must present the native HTTP Basic challenge at the
+# root (sign in with demo/demo) and must never redirect to the setup form.
+root_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H 'Accept: text/html' "$API_URL/")
+[[ "$root_status" == "401" ]] ||
+  fail_with_logs "fresh browser root returned $root_status (expected Basic challenge)"
+root_headers=$(curl --silent --output /dev/null --dump-header - \
+  -H 'Accept: text/html' "$API_URL/")
+printf '%s' "$root_headers" | grep -qi '^WWW-Authenticate: Basic' ||
+  fail_with_logs "fresh browser root did not present the Basic challenge"
+login_target=$(curl --silent --output /dev/null --write-out '%{redirect_url}' \
+  -H 'Accept: text/html' "$API_URL/login")
+[[ "$login_target" == *"/" && "$login_target" != *"/setup"* ]] ||
+  fail_with_logs "demo /login still redirects to the setup form ($login_target)"
+root_authenticated=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --user "$AUTH" -H 'Accept: text/html' "$API_URL/")
+[[ "$root_authenticated" == "200" ]] ||
+  fail_with_logs "authenticated demo root returned $root_authenticated"
+
 orchestrator_health=$(compose exec -T orchestrator /app/orchestrator/.venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read().decode())")
 printf '%s' "$orchestrator_health" | grep -q '"readiness":"ready"\|"readiness": "ready"' || fail_with_logs "orchestrator readiness contract failed"
 

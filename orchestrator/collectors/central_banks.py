@@ -6,6 +6,7 @@ from xml.etree import ElementTree
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
+from http_errors import safe_error_message, scrub_url
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 
@@ -30,6 +31,7 @@ class CentralBanksCollector:
         acquired_at = datetime.now(UTC)
         failures = []
         for feed in feeds:
+            feed_label = scrub_url(feed.get("url", ""))
             try:
                 feed_url = _validated_feed_url(feed, config["collectors"]["central_banks"])
                 response = make_request(
@@ -72,16 +74,21 @@ class CentralBanksCollector:
                             "content": self._text(item, "description")
                             or self._text(item, "summary"),
                             "acquired_at": acquired_at,
-                            "metadata": {"feed": feed["url"]},
+                            "metadata": {"feed": feed_label},
                         }
                     )
             except Exception as exc:
-                failures.append({"feed": feed["url"], "error": str(exc)})
+                failures.append(
+                    {
+                        "feed": feed_label,
+                        "error": safe_error_message(exc, provider="central_banks"),
+                    }
+                )
                 logger.error(
                     "central_bank_feed_failed",
-                    feed=feed["url"],
+                    feed=feed_label,
                     institution=feed.get("institution"),
-                    error=str(exc),
+                    error=safe_error_message(exc, provider="central_banks"),
                     correlation_id=correlation_id,
                 )
         if not records:
@@ -144,7 +151,7 @@ class CentralBanksCollector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": str(exc),
+                "message": safe_error_message(exc, provider="central_banks"),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 

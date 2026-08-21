@@ -53,6 +53,7 @@ from errors import (
     classify_error,
 )
 from http_client import ResponseBodyTooLarge, make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 
 logger = get_logger("collector.public_equities")
@@ -433,13 +434,14 @@ class PublicEquitiesCollector:
             max_response_bytes=MAX_RESPONSE_BYTES,
         )
         response.raise_for_status()
-        content = response.content
-        if (
-            isinstance(content, (bytes, bytearray))
-            and len(content) > MAX_RESPONSE_BYTES
-        ):
-            raise InvalidSourceData(
-                f"public equity chart exceeds {MAX_RESPONSE_BYTES} bytes"
+        # Defense in depth: make_request enforces the cap while streaming, but
+        # a response that did not pass through the bounded streamer must still
+        # be rejected before any JSON parsing.
+        body = response.content
+        if isinstance(body, (bytes, bytearray)) and len(body) > MAX_RESPONSE_BYTES:
+            raise ResponseBodyTooLarge(
+                f"public equity chart exceeds {MAX_RESPONSE_BYTES} bytes",
+                request=response.request,
             )
         payload = response.json()
         observed_available_at = available_at or datetime.now(UTC)
@@ -780,7 +782,7 @@ class PublicEquitiesCollector:
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             return {
                 "healthy": False,
-                "message": f"public chart API unreachable: {exc}",
+                "message": f"public chart API unreachable: {safe_error_message(exc, provider='public_equities')}",
                 "latency_ms": latency_ms,
             }
 

@@ -37,6 +37,9 @@ CATALYST_IMMUTABILITY_MIGRATION = (
 THESIS_FUSION_REFERENCE_MIGRATION = (
     REPOSITORY_ROOT / "db" / "migrations" / "055_thesis_fusion_reference.sql"
 )
+THESIS_METRICS_NULLABLE_MIGRATION = (
+    REPOSITORY_ROOT / "db" / "migrations" / "057_thesis_metrics_nullable.sql"
+)
 RAW_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "002_raw_tables.sql"
 CYCLE_RUNS_INIT = REPOSITORY_ROOT / "db" / "init" / "005_cycle_runs.sql"
 SYSTEM_TABLES_INIT = REPOSITORY_ROOT / "db" / "init" / "004_system_tables.sql"
@@ -294,6 +297,19 @@ class MigrationInventoryTests(unittest.TestCase):
         versions = [path.name.split("_", 1)[0] for path in migrations]
 
         self.assertIn("055", versions)
+        self.assertEqual(
+            [int(version) for version in versions],
+            sorted(int(version) for version in versions),
+        )
+
+    def test_repository_inventory_includes_057_in_numeric_order(self):
+        migrations = sorted(
+            (REPOSITORY_ROOT / "db" / "migrations").glob("*.sql"),
+            key=lambda path: int(path.name.split("_", 1)[0]),
+        )
+        versions = [path.name.split("_", 1)[0] for path in migrations]
+
+        self.assertIn("057", versions)
         self.assertEqual(
             [int(version) for version in versions],
             sorted(int(version) for version in versions),
@@ -1734,6 +1750,111 @@ class ThesisFusionReferenceSchemaTests(unittest.TestCase):
         for statement in sql.split(";"):
             if statement.lstrip().startswith("update investment_theses"):
                 self.assertNotIn("fusion_candidate_fingerprint", statement)
+
+
+class ThesisMetricsNullableSchemaTests(unittest.TestCase):
+    @staticmethod
+    def _sql(path: Path) -> str:
+        uncommented = "\n".join(
+            line.split("--", 1)[0] for line in path.read_text().splitlines()
+        )
+        return " ".join(uncommented.lower().split())
+
+    THESIS_METRICS = (
+        "evidence_strength",
+        "contradiction_strength",
+        "neglect_score",
+        "catalyst_score",
+        "confidence_score",
+        "expected_value",
+        "expected_shortfall",
+        "opportunity_score",
+    )
+    SNAPSHOT_SUBMETRICS = (
+        "evidence_strength",
+        "contradiction_strength",
+        "neglect_score",
+        "catalyst_score",
+        "confidence_score",
+        "expected_value",
+        "expected_shortfall",
+    )
+
+    def test_migration_is_additive_idempotent_and_never_destroys_data(self):
+        sql = self._sql(THESIS_METRICS_NULLABLE_MIGRATION)
+        for destructive_statement in (
+            "drop table",
+            "drop column",
+            "delete from",
+            "truncate",
+        ):
+            self.assertNotIn(destructive_statement, sql)
+        # The only data mutation is a guarded UPDATE that NULLs metric
+        # values; the only DROP CONSTRAINT is the guarded 045 estimate
+        # swap, re-added as a non-negative CHECK.
+        self.assertIn("drop constraint if exists budget_reservations_estimate_positive", sql)
+        self.assertIn(
+            "add constraint budget_reservations_estimate_nonnegative "
+            "check (estimated_usd >= 0)",
+            sql,
+        )
+
+    def test_thesis_metric_columns_lose_not_null_and_default(self):
+        sql = self._sql(THESIS_METRICS_NULLABLE_MIGRATION)
+        for column in self.THESIS_METRICS:
+            self.assertIn(f"alter column {column} drop not null", sql)
+            self.assertIn(f"alter column {column} drop default", sql)
+        # The 049 CHECKs (BETWEEN 0 AND 1) are untouched: they pass NULL
+        # under standard SQL semantics, so unknown scores stay valid rows.
+        # The only constraint drop in the file is the guarded 045 estimate
+        # swap; no score-column CHECK is dropped or replaced.
+        self.assertEqual(
+            sql.count("drop constraint"),
+            1,
+            "only the guarded budget_reservations estimate constraint is dropped",
+        )
+
+    def test_backfill_only_touches_never_evaluated_rows(self):
+        sql = self._sql(THESIS_METRICS_NULLABLE_MIGRATION)
+        backfill = sql[sql.index("update investment_theses") :]
+        # The UPDATE is restricted to rows that have never been evaluated,
+        # so every evaluated row (including a legitimate evaluated zero)
+        # is preserved exactly.
+        self.assertIn("where last_evaluated_at is null", backfill)
+        # It only rewrites rows that still carry stored metric values; a
+        # re-application is a no-op.
+        self.assertIn("is not null", backfill)
+        for column in self.THESIS_METRICS:
+            self.assertIn(f"{column} = null", backfill)
+
+    def test_snapshot_submetrics_become_nullable_but_gated_score_stays(self):
+        sql = self._sql(THESIS_METRICS_NULLABLE_MIGRATION)
+        for column in self.SNAPSHOT_SUBMETRICS:
+            self.assertIn(f"alter column {column} drop not null", sql)
+            self.assertIn(f"alter column {column} drop default", sql)
+        # The frozen gated opportunity_score stays NOT NULL: every
+        # evaluation run produces a numeric score, so a snapshot always
+        # carries one.
+        snapshot = sql[
+            sql.index("alter table investment_opportunity_snapshots") :
+        ]
+        self.assertNotIn("opportunity_score drop not null", snapshot)
+        self.assertNotIn("opportunity_score drop default", snapshot)
+
+    def test_049_is_untouched_and_057_restores_no_defaults(self):
+        # 049 still declares the metrics NOT NULL DEFAULT 0; 057 is the
+        # forward migration that removes those defaults without editing the
+        # historical file.
+        for column in self.THESIS_METRICS:
+            self.assertIn(
+                f"add column if not exists {column} double precision\n"
+                f"        not null default 0",
+                (REPOSITORY_ROOT / "db" / "migrations" / "049_autonomous_thesis_desk.sql")
+                .read_text()
+                .lower(),
+            )
+        self.assertNotIn("set not null", self._sql(THESIS_METRICS_NULLABLE_MIGRATION))
+        self.assertNotIn("set default", self._sql(THESIS_METRICS_NULLABLE_MIGRATION))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,8 @@ from sqlalchemy import text
 
 from db import get_session
 from filing_deltas import compute_filing_delta
-from http_client import get_shared_client, make_request
+from http_client import ResponseBodyTooLarge, get_shared_client, make_request
+from http_errors import safe_error_message
 from investment_service import (
     analyze_document,
     extract_document_text,
@@ -143,7 +144,11 @@ def _fetch_sec_submissions(cik: str, user_agent: str = SEC_USER_AGENT) -> dict |
         response.raise_for_status()
         return response.json()
     except Exception as exc:
-        logger.warning("sec_submissions_failed", cik=cik, error=str(exc))
+        logger.warning(
+            "sec_submissions_failed",
+            cik=cik,
+            error=safe_error_message(exc, provider="sec"),
+        )
         return None
 
 
@@ -294,17 +299,19 @@ def _fetch_sec_directory_bundle(
     def fetch_file(spec: tuple[str, int | None]) -> tuple[str, bytes, str]:
         filename, _declared_size = spec
         _sleep_between_requests()
-        response = make_request(
-            "GET",
-            directory_url + filename,
-            headers={"User-Agent": user_agent, "Accept": "*/*"},
-            timeout=180.0,
-            client=client,
-        )
+        try:
+            response = make_request(
+                "GET",
+                directory_url + filename,
+                headers={"User-Agent": user_agent, "Accept": "*/*"},
+                timeout=180.0,
+                client=client,
+                max_response_bytes=MAX_DIRECTORY_FILE_BYTES,
+            )
+        except ResponseBodyTooLarge as exc:
+            raise ValueError(f"SEC filing file exceeds limit: {filename}") from exc
         response.raise_for_status()
         content = response.content
-        if len(content) > MAX_DIRECTORY_FILE_BYTES:
-            raise ValueError(f"SEC filing file exceeds limit: {filename}")
         content_type = response.headers.get(
             "content-type",
             "application/octet-stream",
@@ -413,7 +420,7 @@ def discover_companies_house_filings(
         logger.warning(
             "companies_house_history_failed",
             company_number=company_number,
-            error=str(exc),
+            error=safe_error_message(exc, provider="companies_house"),
         )
         return []
 
@@ -506,17 +513,22 @@ def _fetch_companies_house_document(
 
     url = COMPANIES_HOUSE_DOCUMENT_URL.format(document_id=document_id)
     _sleep_for_companies_house()
-    response = client.get(
-        url,
-        auth=(api_key, ""),
-        headers={"Accept": content_type},
-        follow_redirects=True,
-        timeout=120.0,
-    )
+    try:
+        response = make_request(
+            "GET",
+            url,
+            headers={"Accept": content_type},
+            auth=(api_key, ""),
+            follow_redirects=True,
+            timeout=120.0,
+            deadline_seconds=120.0,
+            max_response_bytes=MAX_COMPANIES_HOUSE_DOCUMENT_BYTES,
+            client=client,
+        )
+    except ResponseBodyTooLarge as exc:
+        raise ValueError("Companies House document exceeds 100 MB") from exc
     response.raise_for_status()
     content = response.content
-    if len(content) > MAX_COMPANIES_HOUSE_DOCUMENT_BYTES:
-        raise ValueError("Companies House document exceeds 100 MB")
     response_type = response.headers.get("content-type", content_type)
     suffix = {
         "application/xhtml+xml": ".html",
@@ -547,7 +559,11 @@ def _fetch_edinet_documents(api_key: str, target_date: str) -> list[dict]:
         data = response.json()
         return data.get("results", [])
     except Exception as exc:
-        logger.warning("edinet_list_failed", date=target_date, error=str(exc))
+        logger.warning(
+            "edinet_list_failed",
+            date=target_date,
+            error=safe_error_message(exc, provider="edinet"),
+        )
         return []
 
 
@@ -632,7 +648,11 @@ def _fetch_opendart_list(api_key: str, corp_code: str, bgn_de: str) -> list[dict
             return []
         return data.get("list", [])
     except Exception as exc:
-        logger.warning("opendart_list_failed", corp_code=corp_code, error=str(exc))
+        logger.warning(
+            "opendart_list_failed",
+            corp_code=corp_code,
+            error=safe_error_message(exc, provider="opendart"),
+        )
         return []
 
 
@@ -798,11 +818,11 @@ def _ingest_filing(
                 analysis = analyze_document(config, str(document_id))
                 result["analysis_id"] = str(analysis.get("analysis_id", ""))
             except Exception as exc:
-                result["analysis_error"] = str(exc)
+                result["analysis_error"] = safe_error_message(exc, provider=source)
                 logger.warning(
                     "filing_auto_analysis_failed",
                     document_id=str(document_id),
-                    error=str(exc),
+                    error=safe_error_message(exc, provider=source),
                 )
         return result
     except Exception as exc:
@@ -811,9 +831,13 @@ def _ingest_filing(
             filing_source=source,
             filing_id=filing_id,
             source_url=source_url,
-            error=str(exc),
+            error=safe_error_message(exc, provider=source),
         )
-        return {"status": "failed", "filing_id": filing_id, "error": str(exc)}
+        return {
+            "status": "failed",
+            "filing_id": filing_id,
+            "error": safe_error_message(exc, provider=source),
+        }
 
 
 def run_filing_collection(

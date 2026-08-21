@@ -2800,7 +2800,7 @@ def _second_pass_candidates(
                    ORDER BY
                        has_link DESC,
                        has_context DESC,
-                       t.opportunity_score DESC,
+                       t.opportunity_score DESC NULLS LAST,
                        t.last_evaluated_at DESC NULLS LAST,
                        t.id
                    LIMIT :limit"""

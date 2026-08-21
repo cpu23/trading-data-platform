@@ -2035,10 +2035,9 @@ def _load_sec_index_document_types(
             timeout=30.0,
             max_retries=2,
             client=get_shared_client(),
+            max_response_bytes=MAX_DOCUMENT_BYTES,
         )
         response.raise_for_status()
-        if len(response.content) > MAX_DOCUMENT_BYTES:
-            return None
         markup = response.content.decode("utf-8", errors="replace")
         return _parse_sec_index_document_types(markup) or None
     except Exception as exc:
@@ -2129,10 +2128,9 @@ def _load_report_excerpt(config: dict, document: dict) -> tuple[str, str]:
             timeout=90.0,
             max_retries=2,
             client=get_shared_client(),
+            max_response_bytes=MAX_DOCUMENT_BYTES,
         )
         response.raise_for_status()
-        if len(response.content) > MAX_DOCUMENT_BYTES:
-            return existing, "stored_document"
         primary_text = extract_document_text(
             response.content,
             primary_name,

@@ -266,6 +266,36 @@ class RuntimeTopologyTests(unittest.TestCase):
             self.assertEqual(environment["FRED_API_KEY"], "demo-disabled")
             self.assertEqual(environment["OANDA_API_KEY"], "demo-disabled")
 
+    def test_demo_bootstrap_credentials_are_explicit_and_production_has_none(self):
+        """The demo bootstrap is explicit and safe: demo services carry
+        DEPLOYMENT_MODE=demo plus the non-secret demo/demo HTTP Basic
+        credentials so a fresh volume authenticates at the root with no setup
+        form. Production must not carry demo credentials or legacy auth."""
+        demo = load_compose(ROOT / "docker-compose.demo.yml")
+        for name in (
+            "migrate",
+            "orchestrator",
+            "scheduler",
+            "worker",
+            "outbox",
+            "quotes",
+            "demo-live",
+            "api",
+        ):
+            with self.subTest(service=name):
+                environment = demo["services"][name]["environment"]
+                self.assertEqual(environment["DEPLOYMENT_MODE"], "demo")
+                self.assertEqual(environment["LEGACY_BASIC_AUTH"], "1")
+                self.assertEqual(environment["DASHBOARD_USER"], "demo")
+                self.assertEqual(environment["DASHBOARD_PASSWORD"], "demo")
+
+        production = load_compose(ROOT / "docker-compose.yml")
+        for name, service in production["services"].items():
+            with self.subTest(service=name):
+                environment = service.get("environment", {})
+                self.assertNotIn("LEGACY_BASIC_AUTH", environment)
+                self.assertNotIn("DASHBOARD_PASSWORD", environment)
+
     def test_production_compose_exposes_exactly_the_eight_expected_roles(self):
         production = load_compose(ROOT / "docker-compose.yml")
         self.assertEqual(PRODUCTION_ROLES, set(production["services"]))

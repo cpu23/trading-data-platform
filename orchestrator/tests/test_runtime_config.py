@@ -1011,6 +1011,63 @@ class QualitySemanticsTests(unittest.TestCase):
                 self.assertIn("fred_DGS10_freshness", required)
                 self.assertNotIn("oanda_freshness", required)
 
+    def test_loaded_config_without_pricing_fails_closed_for_paid(self):
+        """A validated config must never manufacture paid pricing.
+
+        The runtime schema has no silent per-call estimate default: when
+        ``budgets.reservation_estimate_usd`` is absent, a paid model fails
+        closed at admission (``BudgetUnavailable``) instead of being priced
+        at a guessed 0.05 by the config layer.
+        """
+        from budgets import (
+            BudgetUnavailable,
+            _reservation_policy,
+            enforce_budget,
+            get_budget_config,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            operator = tmp / "operator.yaml"
+            secrets = tmp / "secrets.env"
+            path = tmp / "config.yaml"
+            _write_config(
+                path,
+                extra=(
+                    "budgets:\n"
+                    "  daily_llm_usd: 4.0\n"
+                    "  warn_at_pct: 75\n"
+                    "collectors:\n"
+                    "  fred:\n"
+                    "    enabled: true\n"
+                    "    api_key: real-fred-key\n"
+                    "    series:\n"
+                    "      - id: DGS10\n"
+                    "        frequency: daily\n"
+                ),
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "OPERATOR_CONFIG": str(operator),
+                    "SECRETS_FILE": str(secrets),
+                },
+                clear=True,
+            ):
+                config = load_config(str(path))
+                # No pricing materialized by the schema: the paid policy
+                # raises instead of guessing.
+                with self.assertRaisesRegex(ValueError, "no configured pricing"):
+                    _reservation_policy(config, "briefing")
+                # The enforce path maps that to the fail-closed block and
+                # never reaches a reservation.
+                with patch("budgets._reserve_budget_quota") as reserve:
+                    with self.assertRaises(BudgetUnavailable):
+                        enforce_budget(config, "briefing")
+                reserve.assert_not_called()
+                # The daily cap itself is still readable.
+                self.assertEqual(get_budget_config(config), (4.0, 75.0))
+
     def test_invalid_reload_retains_prior_snapshot_and_reports_status(self):
         """A rejected reload keeps the last valid config and never 500s."""
         with tempfile.TemporaryDirectory() as tmp:

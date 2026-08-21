@@ -2,6 +2,7 @@ import time
 from datetime import UTC, datetime
 
 from http_client import make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 
 logger = get_logger("collector.oanda")
@@ -312,7 +313,7 @@ class OandaCollector:
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             return {
                 "healthy": False,
-                "message": f"OANDA API unreachable: {exc}",
+                "message": f"OANDA API unreachable: {safe_error_message(exc, provider='oanda')}",
                 "latency_ms": latency_ms,
             }
 

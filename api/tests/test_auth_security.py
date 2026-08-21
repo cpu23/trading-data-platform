@@ -353,6 +353,198 @@ class AuthSecurityTests(unittest.TestCase):
             self.assertNotIn("api_key", response.text.lower())
 
 
+class DemoFreshVolumeBootstrapTests(unittest.TestCase):
+    """A fresh demo volume must authenticate with the configured HTTP Basic
+    credentials (demo/demo) and must never present the setup form. Production
+    keeps the fail-closed setup bootstrap."""
+
+    @staticmethod
+    def _html_root_request():
+        return SimpleNamespace(
+            url=SimpleNamespace(path="/"),
+            session={},
+            cookies={},
+            headers={"accept": "text/html"},
+            method="GET",
+        )
+
+    def test_fresh_root_keeps_setup_bootstrap_in_production_with_legacy(self):
+        request = self._html_root_request()
+        with (
+            patch.object(auth, "setup_complete", return_value=False),
+            patch.dict(
+                os.environ,
+                {"DEPLOYMENT_MODE": "production", "LEGACY_BASIC_AUTH": "1"},
+                clear=False,
+            ),
+        ):
+            self.assertEqual(auth.verify_credentials(request, None), "bootstrap")
+
+    def test_fresh_root_keeps_setup_bootstrap_without_configured_credentials(self):
+        request = self._html_root_request()
+        with (
+            patch.object(auth, "setup_complete", return_value=False),
+            patch.dict(
+                os.environ,
+                {
+                    "DEPLOYMENT_MODE": "demo",
+                    "LEGACY_BASIC_AUTH": "1",
+                    "DASHBOARD_USER": "",
+                    "DASHBOARD_PASSWORD": "",
+                },
+                clear=False,
+            ),
+        ):
+            self.assertEqual(auth.verify_credentials(request, None), "bootstrap")
+
+    def test_fresh_root_challenges_basic_in_demo_with_configured_credentials(self):
+        request = self._html_root_request()
+        with (
+            patch.object(auth, "setup_complete", return_value=False),
+            patch.dict(
+                os.environ,
+                {
+                    "DEPLOYMENT_MODE": "demo",
+                    "LEGACY_BASIC_AUTH": "1",
+                    "DASHBOARD_USER": "demo",
+                    "DASHBOARD_PASSWORD": "demo",
+                },
+                clear=False,
+            ),
+        ):
+            with self.assertRaises(auth.HTTPException) as raised:
+                auth.verify_credentials(request, None)
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(raised.exception.headers, {"WWW-Authenticate": "Basic"})
+
+    def test_demo_login_and_setup_pages_never_reach_the_setup_form(self):
+        from fastapi import FastAPI
+        from fastapi.templating import Jinja2Templates
+        from fastapi.testclient import TestClient
+
+        from routes.views import setup as setup_view
+
+        app = FastAPI()
+        app.state.templates = Jinja2Templates(
+            directory=Path(__file__).resolve().parents[1] / "templates"
+        )
+        app.include_router(setup_view.router)
+        with (
+            patch.object(setup_view, "setup_complete", return_value=False),
+            patch.dict(
+                os.environ,
+                {
+                    "DEPLOYMENT_MODE": "test",
+                    "LEGACY_BASIC_AUTH": "1",
+                    "DASHBOARD_USER": "demo",
+                    "DASHBOARD_PASSWORD": "demo",
+                },
+                clear=False,
+            ),
+        ):
+            client = TestClient(app)
+            login = client.get("/login", follow_redirects=False)
+            self.assertEqual(login.status_code, 303)
+            self.assertEqual(login.headers["location"], "/")
+            setup = client.get("/setup", follow_redirects=False)
+            self.assertEqual(setup.status_code, 303)
+            self.assertEqual(setup.headers["location"], "/")
+
+    def test_production_login_and_setup_pages_keep_the_setup_bootstrap(self):
+        from fastapi import FastAPI
+        from fastapi.templating import Jinja2Templates
+        from fastapi.testclient import TestClient
+
+        from routes.views import setup as setup_view
+
+        app = FastAPI()
+        app.state.templates = Jinja2Templates(
+            directory=Path(__file__).resolve().parents[1] / "templates"
+        )
+        app.include_router(setup_view.router)
+        with (
+            patch.object(setup_view, "setup_complete", return_value=False),
+            patch.dict(
+                os.environ,
+                {"DEPLOYMENT_MODE": "production", "LEGACY_BASIC_AUTH": "1"},
+                clear=False,
+            ),
+        ):
+            client = TestClient(app)
+            login = client.get("/login", follow_redirects=False)
+            self.assertEqual(login.status_code, 303)
+            self.assertEqual(login.headers["location"], "/setup")
+            setup = client.get("/setup", follow_redirects=False)
+            self.assertEqual(setup.status_code, 200)
+            self.assertIn('id="setup-token"', setup.text)
+
+    def test_fresh_demo_root_end_to_end_authenticates_with_basic_credentials(self):
+        import base64
+
+        from fastapi.testclient import TestClient
+
+        import main
+
+        config = {
+            "logging": {"level": "INFO"},
+            "llm": {
+                "base_url": "https://example.invalid/v1",
+                "default_model": "test-model",
+                "reasoning_effort": "high",
+            },
+            "budgets": {"daily_llm_usd": 1.0},
+            "collectors": {},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            with (
+                patch.object(auth, "STATE_DIR", state),
+                patch.object(auth, "AUTH_FILE", state / "auth.json"),
+                patch.object(auth, "OPERATOR_FILE", state / "operator.yaml"),
+                patch.object(auth, "ACTIVATION_FILE", state / "activated.json"),
+                patch.object(auth, "SECRETS_FILE", state / "secrets.env"),
+                patch.object(setup, "STATE_DIR", state),
+                patch.object(setup, "AUTH_FILE", state / "auth.json"),
+                patch.object(setup, "ACTIVATION_FILE", state / "activated.json"),
+                patch.object(main, "STATE_DIR", state),
+                patch.object(main, "AUTH_FILE", state / "auth.json"),
+                patch.object(main, "OPERATOR_FILE", state / "operator.yaml"),
+                patch.object(main, "ACTIVATION_FILE", state / "activated.json"),
+                patch.object(main, "load_config", return_value=config),
+                patch(
+                    "routes.views.settings.app_config.load_config",
+                    return_value=config,
+                ),
+            ):
+                client = TestClient(main.create_app())
+                root = client.get(
+                    "/", headers={"accept": "text/html"}, follow_redirects=False
+                )
+                self.assertEqual(root.status_code, 401)
+                self.assertEqual(root.headers.get("www-authenticate"), "Basic")
+                self.assertNotEqual(root.headers.get("location"), "/setup")
+                login = client.get(
+                    "/login", headers={"accept": "text/html"}, follow_redirects=False
+                )
+                self.assertEqual(login.status_code, 303)
+                self.assertEqual(login.headers["location"], "/")
+                setup_page = client.get(
+                    "/setup", headers={"accept": "text/html"}, follow_redirects=False
+                )
+                self.assertEqual(setup_page.status_code, 303)
+                self.assertEqual(setup_page.headers["location"], "/")
+                credentials = base64.b64encode(b"test:test").decode()
+                dashboard = client.get(
+                    "/",
+                    headers={
+                        "accept": "text/html",
+                        "Authorization": f"Basic {credentials}",
+                    },
+                    follow_redirects=False,
+                )
+                self.assertEqual(dashboard.status_code, 200)
+
+
 class AuthSigningSecurityTests(unittest.TestCase):
     """Fail-closed signing keys, CSRF enforcement, and middleware ordering."""
 

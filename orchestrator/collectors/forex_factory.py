@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from db import get_session
 from http_client import make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 
@@ -933,7 +934,7 @@ class ForexFactoryCollector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": f"ForexFactory unreachable: {exc}",
+                "message": f"ForexFactory unreachable: {safe_error_message(exc, provider='forex_factory')}",
                 "latency_ms": latency_ms,
             }
 

@@ -10,6 +10,7 @@ from collectors.base import CollectionResult, elapsed_ms
 from db import get_session, query_latest
 from errors import InvalidSourceData, PersistenceError, TransientSourceError
 from http_client import make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 
 logger = get_logger("collector.fred")
@@ -454,7 +455,7 @@ class FredCollector:
                 "latest_query_failed",
                 action="get_start_date",
                 series_id=series_id,
-                error=str(exc),
+                error=safe_error_message(exc, provider="fred"),
             )
 
         return datetime.now(UTC) - timedelta(days=backfill_years * 365)
@@ -643,7 +644,7 @@ class FredCollector:
             latency_ms = int(time.monotonic() * 1000 - start_ms)
             return {
                 "healthy": False,
-                "message": f"FRED API unreachable: {exc}",
+                "message": f"FRED API unreachable: {safe_error_message(exc, provider='fred')}",
                 "latency_ms": latency_ms,
             }
 

@@ -831,6 +831,47 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertIn("tr.thesis-opportunity-ineligible", style)
         self.assertIn("box-shadow: inset 3px 0 0", style)
 
+    def test_unknown_metrics_render_as_em_dash_never_zero(self):
+        # Unknown (NULL) metrics render as the em dash across the desk UI:
+        # app.js treats null/undefined as unknown (never 0), and the case
+        # and thesis templates default empty cells to the em dash.
+        script = (API_ROOT / "static" / "app.js").read_text()
+        self.assertIn("var thesisUnknown = '\\u2014';", script)
+        self.assertIn(
+            "if (value === null || value === undefined || value === '') "
+            "return thesisUnknown;",
+            script,
+        )
+        # A measured zero still renders as 0.00; only missing values get
+        # the em dash.
+        self.assertIn("return number.toFixed(2);", script)
+        self.assertNotIn("return 0.00;", script)
+
+        case_template = (API_ROOT / "templates" / "research_case.html").read_text()
+        for field in (
+            "economic_significance",
+            "market_sensitivity",
+            "persistence",
+            "breadth",
+            "investability",
+            "evidence_strength",
+        ):
+            self.assertIn(f"{{{{ research_case.{field} or '—' }}}}", case_template)
+        for cell in (
+            "demand_impulse",
+            "scarcity",
+            "pricing_power",
+            "margin_sensitivity",
+            "supply_responsiveness",
+            "public_market_investability",
+        ):
+            self.assertIn(f"{{{{ item.{cell} or '—' }}}}", case_template)
+        self.assertNotIn("or 'unknown'", case_template)
+
+        thesis_template = (API_ROOT / "templates" / "research_thesis.html").read_text()
+        self.assertIn('data-score="opportunity_score">—</dd>', thesis_template)
+        self.assertIn('data-thesis-field="evaluated">—</dd>', thesis_template)
+
     def test_thesis_detail_route_validates_uuid_before_render(self):
         client = self._client()
 

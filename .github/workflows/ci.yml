@@ -209,7 +209,6 @@ jobs:
         with:
           image-ref: trading-data-platform:0.1.0
           severity: CRITICAL,HIGH
-          ignore-unfixed: true
           exit-code: 1
       - name: Always tear down demo and volumes
         if: always()

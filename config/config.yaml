@@ -1554,7 +1554,10 @@ budgets:
   warn_at_pct: 80
   # Per-call admission estimate and lifetime for budget reservations; a paid
   # call is admitted only while spent + active reservations + estimate fit the
-  # cap. Optional: orchestrator defaults are 0.05 USD and 600 seconds.
+  # cap. There is no orchestrator-side pricing default: a paid model with no
+  # configured estimate fails closed, so this repository default (0.05 USD)
+  # is what admits generic paid calls; per-processor estimates below refine
+  # it. reservation_ttl_seconds defaults to 600 when absent.
   reservation_estimate_usd: 0.05
   # The live p99 thesis-autonomy call cost is about $0.0116. Keep a bounded
   # safety margin without reserving the generic $0.05 for every concurrent call.

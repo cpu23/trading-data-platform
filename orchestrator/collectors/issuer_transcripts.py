@@ -89,7 +89,8 @@ from bs4 import BeautifulSoup
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from contracts.outbound_security import OutboundSecurityError, resolve_redirect_url
 from errors import InvalidSourceData
-from http_client import make_request
+from http_client import ResponseBodyTooLarge, make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 from transcription import (
@@ -244,7 +245,7 @@ def _bounded_float(value, default: float, minimum: float, maximum: float) -> flo
 
 def _safe_error(exc: BaseException) -> str:
     """Bounded diagnostic text; never raw provider secrets."""
-    return str(exc)[:_MAX_ERROR_CHARS] or type(exc).__name__
+    return safe_error_message(exc, limit=_MAX_ERROR_CHARS) or type(exc).__name__
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -281,17 +282,33 @@ def _fetch_bounded(
     hop is shape-validated (https-only) here, then re-validated against DNS
     and pinned by the shared public-only transport at send time. Returns
     ``(response, final_url)``.
+
+    The body bound is enforced while the response streams
+    (``max_response_bytes``): an oversized declared ``Content-Length`` is
+    rejected before any bytes are read, and the stream is aborted as soon as
+    the actual byte count passes the cap, covering missing or false-small
+    ``Content-Length`` and chunked bodies. The delivered body is then
+    re-measured as a final guard, so oversized content still fails closed
+    with an inspectable per-issuer error even if the transport bound is
+    bypassed. Because the transport already capped the stream, the re-measure
+    never materializes more bytes than the bound allows.
     """
     current = url
     for _hop in range(max_redirects + 1):
-        response = make_request(
-            "GET",
-            current,
-            headers=headers,
-            timeout=timeout,
-            correlation_id=correlation_id,
-            follow_redirects=False,
-        )
+        try:
+            response = make_request(
+                "GET",
+                current,
+                headers=headers,
+                timeout=timeout,
+                correlation_id=correlation_id,
+                follow_redirects=False,
+                max_response_bytes=max_bytes,
+            )
+        except ResponseBodyTooLarge as exc:
+            raise InvalidSourceData(
+                f"downloaded content exceeds the {max_bytes}-byte limit: {current}"
+            ) from exc
         if response.is_redirect:
             location = response.headers.get("location")
             response.close()

@@ -537,14 +537,6 @@ class CompanyExpectationsCollector:
             max_response_bytes=MAX_RESPONSE_BYTES,
         )
         response.raise_for_status()
-        content = response.content
-        if (
-            isinstance(content, (bytes, bytearray))
-            and len(content) > MAX_RESPONSE_BYTES
-        ):
-            raise InvalidSourceData(
-                f"Nasdaq response exceeds {MAX_RESPONSE_BYTES} bytes"
-            )
         try:
             payload = response.json()
         except ValueError as exc:

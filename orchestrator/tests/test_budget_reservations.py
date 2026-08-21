@@ -25,6 +25,7 @@ from pg_support import parse_config, provision, require_postgres, truncate  # no
 from budgets import (
     BudgetExceeded,
     BudgetUnavailable,
+    _known_free_model,
     _reservation_policy,
     _reserve_budget_quota,
     enforce_budget,
@@ -64,8 +65,17 @@ def _insert(result):
 
 
 class ReservationPolicyTests(unittest.TestCase):
-    def test_default_estimate_and_ttl(self):
-        self.assertEqual(_reservation_policy({}, "briefing"), (0.05, 600.0))
+    def test_paid_model_without_configured_pricing_fails_closed(self):
+        # A paid call whose pricing is not configured must never be admitted
+        # with a guessed estimate: no estimate, no reservation, no dispatch.
+        for budgets in ({}, {"daily_llm_usd": 2.0}):
+            with self.subTest(budgets=budgets):
+                with self.assertRaisesRegex(ValueError, "no configured pricing"):
+                    _reservation_policy({"budgets": budgets}, "briefing")
+
+    def test_generic_pricing_is_the_paid_fallback(self):
+        config = {"budgets": {"reservation_estimate_usd": 0.05}}
+        self.assertEqual(_reservation_policy(config, "briefing"), (0.05, 600.0))
 
     def test_per_processor_estimate_wins_over_global(self):
         config = {
@@ -76,6 +86,24 @@ class ReservationPolicyTests(unittest.TestCase):
         }
         self.assertEqual(_reservation_policy(config, "briefing")[0], 0.2)
         self.assertEqual(_reservation_policy(config, "macro_regime")[0], 0.5)
+
+    def test_known_free_model_reserves_zero_without_pricing(self):
+        # A known-free slug (OpenRouter :free variant) reserves zero cost
+        # even when no pricing is configured at all.
+        self.assertEqual(
+            _reservation_policy(
+                {}, "thesis_autonomy", model="nvidia/nemotron-3-super-120b-a12b:free"
+            ),
+            (0.0, 600.0),
+        )
+
+    def test_known_free_detection_is_case_and_whitespace_tolerant(self):
+        self.assertTrue(_known_free_model("Provider/Model:free"))
+        self.assertTrue(_known_free_model(" provider/model:FREE "))
+        self.assertFalse(_known_free_model("provider/model"))
+        self.assertFalse(_known_free_model("provider/model:freebie"))
+        self.assertFalse(_known_free_model(None))
+        self.assertFalse(_known_free_model(""))
 
     def test_invalid_policy_fails_closed(self):
         for budgets in (
@@ -93,7 +121,10 @@ class ReservationPolicyTests(unittest.TestCase):
         # TTL must cover llm.stage_timeout_seconds * max_retries + 30s slack.
         config = {
             "llm": {"stage_timeout_seconds": 90, "max_retries": 1},
-            "budgets": {"reservation_ttl_seconds": 60},
+            "budgets": {
+                "reservation_estimate_usd": 0.05,
+                "reservation_ttl_seconds": 60,
+            },
         }
         with self.assertRaises(ValueError):
             _reservation_policy(config, "briefing")
@@ -105,6 +136,7 @@ class ReservationPolicyTests(unittest.TestCase):
             "llm": {"stage_timeout_seconds": 90, "max_retries": 1},
             "budgets": {
                 "daily_llm_usd": 2.0,
+                "reservation_estimate_usd": 0.05,
                 "reservation_ttl_seconds": 60,
             },
         }
@@ -180,14 +212,104 @@ class ReservationAdmissionTests(unittest.TestCase):
         ):
             with self.assertRaises(BudgetUnavailable):
                 enforce_budget(
-                    {"budgets": {"daily_llm_usd": 2.0}}, "briefing"
+                    {
+                        "budgets": {
+                            "daily_llm_usd": 2.0,
+                            "reservation_estimate_usd": 0.05,
+                        }
+                    },
+                    "briefing",
                 )
 
-    def test_zero_cap_denies_all_paid_calls(self):
+    def test_enforce_budget_rejects_paid_model_with_unknown_pricing(self):
+        # A paid model with no configured pricing fails closed into
+        # BudgetUnavailable before any reservation or provider call.
         with patch("budgets._reserve_budget_quota") as reserve:
-            with self.assertRaises(BudgetExceeded):
+            with self.assertRaises(BudgetUnavailable):
+                enforce_budget(
+                    {"budgets": {"daily_llm_usd": 2.0}},
+                    "thesis_autonomy",
+                    model="openai/gpt-5.6-luna",
+                )
+        reserve.assert_not_called()
+
+    def test_enforce_budget_admits_known_free_model_with_zero_reservation(self):
+        # A known-free model reserves zero cost and is admitted even when the
+        # paid cap is fully committed: the reservation cannot oversubscribe.
+        session = _session([_sums(2.0, 0.0), _insert(("res-free",))])
+        with patch("budgets.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            permit = enforce_budget(
+                {
+                    "budgets": {
+                        "daily_llm_usd": 2.0,
+                        "reservation_estimate_usd": 0.05,
+                    }
+                },
+                "thesis_autonomy",
+                model="nvidia/nemotron-3-super-120b-a12b:free",
+                correlation_id="cid-free",
+                component="thesis_autonomy",
+            )
+        self.assertTrue(permit.valid)
+        self.assertEqual(permit.reservation_id, "res-free")
+        insert_params = session.execute.call_args_list[3].args[1]
+        self.assertEqual(insert_params["estimate"], 0.0)
+        self.assertEqual(insert_params["processor"], "thesis_autonomy")
+        # The exhausted cap was bypassed for the zero-cost reservation: the
+        # sums query still ran (spent 2.0, reserved 0.0) but no BudgetExceeded
+        # was raised and the insert happened.
+        self.assertEqual(len(session.execute.call_args_list), 4)
+
+    def test_zero_cap_denies_all_paid_calls(self):
+        # A zero daily cap denies every paid call. With pricing configured
+        # the quota check rejects the reservation outright...
+        session = _session([_sums(0.0, 0.0)])
+        with patch("budgets.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            with self.assertRaises(BudgetExceeded) as raised:
+                enforce_budget(
+                    {
+                        "budgets": {
+                            "daily_llm_usd": 0,
+                            "reservation_estimate_usd": 0.05,
+                        }
+                    },
+                    "briefing",
+                )
+        self.assertEqual(raised.exception.cap, 0.0)
+        # No insert was attempted on the blocked path.
+        self.assertEqual(len(session.execute.call_args_list), 3)
+        # ...and without pricing the paid call fails closed (BudgetUnavailable)
+        # before any reservation is attempted, never admitting with a guess.
+        with patch("budgets._reserve_budget_quota") as reserve:
+            with self.assertRaises(BudgetUnavailable):
                 enforce_budget({"budgets": {"daily_llm_usd": 0}}, "briefing")
         reserve.assert_not_called()
+
+    def test_known_free_model_reserves_zero_when_paid_cap_is_zero(self):
+        # A zero paid daily cap denies paid calls but must not block a
+        # known-free model: the zero-cost reservation cannot oversubscribe,
+        # so it is admitted with an auditable reservation row.
+        session = _session([_sums(0.0, 0.0), _insert(("res-free-zero",))])
+        with patch("budgets.get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            permit = enforce_budget(
+                {"budgets": {"daily_llm_usd": 0}},
+                "thesis_autonomy",
+                model="nvidia/nemotron-3-super-120b-a12b:free",
+                correlation_id="cid-free-zero",
+                component="thesis_autonomy",
+            )
+        self.assertTrue(permit.valid)
+        self.assertEqual(permit.reservation_id, "res-free-zero")
+        insert_params = session.execute.call_args_list[3].args[1]
+        self.assertEqual(insert_params["estimate"], 0.0)
+        self.assertEqual(insert_params["processor"], "thesis_autonomy")
+        # The paid cap of zero was bypassed for the zero-cost reservation:
+        # the sums query ran (spent 0.0, reserved 0.0) but no BudgetExceeded
+        # was raised and the insert happened.
+        self.assertEqual(len(session.execute.call_args_list), 4)
 
     def test_negative_cap_fails_closed_not_unlimited(self):
         with patch("budgets._reserve_budget_quota") as reserve:

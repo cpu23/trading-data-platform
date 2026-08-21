@@ -1,3 +1,4 @@
+import json
 import math
 import time
 from collections.abc import Callable
@@ -268,6 +269,123 @@ def resolve_request_policy(
     )
 
 
+def _prepare_request(
+    llm_config: dict,
+    processor_id: str,
+    prompt: str,
+    policy: LLMRequestPolicy,
+    *,
+    messages: list[dict] | None = None,
+    include_temperature: bool | None = None,
+    response_schema: dict | None = None,
+    reasoning_effort: str | None = None,
+) -> tuple[dict, dict]:
+    """Deterministically validate and build the outbound request and headers.
+
+    Runs before budget admission: every raise here is a pure function of
+    caller/config inputs (empty messages, malformed ``max_prices``, malformed
+    ``response_schema``, missing/invalid api_key, and their equivalents), so a
+    request that can never be dispatched is rejected before any reservation is
+    created. Admission happens only once the request is known to be
+    dispatchable, keeping every post-admission exit on the settle/retain/
+    release path.
+    """
+    if include_temperature is None:
+        include_temperature = llm_config.get("include_temperature", True)
+    if not isinstance(include_temperature, bool):
+        raise ValueError("llm.include_temperature must be a boolean")
+
+    if messages is None:
+        request_messages = [{"role": "user", "content": prompt}]
+    else:
+        if not messages:
+            raise ValueError("messages must be a non-empty array")
+        request_messages = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("each message must be an object")
+            role = message.get("role")
+            content = message.get("content")
+            if role not in {"system", "user", "assistant"}:
+                raise ValueError("message role is invalid")
+            if not isinstance(content, str) or not content:
+                raise ValueError("message content must be a non-empty string")
+            request_messages.append(dict(message))
+
+    request_body = {
+        "model": policy.model,
+        "messages": request_messages,
+        "max_tokens": policy.max_output_tokens,
+    }
+    if include_temperature:
+        request_body["temperature"] = policy.temperature
+
+    provider_preferences = {}
+    max_price = _processor_value(llm_config, "max_prices", processor_id, None)
+    if max_price is not None:
+        if not isinstance(max_price, dict) or not max_price:
+            raise ValueError(
+                f"llm.max_prices for {processor_id} must be a non-empty object"
+            )
+        provider_preferences["max_price"] = dict(max_price)
+
+    if response_schema is not None:
+        if not isinstance(response_schema, dict):
+            raise ValueError("response_schema must be a JSON Schema object")
+        schema_config = response_schema
+        if not (
+            isinstance(response_schema.get("name"), str)
+            and isinstance(response_schema.get("schema"), dict)
+        ):
+            schema_config = {
+                "name": "structured_response",
+                "strict": True,
+                "schema": response_schema,
+            }
+        request_body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": schema_config,
+        }
+        if _processor_value(
+            llm_config,
+            "require_parameters",
+            processor_id,
+            True,
+        ):
+            provider_preferences["require_parameters"] = True
+    elif policy.structured_response:
+        request_body["response_format"] = {"type": "json_object"}
+        if _processor_value(
+            llm_config,
+            "require_parameters",
+            processor_id,
+            True,
+        ):
+            provider_preferences["require_parameters"] = True
+    if provider_preferences:
+        request_body["provider"] = provider_preferences
+    if reasoning_effort is not None:
+        request_body["reasoning"] = {"effort": reasoning_effort}
+
+    api_key = _processor_value(
+        llm_config,
+        "api_keys",
+        processor_id,
+        llm_config["api_key"],
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/trading-data-platform",
+    }
+    try:
+        json.dumps(request_body, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LLM request body must be JSON-serializable") from exc
+    return request_body, headers
+
+
 class LLMStage:
     """Own one processor's non-resetting LLM deadline and safe attempt telemetry."""
 
@@ -361,6 +479,18 @@ class LLMStage:
 
         try:
             if self._budget_permit is None:
+                # Deterministic local validation precedes admission: a
+                # malformed request (bad max_prices/response_schema/api_key
+                # config) must never strand an active reservation, so it is
+                # rejected before the permit is created.
+                _prepare_request(
+                    self.config["llm"],
+                    self.processor_id,
+                    prompt,
+                    self.policy,
+                    response_schema=self.response_schema,
+                    reasoning_effort=self.reasoning_effort,
+                )
                 try:
                     self._budget_permit = enforce_budget(
                         self.config,
@@ -368,6 +498,7 @@ class LLMStage:
                         self.budget_context,
                         correlation_id=self.correlation_id,
                         component=self.processor_id,
+                        model=self.policy.model,
                     )
                 except BudgetBlock as exc:
                     exc.telemetry = self.telemetry
@@ -440,10 +571,6 @@ def call_llm(
         config = load_config()
 
     llm_config = config["llm"]
-    if include_temperature is None:
-        include_temperature = llm_config.get("include_temperature", True)
-    if not isinstance(include_temperature, bool):
-        raise ValueError("llm.include_temperature must be a boolean")
     policy = resolve_request_policy(
         config,
         processor_id,
@@ -453,6 +580,22 @@ def call_llm(
         timeout=timeout,
         structured_response=structured_response,
     )
+    # Deterministic local validation and request construction precede budget
+    # admission: a malformed request (empty messages, bad max_prices,
+    # malformed response_schema, missing/invalid api_key) is rejected before
+    # any reservation exists, so no paid-admitted call can fail before HTTP
+    # dispatch with an un-released reservation. Every post-admission exit is
+    # on the settle/retain/release path below.
+    request_body, headers = _prepare_request(
+        llm_config,
+        processor_id,
+        prompt,
+        policy,
+        messages=messages,
+        include_temperature=include_temperature,
+        response_schema=response_schema,
+        reasoning_effort=reasoning_effort,
+    )
     if _budget_permit is None or not _budget_permit.valid:
         _budget_permit = enforce_budget(
             config,
@@ -460,6 +603,7 @@ def call_llm(
             budget_context,
             correlation_id=correlation_id,
             component=processor_id,
+            model=policy.model,
         )
     # Paid OpenRouter chat completions are single-attempt: the endpoint has no
     # documented inbound idempotency contract, so an ambiguous transport or
@@ -468,88 +612,6 @@ def call_llm(
     # calls instead.
     request_attempts = 1
 
-    if messages is None:
-        request_messages = [{"role": "user", "content": prompt}]
-    else:
-        if not messages:
-            raise ValueError("messages must be a non-empty array")
-        request_messages = []
-        for message in messages:
-            if not isinstance(message, dict):
-                raise ValueError("each message must be an object")
-            role = message.get("role")
-            content = message.get("content")
-            if role not in {"system", "user", "assistant"}:
-                raise ValueError("message role is invalid")
-            if not isinstance(content, str) or not content:
-                raise ValueError("message content must be a non-empty string")
-            request_messages.append(dict(message))
-    request_body = {
-        "model": policy.model,
-        "messages": request_messages,
-        "max_tokens": policy.max_output_tokens,
-    }
-    if include_temperature:
-        request_body["temperature"] = policy.temperature
-    provider_preferences = {}
-    max_price = _processor_value(llm_config, "max_prices", processor_id, None)
-    if max_price is not None:
-        if not isinstance(max_price, dict) or not max_price:
-            raise ValueError(
-                f"llm.max_prices for {processor_id} must be a non-empty object"
-            )
-        provider_preferences["max_price"] = dict(max_price)
-
-    if response_schema is not None:
-        if not isinstance(response_schema, dict):
-            raise ValueError("response_schema must be a JSON Schema object")
-        schema_config = response_schema
-        if not (
-            isinstance(response_schema.get("name"), str)
-            and isinstance(response_schema.get("schema"), dict)
-        ):
-            schema_config = {
-                "name": "structured_response",
-                "strict": True,
-                "schema": response_schema,
-            }
-        request_body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": schema_config,
-        }
-        if _processor_value(
-            llm_config,
-            "require_parameters",
-            processor_id,
-            True,
-        ):
-            provider_preferences["require_parameters"] = True
-    elif policy.structured_response:
-        request_body["response_format"] = {"type": "json_object"}
-        if _processor_value(
-            llm_config,
-            "require_parameters",
-            processor_id,
-            True,
-        ):
-            provider_preferences["require_parameters"] = True
-    if provider_preferences:
-        request_body["provider"] = provider_preferences
-    if reasoning_effort is not None:
-        request_body["reasoning"] = {"effort": reasoning_effort}
-
-    api_key = _processor_value(
-        llm_config,
-        "api_keys",
-        processor_id,
-        llm_config["api_key"],
-    )
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/trading-data-platform",
-    }
     started_at = time.monotonic()
     logger.info(
         "llm_call_started",

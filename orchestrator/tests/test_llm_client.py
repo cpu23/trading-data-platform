@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
@@ -8,7 +9,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from http_client import make_request
-from llm_client import OPENROUTER_URL, call_llm
+from llm_client import OPENROUTER_URL, LLMStage, call_llm
 
 
 def _response(
@@ -190,6 +191,236 @@ class LlmClientTests(unittest.TestCase):
                 messages=[{"role": "tool", "content": "unsafe"}],
                 _budget_permit=Mock(valid=True),
             )
+        request.assert_not_called()
+
+
+class LlmReservationLeakTests(unittest.TestCase):
+    """Deterministic local validation must precede budget admission.
+
+    A malformed request (empty messages, bad max_prices, malformed
+    response_schema, missing api_key, and their equivalents) must be rejected
+    before ``enforce_budget`` runs: an admitted-but-undispatchable call would
+    otherwise leave an active reservation that ties up the daily cap until its
+    TTL expires. These tests drive the real admission path (``budgets.get_session``
+    patched) and assert no admission query ever runs on a local failure, plus a
+    control proving a valid request does admit and settle.
+    """
+
+    def setUp(self):
+        self.config = {
+            "llm": {
+                "api_key": "top-secret",
+                "models": {"default": "provider/model"},
+            },
+            "budgets": {
+                "daily_llm_usd": 2.0,
+                "warn_at_pct": 80,
+                "reservation_estimate_usd": 0.05,
+            },
+        }
+
+    @staticmethod
+    def _admission_session():
+        session = Mock()
+        lock = Mock()
+        lock.fetchone.return_value = None
+        sweep = Mock()
+        sweep.fetchone.return_value = None
+        sums = Mock()
+        sums.fetchone.return_value = SimpleNamespace(
+            _mapping={"spent_usd": 0.5, "reserved_usd": 0.0}
+        )
+        insert = Mock()
+        insert.fetchone.return_value = ("reservation-1",)
+        trailing = Mock()
+        trailing.fetchone.return_value = None
+        queue = [lock, sweep, sums, insert]
+        session.execute.side_effect = lambda *args, **kwargs: (
+            queue.pop(0) if queue else trailing
+        )
+        return session
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_empty_messages_rejected_before_admission(self, get_session, request):
+        with self.assertRaisesRegex(ValueError, "messages must be a non-empty array"):
+            call_llm("hello", config=self.config, messages=[])
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_non_dict_message_rejected_before_admission(self, get_session, request):
+        with self.assertRaisesRegex(ValueError, "each message must be an object"):
+            call_llm("hello", config=self.config, messages=[("role", "user")])
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_invalid_role_rejected_before_admission(self, get_session, request):
+        with self.assertRaisesRegex(ValueError, "message role is invalid"):
+            call_llm(
+                "hello",
+                config=self.config,
+                messages=[{"role": "tool", "content": "unsafe"}],
+            )
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_empty_content_rejected_before_admission(self, get_session, request):
+        with self.assertRaisesRegex(ValueError, "message content must be a non-empty"):
+            call_llm(
+                "hello",
+                config=self.config,
+                messages=[{"role": "user", "content": ""}],
+            )
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_malformed_max_prices_rejected_before_admission(self, get_session, request):
+        for max_prices in ("not-a-dict", {}):
+            with self.subTest(max_prices=max_prices):
+                config = {
+                    **self.config,
+                    "llm": {
+                        **self.config["llm"],
+                        "max_prices": {"briefing": max_prices},
+                    },
+                }
+                with self.assertRaisesRegex(
+                    ValueError, "llm.max_prices for briefing must be a non-empty object"
+                ):
+                    call_llm("hello", config=config, processor_id="briefing")
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_malformed_response_schema_rejected_before_admission(
+        self, get_session, request
+    ):
+        with self.assertRaisesRegex(
+            ValueError, "response_schema must be a JSON Schema object"
+        ):
+            call_llm("hello", config=self.config, response_schema="not-a-schema")
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_unserializable_nested_request_rejected_before_admission(
+        self, get_session, request
+    ):
+        invalid_inputs = (
+            {
+                "response_schema": {
+                    "type": "object",
+                    "properties": {"value": {"default": object()}},
+                }
+            },
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hello",
+                        "metadata": object(),
+                    }
+                ]
+            },
+        )
+        for kwargs in invalid_inputs:
+            with self.subTest(kwargs=tuple(kwargs)):
+                with self.assertRaisesRegex(
+                    ValueError, "LLM request body must be JSON-serializable"
+                ):
+                    call_llm("hello", config=self.config, **kwargs)
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_missing_api_key_rejected_before_admission(self, get_session, request):
+        config = {
+            **self.config,
+            "llm": {"models": {"default": "provider/model"}},
+        }
+        with self.assertRaises(KeyError):
+            call_llm("hello", config=config)
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_invalid_include_temperature_rejected_before_admission(
+        self, get_session, request
+    ):
+        with self.assertRaisesRegex(
+            ValueError, "llm.include_temperature must be a boolean"
+        ):
+            call_llm("hello", config=self.config, include_temperature="yes")
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_valid_request_admits_and_settles(self, get_session, request):
+        get_session.return_value.__enter__.return_value = self._admission_session()
+        response = Mock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.01},
+        }
+        request.return_value = response
+
+        result = call_llm("hello", config=self.config)
+
+        self.assertEqual(result["content"], "ok")
+        request.assert_called_once()
+        # Control: a valid request did run the full admission sequence,
+        # including the INSERT that creates the reservation.
+        insert_sql = str(
+            get_session.return_value.__enter__.return_value.execute.call_args_list[
+                3
+            ].args[0]
+        )
+        self.assertIn("INSERT INTO budget_reservations", insert_sql)
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_stage_malformed_config_rejected_before_admission(
+        self, get_session, request
+    ):
+        config = {
+            **self.config,
+            "llm": {
+                **self.config["llm"],
+                "max_prices": {"briefing": "not-a-dict"},
+            },
+        }
+        stage = LLMStage(config, "briefing")
+        with self.assertRaisesRegex(
+            ValueError, "llm.max_prices for briefing must be a non-empty object"
+        ):
+            stage.call("hello")
+        get_session.assert_not_called()
+        request.assert_not_called()
+
+    @patch("llm_client.make_request")
+    @patch("budgets.get_session")
+    def test_stage_malformed_response_schema_rejected_before_admission(
+        self, get_session, request
+    ):
+        stage = LLMStage(self.config, "briefing", response_schema="not-a-schema")
+        with self.assertRaisesRegex(
+            ValueError, "response_schema must be a JSON Schema object"
+        ):
+            stage.call("hello")
+        get_session.assert_not_called()
         request.assert_not_called()
 
 

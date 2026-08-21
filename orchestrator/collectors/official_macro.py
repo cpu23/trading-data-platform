@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 
@@ -68,12 +69,17 @@ class ConfiguredMacroCollector:
                     empty_series.append(series["id"])
                 records.extend(parsed)
             except Exception as exc:
-                failures.append({"series_id": series["id"], "error": str(exc)})
+                failures.append(
+                    {
+                        "series_id": series["id"],
+                        "error": safe_error_message(exc, provider=self.source_id),
+                    }
+                )
                 logger.error(
                     "official_series_failed",
                     source_id=self.source_id,
                     series_id=series["id"],
-                    error=str(exc),
+                    error=safe_error_message(exc, provider=self.source_id),
                     correlation_id=correlation_id,
                 )
 
@@ -221,7 +227,7 @@ class ConfiguredMacroCollector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": str(exc),
+                "message": safe_error_message(exc, provider=self.source_id),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 

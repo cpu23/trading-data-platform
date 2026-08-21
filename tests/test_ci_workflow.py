@@ -75,6 +75,24 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("down --volumes", teardown[0]["run"])
         self.assertIn("--remove-orphans", teardown[0]["run"])
 
+    def test_trivy_gate_requires_zero_high_critical_without_exceptions(self):
+        """The image gate enforces all HIGH/CRITICAL findings (fixed or not);
+        ignore-unfixed, severity exceptions, and ignore rules are prohibited."""
+        job = self.workflow["jobs"]["demo-smoke"]
+        scan = next(
+            step for step in job["steps"] if "trivy-action" in step.get("uses", "")
+        )
+        self.assertEqual(scan["with"]["image-ref"], "trading-data-platform:0.1.0")
+        self.assertEqual(scan["with"]["severity"], "CRITICAL,HIGH")
+        # yaml.BaseLoader keeps scalars as strings.
+        self.assertEqual(scan["with"]["exit-code"], "1")
+        rendered = yaml.safe_dump(scan)
+        self.assertNotIn("ignore-unfixed", rendered)
+        self.assertNotIn("--ignore-unfixed", rendered)
+        self.assertNotIn("ignorefile", rendered)
+        self.assertNotIn("skip-files", rendered)
+        self.assertNotIn("skip-dirs", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

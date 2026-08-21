@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.fred import FRED_OBSERVATIONS_URL, FRED_SERIES_URL, FredCollector
@@ -797,6 +799,48 @@ class FredOrchestratorMetricTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["db_write_duration_ms"], 40)
         self.assertEqual(write_log.call_args.kwargs["api_calls_made"], 1)
         estimate.assert_not_called()
+
+
+class FredHealthCheckSentinelTests(unittest.TestCase):
+    def _config(self, api_key):
+        return {"collectors": {"fred": {"api_key": api_key}}}
+
+    @patch("collectors.fred.make_request")
+    def test_health_message_never_contains_api_key(self, make_request):
+        secret = "SENTINEL-FRED-KEY"
+        request = httpx.Request(
+            "GET",
+            FRED_SERIES_URL,
+            params={"series_id": "GDP", "api_key": secret, "file_type": "json"},
+        )
+        make_request.return_value = httpx.Response(401, request=request, content=b"")
+
+        result = FredCollector().health_check(self._config(secret))
+
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["message"], "FRED API returned status 401")
+        self.assertNotIn(secret, result["message"])
+
+    @patch("collectors.fred.make_request")
+    def test_health_exception_message_never_contains_api_key(self, make_request):
+        secret = "SENTINEL-FRED-KEY"
+        request = httpx.Request(
+            "GET",
+            FRED_SERIES_URL,
+            params={"series_id": "GDP", "api_key": secret, "file_type": "json"},
+        )
+        make_request.side_effect = httpx.HTTPStatusError(
+            f"401 Unauthorized for url '{request.url}'",
+            request=request,
+            response=httpx.Response(401, request=request, content=b""),
+        )
+
+        result = FredCollector().health_check(self._config(secret))
+
+        self.assertFalse(result["healthy"])
+        self.assertNotIn(secret, result["message"])
+        self.assertNotIn("api_key", result["message"])
+        self.assertIn("api.stlouisfed.org", result["message"])
 
 
 if __name__ == "__main__":

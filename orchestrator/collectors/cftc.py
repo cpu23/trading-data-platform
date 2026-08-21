@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from collectors.base import CollectionResult, CollectorNoData, CollectorSetupRequired
 from errors import ERROR_CLASS_UNKNOWN, InvalidSourceData, classify_error
 from http_client import make_request
+from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 
@@ -315,7 +316,7 @@ class CftcCollector:
             return {
                 "healthy": False,
                 "state": "failed",
-                "message": str(exc),
+                "message": safe_error_message(exc, provider="cftc"),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
 

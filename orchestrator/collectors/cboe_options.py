@@ -47,7 +47,7 @@ import httpx
 
 from collectors.base import CollectionResult, CollectionWriteBatch
 from errors import InvalidSourceData, TransientSourceError
-from http_client import make_request
+from http_client import ResponseBodyTooLarge, make_request
 from logging_config import get_logger
 from options_analytics import analyze_chain
 from provider_origins import validate_configured_origin
@@ -252,16 +252,23 @@ class CboeOptionsCollector:
                 _sleep(bounds["rate_delay_seconds"])
             url = f"{base_url.rstrip('/')}/{symbol}.json"
             try:
-                response = make_request(
-                    method="GET",
-                    url=url,
-                    headers={
-                        "User-Agent": user_agent,
-                        "Accept": "application/json",
-                    },
-                    correlation_id=correlation_id,
-                    deadline_seconds=bounds["request_deadline_seconds"],
-                )
+                try:
+                    response = make_request(
+                        method="GET",
+                        url=url,
+                        headers={
+                            "User-Agent": user_agent,
+                            "Accept": "application/json",
+                        },
+                        correlation_id=correlation_id,
+                        deadline_seconds=bounds["request_deadline_seconds"],
+                        max_response_bytes=bounds["max_response_bytes"],
+                    )
+                except ResponseBodyTooLarge as exc:
+                    raise InvalidSourceData(
+                        f"cboe_options chain exceeds byte bound "
+                        f"({bounds['max_response_bytes']} bytes)"
+                    ) from exc
                 self._enforce_byte_bound(response, bounds["max_response_bytes"])
                 try:
                     payload = response.json()
@@ -501,6 +508,13 @@ class CboeOptionsCollector:
 
     @staticmethod
     def _enforce_byte_bound(response, max_bytes: int) -> None:
+        """Reject an oversized declared body before consuming it.
+
+        The actual byte count is enforced incrementally while the response
+        streams (``max_response_bytes`` on the request); this early check
+        only rejects an already-declared ``Content-Length`` so the body is
+        never materialized at all.
+        """
         declared = response.headers.get("content-length")
         if declared is not None:
             try:
@@ -511,11 +525,6 @@ class CboeOptionsCollector:
                     )
             except (TypeError, ValueError):
                 pass  # Unparseable header is not evidence of size; body check follows.
-        if len(response.content) > max_bytes:
-            raise InvalidSourceData(
-                f"cboe_options chain exceeds byte bound "
-                f"({len(response.content)} > {max_bytes})"
-            )
 
     @staticmethod
     def _parse_chain_payload(
