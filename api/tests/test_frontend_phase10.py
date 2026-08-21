@@ -85,7 +85,14 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertNotIn("cycle-mode-select", self.header)
         # Navigation stays focused on primary market and research workspaces.
         self.assertIn("partials/navigation.html", self.header)
-        for label in ("Dashboard", "News", "Investments", "Research", "Settings"):
+        for label in (
+            "Dashboard",
+            "Markets",
+            "News",
+            "Investments",
+            "Research",
+            "Settings",
+        ):
             self.assertIn(label, self.navigation)
         for label in ("Logs", "Quality", "Operations"):
             self.assertNotIn(f"'{label}'", self.navigation)
@@ -96,6 +103,25 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("data-chip-label", self.header)
         self.assertIn("data-chip-settings", self.header)
         self.assertIn("initDataChip", self.app_js)
+
+    def test_navigation_pages_in_exact_contract_order(self):
+        # Contract order: Dashboard, Markets, News, Investments, Research,
+        # Settings. Markets sits between Dashboard and News, and no
+        # operational page may appear in the primary navigation.
+        import re
+
+        pages = re.findall(r"\('([^']*)', '([^']*)'\)", self.navigation)
+        self.assertEqual(
+            pages,
+            [
+                ("/", "Dashboard"),
+                ("/markets", "Markets"),
+                ("/news", "News"),
+                ("/investment", "Investments"),
+                ("/research", "Research"),
+                ("/settings", "Settings"),
+            ],
+        )
 
     def test_settings_hosts_cycle_controls_and_operations(self):
         self.assertEqual(self.settings.count('id="run-cycle-btn"'), 1)
@@ -146,7 +172,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertEqual(context["clusters"], [])
 
 
-class ResearchIntelligenceRenderingContracts(unittest.TestCase):
+class ResearchCaseRenderingContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = Environment(
@@ -280,42 +306,6 @@ class ResearchIntelligenceRenderingContracts(unittest.TestCase):
             self.assertIn(text, rendered)
         self.assertNotIn("BUY", rendered)
         self.assertNotIn("SELL", rendered)
-
-    def test_dashboard_intelligence_partial_renders_only_supplied_material_context(self):
-        template = self.env.get_template("partials/research_intelligence.html")
-        empty = template.render(research_intelligence={"drivers": [], "cases": []})
-        self.assertEqual(empty.strip(), "")
-
-        rendered = template.render(
-            research_intelligence={
-                "drivers": [
-                    {
-                        "target": "USD",
-                        "direction": "supportive",
-                        "driver_label": "Relative policy expectations",
-                        "mechanism": "Expected rate differential widened.",
-                        "strength": "moderate",
-                        "horizon": "weeks",
-                        "changed_since_prior": True,
-                    }
-                ],
-                "cases": [
-                    {
-                        "id": "case-1",
-                        "title": "Grid equipment constraint",
-                        "what_changed": "Independent evidence strengthened.",
-                        "lifecycle_state": "research_ready",
-                        "evidence_strength": "high",
-                    }
-                ],
-            }
-        )
-        self.assertIn("Major-market drivers", rendered)
-        self.assertIn("Relative policy expectations", rendered)
-        self.assertIn("supportive · moderate · weeks · changed", rendered)
-        self.assertIn("/research/cases/case-1", rendered)
-        self.assertIn("no trading signal", rendered)
-
 
 if __name__ == "__main__":
     unittest.main()

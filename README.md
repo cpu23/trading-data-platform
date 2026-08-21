@@ -16,8 +16,6 @@ processors, API, database schema, operational views, and dashboard. It excludes
 credentials, generated logs, private databases, proprietary research, and
 trading decisions.
 
-![Trading dashboard](docs/assets/dashboard-full-page.png)
-
 ## Why This Project Exists
 
 Market context often lives across unrelated websites, spreadsheets, API
@@ -69,12 +67,14 @@ flowchart LR
 
     subgraph Delivery["Delivery Layer"]
         API["FastAPI JSON API"]
-        Fanout["Concurrent dashboard loader"]
-        Dashboard["HTMX dashboard"]
+        Dashboard["Dashboard `/` — lean surface:<br/>compact strip, since-last-view,<br/>lazy watchlist grid, briefing"]
+        Markets["Markets `/markets` — lazy shell:<br/>cross-asset, catalysts, macro releases,<br/>regime, indicators, calendar"]
+        News["News `/news` — change feed,<br/>story monitor, source controls"]
         Investments["Investment research view"]
         Research["Research case workspace"]
         Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
+        Heartbeat["Browser `marketRefresh` heartbeat:<br/>one timer; SSE sections never poll"]
     end
 
     FRED --> Collectors
@@ -103,11 +103,16 @@ flowchart LR
     Derived --> API
     Cases --> API
     Operations --> API
-    API --> Fanout --> Dashboard
+    API --> Dashboard
+    API --> Markets
+    API --> News
     API --> Investments
     API --> Research
     API --> Evaluation
     API --> Health
+    Heartbeat --> Dashboard
+    Heartbeat --> Markets
+    Heartbeat --> News
 ```
 
 Every triggered cycle receives a correlation ID that connects collector runs,
@@ -132,11 +137,12 @@ derived outputs inspectable without mixing raw source data with analysis.
   LLM spend are available through both the API and dashboard.
 - **Durable live delivery:** append-only domain events, transactional outbox,
   leased analysis jobs, immutable section snapshots, replayable SSE
-  invalidations, and bounded HTMX partial refreshes decouple ingestion from
-  presentation.
+  invalidations, one centralized `marketRefresh` heartbeat, and bounded HTMX
+  partial refreshes decouple ingestion from presentation.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
-- **Bounded read latency:** dashboard datasets load concurrently, macro
+- **Bounded read latency:** the dashboard `/` renders a compact context with
+  lazy surfaces, `/markets` is an empty shell until its partials load, macro
   indicators use one batched query, and the health path reuses a 30-second
   quality snapshot while `/quality` remains an explicit live diagnostic.
 - **Investment research:** deterministic filing deltas, versioned themes and
@@ -164,53 +170,78 @@ derived outputs inspectable without mixing raw source data with analysis.
 
 ## Dashboard
 
-The dashboard is designed as a trader-facing morning context view rather than a
-signal engine. It includes:
+The authenticated web UI is split into focused workspaces in a fixed
+navigation order: **Dashboard** (`/`), **Markets** (`/markets`), **News**
+(`/news`), **Investments** (`/investment`), **Research** (`/research`), and
+**Settings** (`/settings`).
 
-- Session snapshot, latest price update, material event, regime, next catalyst,
-  source state, and budget in a compact top strip
-- Since-last-view change summary
-- Material change feed and dense sortable watchlist
-- Asset evidence drawer, cross-asset context, catalysts, and briefing delta
-- Staged macro-release cards and canonical evolving news stories
-- Source/processor freshness and historical regime/indicator context
-- Changed major-market drivers and genuinely material dynamic research cases,
-  linked to evidence-rich case workspaces without displacing Since last view
-- A separate Research workspace for maintained themes, versioned theses,
-  company dossiers, filing deltas, and read-only portfolio context
-- A separate replay-evaluation workspace for benchmark score dimensions,
-  lifecycle lead time, model/prompt variants, failures, latency, cost, and
-  regression comparisons
-- Refresh, analyze, and explicit force-full cycle controls with durable status
-- Authenticated Dashboard, Research, Investments, Settings, Logs, Quality,
-  News, and Operations views
+### Dashboard (`/`)
 
-Independent dashboard datasets are loaded concurrently. The dashboard and
-settings pages each consume one consolidated system-health response instead of
-rerunning the quality suite, and macro indicator summaries are fetched in one
-batched database query.
+The dashboard is a lean trader-facing morning context view rather than a
+signal engine. It renders only:
 
-### Current read-path baseline
+- Header with the data freshness control
+- Compact top strip: Current session, Current regime, Next catalyst
+- Since your last view change summary
+- One lazy-loaded watchlist grid
+- One asset evidence drawer
+- One merged briefing (What changed / Current interpretation / What would
+  invalidate this, with delta, atom counts, and evidence disclosures)
 
-Warm local measurements from 29 July 2026:
+Market-detail surfaces — cross-asset context, upcoming catalysts,
+macro-release cards, regime history, macro indicators, and the economic
+calendar — live on the Markets workspace rather than the dashboard.
 
-| Route | Median response time |
-| --- | ---: |
-| Dashboard `/` | 141.53 ms |
-| Settings `/settings` | 7.16 ms |
-| System health `/api/system/health` | 6.82 ms |
-| Macro summary `/api/macro/dashboard` | 124.29 ms |
+### Markets (`/markets`)
 
-Chromium first contentful paint was 204 ms for the dashboard and 40 ms for
-settings. These are local acceptance measurements, not a production SLA. See
-[docs/performance-baseline.md](docs/performance-baseline.md) for the environment,
-samples, cache semantics, and reproduction procedure.
+A lazy shell that loads six canonical partials on demand, in order:
+cross-asset context, upcoming catalysts, macro release monitor, global macro
+regime, key macro indicators, and the economic calendar. The page itself
+renders no dataset; each section swaps in its partial, which then owns its
+refresh contract.
 
-The Investments page measured 2.04 ms median server response time and 76 ms
-first contentful paint in the same local environment. Its dashboard JSON route
-measured 9.14 ms median. See
-[docs/investment-research.md](docs/investment-research.md) for filing-status
-measurements and operating semantics.
+### News (`/news`)
+
+Owns the continuous material change feed (with load-earlier pagination), the
+source controls, the canonical story monitor, and story lane/state filters.
+
+### Refresh model
+
+One browser heartbeat event (`marketRefresh`) is the only periodic timer in
+the client. Non-SSE partials refresh on that event; SSE-registered sections
+invalidate through the event stream and never poll. Lazy placeholders swap in
+their partial once on `load`; the swapped-in partial then owns its refresh
+contract, so no placeholder ever creates a second timer. The heartbeat pauses
+while the tab is hidden and dispatches one immediate refresh when visibility
+returns. If the SSE stream is unavailable or disconnected, the same heartbeat
+drives registered live sections — there is no second interval.
+
+### Since your last view
+
+Research market-driver and material research-case changes appear in the same
+deterministic Since your last view path as every other change type: one
+loader, one marker endpoint, no model inference, and no second aggregator.
+
+### Operations
+
+Run, analyze, and explicit force-full cycle controls with durable status live
+on Settings, not on the dashboard header. The dashboard and settings pages
+each consume one consolidated system-health response instead of rerunning the
+quality suite, and macro indicator summaries are fetched in one batched
+database query.
+
+### Read-path baseline
+
+The local read-path measurements recorded in
+[docs/performance-baseline.md](docs/performance-baseline.md) were taken on
+29 July 2026 and predate the lean-dashboard refactor: the dashboard `/` row
+and the browser paint numbers described a heavier page with concurrent
+dataset loading, and they no longer represent the current read path. The
+current `/` renders a compact context and lazy surfaces, and `/markets` is an
+empty shell until its partials load. Re-measuring the refactored read path is
+deferred, so this README claims no updated browser or benchmark numbers. See
+[docs/performance-baseline.md](docs/performance-baseline.md) for the recorded
+environment, samples, cache semantics, and reproduction procedure.
 
 ![System logs](docs/assets/system-logs-full-page.png)
 
@@ -357,11 +388,11 @@ restart; Compose normally performs that recycling automatically.
    **Run due cycle**. The page follows the durable correlation ID through
    collection and processing rather than treating HTTP `202 Accepted` as
    completion.
-5. Inspect **Dashboard**, **News**, **Investments**, and **Research** for
-   outputs; use **Operations**, **Logs**, and **Quality checks** for a partial
-   or failed run. A terminal `partial` result means accepted work completed
-   durably but at least one collector or processor failed; it is not reported
-   as success.
+5. Inspect **Dashboard**, **Markets**, **News**, **Investments**, and
+   **Research** for outputs; use **Operations**, **Logs**, and
+   **Quality checks** for a partial or failed run. A terminal `partial`
+   result means accepted work completed durably but at least one collector or
+   processor failed; it is not reported as success.
 
 Use **Force full cycle** only for deliberate recovery or validation: it ignores
 normal due-time and unchanged-input skips and may consume substantially more

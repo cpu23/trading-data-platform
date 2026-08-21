@@ -6,6 +6,12 @@ Focused, template-level contracts for the lean dashboard refactor:
   (header, compact top strip, Since your last view, one lazy watchlist grid,
   one drawer/expansion target, one merged briefing) and no prohibited
   sections/includes.
+* ``markets.html`` is a lazy shell composing exactly the six market surfaces
+  in contract order; each shell section loads its canonical partial once and
+  never polls or registers SSE on the shell.
+* The six market partials refresh through the single ``marketRefresh``
+  heartbeat; the SSE-capable ones expose only ``data-live-*`` attributes when
+  live updates are enabled, never pairing the stream with self-refresh.
 * ``partials/top_strip.html`` renders exactly three cells (Current session,
   Current regime, Next catalyst) with truthful unavailable placeholders and a
   ``marketRefresh``-only refresh contract.
@@ -90,6 +96,30 @@ DELTA_UNAVAILABLE = {
     "atoms": [],
 }
 
+# /markets composes exactly these six surfaces, in contract order.
+MARKETS_LAZY_SECTIONS = (
+    ("/partials/markets/cross-asset", "Cross-asset context"),
+    ("/partials/markets/catalysts", "Upcoming catalysts"),
+    ("/partials/markets/macro-releases", "Macro release monitor"),
+    ("/partials/markets/regime", "Global macro regime"),
+    ("/partials/markets/indicators", "Key macro indicators"),
+    ("/partials/markets/events", "Economic calendar"),
+)
+
+# Partials that register as SSE live sections when live updates are enabled.
+MARKETS_SSE_PARTIALS = {
+    "cross_asset": "/partials/markets/cross-asset",
+    "catalysts": "/partials/markets/catalysts",
+    "macro_release_cards": "/partials/markets/macro-releases",
+}
+
+# Partials that are always heartbeat-driven and never register as SSE.
+MARKETS_HEARTBEAT_PARTIALS = {
+    "regime_section": "/partials/markets/regime",
+    "indicators_section": "/partials/markets/indicators",
+    "events_section": "/partials/markets/events",
+}
+
 
 class LeanDashboardTemplateContracts(unittest.TestCase):
     @classmethod
@@ -99,6 +129,7 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
             autoescape=select_autoescape(("html",)),
         )
         cls.dashboard = (API_ROOT / "templates/dashboard.html").read_text()
+        cls.markets = (API_ROOT / "templates/markets.html").read_text()
         cls.top_strip = (API_ROOT / "templates/partials/top_strip.html").read_text()
         cls.briefing_prose = (
             API_ROOT / "templates/partials/briefing_prose.html"
@@ -141,6 +172,75 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
 
     def test_dashboard_keeps_drawer_expansion_target(self):
         self.assertIn("partials/expansion_panel.html", self.dashboard)
+
+    # ── /markets page composition ────────────────────────────────────────────
+
+    def test_markets_page_is_lazy_shell_with_six_sections_in_contract_order(self):
+        # /markets composes exactly the six market surfaces in contract
+        # order, each as a load-once placeholder that swaps in the canonical
+        # partial (which then owns refresh). The shell itself never polls and
+        # never registers SSE sections.
+        for url, heading in MARKETS_LAZY_SECTIONS:
+            with self.subTest(url=url):
+                self.assertIn(url, self.markets)
+                self.assertIn(heading, self.markets)
+        positions = [
+            self.markets.index(url) for url, _ in MARKETS_LAZY_SECTIONS
+        ]
+        self.assertEqual(
+            positions, sorted(positions),
+            "Markets surfaces must appear in contract order",
+        )
+        self.assertEqual(self.markets.count('hx-trigger="load"'), 6)
+        self.assertEqual(self.markets.count('hx-swap="outerHTML"'), 6)
+        self.assertEqual(self.markets.count('role="status"'), 6)
+        self.assertNotIn("marketRefresh", self.markets)
+        self.assertNotIn("data-live-section", self.markets)
+        self.assertNotIn("every 90s", self.markets)
+
+    # ── market partial refresh contracts ────────────────────────────────────
+
+    def test_market_partials_refresh_through_heartbeat_when_not_sse(self):
+        # Non-SSE rendering of every market partial listens to the single
+        # marketRefresh heartbeat and never polls.
+        all_partials = {**MARKETS_SSE_PARTIALS, **MARKETS_HEARTBEAT_PARTIALS}
+        for partial, canonical in all_partials.items():
+            with self.subTest(partial=partial):
+                source = self.render(
+                    f"partials/{partial}.html", live_updates_enabled=False
+                )
+                self.assertIn(f'hx-get="{canonical}"', source)
+                self.assertIn('hx-trigger="marketRefresh from:body', source)
+                self.assertNotIn("data-live-section", source)
+                self.assertNotIn("every 90s", source)
+                self.assertNotIn("setInterval", source)
+
+    def test_sse_capable_market_partials_never_pair_stream_with_self_refresh(self):
+        # SSE-enabled market partials expose only data-live attributes: no
+        # self-fetch and no marketRefresh/poll trigger on the section.
+        for partial, canonical in MARKETS_SSE_PARTIALS.items():
+            with self.subTest(partial=partial):
+                source = self.render(
+                    f"partials/{partial}.html", live_updates_enabled=True
+                )
+                self.assertIn("data-live-section", source)
+                self.assertIn(f'data-live-url="{canonical}"', source)
+                self.assertNotIn("hx-get=", source)
+                self.assertNotIn("hx-trigger=", source)
+                self.assertNotIn("every 90s", source)
+
+    def test_regime_indicators_events_are_heartbeat_driven_never_sse(self):
+        # These three surfaces never register as SSE sections: they listen to
+        # the single marketRefresh heartbeat (plus cycleComplete) and never
+        # poll.
+        for partial in MARKETS_HEARTBEAT_PARTIALS:
+            with self.subTest(partial=partial):
+                source = self.render(
+                    f"partials/{partial}.html", live_updates_enabled=True
+                )
+                self.assertNotIn("data-live-section", source)
+                self.assertIn('hx-trigger="marketRefresh from:body', source)
+                self.assertNotIn("every 90s", source)
 
     # ── compact top strip ────────────────────────────────────────────────────
 
