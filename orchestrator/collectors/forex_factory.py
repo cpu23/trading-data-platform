@@ -133,7 +133,7 @@ class ForexFactoryCollector:
                         "weekly_export_fetch_failed",
                         action="collect",
                         week=target_week["week_key"],
-                        error=str(exc),
+                        error=safe_error_message(exc, provider="forex_factory"),
                         correlation_id=correlation_id,
                     )
                     raise
@@ -142,7 +142,7 @@ class ForexFactoryCollector:
                     "weekly_export_fetch_failed_using_cache",
                     action="collect",
                     week=target_week["week_key"],
-                    error=str(exc),
+                    error=safe_error_message(exc, provider="forex_factory"),
                     correlation_id=correlation_id,
                 )
                 payload_source = "stale_cache"
@@ -369,7 +369,7 @@ class ForexFactoryCollector:
                 "weekly_export_cache_read_failed",
                 action="load_cache",
                 week=target_week["week_key"],
-                error=str(exc),
+                error=safe_error_message(exc, provider="forex_factory"),
                 correlation_id=correlation_id,
             )
         return None
@@ -420,7 +420,7 @@ class ForexFactoryCollector:
                 "weekly_export_cache_write_failed",
                 action="store_cache",
                 week=target_week["week_key"],
-                error=str(exc),
+                error=safe_error_message(exc, provider="forex_factory"),
                 correlation_id=correlation_id,
             )
             raise RuntimeError(
@@ -461,7 +461,7 @@ class ForexFactoryCollector:
                 logger.warning(
                     "export_event_parse_skipped",
                     action="parse_export_payload",
-                    error=str(exc),
+                    error=safe_error_message(exc, provider="forex_factory"),
                     event=item,
                     correlation_id=correlation_id,
                 )
@@ -673,7 +673,7 @@ class ForexFactoryCollector:
                 logger.warning(
                     "row_parse_skipped",
                     action="parse_calendar",
-                    error=str(exc),
+                    error=safe_error_message(exc, provider="forex_factory"),
                     row_html=row_html,
                     correlation_id=correlation_id,
                 )

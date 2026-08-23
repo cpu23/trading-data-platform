@@ -2797,6 +2797,34 @@ class OpportunitySnapshotTests(unittest.TestCase):
         self.assertEqual(params["opportunity_score"], 0.0)
         session.commit.assert_not_called()
 
+    def test_explicit_zero_submetrics_stay_numeric_in_snapshot(self):
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(first=None),  # no prior snapshot
+                Result(first={"id": LINK_ID}),  # INSERT won
+            ]
+        )
+        appended = append_opportunity_snapshot(
+            session,
+            str(THESIS_ID),
+            snapshot_key="eval:2026-08-06",
+            opportunity_score=0.0,
+            expected_value=0.0,
+            expected_shortfall=0.0,
+            confidence_score=0.0,
+            neglect_score=0.0,
+            catalyst_score=0.0,
+            evidence_strength=0.0,
+            contradiction_strength=0.0,
+        )
+        self.assertTrue(appended)
+        params = session.calls[2][1]
+        self.assertEqual(params["confidence_score"], 0.0)
+        self.assertEqual(params["neglect_score"], 0.0)
+        self.assertEqual(params["catalyst_score"], 0.0)
+        session.commit.assert_not_called()
+
 
 class FalsificationRunTests(unittest.TestCase):
     def test_record_run_is_idempotent(self):
@@ -3251,6 +3279,58 @@ class EvaluateThesisTests(unittest.TestCase):
         self.assertEqual(update_params["evidence_strength"], 0.0)
         self.assertEqual(update_params["contradiction_strength"], 0.0)
         self.assertEqual(update_params["opportunity_score"], 0.0)
+        session.commit.assert_not_called()
+
+    def test_evaluate_preserves_legitimate_numeric_zero_submetrics(self):
+        signal = self._strong_support_signal(
+            "claim:a", "filings:nvda", {"statement": "Capex up."}
+        )
+        session = Session(
+            [
+                Result(first={"present": 1}),  # thesis exists
+                Result(
+                    rows=[
+                        evidence_row(
+                            evidence_fingerprint=signal.evidence_fingerprint
+                        )
+                    ]
+                ),
+                Result(
+                    rows=[
+                        {
+                            "description": "Capex guide raise",
+                            "state": "missed",
+                            "expected_at": NOW,
+                        }
+                    ]
+                ),
+                Result(rows=self._complete_scenario_rows()),
+                Result(rows=[]),  # no market bars
+                Result(),  # UPDATE thesis score columns
+                Result(first={"present": 1}),  # snapshot: thesis exists
+                Result(first=None),  # snapshot: no prior key
+                Result(),  # snapshot INSERT
+            ]
+        )
+        result = evaluate_thesis(
+            session,
+            str(THESIS_ID),
+            as_of=NOW,
+            snapshot_key="eval:2026-08-06",
+            attention=1.0,
+            crowding=1.0,
+        )
+        self.assertEqual(result["neglect"]["neglect"], 0.0)
+        self.assertEqual(result["catalyst"]["readiness"], 0.0)
+        self.assertIsNotNone(result["evidence"]["confidence"])
+        update_params = session.calls[5][1]
+        self.assertEqual(update_params["neglect_score"], 0.0)
+        self.assertEqual(update_params["catalyst_score"], 0.0)
+        self.assertIsNotNone(update_params["confidence_score"])
+        snapshot_params = session.calls[8][1]
+        self.assertEqual(snapshot_params["neglect_score"], 0.0)
+        self.assertEqual(snapshot_params["catalyst_score"], 0.0)
+        self.assertIsNotNone(snapshot_params["confidence_score"])
         session.commit.assert_not_called()
 
     def test_replay_cutoff_bounds_every_persisted_input_query(self):
