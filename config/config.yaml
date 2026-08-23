@@ -456,6 +456,24 @@ thesis_autonomy:
   liquidity: null
   downside: null
 
+# Incremental autonomous research maintenance. The deterministic planner runs
+# independently from broad thesis discovery and may complete with an empty
+# agenda without invoking a model. The global UTC-day LLM budget remains the
+# authoritative cap over every plan and skill.
+research_control_plane:
+  enabled: true
+  planning_interval_minutes: 15
+  event_debounce_seconds: 120
+  maximum_questions_per_plan: 20
+  maximum_work_orders_per_plan: 8
+  maximum_runtime_seconds_per_plan: 900
+  model_budget_usd_per_plan: 1.00
+  minimum_priority: 0.0
+  catalyst_lookahead_days: 30
+  stale_question_days: 14
+  priority_policy_version: v1
+  materiality_policy_version: v1
+
 collectors:
   fred:
     enabled: false

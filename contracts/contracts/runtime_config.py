@@ -727,6 +727,27 @@ class ThesisAutonomyConfig(FrozenModel):
     downside: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class ResearchControlPlaneConfig(FrozenModel):
+    """Bounded autonomous research maintenance and planning policy."""
+
+    enabled: bool = True
+    planning_interval_minutes: int = Field(default=15, ge=1, le=1440)
+    event_debounce_seconds: int = Field(default=120, ge=0, le=86400)
+    maximum_questions_per_plan: int = Field(default=20, ge=1, le=1000)
+    maximum_work_orders_per_plan: int = Field(default=8, ge=1, le=100)
+    maximum_runtime_seconds_per_plan: int = Field(default=900, ge=1, le=86400)
+    model_budget_usd_per_plan: float = Field(
+        default=1.0, ge=0.0, le=100.0, allow_inf_nan=False
+    )
+    minimum_priority: float = Field(
+        default=0.0, ge=0.0, le=1_000_000.0, allow_inf_nan=False
+    )
+    catalyst_lookahead_days: int = Field(default=30, ge=0, le=3650)
+    stale_question_days: int = Field(default=14, ge=1, le=3650)
+    priority_policy_version: NonBlankText = Field(default="v1", max_length=64)
+    materiality_policy_version: NonBlankText = Field(default="v1", max_length=64)
+
+
 # ---------------------------------------------------------------------------
 # macro events
 # ---------------------------------------------------------------------------
@@ -1525,6 +1546,9 @@ class AppConfig(FrozenModel):
         default_factory=ResearchIntelligenceConfig
     )
     thesis_autonomy: ThesisAutonomyConfig = Field(default_factory=ThesisAutonomyConfig)
+    research_control_plane: ResearchControlPlaneConfig = Field(
+        default_factory=ResearchControlPlaneConfig
+    )
     collectors: dict[str, CollectorConfig] = Field(default_factory=dict)
     processors: dict[str, ProcessorConfig] = Field(default_factory=dict)
     reuters: ReutersConfig = Field(default_factory=ReutersConfig)
@@ -1776,6 +1800,20 @@ class AppConfig(FrozenModel):
                 "ultimate cap"
             )
         return self
+
+    @model_validator(mode="after")
+    def _check_research_control_plane_budget(self) -> AppConfig:
+        """A planning ceiling cannot exceed the authoritative daily LLM cap."""
+        if (
+            self.research_control_plane.model_budget_usd_per_plan
+            > self.budgets.daily_llm_usd
+        ):
+            raise ValueError(
+                "research_control_plane.model_budget_usd_per_plan must not exceed "
+                "budgets.daily_llm_usd; the global daily budget is authoritative"
+            )
+        return self
+
 
     @model_validator(mode="after")
     def _check_reservation_ttl_vs_call_deadline(self) -> AppConfig:
@@ -2697,6 +2735,7 @@ __all__ = [
     "ResearchIntelligenceConfig",
     "ResearchLifecycleThresholdsConfig",
     "ResearchLimitsConfig",
+    "ResearchControlPlaneConfig",
     "ResearchStageConfig",
     "ReutersConfig",
     "SourceSeriesConfig",
