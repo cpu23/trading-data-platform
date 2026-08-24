@@ -749,7 +749,7 @@
   }
 
   function refreshLiveSection(section) {
-    if (!window.htmx || !section || !section.isConnected) return;
+    if (!window.htmx || !section || !section.isConnected || document.hidden) return;
     var sectionKey = section.dataset.liveSection;
     var url = section.dataset.liveUrl;
     if (!sectionKey || !url || liveRefreshes[sectionKey]) return;
@@ -788,6 +788,7 @@
       }
       return;
     }
+    refreshLiveSections();
     dispatchMarketRefresh();
     ensureMarketRefresh();
   }
@@ -849,11 +850,179 @@
     });
   }
 
+  var topologySelectedId = null;
+  var topologyFocusKey = null;
+  var topologySwapBound = false;
+
+  function topologyNodeById(section, nodeId) {
+    return Array.prototype.find.call(
+      section.querySelectorAll('.system-topology-node'),
+      function (node) { return node.dataset.topologyNode === nodeId; }
+    ) || null;
+  }
+
+  function topologyDetailById(section, nodeId) {
+    return Array.prototype.find.call(
+      section.querySelectorAll('[data-topology-detail]'),
+      function (detail) { return detail.dataset.topologyDetail === nodeId; }
+    ) || null;
+  }
+
+  function focusTopologyNode(node) {
+    try {
+      node.focus({preventScroll: true});
+    } catch (_error) {
+      node.focus();
+    }
+  }
+
+  function selectTopologyNode(section, node, moveFocus, scrollDetail) {
+    if (!section || !node) return;
+    var nodeId = node.dataset.topologyNode || null;
+    section.querySelectorAll('.system-topology-node').forEach(function (item) {
+      var selected = item === node;
+      item.classList.toggle('is-selected', selected);
+      item.setAttribute('aria-expanded', selected ? 'true' : 'false');
+      item.setAttribute('tabindex', selected ? '0' : '-1');
+    });
+    section.querySelectorAll('[data-topology-detail]').forEach(function (detail) {
+      detail.open = detail.dataset.topologyDetail === nodeId;
+    });
+    topologySelectedId = nodeId;
+    if (moveFocus) focusTopologyNode(node);
+    var detail = topologyDetailById(section, nodeId);
+    if (detail && scrollDetail) detail.scrollIntoView({block: 'nearest'});
+  }
+
+  function toggleTopologyNode(section, node) {
+    var nodeId = node && node.dataset.topologyNode;
+    var detail = nodeId ? topologyDetailById(section, nodeId) : null;
+    if (!detail || !detail.open) {
+      selectTopologyNode(section, node, false, true);
+      return;
+    }
+    topologySelectedId = null;
+    detail.open = false;
+    node.classList.remove('is-selected');
+    node.setAttribute('aria-expanded', 'false');
+    node.setAttribute('tabindex', '0');
+  }
+
+  function topologyFocusFor(section, active) {
+    if (!active || (active !== section && !section.contains(active))) return null;
+    var node = active.closest && active.closest('.system-topology-node');
+    if (node) return {kind: 'node', id: node.dataset.topologyNode};
+    if (active.matches && active.matches('.system-topology-graph-scroll')) {
+      return {kind: 'scroller'};
+    }
+    var detail = active.closest && active.closest('[data-topology-detail]');
+    if (detail) {
+      var kind = active.matches('a') ? 'link' : 'summary';
+      return {kind: kind, id: detail.dataset.topologyDetail};
+    }
+    return {kind: 'section'};
+  }
+
+  function restoreTopologyFocus(section, key) {
+    if (!key) return;
+    var target = null;
+    if (key.kind === 'node') {
+      target = topologyNodeById(section, key.id);
+    } else if (key.kind === 'scroller') {
+      target = section.querySelector('.system-topology-graph-scroll');
+    } else if (key.kind === 'summary' || key.kind === 'link') {
+      var detail = topologyDetailById(section, key.id);
+      if (detail) target = detail.querySelector(key.kind === 'link' ? 'a' : 'summary');
+    }
+    if (!target) target = section;
+    try {
+      target.focus({preventScroll: true});
+    } catch (_error) {
+      target.focus();
+    }
+  }
+
+  function initSystemTopology(root) {
+    var scope = root || document;
+    var sections = [];
+    if (scope.matches && scope.matches('[data-system-topology]')) sections.push(scope);
+    scope.querySelectorAll('[data-system-topology]').forEach(function (section) {
+      sections.push(section);
+    });
+    sections.forEach(function (section) {
+      if (section.dataset.topologyBound === 'true') return;
+      section.dataset.topologyBound = 'true';
+      section.addEventListener('click', function (event) {
+        var node = event.target.closest && event.target.closest('.system-topology-node');
+        if (node && section.contains(node)) toggleTopologyNode(section, node);
+      });
+      section.addEventListener('keydown', function (event) {
+        var node = event.target.closest && event.target.closest('.system-topology-node');
+        if (!node || !section.contains(node)) return;
+        var nodes = Array.prototype.slice.call(
+          section.querySelectorAll('.system-topology-node')
+        );
+        var index = nodes.indexOf(node);
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggleTopologyNode(section, node);
+        } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          selectTopologyNode(section, nodes[(index + 1) % nodes.length], true, false);
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          selectTopologyNode(
+            section,
+            nodes[(index - 1 + nodes.length) % nodes.length],
+            true,
+            false
+          );
+        }
+      });
+      section.querySelectorAll('[data-topology-detail]').forEach(function (detail) {
+        detail.addEventListener('toggle', function () {
+          var node = topologyNodeById(section, detail.dataset.topologyDetail);
+          if (!node) return;
+          if (detail.open) {
+            selectTopologyNode(section, node, false, false);
+          } else if (topologySelectedId === detail.dataset.topologyDetail) {
+            topologySelectedId = null;
+            node.classList.remove('is-selected');
+            node.setAttribute('aria-expanded', 'false');
+            node.setAttribute('tabindex', '0');
+          }
+        });
+      });
+      var selected = topologySelectedId
+        ? topologyNodeById(section, topologySelectedId)
+        : null;
+      if (selected) {
+        selectTopologyNode(section, selected, false, false);
+      } else {
+        var first = section.querySelector('.system-topology-node');
+        if (first) first.setAttribute('tabindex', '0');
+      }
+      if (topologyFocusKey) {
+        restoreTopologyFocus(section, topologyFocusKey);
+        topologyFocusKey = null;
+      }
+    });
+    if (!topologySwapBound) {
+      topologySwapBound = true;
+      document.body.addEventListener('htmx:beforeSwap', function (event) {
+        var target = event.detail && event.detail.target;
+        if (!target || !target.matches || !target.matches('[data-system-topology]')) return;
+        topologyFocusKey = topologyFocusFor(target, document.activeElement);
+      });
+    }
+  }
+
   function initDynamicUi(root) {
     initCharts(root);
     initTimezoneControl(root);
     initLiveSections();
     initThesisViews(root);
+    initSystemTopology(root);
   }
 
   /* Bounded thesis tournament views ----------------------------------------- */
@@ -2130,12 +2299,17 @@
     initLiveSections();
     initSinceLastView();
     initThesisViews(document);
+    initSystemTopology(document);
   });
 
   ['htmx:afterSwap', 'htmx:afterSettle'].forEach(function (eventName) {
     document.body.addEventListener(eventName, function (evt) {
-      if (evt.detail && evt.detail.target) initCharts(evt.detail.target);
-      if (evt.detail && evt.detail.target) initDynamicUi(evt.detail.target);
+      var target = evt.detail && evt.detail.target;
+      if (!target) return;
+      var replacement = target.id ? document.getElementById(target.id) : null;
+      if (replacement && replacement !== target) target = replacement;
+      initCharts(target);
+      initDynamicUi(target);
     });
   });
 })();

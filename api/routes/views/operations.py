@@ -10,6 +10,7 @@ from routes.json.atoms import load_atom_context
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
 from routes.views.news import load_news_context
+from topology import build_system_topology, unavailable_system_topology
 
 router = APIRouter()
 OVERVIEW_LIMIT = 10
@@ -221,6 +222,10 @@ def _local_snapshot(request: Request) -> dict:
         }
     except Exception:
         claim_history = unavailable
+    try:
+        topology = build_system_topology().model_dump(mode="json")
+    except Exception:
+        topology = unavailable_system_topology().model_dump(mode="json")
 
     return {
         "tz": tz,
@@ -230,6 +235,7 @@ def _local_snapshot(request: Request) -> dict:
         "event_pipeline": event_pipeline,
         "claim_history": claim_history,
         "live_updates_enabled": _live_updates_enabled(config),
+        "topology": topology,
     }
 
 
@@ -245,6 +251,7 @@ async def operations_overview(request: Request):
             "request": request,
             **snapshot["tz"],
             "source_state": source_state,
+            "topology": snapshot.get("topology", {}),
             "live_updates_enabled": snapshot.get("live_updates_enabled", False),
             "processors": snapshot["processors"],
             "feed": snapshot["feed"],
@@ -266,6 +273,28 @@ async def partial_source_health(request: Request):
             "request": request,
             "source_state": source_state,
             "live_updates_enabled": _live_updates_enabled(config),
+        },
+    )
+
+
+@router.get("/partials/operations/system-topology")
+async def partial_system_topology(request: Request):
+    try:
+        config = await run_in_threadpool(load_config)
+        live_updates_enabled = _live_updates_enabled(config)
+    except Exception:
+        live_updates_enabled = False
+    try:
+        topology = await run_in_threadpool(build_system_topology)
+    except Exception:
+        topology = unavailable_system_topology()
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "partials/system_topology.html",
+        {
+            "request": request,
+            "topology": topology.model_dump(mode="json"),
+            "live_updates_enabled": live_updates_enabled,
         },
     )
 

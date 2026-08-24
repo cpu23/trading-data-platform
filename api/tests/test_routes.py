@@ -11,6 +11,7 @@ import unittest
 from contextlib import ExitStack
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -101,6 +102,7 @@ def tearDownModule():
         _runtime_config_patcher.stop()
     if _runtime_env_patcher is not None:
         _runtime_env_patcher.stop()
+
 
 # ── Auth helpers ────────────────────────────────────────────────────────────
 CSRF_TOKEN = mint_csrf_token()
@@ -345,9 +347,7 @@ class TestSystemRoutes(unittest.TestCase):
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_disabled_required_quote_stream_fails_readiness(
-        self, mock_get, _query
-    ):
+    def test_disabled_required_quote_stream_fails_readiness(self, mock_get, _query):
         health = MagicMock()
         health.json.return_value = {
             "liveness": "ok",
@@ -364,20 +364,15 @@ class TestSystemRoutes(unittest.TestCase):
         mock_get.return_value = health
         config = {
             **MOCK_CONFIG,
-            "collectors": {
-                "oanda": {"enabled": True, "stream_enabled": True}
-            },
+            "collectors": {"oanda": {"enabled": True, "stream_enabled": True}},
         }
 
-        with patch(
-            "routes.json.system.app_config.load_config", return_value=config
-        ):
+        with patch("routes.json.system.app_config.load_config", return_value=config):
             response = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["readiness"], "unready")
         self.assertEqual(response.json()["data_health"], "degraded")
-
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
@@ -415,9 +410,7 @@ class TestSystemRoutes(unittest.TestCase):
 
     @patch("routes.json.system.query_many", return_value=[])
     @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_empty_quality_checks_are_unknown(
-        self, mock_get, _query
-    ):
+    def test_empty_quality_checks_are_unknown(self, mock_get, _query):
         """An empty check result is unknown, never silently healthy."""
         health = MagicMock()
         health.json.return_value = {
@@ -818,6 +811,46 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertIsInstance(data["logs"], list)
         self.assertIn("limit", data)
 
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_logs_rejects_malformed_correlation_id_before_database(self, query_many):
+        for value in (":", "not-a-uuid"):
+            with self.subTest(value=value):
+                response = client.get(
+                    "/api/system/logs",
+                    params={"correlation_id": value},
+                    headers=AUTH,
+                )
+                self.assertEqual(response.status_code, 422)
+        query_many.assert_not_called()
+
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_logs_binds_valid_correlation_id_as_uuid(self, query_many):
+        correlation_id = UUID("00000000-0000-0000-0000-000000000123")
+        response = client.get(
+            "/api/system/logs",
+            params={"correlation_id": str(correlation_id)},
+            headers=AUTH,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            query_many.call_args.kwargs["params"]["correlation_id"],
+            correlation_id,
+        )
+
+    @patch("routes.json.system.query_many", return_value=[])
+    def test_html_logs_reject_malformed_correlation_id_before_database(
+        self, query_many
+    ):
+        for path in ("/logs", "/partials/logs"):
+            with self.subTest(path=path):
+                response = client.get(
+                    path,
+                    params={"correlation_id": ":"},
+                    headers=AUTH,
+                )
+                self.assertEqual(response.status_code, 422)
+        query_many.assert_not_called()
+
 
 class TestBoundedDashboardInputs(unittest.TestCase):
     @patch("routes.json.events.query_many", return_value=[])
@@ -1116,6 +1149,8 @@ class TestLiveViewPartials(unittest.TestCase):
         self.assertIn("Source &amp; scheduler state", partial.text)
         self.assertIn("source-09", partial.text)
         self.assertNotIn("overflow-source", partial.text)
+        self.assertIn('class="table-wrap"', partial.text)
+        self.assertIn('aria-labelledby="source-state-title"', partial.text)
         self.assertIn('data-live-section="source_health"', partial.text)
         self.assertIn('data-live-event="source_health_changed"', partial.text)
         self.assertIn(
@@ -1368,6 +1403,14 @@ class TestOperationsOverview(unittest.TestCase):
         self.assertIn("briefing", response.text)
         self.assertIn("Asia/Tokyo", response.text)
         self.assertNotIn("RAW_SECRET", response.text)
+        self.assertEqual(response.text.count('class="table-wrap"'), 4)
+        for heading_id in (
+            "source-state-title",
+            "event-pipeline-title",
+            "processor-title",
+            "runs-title",
+        ):
+            self.assertIn(f'tabindex="0" aria-labelledby="{heading_id}"', response.text)
         self.assertEqual(query.call_count, 5)
         bounded_calls = [
             call
@@ -1686,7 +1729,6 @@ class TestCalendarDisplayTimezone(unittest.TestCase):
         self.assertEqual(event["display_timezone"], "Asia/Tokyo")
 
 
-
 class TestResearchIntelligenceRoutes(unittest.TestCase):
     CASE_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -1706,7 +1748,6 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
             ).status_code,
             401,
         )
-
 
     def test_case_list_is_bounded_and_serializes_research_state(self):
         helpers = MagicMock()
@@ -1755,9 +1796,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
             patch("routes.json.research._research_queries", helpers),
             patch("routes.json.research.get_session"),
         ):
-            missing = client.get(
-                f"/api/research/cases/{self.CASE_ID}", headers=AUTH
-            )
+            missing = client.get(f"/api/research/cases/{self.CASE_ID}", headers=AUTH)
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.json()["detail"], "Research case not found")
 
@@ -1810,9 +1849,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
             }
         )
         with (
-            patch(
-                "routes.json.research._annotate_benchmark_scorecard", annotate
-            ),
+            patch("routes.json.research._annotate_benchmark_scorecard", annotate),
             patch("routes.json.research.get_session") as get_session,
         ):
             response = client.post(
@@ -1831,9 +1868,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
         )
 
         annotate.reset_mock()
-        with patch(
-            "routes.json.research._annotate_benchmark_scorecard", annotate
-        ):
+        with patch("routes.json.research._annotate_benchmark_scorecard", annotate):
             invalid = client.post(
                 f"/api/research/replays/{self.CASE_ID}/annotations",
                 json={"overall_label": "pass", "unsupported": True},

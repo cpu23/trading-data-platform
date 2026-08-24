@@ -28,21 +28,16 @@
     <td colspan="7">
       <div class="log-detail">
         {% if log.log_type == 'collection' %}
-          {% if log.get('error_traceback') %}
-            <strong>Error traceback:</strong><br>{{ log.get('error_traceback') }}
-          {% elif log.error_message %}
+          {% if log.error_message %}
             <strong>Error:</strong> {{ log.error_message }}
           {% else %}
-            No additional details.
+            No additional public details.
           {% endif %}
         {% else %}
           <strong>Model:</strong> {{ log.model_used or '—' }}<br>
           <strong>Tokens:</strong> {{ log.tokens_input if log.tokens_input is not none else '—' }} in / {{ log.tokens_output if log.tokens_output is not none else '—' }} out<br>
           <strong>Cost:</strong> ${{ '%.4f' | format(log.get('cost_usd')) if log.get('cost_usd') is not none else '—' }}<br>
-          <hr style="border: none; border-top: 1px solid var(--hairline); margin: 8px 0;">
-          {% if log.get('prompt_text') %}<strong>Prompt:</strong><br><pre style="white-space: pre-wrap; margin: 4px 0;">{{ log.get('prompt_text') }}</pre><br>{% endif %}
-          {% if log.get('raw_response') %}<strong>Response:</strong><br><pre style="white-space: pre-wrap; margin: 4px 0;">{{ log.get('raw_response') }}</pre><br>{% endif %}
-          {% if log.error_message %}<strong>Error:</strong><br>{{ log.error_message }}{% endif %}
+          {% if log.error_message %}<strong>Error:</strong> {{ log.error_message }}{% endif %}
         {% endif %}
       </div>
     </td>

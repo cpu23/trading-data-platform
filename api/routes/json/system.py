@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, HTTPException, Path, Query, Request
@@ -14,6 +16,7 @@ from contracts import (
     RunListResponse,
     RunStatusResponse,
     SystemHealthResponse,
+    SystemTopologyResponse,
 )
 from db import query_many, query_one
 from logging_config import get_logger
@@ -23,12 +26,12 @@ router = APIRouter()
 
 logger = get_logger("system.health")
 
+
 def _safe_config_version() -> str | None:
     try:
         return app_config.config_version()
     except Exception:
         return None
-
 
 
 def _dependency_unready_response(
@@ -61,8 +64,6 @@ def _dependency_unready_response(
         }
     )
     return JSONResponse(status_code=503, content=payload.model_dump(mode="json"))
-
-
 
 
 def _load_local_health_data():
@@ -110,6 +111,83 @@ def _fmt(value):
     return str(value)
 
 
+def _public_failure(error: object, *, status: object, kind: str) -> str | None:
+    """Expose failure state without returning stored provider/model diagnostics."""
+    if error is None:
+        return None
+    normalized = str(status or "error").strip().lower()
+    if normalized not in {
+        "abandoned",
+        "degraded",
+        "error",
+        "failed",
+        "partial",
+        "retrying",
+        "skipped",
+        "stale",
+        "unavailable",
+        "unhealthy",
+    }:
+        normalized = "error"
+    return f"{kind} reported {normalized}; private diagnostics omitted"
+
+
+def _public_quality_snapshot(snapshot: object) -> dict:
+    if hasattr(snapshot, "model_dump"):
+        raw = snapshot.model_dump(mode="json")
+    elif isinstance(snapshot, Mapping):
+        raw = dict(snapshot)
+    else:
+        return {"overall": "unknown", "checks": []}
+
+    def public_check(value: object) -> dict:
+        check = dict(value) if isinstance(value, Mapping) else {}
+        result = {
+            "healthy": check.get("healthy") is True,
+            "status": check.get("status"),
+            "freshness": check.get("freshness"),
+            "detail": None,
+        }
+        for key in ("name", "source_id"):
+            candidate = check.get(key)
+            if isinstance(candidate, str) and candidate:
+                result[key] = candidate[:200]
+        return result
+
+    checks = raw.get("checks", [])
+    if isinstance(checks, Mapping):
+        public_checks: dict | list = {
+            str(key)[:200]: public_check(value)
+            for key, value in list(checks.items())[:100]
+        }
+    elif isinstance(checks, list):
+        public_checks = [public_check(value) for value in checks[:100]]
+    else:
+        public_checks = []
+    return {"overall": raw.get("overall", "unknown"), "checks": public_checks}
+
+
+def _public_progress(summary: object) -> dict:
+    if not isinstance(summary, Mapping):
+        return {}
+    progress = summary.get("progress")
+    if not isinstance(progress, Mapping):
+        return {}
+    public: dict[str, object] = {}
+    for key in ("total_stages", "completed_stages"):
+        value = progress.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            public[key] = max(0, min(value, 10_000))
+    current = progress.get("current_stage")
+    if (
+        isinstance(current, str)
+        and 1 <= len(current) <= 100
+        and all(character.isalnum() or character in "_-" for character in current)
+    ):
+        public["current_stage"] = current
+    return public
+
+
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(request: Request):
     try:
@@ -140,9 +218,7 @@ async def get_system_health(request: Request):
             timeout=5.0,
         )
         health_response.raise_for_status()
-        health_model = OrchestratorHealthResponse.model_validate(
-            health_response.json()
-        )
+        health_model = OrchestratorHealthResponse.model_validate(health_response.json())
         if health_model.readiness != "ready":
             raise ValueError("orchestrator is not ready")
         if health_model.quality is None:
@@ -188,9 +264,12 @@ async def get_system_health(request: Request):
                 "last_status": status,
                 "next_due_at": None,
                 "stale": status != "running",
-                "quality_warn": component.get("kind") == "data"
-                and status != "running",
-                "error_message": component.get("reason"),
+                "quality_warn": component.get("kind") == "data" and status != "running",
+                "error_message": _public_failure(
+                    component.get("reason"),
+                    status=status,
+                    kind="orchestrator component",
+                ),
             }
         )
 
@@ -206,9 +285,7 @@ async def get_system_health(request: Request):
 
     unhealthy_checks = []
     for check_id, check_data in checks_iter:
-        status = str(
-            check_data.get("status", check_data.get("freshness", ""))
-        ).lower()
+        status = str(check_data.get("status", check_data.get("freshness", ""))).lower()
         unhealthy = not check_data["healthy"] or status in {
             "unhealthy",
             "stale",
@@ -252,12 +329,17 @@ async def get_system_health(request: Request):
         unhealthy_checks
     )
     if quality_degraded:
-        reasons = [
-            f"{check_id}: {check.get('detail') or 'unhealthy'}"
-            for check_id, check in unhealthy_checks
-        ]
-        if not reasons:
-            reasons = [f"orchestrator quality overall is {quality['overall']}"]
+        if unhealthy_checks:
+            check_ids = ", ".join(
+                str(check_id)[:200] for check_id, _ in unhealthy_checks
+            )
+            quality_reason = (
+                f"{len(unhealthy_checks)} orchestrator quality check"
+                f"{'s' if len(unhealthy_checks) != 1 else ''} reported unhealthy: "
+                f"{check_ids}"
+            )
+        else:
+            quality_reason = f"orchestrator quality overall is {quality['overall']}"
         components.append(
             {
                 "name": "quality_checks",
@@ -267,7 +349,7 @@ async def get_system_health(request: Request):
                 "next_due_at": None,
                 "stale": False,
                 "quality_warn": True,
-                "error_message": "; ".join(reasons),
+                "error_message": quality_reason,
             }
         )
 
@@ -302,10 +384,10 @@ async def get_system_health(request: Request):
                 "next_due_at": schedule_map.get(source_id),
                 "stale": stale,
                 "quality_warn": quality_warn_map.get(source_id, False),
-                "error_message": (
-                    row.get("error_message")
-                    if row.get("status") in {"failed", "partial"}
-                    else None
+                "error_message": _public_failure(
+                    row.get("error_message"),
+                    status=row.get("status"),
+                    kind="collector",
                 ),
             }
         )
@@ -341,10 +423,10 @@ async def get_system_health(request: Request):
                 "next_due_at": schedule_map.get(processor_id),
                 "stale": stale,
                 "quality_warn": quality_warn_map.get(processor_id, False),
-                "error_message": (
-                    row.get("error_message")
-                    if row.get("status") in {"failed", "partial"}
-                    else None
+                "error_message": _public_failure(
+                    row.get("error_message"),
+                    status=row.get("status"),
+                    kind="processor",
                 ),
             }
         )
@@ -389,7 +471,7 @@ async def get_system_health(request: Request):
         "components": components,
         "today_llm_cost_usd": round(today_cost, 4),
         "today_token_count": today_tokens,
-        "quality": quality,
+        "quality": _public_quality_snapshot(quality),
         "config_version": health.get("config_version"),
     }
     response_model = SystemHealthResponse.model_validate(result)
@@ -406,33 +488,56 @@ def get_budget():
     return get_budget_status()
 
 
+@router.get("/system/topology", response_model=SystemTopologyResponse)
+async def get_system_topology():
+    """Return a bounded live topology; partial aggregates remain visible."""
+    from topology import build_system_topology, unavailable_system_topology
+
+    try:
+        return await run_in_threadpool(build_system_topology)
+    except Exception:
+        return unavailable_system_topology()
+
+
 @router.get("/system/logs")
 def get_system_logs(
-    component: str = Query(default=""),
-    status: str = Query(default=""),
+    component: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.-]{0,100}$", max_length=100
+    ),
+    status: str = Query(default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50),
     limit: int = Query(default=50, ge=1, le=500),
-    include_detail: bool = Query(default=False),
     from_date: datetime | None = Query(default=None, alias="from"),
-    correlation_id: str = Query(default=""),
+    correlation_id: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.:-]{0,200}$", max_length=200
+    ),
 ):
+    parsed_correlation_id = None
+    if correlation_id:
+        try:
+            parsed_correlation_id = UUID(correlation_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="correlation_id must be a UUID"
+            ) from exc
+
     config = app_config.load_config()
 
     params: dict = {"limit": limit}
 
     collector_sql = """
-        SELECT log_id, correlation_id, 'collection' as log_type, collector as component, started_at,
-               completed_at, status, records_fetched, records_written,
-               duration_ms, error_message, error_traceback,
+        SELECT log_id, correlation_id, 'collection' as log_type,
+               collector as component, started_at, completed_at, status,
+               records_fetched, records_written, duration_ms, error_message,
                NULL as model_used, NULL as tokens_input, NULL as tokens_output,
-               NULL as cost_usd, NULL as prompt_text, NULL as raw_response
+               NULL as cost_usd
         FROM collection_log
     """
     processor_sql = """
-        SELECT log_id, correlation_id, 'processing' as log_type, processor as component, started_at,
-               completed_at, status, NULL as records_fetched, NULL as records_written,
-               duration_ms, error_message, NULL as error_traceback,
-               model_used, tokens_input, tokens_output, cost_usd,
-               prompt_text, raw_response
+        SELECT log_id, correlation_id, 'processing' as log_type,
+               processor as component, started_at, completed_at, status,
+               NULL as records_fetched, NULL as records_written,
+               duration_ms, error_message, model_used, tokens_input,
+               tokens_output, cost_usd
         FROM processing_log
     """
 
@@ -440,24 +545,31 @@ def get_system_logs(
     where_clauses_processor = []
 
     if component:
-        where_clauses_collector.append("collector LIKE :comp_filter")
-        where_clauses_processor.append("processor LIKE :comp_filter")
-        params["comp_filter"] = f"%{component}%"
+        where_clauses_collector.append("collector LIKE :comp_filter ESCAPE '\\'")
+        where_clauses_processor.append("processor LIKE :comp_filter ESCAPE '\\'")
+        escaped_component = component.replace("_", "\\_")
+        params["comp_filter"] = f"%{escaped_component}%"
 
     if status:
         where_clauses_collector.append("status = :status_filter")
         where_clauses_processor.append("status = :status_filter")
         params["status_filter"] = status
 
+    if from_date is not None and (
+        from_date.tzinfo is None or from_date.utcoffset() is None
+    ):
+        raise HTTPException(
+            status_code=422, detail="from must be a timezone-aware datetime"
+        )
     if from_date:
         where_clauses_collector.append("started_at >= :from_date")
         where_clauses_processor.append("started_at >= :from_date")
         params["from_date"] = from_date
 
-    if correlation_id:
+    if parsed_correlation_id is not None:
         where_clauses_collector.append("correlation_id = :correlation_id")
         where_clauses_processor.append("correlation_id = :correlation_id")
-        params["correlation_id"] = correlation_id
+        params["correlation_id"] = parsed_correlation_id
 
     collector_where = (
         (" WHERE " + " AND ".join(where_clauses_collector))
@@ -495,21 +607,22 @@ def get_system_logs(
             "completed_at": _fmt(row.get("completed_at")),
             "status": row["status"],
             "duration_ms": row.get("duration_ms"),
-            "error_message": row.get("error_message"),
+            "error_message": _public_failure(
+                row.get("error_message"),
+                status=row.get("status"),
+                kind=str(row.get("log_type") or "operation"),
+            ),
         }
         if row["log_type"] == "collection":
             entry["records_fetched"] = row.get("records_fetched")
             entry["records_written"] = row.get("records_written")
-            if include_detail:
-                entry["error_traceback"] = row.get("error_traceback")
         elif row["log_type"] == "processing":
             entry["model_used"] = row.get("model_used")
             entry["tokens_input"] = row.get("tokens_input")
             entry["tokens_output"] = row.get("tokens_output")
-            entry["cost_usd"] = float(row["cost_usd"]) if row.get("cost_usd") else None
-            if include_detail:
-                entry["prompt_text"] = row.get("prompt_text")
-                entry["raw_response"] = row.get("raw_response")
+            entry["cost_usd"] = (
+                float(row["cost_usd"]) if row.get("cost_usd") is not None else None
+            )
         logs.append(entry)
 
     return {"logs": logs, "limit": limit}
@@ -537,9 +650,20 @@ def get_bounded_logs(lines: str = Query(default="200")):
     )
     logs = [
         {
-            **row,
+            "correlation_id": (
+                str(row["correlation_id"]) if row.get("correlation_id") else None
+            ),
+            "component": row.get("component"),
+            "log_type": row.get("log_type"),
             "started_at": _fmt(row.get("started_at")),
             "completed_at": _fmt(row.get("completed_at")),
+            "status": row.get("status"),
+            "duration_ms": row.get("duration_ms"),
+            "error_message": _public_failure(
+                row.get("error_message"),
+                status=row.get("status"),
+                kind=str(row.get("log_type") or "operation"),
+            ),
         }
         for row in rows
     ]
@@ -564,15 +688,22 @@ def _run_payload(row: dict) -> dict:
         "triggered_by": row.get("triggered_by"),
         "started_at": _fmt(row.get("started_at")),
         "completed_at": _fmt(row.get("completed_at")),
-        "error_message": row.get("error_message"),
-        "summary": summary,
+        "error_message": _public_failure(
+            row.get("error_message"),
+            status=row.get("result_status") or row.get("status"),
+            kind="run",
+        ),
+        "summary": {"progress": _public_progress(summary)},
     }
 
 
 @router.get("/system/runs", response_model=RunListResponse)
 def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
     rows = query_many(
-        "SELECT * FROM cycle_runs ORDER BY started_at DESC LIMIT :limit",
+        """SELECT correlation_id, status, result_status, run_kind,
+                  requested_component, triggered_by, started_at, completed_at,
+                  error_message, summary
+           FROM cycle_runs ORDER BY started_at DESC LIMIT :limit""",
         {"limit": limit},
         config=app_config.load_config(),
     )
@@ -580,11 +711,14 @@ def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
 
 
 @router.get("/system/runs/{correlation_id}", response_model=RunDetailResponse)
-def get_system_run(correlation_id: str):
+def get_system_run(correlation_id: UUID):
     config = app_config.load_config()
     row = query_one(
-        "SELECT * FROM cycle_runs WHERE correlation_id = :cid",
-        {"cid": correlation_id},
+        """SELECT correlation_id, status, result_status, run_kind,
+                  requested_component, triggered_by, started_at, completed_at,
+                  error_message, summary
+           FROM cycle_runs WHERE correlation_id = :cid""",
+        {"cid": str(correlation_id)},
         config=config,
     )
     if not row:
@@ -595,17 +729,16 @@ def get_system_run(correlation_id: str):
         SELECT log_id, correlation_id, 'collector' AS kind, collector AS component,
                started_at, completed_at, status, duration_ms, records_fetched,
                records_written, NULL::INTEGER AS tokens_input,
-               NULL::INTEGER AS tokens_output, NULL::DOUBLE PRECISION AS cost_usd,
-               error_message
+               NULL::INTEGER AS tokens_output, NULL::DOUBLE PRECISION AS cost_usd
         FROM collection_log WHERE correlation_id = :cid
         UNION ALL
         SELECT log_id, correlation_id, 'processor' AS kind, processor AS component,
                started_at, completed_at, status, duration_ms, NULL, NULL,
-               tokens_input, tokens_output, cost_usd, error_message
+               tokens_input, tokens_output, cost_usd
         FROM processing_log WHERE correlation_id = :cid
         ORDER BY started_at
         """,
-        {"cid": correlation_id},
+        {"cid": str(correlation_id)},
         config=config,
     )
     payload = _run_payload(row)
@@ -626,28 +759,32 @@ def get_system_run(correlation_id: str):
 
 
 @router.get("/system/cycle-status", response_model=RunStatusResponse)
-def get_cycle_status(correlation_id: str = Query(...)):
+def get_cycle_status(correlation_id: UUID = Query(...)):
     config = app_config.load_config()
 
     row = query_one(
         "SELECT status, result_status, started_at, completed_at, error_message, summary "
         "FROM cycle_runs WHERE correlation_id = :cid",
-        {"cid": correlation_id},
+        {"cid": str(correlation_id)},
         config=config,
     )
 
     if not row:
-        return {"status": "unknown", "correlation_id": correlation_id}
+        return {"status": "unknown", "correlation_id": str(correlation_id)}
 
     run = get_system_run(correlation_id)
     return {
         "status": row.get("result_status") or row["status"],
         "lifecycle_status": row["status"],
         "result_status": row.get("result_status"),
-        "correlation_id": correlation_id,
+        "correlation_id": str(correlation_id),
         "started_at": _fmt(row.get("started_at")),
         "completed_at": _fmt(row.get("completed_at")),
-        "error_message": row.get("error_message"),
+        "error_message": _public_failure(
+            row.get("error_message"),
+            status=row.get("result_status") or row.get("status"),
+            kind="run",
+        ),
         "progress": run.get("summary", {}).get("progress", {}),
         "stages": run.get("stages", []),
     }

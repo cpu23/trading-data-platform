@@ -12,21 +12,32 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
-from uuid import UUID
+from typing import Any, Literal
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
+from budgets import mark_override_dispatch_failed, register_manual_override
 from config import load_config, orchestrator_url
+from contracts import (
+    ResearchControlPlaneRunRequest,
+    ResearchControlPlaneRunResponse,
+    ResearchControlPlaneStatusResponse,
+    ResearchQuestionListResponse,
+    ResearchWorkOrderListResponse,
+)
 from db import get_session
 from routes.json.triggers import (
     _enforce_api_budget,
     _internal_basic_auth,
+    _manual_override,
     _post_to_orchestrator,
 )
 
@@ -81,6 +92,14 @@ except ImportError:  # pragma: no cover - api-only environment
         _research = None
         ENTITY_TYPES = EVIDENCE_TYPES = RELATIONSHIPS = ()
         CATALYST_STATES = RISK_KINDS = RISK_SEVERITIES = HOLDING_SOURCES = ()
+
+
+try:
+    from research_control_plane.repository import (
+        enqueue_planner_job as _enqueue_control_plane_planner,
+    )
+except ImportError:  # pragma: no cover - api-only environment
+    _enqueue_control_plane_planner = None
 
 
 try:  # orchestrator directory on PYTHONPATH (deployment wiring)
@@ -1092,3 +1111,442 @@ async def retry_intelligence_job(job_id: str, request: Request):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _enforce_api_budget(None)
     return await _research_orchestrator_post(request, f"/research/jobs/{parsed}/retry")
+
+
+def _control_plane_settings(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = config.get("research_control_plane", {})
+    return value if isinstance(value, Mapping) else {}
+
+
+@router.get(
+    "/control-plane/status",
+    response_model=ResearchControlPlaneStatusResponse,
+)
+def control_plane_status():
+    """Return bounded, aggregate control-plane state without private payloads."""
+    generated_at = datetime.now(UTC)
+    try:
+        config = load_config()
+        settings = _control_plane_settings(config)
+        stale_days = max(1, min(int(settings.get("stale_question_days", 14)), 365))
+        with get_session(config) as session:
+            backlog_rows = (
+                session.execute(
+                    text(
+                        """
+                    SELECT status, COUNT(*) AS count
+                    FROM research_questions
+                    GROUP BY status
+                    """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            aggregate = (
+                session.execute(
+                    text(
+                        """
+                    SELECT
+                        (SELECT COUNT(*) FROM research_work_orders
+                         WHERE status IN ('planned', 'queued', 'leased', 'running',
+                                          'failed_retryable')) AS active_work_orders,
+                        (SELECT MAX(completed_at) FROM research_plans) AS latest_plan_at,
+                        (SELECT MAX(created_at) FROM research_effects) AS latest_effect_at,
+                        (SELECT COUNT(*) FROM investment_theses
+                         WHERE last_evaluated_at IS NULL
+                            OR last_evaluated_at < NOW() - make_interval(days => :stale_days)
+                        ) AS stale_thesis_debt,
+                        (
+                            SELECT CASE WHEN COUNT(f.id) = 0 THEN NULL
+                                ELSE COUNT(o.id)::DOUBLE PRECISION / COUNT(f.id)
+                            END
+                            FROM investment_thesis_forecasts f
+                            LEFT JOIN investment_forecast_outcomes o
+                              ON o.forecast_id = f.id
+                            WHERE f.target_date <= CURRENT_DATE
+                        ) AS forecast_resolution_coverage
+                    """
+                    ),
+                    {"stale_days": stale_days},
+                )
+                .mappings()
+                .one()
+            )
+            metric = (
+                session.execute(
+                    text(
+                        """
+                    SELECT
+                        CASE WHEN completed_work = 0 THEN NULL
+                             ELSE material_updates::DOUBLE PRECISION / completed_work
+                        END AS material_change_yield,
+                        CASE WHEN completed_work = 0 THEN NULL
+                             ELSE justified_noops::DOUBLE PRECISION / completed_work
+                        END AS justified_noop_rate,
+                        cost_per_material_update AS cost_per_material_update_usd,
+                        median_event_to_verified_latency_ms,
+                        duplicate_work_rate, evidence_reuse_ratio
+                    FROM research_productivity_daily
+                    ORDER BY metric_day DESC
+                    LIMIT 1
+                    """
+                    )
+                )
+                .mappings()
+                .first()
+                or {}
+            )
+        backlog = {
+            "pending": 0,
+            "planned": 0,
+            "queued": 0,
+            "running": 0,
+            "resolved": 0,
+            "unresolvable": 0,
+            "expired": 0,
+            "cancelled": 0,
+        }
+        for row in backlog_rows:
+            if row["status"] in backlog:
+                backlog[str(row["status"])] = int(row["count"])
+        return {
+            "status": "available",
+            "enabled": bool(settings.get("enabled", False)),
+            "generated_at": generated_at,
+            "priority_policy_version": str(
+                settings.get("priority_policy_version", "v1")
+            ),
+            "materiality_policy_version": str(
+                settings.get("materiality_policy_version", "v1")
+            ),
+            "backlog": backlog,
+            "active_work_orders": int(aggregate["active_work_orders"] or 0),
+            "latest_plan_at": aggregate["latest_plan_at"],
+            "latest_effect_at": aggregate["latest_effect_at"],
+            "metrics": {
+                "material_change_yield": metric.get("material_change_yield"),
+                "justified_noop_rate": metric.get("justified_noop_rate"),
+                "cost_per_material_update_usd": metric.get(
+                    "cost_per_material_update_usd"
+                ),
+                "median_event_to_verified_latency_ms": metric.get(
+                    "median_event_to_verified_latency_ms"
+                ),
+                "duplicate_work_rate": metric.get("duplicate_work_rate"),
+                "evidence_reuse_ratio": metric.get("evidence_reuse_ratio"),
+                "stale_thesis_debt": int(aggregate["stale_thesis_debt"] or 0),
+                "forecast_resolution_coverage": aggregate[
+                    "forecast_resolution_coverage"
+                ],
+            },
+            "unavailable_components": [],
+        }
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "enabled": False,
+                "generated_at": generated_at.isoformat(),
+                "priority_policy_version": "v1",
+                "materiality_policy_version": "v1",
+                "backlog": {
+                    "pending": 0,
+                    "planned": 0,
+                    "queued": 0,
+                    "running": 0,
+                    "resolved": 0,
+                    "unresolvable": 0,
+                    "expired": 0,
+                    "cancelled": 0,
+                },
+                "active_work_orders": 0,
+                "latest_plan_at": None,
+                "latest_effect_at": None,
+                "metrics": {"stale_thesis_debt": 0},
+                "unavailable_components": ["database"],
+            },
+        )
+
+
+@router.get(
+    "/questions",
+    response_model=ResearchQuestionListResponse,
+)
+def control_plane_questions(
+    status: Literal[
+        "pending",
+        "planned",
+        "queued",
+        "running",
+        "resolved",
+        "unresolvable",
+        "expired",
+        "cancelled",
+    ]
+    | None = Query(default=None),
+    question_type: Literal[
+        "earnings_guidance_delta",
+        "filing_peer_readthrough",
+        "positioning_divergence",
+        "thesis_challenge",
+        "forecast_resolution",
+        "catalyst_confirmation",
+        "evidence_refresh",
+        "source_gap",
+    ]
+    | None = Query(default=None),
+    target_kind: Literal["thesis", "group", "forecast", "catalyst", "entity", "source"]
+    | None = Query(default=None),
+    target_ref: str | None = Query(default=None, min_length=1, max_length=500),
+    cursor: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """List a bounded, filterable page of durable research questions."""
+    try:
+        predicates = []
+        params: dict[str, Any] = {"limit": limit}
+        for column, value in (
+            ("status", status),
+            ("question_type", question_type),
+            ("target_kind", target_kind),
+            ("target_ref", target_ref),
+        ):
+            if value is not None:
+                predicates.append(f"{column} = :{column}")
+                params[column] = value
+        if cursor is not None:
+            predicates.append("id > :cursor")
+            params["cursor"] = cursor
+        where_clause = " AND ".join(predicates) if predicates else "TRUE"
+        with get_session(load_config()) as session:
+            rows = (
+                session.execute(
+                    text(
+                        f"""
+                        SELECT *
+                        FROM research_questions
+                        WHERE {where_clause}
+                        ORDER BY id
+                        LIMIT :limit
+                        """
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row["id"],
+                    "fingerprint": row["fingerprint"],
+                    "origin_kind": row["origin_kind"],
+                    "question_type": row["question_type"],
+                    "atomic_question": row["atomic_question"],
+                    "target_kind": row["target_kind"],
+                    "target_ref": row["target_ref"],
+                    "accepted_cutoff": row["accepted_cutoff"],
+                    "required_evidence_shape": row["required_evidence_shape"],
+                    "acceptable_source_families": row["acceptable_source_families"],
+                    "priority": {
+                        "policy_version": row["priority_policy_version"],
+                        "materiality": row["materiality"],
+                        "uncertainty": row["uncertainty"],
+                        "discrimination_power": row["discrimination_power"],
+                        "urgency": row["urgency"],
+                        "freshness_gap": row["freshness_gap"],
+                        "resolvability": row["resolvability"],
+                        "expected_cost_usd": row["estimated_cost_usd"],
+                        "expected_runtime_seconds": row["estimated_runtime_seconds"],
+                        "expected_human_review_minutes": row[
+                            "expected_human_review_minutes"
+                        ],
+                        "score": row["priority_score"],
+                        "blockers": row["priority_blockers"],
+                    },
+                    "status": row["status"],
+                    "attempt_count": row["attempt_count"],
+                    "not_before": row["not_before"],
+                    "due_at": row["due_at"],
+                    "expires_at": row["expires_at"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "resolved_at": row["resolved_at"],
+                    "resolution_evidence_refs": row["resolution_evidence_refs"],
+                    "resolution_summary": row["resolution_summary"],
+                    "unresolved_reason": row["unresolved_reason"],
+                }
+            )
+        return {
+            "items": items,
+            "limit": limit,
+            "next_cursor": str(rows[-1]["id"]) if len(rows) == limit else None,
+            "status": "available",
+        }
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "items": [],
+                "limit": limit,
+                "next_cursor": None,
+                "status": "unavailable",
+            },
+        )
+
+
+@router.get(
+    "/work-orders",
+    response_model=ResearchWorkOrderListResponse,
+)
+def control_plane_work_orders(
+    status: Literal[
+        "planned",
+        "queued",
+        "leased",
+        "running",
+        "completed",
+        "failed_retryable",
+        "failed_terminal",
+        "cancelled",
+        "stale",
+    ]
+    | None = Query(default=None),
+    question_id: UUID | None = Query(default=None),
+    skill_key: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=120,
+        pattern=r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+    ),
+    cursor: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """List bounded work-order metadata while excluding skill inputs and payloads."""
+    try:
+        predicates = []
+        params: dict[str, Any] = {"limit": limit}
+        for column, value in (
+            ("w.status", status),
+            ("w.question_id", question_id),
+            ("s.skill_key", skill_key),
+        ):
+            if value is not None:
+                parameter = column.split(".")[-1]
+                predicates.append(f"{column} = :{parameter}")
+                params[parameter] = value
+        if cursor is not None:
+            predicates.append("w.id > :cursor")
+            params["cursor"] = cursor
+        where_clause = " AND ".join(predicates) if predicates else "TRUE"
+        with get_session(load_config()) as session:
+            rows = (
+                session.execute(
+                    text(
+                        f"""
+                        SELECT w.id, w.question_id, w.plan_id, w.analysis_job_id,
+                               s.skill_key, s.version AS skill_version,
+                               s.content_fingerprint AS skill_fingerprint,
+                               w.accepted_cutoff, w.planning_policy_version,
+                               w.estimated_value, w.reserved_cost_usd,
+                               w.reserved_runtime_seconds, w.status, w.attempt_count,
+                               w.material_effect_summary, w.error_kind, w.created_at,
+                               w.queued_at, w.started_at, w.completed_at
+                        FROM research_work_orders w
+                        JOIN research_skill_versions s ON s.id = w.skill_version_id
+                        WHERE {where_clause}
+                        ORDER BY w.id
+                        LIMIT :limit
+                        """
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+        items = [dict(row) for row in rows]
+        return {
+            "items": items,
+            "limit": limit,
+            "next_cursor": str(rows[-1]["id"]) if len(rows) == limit else None,
+            "status": "available",
+        }
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "items": [],
+                "limit": limit,
+                "next_cursor": None,
+                "status": "unavailable",
+            },
+        )
+
+
+@router.post(
+    "/control-plane/run",
+    status_code=202,
+    response_model=ResearchControlPlaneRunResponse,
+)
+async def run_control_plane(
+    request: Request,
+    body: ResearchControlPlaneRunRequest,
+):
+    """Enqueue one coalesced manual planner job; execution remains asynchronous."""
+    override = _manual_override(body, request)
+    _enforce_api_budget(override)
+    config = load_config()
+    correlation_id = uuid4()
+    accepted_at = datetime.now(UTC)
+    if override:
+        try:
+            register_manual_override(
+                correlation_id=str(correlation_id),
+                run_kind="research",
+                requested_component="research_control_plane",
+                config=config,
+                **override,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="Budget override audit unavailable"
+            ) from exc
+    try:
+        if _enqueue_control_plane_planner is None:
+            raise RuntimeError("research control plane unavailable")
+        result = await run_in_threadpool(
+            _enqueue_control_plane_planner,
+            config,
+            correlation_id=correlation_id,
+            trigger_kind="manual",
+            trigger_ref=body.reason,
+            dedupe_ref="global",
+            accepted_cutoff=accepted_at,
+        )
+    except Exception as exc:
+        if override:
+            mark_override_dispatch_failed(
+                str(correlation_id), type(exc).__name__, config=config
+            )
+        raise HTTPException(
+            status_code=503, detail="Research control plane unavailable"
+        ) from exc
+    if result.get("coalesced") and override:
+        mark_override_dispatch_failed(
+            str(correlation_id), "planner run coalesced", config=config
+        )
+    job_id = result.get("job_id")
+    if job_id is None:
+        raise HTTPException(
+            status_code=503, detail="Research control plane queue unavailable"
+        )
+    return {
+        "correlation_id": correlation_id,
+        "analysis_job_id": UUID(str(job_id)),
+        "coalesced": bool(result.get("coalesced")),
+        "accepted_at": accepted_at,
+        "status": "coalesced" if result.get("coalesced") else "accepted",
+    }

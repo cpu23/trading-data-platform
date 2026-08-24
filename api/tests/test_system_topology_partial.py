@@ -31,11 +31,15 @@ class _MarkupProbe(HTMLParser):
         for node_tag, node_attrs in self.nodes:
             if tag is not None and node_tag != tag:
                 continue
-            if class_name is not None and class_name not in (
-                node_attrs.get("class") or ""
-            ).split():
+            if (
+                class_name is not None
+                and class_name not in (node_attrs.get("class") or "").split()
+            ):
                 continue
-            if any(node_attrs.get(name.replace("__", "-")) != value for name, value in attrs.items()):
+            if any(
+                node_attrs.get(name.replace("__", "-")) != value
+                for name, value in attrs.items()
+            ):
                 continue
             matches.append(node_attrs)
         return matches
@@ -162,9 +166,15 @@ class SystemTopologyPartialContract(unittest.TestCase):
         self.assertNotIn("height", svgs[0])
         self.assertEqual(len(probe.select("g", class_name="system-topology-layer")), 3)
         self.assertEqual(len(probe.select("g", class_name="system-topology-node")), 3)
-        self.assertEqual(len(probe.select("path", class_name="system-topology-edge-line")), 2)
-        self.assertLessEqual(len(probe.select("g", class_name="system-topology-node")), 64)
-        self.assertLessEqual(len(probe.select("path", class_name="system-topology-edge-line")), 128)
+        self.assertEqual(
+            len(probe.select("path", class_name="system-topology-edge-line")), 2
+        )
+        self.assertLessEqual(
+            len(probe.select("g", class_name="system-topology-node")), 64
+        )
+        self.assertLessEqual(
+            len(probe.select("path", class_name="system-topology-edge-line")), 128
+        )
 
     def test_caps_direct_rendering_at_contract_bounds(self):
         prototype = _topology()["nodes"][0]
@@ -178,10 +188,7 @@ class SystemTopologyPartialContract(unittest.TestCase):
             for index in range(70)
         ]
         edge = _topology()["edges"][0]
-        edges = [
-            {**edge, "source": "node_0", "target": "node_1"}
-            for _ in range(140)
-        ]
+        edges = [{**edge, "source": "node_0", "target": "node_1"} for _ in range(140)]
         probe = _MarkupProbe()
         probe.feed(self.render(_topology(nodes=nodes, edges=edges)))
 
@@ -196,8 +203,10 @@ class SystemTopologyPartialContract(unittest.TestCase):
         probe.feed(rendered)
         nodes = probe.select("g", class_name="system-topology-node")
 
-        self.assertEqual({node.get("tabindex") for node in nodes}, {"0"})
+        self.assertEqual([node.get("tabindex") for node in nodes].count("0"), 1)
+        self.assertTrue({node.get("tabindex") for node in nodes}.issubset({"0", "-1"}))
         self.assertEqual({node.get("role") for node in nodes}, {"button"})
+        self.assertEqual({node.get("aria-expanded") for node in nodes}, {"false"})
         for node in nodes:
             self.assertTrue(node.get("aria-label"))
             controls = node.get("aria-controls")
@@ -214,7 +223,9 @@ class SystemTopologyPartialContract(unittest.TestCase):
         probe = _MarkupProbe()
         probe.feed(rendered)
 
-        self.assertEqual(len(probe.select("ul", class_name="system-topology-legend")), 1)
+        self.assertEqual(
+            len(probe.select("ul", class_name="system-topology-legend")), 1
+        )
         self.assertEqual(
             probe.select("time", class_name="system-topology-updated")[0]["datetime"],
             "2026-08-23T14:05:00+00:00",
@@ -241,9 +252,7 @@ class SystemTopologyPartialContract(unittest.TestCase):
         self.assertNotIn("animation", self.template_source.lower())
 
     def test_unavailable_and_no_data_states_are_distinct(self):
-        unavailable = self.render(
-            _topology(status="unavailable", nodes=[], edges=[])
-        )
+        unavailable = self.render(_topology(status="unavailable", nodes=[], edges=[]))
         empty = self.render(_topology(nodes=[], edges=[]))
         unavailable_probe = _MarkupProbe()
         unavailable_probe.feed(unavailable)
@@ -253,6 +262,16 @@ class SystemTopologyPartialContract(unittest.TestCase):
         self.assertNotIn("<svg", unavailable)
         self.assertIn("No topology data has been recorded yet", empty)
         self.assertNotIn("<svg", empty)
+        empty_probe = _MarkupProbe()
+        empty_probe.feed(empty)
+        self.assertEqual(
+            unavailable_probe.select(id="system-topology")[0].get("aria-describedby"),
+            "system-topology-unavailable-message",
+        )
+        self.assertEqual(
+            empty_probe.select(id="system-topology")[0].get("aria-describedby"),
+            "system-topology-empty-message",
+        )
 
     def test_has_no_external_graph_dependency_or_executable_script(self):
         source = self.template_source.lower()

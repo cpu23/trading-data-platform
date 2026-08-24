@@ -53,7 +53,9 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
         self.assertIn("if (marketRefreshTimer || document.hidden) return;", self.app_js)
         self.assertIn("if (!refreshBound) {", self.app_js)
         self.assertIn("refreshBound = true;", self.app_js)
-        self.assertIn("function initLiveSections() {\n    ensureMarketRefresh();", self.app_js)
+        self.assertIn(
+            "function initLiveSections() {\n    ensureMarketRefresh();", self.app_js
+        )
         self.assertIn("ensureMarketRefresh();", self.app_js)
 
     def test_initial_hidden_startup_does_not_create_interval(self):
@@ -61,12 +63,8 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
         # load or restore), ensureMarketRefresh must still bind the
         # visibilitychange listener idempotently but must NOT create the
         # interval; the restoration path starts it on first visibility return.
-        self.assertIn(
-            "if (marketRefreshTimer || document.hidden) return;", self.app_js
-        )
-        self.assertIn(
-            "if (!refreshBound) {\n      refreshBound = true;", self.app_js
-        )
+        self.assertIn("if (marketRefreshTimer || document.hidden) return;", self.app_js)
+        self.assertIn("if (!refreshBound) {\n      refreshBound = true;", self.app_js)
 
     def test_periodic_dispatch_pauses_while_document_is_hidden(self):
         self.assertIn(
@@ -127,10 +125,34 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
         # funnels into the guarded ensureMarketRefresh; nothing in the swap
         # path calls setInterval directly.
         self.assertIn("['htmx:afterSwap', 'htmx:afterSettle'].forEach", self.app_js)
-        self.assertIn("initDynamicUi(evt.detail.target)", self.app_js)
+        self.assertIn("initDynamicUi(target)", self.app_js)
         self.assertIn("function initDynamicUi(root) {", self.app_js)
         self.assertIn("initLiveSections();", self.app_js)
         self.assertIn("if (marketRefreshTimer || document.hidden) return;", self.app_js)
+
+    def test_topology_swaps_rebind_once_restore_focus_and_toggle_disclosures(self):
+        self.assertIn(
+            "if (section.dataset.topologyBound === 'true') return;", self.app_js
+        )
+        self.assertIn("function toggleTopologyNode(section, node)", self.app_js)
+        self.assertEqual(
+            self.app_js.count("toggleTopologyNode(section, node);"),
+            2,
+        )
+        self.assertIn("node.focus({preventScroll: true});", self.app_js)
+        focus_at = self.app_js.index("if (moveFocus) focusTopologyNode(node);")
+        scroll_at = self.app_js.index(
+            "if (detail && scrollDetail) detail.scrollIntoView"
+        )
+        self.assertLess(focus_at, scroll_at)
+        self.assertIn(
+            "var replacement = target.id ? document.getElementById(target.id) : null;",
+            self.app_js,
+        )
+        self.assertIn(
+            "if (replacement && replacement !== target) target = replacement;",
+            self.app_js,
+        )
 
     def test_cycle_complete_and_quote_stream_behavior_preserved(self):
         self.assertIn(
@@ -138,7 +160,9 @@ class MarketRefreshHeartbeatContracts(unittest.TestCase):
             "new CustomEvent('cycleComplete', { bubbles: true }))",
             self.app_js,
         )
-        self.assertIn("var source = new EventSource('/api/quotes/stream');", self.app_js)
+        self.assertIn(
+            "var source = new EventSource('/api/quotes/stream');", self.app_js
+        )
 
 
 if __name__ == "__main__":

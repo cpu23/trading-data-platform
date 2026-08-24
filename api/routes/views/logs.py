@@ -43,8 +43,6 @@ def _fetch_logs(
         component=component,
         status=status,
         limit=limit,
-        include_detail=True,
-        include_internal=False,
         from_date=from_date,
         correlation_id=correlation_id,
     )
@@ -76,10 +74,16 @@ def _distinct_components(config: dict) -> list[str]:
 @router.get("/logs")
 def logs_page(
     request: Request,
-    component: str = Query(default=""),
-    status: str = Query(default=""),
-    range: str = Query(default=""),
-    correlation_id: str = Query(default=""),
+    component: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.-]{0,100}$", max_length=100
+    ),
+    status: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50
+    ),
+    range: str = Query(default="", pattern=r"^(?:|24h|7d)$", max_length=3),
+    correlation_id: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.:-]{0,200}$", max_length=200
+    ),
 ):
     config = load_config()
     templates = _get_templates(request)
@@ -102,7 +106,7 @@ def logs_page(
             "selected_status": status,
             "selected_range": range,
             "selected_correlation_id": correlation_id,
-            "runs": get_system_runs(limit=12, include_internal=False).get("runs", []),
+            "runs": get_system_runs(limit=12).get("runs", []),
         },
     )
 
@@ -110,10 +114,16 @@ def logs_page(
 @router.get("/partials/logs")
 def partial_logs(
     request: Request,
-    component: str = Query(default=""),
-    status: str = Query(default=""),
-    range: str = Query(default=""),
-    correlation_id: str = Query(default=""),
+    component: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.-]{0,100}$", max_length=100
+    ),
+    status: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50
+    ),
+    range: str = Query(default="", pattern=r"^(?:|24h|7d)$", max_length=3),
+    correlation_id: str = Query(
+        default="", pattern=r"^[A-Za-z0-9_.:-]{0,200}$", max_length=200
+    ),
 ):
     templates = _get_templates(request)
     logs = _fetch_logs(

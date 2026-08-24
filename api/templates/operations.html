@@ -10,6 +10,8 @@
 
   {% include "partials/source_health.html" %}
 
+  {% include "partials/system_topology.html" %}
+
   <section aria-labelledby="event-pipeline-title">
     <h2 id="event-pipeline-title">Event pipeline</h2>
     {% if not event_pipeline.available %}<p role="status">Unavailable</p>
@@ -22,9 +24,9 @@
         <dt>Oldest pending</dt><dd>{{ event_pipeline.oldest_pending_display or '—' }}</dd>
       </dl>
       {% if not event_pipeline.freshness %}<p>No source freshness state yet</p>
-      {% else %}<table><thead><tr><th scope="col">Source</th><th scope="col">Freshness</th><th scope="col">Last success</th><th scope="col">Next expected</th><th scope="col">Reason</th></tr></thead><tbody>
+      {% else %}<div class="table-wrap" tabindex="0" aria-labelledby="event-pipeline-title"><table><thead><tr><th scope="col">Source</th><th scope="col">Freshness</th><th scope="col">Last success</th><th scope="col">Next expected</th><th scope="col">Reason</th></tr></thead><tbody>
         {% for item in event_pipeline.freshness %}<tr><th scope="row">{{ item.source }}</th><td>{{ item.state }}</td><td>{{ item.last_success_display or '—' }}</td><td>{{ item.expected_next_display or '—' }}</td><td>{{ item.reason_code or '—' }}</td></tr>{% endfor %}
-      </tbody></table>{% endif %}
+      </tbody></table></div>{% endif %}
     {% endif %}
   </section>
 
@@ -32,9 +34,9 @@
     <h2 id="processor-title">Latest processor outcomes</h2>
     {% if not processors.available %}<p role="status">Unavailable</p>
     {% elif not processors['items'] %}<p>No processor outcomes yet</p>
-    {% else %}<table><thead><tr><th scope="col">Processor</th><th scope="col">Status</th><th scope="col">Model</th><th scope="col">Cost</th><th scope="col">Time</th><th scope="col">Duration</th></tr></thead><tbody>
+    {% else %}<div class="table-wrap" tabindex="0" aria-labelledby="processor-title"><table><thead><tr><th scope="col">Processor</th><th scope="col">Status</th><th scope="col">Model</th><th scope="col">Cost</th><th scope="col">Time</th><th scope="col">Duration</th></tr></thead><tbody>
       {% for item in processors['items'] %}<tr><th scope="row">{{ item.processor }}</th><td>{{ item.status }}</td><td>{{ item.model_used or '—' }}</td><td>{% if item.cost_usd is not none %}${{ '%.4f'|format(item.cost_usd) }}{% else %}—{% endif %}</td><td>{{ item.time_display or '—' }}</td><td>{{ item.duration_ms if item.duration_ms is not none else '—' }}{% if item.duration_ms is not none %} ms{% endif %}</td></tr>{% endfor %}
-    </tbody></table>{% endif %}
+    </tbody></table></div>{% endif %}
   </section>
 
   <section aria-labelledby="feed-title">
@@ -47,9 +49,9 @@
     <h2 id="runs-title">Recent durable runs</h2>
     {% if not runs.available %}<p role="status">Unavailable</p>
     {% elif not runs['items'] %}<p>No durable runs yet</p>
-    {% else %}<table><thead><tr><th scope="col">Mode</th><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Duration</th><th scope="col">Started</th><th scope="col">Summary</th></tr></thead><tbody>
+    {% else %}<div class="table-wrap" tabindex="0" aria-labelledby="runs-title"><table><thead><tr><th scope="col">Mode</th><th scope="col">Component</th><th scope="col">Status</th><th scope="col">Duration</th><th scope="col">Started</th><th scope="col">Summary</th></tr></thead><tbody>
       {% for item in runs['items'] %}<tr><th scope="row">{{ item.mode }}</th><td>{{ item.component }}</td><td>{{ item.status }}</td><td>{{ item.duration_ms if item.duration_ms is not none else '—' }}{% if item.duration_ms is not none %} ms{% endif %}</td><td>{{ item.time_display or '—' }}</td><td>{{ item.summary }}</td></tr>{% endfor %}
-    </tbody></table>{% endif %}
+    </tbody></table></div>{% endif %}
   </section>
 
   {% include "partials/claim_history.html" %}

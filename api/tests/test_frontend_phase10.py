@@ -39,7 +39,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("initCharts(document);", self.app_js)
         self.assertIn("htmx:afterSwap", self.app_js)
         self.assertIn("htmx:afterSettle", self.app_js)
-        self.assertIn("initCharts(evt.detail.target)", self.app_js)
+        self.assertIn("initDynamicUi(target)", self.app_js)
         self.assertIn("Chart.getChart(canvas)", self.app_js)
         self.assertIn("existing.destroy()", self.app_js)
 
@@ -306,6 +306,7 @@ class ResearchCaseRenderingContracts(unittest.TestCase):
             self.assertIn(text, rendered)
         self.assertNotIn("BUY", rendered)
         self.assertNotIn("SELL", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

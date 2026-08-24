@@ -1,5 +1,5 @@
 {% set topology_status = topology.status if topology else 'unavailable' %}
-<section class="system-topology-section" id="system-topology" aria-labelledby="system-topology-title"
+<section class="system-topology-section" id="system-topology" aria-labelledby="system-topology-title" tabindex="-1"{% if not topology or topology_status == 'unavailable' %} aria-describedby="system-topology-unavailable-message"{% elif not topology.nodes %} aria-describedby="system-topology-empty-message"{% endif %}
          data-system-topology="" data-topology-status="{{ topology_status }}"{% if live_updates_enabled %}
          data-live-section="system_topology"
          data-live-event="system_topology_changed"
@@ -15,7 +15,7 @@
   </header>
 
   {% if not topology or topology_status == 'unavailable' %}
-    <div class="empty-state system-topology-unavailable" role="status" aria-live="polite">
+    <div class="empty-state system-topology-unavailable" id="system-topology-unavailable-message" role="status" aria-live="polite">
       <strong>System topology is temporarily unavailable.</strong>
       <span>The operations data needed to build this view could not be read.</span>
       {% if topology and topology.unavailable_components %}
@@ -24,7 +24,7 @@
       {% if topology and topology.summary %}<span>{{ topology.summary }}</span>{% endif %}
     </div>
   {% elif not topology.nodes %}
-    <div class="empty-state system-topology-empty" role="status">
+    <div class="empty-state system-topology-empty" id="system-topology-empty-message" role="status">
       <strong>No topology data has been recorded yet.</strong>
       <span>{{ topology.summary }}</span>
     </div>
@@ -32,12 +32,16 @@
     {% set topology_nodes = topology.nodes[:64] %}
     {% set topology_edges = topology.edges[:128] %}
     {% set topology_groups = topology_nodes | groupby('group') %}
-    {% set bounds = namespace(max_nodes=1) %}
+    {% set bounds = namespace(max_nodes=1, graph_height=40) %}
+    {% set max_columns = 5 %}
     {% for layer in topology_groups %}
       {% if layer.list | length > bounds.max_nodes %}{% set bounds.max_nodes = layer.list | length %}{% endif %}
+      {% set layer_rows = ((layer.list | length + max_columns - 1) // max_columns) %}
+      {% set bounds.graph_height = bounds.graph_height + 62 + layer_rows * 108 %}
     {% endfor %}
-    {% set graph_width = 220 + bounds.max_nodes * 176 %}
-    {% set graph_height = 40 + (topology_groups | length) * 132 %}
+    {% set display_columns = bounds.max_nodes if bounds.max_nodes < max_columns else max_columns %}
+    {% set graph_width = 220 + display_columns * 176 %}
+    {% set graph_height = bounds.graph_height %}
 
     {% if topology_status == 'partial' %}
       <div class="system-topology-notice" role="status">
@@ -57,7 +61,7 @@
     </ul>
 
     <div class="topology-graph-scroll system-topology-graph-scroll" data-topology-stack="" tabindex="0" aria-label="Scrollable system topology graph">
-      <svg class="system-topology-graph" viewBox="0 0 {{ graph_width }} {{ graph_height }}" preserveAspectRatio="xMinYMin meet" role="img" aria-labelledby="system-topology-svg-title system-topology-svg-description">
+      <svg class="system-topology-graph" viewBox="0 0 {{ graph_width }} {{ graph_height }}" preserveAspectRatio="xMinYMin meet" role="group" aria-labelledby="system-topology-svg-title system-topology-svg-description">
         <title id="system-topology-svg-title">System component topology</title>
         <desc id="system-topology-svg-description">{{ topology.summary }} Nodes are grouped by operational layer; each node includes a visible status and has an associated detail disclosure below the graph.</desc>
         <defs>
@@ -68,51 +72,72 @@
 
         <g class="system-topology-edges" aria-label="Component dependencies">
           {% for edge in topology_edges %}
-            {% set edge_layout = namespace(source_x=0, source_y=0, target_x=0, target_y=0, source_label=edge.source, target_label=edge.target) %}
+            {% set edge_layout = namespace(source_x=0, source_y=0, target_x=0, target_y=0, source_label=edge.source, target_label=edge.target, layer_top=24) %}
             {% for layer in topology_groups %}
-              {% set edge_layer_y = 82 + loop.index0 * 132 %}
+              {% set layer_rows = ((layer.list | length + max_columns - 1) // max_columns) %}
               {% for node in layer.list %}
+                {% set edge_node_x = 180 + (loop.index0 % max_columns) * 176 %}
+                {% set edge_node_y = edge_layout.layer_top + 62 + (loop.index0 // max_columns) * 108 %}
                 {% if node.id == edge.source %}
-                  {% set edge_layout.source_x = 180 + loop.index0 * 176 %}
-                  {% set edge_layout.source_y = edge_layer_y %}
+                  {% set edge_layout.source_x = edge_node_x %}
+                  {% set edge_layout.source_y = edge_node_y %}
                   {% set edge_layout.source_label = node.label %}
                 {% endif %}
                 {% if node.id == edge.target %}
-                  {% set edge_layout.target_x = 180 + loop.index0 * 176 %}
-                  {% set edge_layout.target_y = edge_layer_y %}
+                  {% set edge_layout.target_x = edge_node_x %}
+                  {% set edge_layout.target_y = edge_node_y %}
                   {% set edge_layout.target_label = node.label %}
                 {% endif %}
               {% endfor %}
+              {% set edge_layout.layer_top = edge_layout.layer_top + 62 + layer_rows * 108 %}
             {% endfor %}
+            {% if edge_layout.target_y > edge_layout.source_y %}
+              {% set edge_layout.source_y = edge_layout.source_y + 42 %}
+              {% set edge_layout.target_y = edge_layout.target_y - 50 %}
+            {% elif edge_layout.target_y < edge_layout.source_y %}
+              {% set edge_layout.source_y = edge_layout.source_y - 42 %}
+              {% set edge_layout.target_y = edge_layout.target_y + 50 %}
+            {% elif edge_layout.target_x > edge_layout.source_x %}
+              {% set edge_layout.source_x = edge_layout.source_x + 70 %}
+              {% set edge_layout.target_x = edge_layout.target_x - 78 %}
+            {% else %}
+              {% set edge_layout.source_x = edge_layout.source_x - 70 %}
+              {% set edge_layout.target_x = edge_layout.target_x + 78 %}
+            {% endif %}
+            {% set edge_offset = ((loop.index0 % 7) - 3) * 6 %}
             <g class="system-topology-edge status-{{ edge.status }} topology-activity"
                data-source="{{ edge.source }}" data-target="{{ edge.target }}"
-               data-activity-state="{% if edge.recent_activity_count is not none and edge.recent_activity_count > 0 %}recent{% else %}idle{% endif %}"
+               data-activity-state="{% if edge.recent_activity_count is none %}unknown{% elif edge.recent_activity_count > 0 %}recent{% else %}idle{% endif %}"
                aria-label="{{ edge_layout.source_label }} to {{ edge_layout.target_label }}: {{ edge.kind }}, status {{ edge.status | replace('_', ' ') }}">
-              <path class="system-topology-edge-line" d="M {{ edge_layout.source_x }} {{ edge_layout.source_y }} C {{ edge_layout.source_x }} {{ (edge_layout.source_y + edge_layout.target_y) / 2 }}, {{ edge_layout.target_x }} {{ (edge_layout.source_y + edge_layout.target_y) / 2 }}, {{ edge_layout.target_x }} {{ edge_layout.target_y }}" marker-end="url(#system-topology-arrow)"></path>
+              <path class="system-topology-edge-line" d="M {{ edge_layout.source_x }} {{ edge_layout.source_y }} C {{ edge_layout.source_x }} {{ (edge_layout.source_y + edge_layout.target_y) / 2 + edge_offset }}, {{ edge_layout.target_x }} {{ (edge_layout.source_y + edge_layout.target_y) / 2 + edge_offset }}, {{ edge_layout.target_x }} {{ edge_layout.target_y }}" marker-end="url(#system-topology-arrow)"></path>
             </g>
           {% endfor %}
         </g>
 
+        {% set node_layout = namespace(layer_top=24, focus_assigned=false) %}
         {% for layer in topology_groups %}
-          {% set layer_y = 82 + loop.index0 * 132 %}
+          {% set layer_rows = ((layer.list | length + max_columns - 1) // max_columns) %}
           <g class="system-topology-layer" role="group" aria-label="{{ layer.grouper }} layer">
-            <text class="system-topology-layer-label" x="12" y="{{ layer_y - 5 }}">{{ layer.grouper }}</text>
-            <text class="system-topology-layer-count" x="12" y="{{ layer_y + 15 }}">{{ layer.list | length }} component{% if layer.list | length != 1 %}s{% endif %}</text>
+            <text class="system-topology-layer-label" x="12" y="{{ node_layout.layer_top + 57 }}">{{ layer.grouper }}</text>
+            <text class="system-topology-layer-count" x="12" y="{{ node_layout.layer_top + 77 }}">{{ layer.list | length }} component{% if layer.list | length != 1 %}s{% endif %}</text>
             {% for node in layer.list %}
-              {% set node_x = 180 + loop.index0 * 176 %}
+              {% set node_x = 180 + (loop.index0 % max_columns) * 176 %}
+              {% set node_y = node_layout.layer_top + 62 + (loop.index0 // max_columns) * 108 %}
               <g class="system-topology-node status-{{ node.status }} topology-activity"
-                 role="button" tabindex="0"
+                 role="button" tabindex="{{ 0 if not node_layout.focus_assigned else -1 }}"
                  data-topology-node="{{ node.id }}"
                  data-activity-state="{{ node.activity_state }}"
                  aria-label="{{ node.label }}, {{ node.kind }}, status {{ node.status | replace('_', ' ') }}, activity {{ node.activity_state }}{% if node.bounded_count is not none %}, count {{ node.bounded_count }}{% endif %}"
                  aria-controls="system-topology-detail-{{ node.id }}" aria-expanded="false">
-                <rect class="system-topology-node-shape" x="{{ node_x - 70 }}" y="{{ layer_y - 42 }}" width="140" height="84" rx="4"></rect>
-                <text class="system-topology-node-label" x="{{ node_x }}" y="{{ layer_y - 13 }}" text-anchor="middle">{{ node.label | truncate(22, true, '…') }}</text>
-                <text class="system-topology-node-status" x="{{ node_x }}" y="{{ layer_y + 7 }}" text-anchor="middle">Status: {{ node.status | replace('_', ' ') | title }}</text>
-                <text class="system-topology-node-activity" x="{{ node_x }}" y="{{ layer_y + 25 }}" text-anchor="middle">{{ node.activity_state | replace('_', ' ') }}{% if node.bounded_count is not none %} · {{ node.bounded_count }}{% endif %}</text>
+                <rect class="system-topology-node-shape" x="{{ node_x - 70 }}" y="{{ node_y - 42 }}" width="140" height="84" rx="4"></rect>
+                <text class="system-topology-node-label" x="{{ node_x }}" y="{{ node_y - 13 }}" text-anchor="middle">{{ node.label | truncate(22, true, '…') }}</text>
+                <text class="system-topology-node-status" x="{{ node_x }}" y="{{ node_y + 7 }}" text-anchor="middle">Status: {{ node.status | replace('_', ' ') | title }}</text>
+                <text class="system-topology-node-activity" x="{{ node_x }}" y="{{ node_y + 25 }}" text-anchor="middle">{{ node.activity_state | replace('_', ' ') }}{% if node.bounded_count is not none %} · {{ node.bounded_count }}{% endif %}</text>
               </g>
+              {% set node_layout.focus_assigned = true %}
             {% endfor %}
           </g>
+          {% set node_layout.layer_top = node_layout.layer_top + 62 + layer_rows * 108 %}
         {% endfor %}
       </svg>
     </div>
@@ -132,7 +157,7 @@
             </dl>
             <p>{{ node.safe_detail }}</p>
             {% if node.staleness_reason %}<p><strong>Staleness:</strong> {{ node.staleness_reason }}</p>{% endif %}
-            {% if node.inferred_activity %}<p class="section-note">Activity is inferred from bounded operational evidence.</p>{% endif %}
+            {% if node.inferred_activity %}<p class="section-note">State is inferred; the detail above names the available evidence boundary.</p>{% endif %}
             {% if node.navigation_target %}<a class="quiet-link" href="{{ node.navigation_target }}">Open {{ node.label }}</a>{% endif %}
           </details>
         {% endfor %}
@@ -152,7 +177,7 @@
             {% if node.id == edge.source %}{% set edge_labels.source = node.label %}{% endif %}
             {% if node.id == edge.target %}{% set edge_labels.target = node.label %}{% endif %}
           {% endfor %}
-          <li>{{ edge_labels.source }} to {{ edge_labels.target }}: {{ edge.kind }} ({{ edge.status | replace('_', ' ') }}).</li>
+          <li>{{ edge_labels.source }} to {{ edge_labels.target }}: {{ edge.kind }} ({{ edge.status | replace('_', ' ') }}{% if edge.recent_activity_count is not none %}; {{ edge.recent_activity_count }} recent{% else %}; activity unknown{% endif %}{% if edge.last_activity_at %}; last <time datetime="{{ edge.last_activity_at }}">{{ edge.last_activity_at }}</time>{% endif %}).</li>
         {% endfor %}
       </ul>
     </section>
