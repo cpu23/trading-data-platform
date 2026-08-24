@@ -494,6 +494,102 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         # The two stable section jobs are preserved.
         self.assertEqual(len(job_types), 2)
 
+    def test_price_tick_control_plane_propagates_once_per_target_bucket(self):
+        from events.routing import initial_handler
+
+        config = {
+            "thesis_autonomy": {"enabled": False},
+            "research_control_plane": {
+                "enabled": True,
+                "event_debounce_seconds": 120,
+                "priority_policy_version": "v1",
+            },
+        }
+
+        def event(symbol, at, event_id):
+            payload = {
+                "event_id": event_id,
+                "source": "oanda",
+                "event_type": "price_tick",
+                "entities": [{"symbol": symbol}],
+                "markets": [],
+                "importance_hint": "0.5",
+            }
+            return SimpleNamespace(
+                **payload,
+                content_hash="a" * 64,
+                correlation_id="corr-1",
+                ingested_at=at,
+                payload={},
+                model_dump=lambda mode: dict(payload),
+            )
+
+        seen = set()
+        enqueued = []
+
+        def enqueue(_session, **kwargs):
+            identity = (
+                kwargs["job_type"],
+                kwargs["dedupe_key"],
+                kwargs["input_fingerprint"],
+            )
+            inserted = identity not in seen
+            seen.add(identity)
+            enqueued.append(kwargs)
+            return SimpleNamespace(
+                inserted=inserted,
+                job=SimpleNamespace(id=f"job-{len(enqueued)}"),
+            )
+
+        start = datetime(2026, 8, 15, 9, 10, tzinfo=UTC)
+        events = (
+            event("AAPL", start, "tick-1"),
+            event("AAPL", start.replace(minute=11), "tick-2"),
+            event("MSFT", start.replace(minute=11), "tick-3"),
+            event("AAPL", start.replace(minute=12), "tick-4"),
+        )
+        session = MagicMock()
+        with (
+            patch("events.freshness.record_event_observation", return_value={}),
+            patch("events.routing._config", return_value=config),
+            patch("events.routing._enqueue_section_jobs", return_value=[]),
+            patch("analysis_jobs.enqueue_job", side_effect=enqueue),
+            patch(
+                "research_control_plane.repository.propagate_event_dependencies",
+                return_value={
+                    "nodes_touched": 1,
+                    "edges_touched": 1,
+                    "theses_affected": 1,
+                },
+            ) as propagate,
+            patch(
+                "research_control_plane.repository.upsert_question",
+                return_value={"id": "question"},
+            ),
+            patch(
+                "research_control_plane.notifications."
+                "publish_control_plane_invalidations"
+            ),
+        ):
+            results = [initial_handler(session, item) for item in events]
+
+        self.assertEqual(propagate.call_count, 3)
+        self.assertTrue(results[0]["research_control_plane"]["planner_job_created"])
+        self.assertTrue(results[1]["research_control_plane"]["planner_job_coalesced"])
+        self.assertEqual(
+            results[1]["research_control_plane"]["nodes_touched"],
+            0,
+        )
+        self.assertNotEqual(
+            enqueued[0]["dedupe_key"],
+            enqueued[2]["dedupe_key"],
+        )
+        self.assertEqual(enqueued[0]["dedupe_key"], enqueued[1]["dedupe_key"])
+        self.assertNotEqual(
+            enqueued[0]["input_fingerprint"],
+            enqueued[3]["input_fingerprint"],
+        )
+
 
 class PlaybookMatchLedgerTests(unittest.TestCase):
     """Event-driven context-match ledger (events/routing.py)."""

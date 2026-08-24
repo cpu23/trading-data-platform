@@ -18,6 +18,7 @@
 CREATE TABLE IF NOT EXISTS research_questions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     fingerprint TEXT NOT NULL,
+    question_key TEXT NOT NULL,
     origin_kind TEXT NOT NULL,
     question_type TEXT NOT NULL,
     atomic_question TEXT NOT NULL,
@@ -52,7 +53,10 @@ CREATE TABLE IF NOT EXISTS research_questions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMPTZ,
     CONSTRAINT research_questions_fingerprint_check
-        CHECK (fingerprint ~ '^[0-9a-f]{64}$'),
+        CHECK (
+            fingerprint ~ '^[0-9a-f]{64}$'
+            AND question_key ~ '^[0-9a-f]{64}$'
+        ),
     CONSTRAINT research_questions_origin_check
         CHECK (origin_kind IN (
             'promoted_candidate', 'falsification', 'stale_dependency',
@@ -119,11 +123,7 @@ CREATE TABLE IF NOT EXISTS research_questions (
     CONSTRAINT research_questions_time_order_check
         CHECK (
             updated_at >= created_at
-            AND not_before >= created_at
-            AND (due_at IS NULL OR due_at >= created_at)
-            AND (expires_at IS NULL OR expires_at >= created_at)
             AND (due_at IS NULL OR expires_at IS NULL OR expires_at >= due_at)
-            AND (dirty_since IS NULL OR dirty_since >= created_at)
             AND (resolved_at IS NULL OR resolved_at >= created_at)
         ),
     CONSTRAINT research_questions_resolution_bounds_check
@@ -136,6 +136,9 @@ CREATE TABLE IF NOT EXISTS research_questions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_research_questions_active_fingerprint
     ON research_questions (fingerprint)
     WHERE status IN ('pending', 'planned', 'queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_research_questions_active_key
+    ON research_questions (question_key, accepted_cutoff DESC, id)
+    WHERE status IN ('pending', 'planned', 'queued', 'running');
 CREATE INDEX IF NOT EXISTS idx_research_questions_planner
     ON research_questions (
         priority_score DESC NULLS LAST, not_before, due_at, created_at, id
@@ -143,10 +146,43 @@ CREATE INDEX IF NOT EXISTS idx_research_questions_planner
     WHERE status IN ('pending', 'planned');
 CREATE INDEX IF NOT EXISTS idx_research_questions_target
     ON research_questions (target_kind, target_ref, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_questions_list_status
+    ON research_questions (status, id);
+CREATE INDEX IF NOT EXISTS idx_research_questions_list_type
+    ON research_questions (question_type, id);
+CREATE INDEX IF NOT EXISTS idx_research_questions_list_target
+    ON research_questions (target_kind, target_ref, id);
 CREATE INDEX IF NOT EXISTS idx_research_questions_expiry
     ON research_questions (expires_at, id)
     WHERE status IN ('pending', 'planned', 'queued', 'running')
       AND expires_at IS NOT NULL;
+
+-- Bounded operational activity probes used by the live topology.  Expression
+-- indexes match the exact persisted activity timestamp semantics so MAX probes
+-- do not scan complete durable ledgers as their history grows.
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_activity
+    ON analysis_jobs ((COALESCE(completed_at, started_at, created_at)) DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_jobs_type_activity
+    ON analysis_jobs (
+        job_type, (COALESCE(completed_at, started_at, created_at)) DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_market_events_ingested
+    ON market_events (ingested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_activity
+    ON event_outbox (
+        (COALESCE(completed_at, claimed_at, created_at)) DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_ui_events_created
+    ON ui_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_questions_updated
+    ON research_questions (updated_at DESC);
+
+-- Exact normalized predicates used by the positioning-divergence skill.  The
+-- collectors persist uppercase symbols/market IDs and lowercase source IDs.
+CREATE INDEX IF NOT EXISTS idx_option_snapshot_features_symbol_captured
+    ON option_snapshot_features (symbol, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_positioning_reports_market_report
+    ON positioning_reports (market_id, report_date DESC, source, category);
 
 CREATE OR REPLACE FUNCTION guard_research_question_lifecycle()
 RETURNS TRIGGER AS $$
@@ -154,27 +190,36 @@ DECLARE
     old_terminal BOOLEAN;
     transition_allowed BOOLEAN := FALSE;
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'research questions are retained for audit';
+    END IF;
+
     IF NEW.id IS DISTINCT FROM OLD.id
        OR NEW.fingerprint IS DISTINCT FROM OLD.fingerprint
+       OR NEW.question_key IS DISTINCT FROM OLD.question_key
        OR NEW.origin_kind IS DISTINCT FROM OLD.origin_kind
        OR NEW.question_type IS DISTINCT FROM OLD.question_type
        OR NEW.atomic_question IS DISTINCT FROM OLD.atomic_question
        OR NEW.target_kind IS DISTINCT FROM OLD.target_kind
-       OR NEW.target_ref IS DISTINCT FROM OLD.target_ref THEN
+       OR NEW.target_ref IS DISTINCT FROM OLD.target_ref
+       OR NEW.accepted_cutoff IS DISTINCT FROM OLD.accepted_cutoff
+       OR NEW.required_evidence_shape IS DISTINCT FROM OLD.required_evidence_shape
+       OR NEW.acceptable_source_families IS DISTINCT FROM OLD.acceptable_source_families
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
         RAISE EXCEPTION 'research question identity is immutable';
     END IF;
 
-    IF NEW.accepted_cutoff < OLD.accepted_cutoff THEN
-        RAISE EXCEPTION 'research question accepted cutoff cannot move backward';
-    END IF;
-    IF NEW.accepted_cutoff IS DISTINCT FROM OLD.accepted_cutoff
-       AND OLD.status NOT IN ('pending', 'planned') THEN
-        RAISE EXCEPTION 'accepted cutoff is frozen once work is queued';
-    END IF;
 
     old_terminal := OLD.status IN ('resolved', 'unresolvable', 'expired', 'cancelled');
     IF old_terminal AND NEW.status IS DISTINCT FROM OLD.status THEN
         RAISE EXCEPTION 'terminal research question cannot return to active state';
+    END IF;
+
+    IF NEW.status IN ('planned', 'queued', 'running')
+       AND NEW.status IS DISTINCT FROM OLD.status
+       AND NEW.expires_at IS NOT NULL
+       AND NEW.expires_at <= NOW() THEN
+        RAISE EXCEPTION 'expired research question cannot enter active work';
     END IF;
 
     IF NEW.status IS DISTINCT FROM OLD.status THEN
@@ -186,7 +231,7 @@ BEGIN
                 'pending', 'queued', 'unresolvable', 'expired', 'cancelled'
             )) OR
             (OLD.status = 'queued' AND NEW.status IN (
-                'planned', 'running', 'expired', 'cancelled'
+                'planned', 'running', 'unresolvable', 'expired', 'cancelled'
             )) OR
             (OLD.status = 'running' AND NEW.status IN (
                 'planned', 'resolved', 'unresolvable', 'expired', 'cancelled'
@@ -216,7 +261,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS research_questions_lifecycle ON research_questions;
 CREATE TRIGGER research_questions_lifecycle
-BEFORE UPDATE ON research_questions
+BEFORE UPDATE OR DELETE ON research_questions
 FOR EACH ROW EXECUTE FUNCTION guard_research_question_lifecycle();
 
 -- ---------------------------------------------------------------------------
@@ -232,7 +277,7 @@ CREATE TABLE IF NOT EXISTS research_skill_versions (
     output_schema JSONB NOT NULL,
     allowed_tools TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     allowed_source_families TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-    point_in_time_required BOOLEAN NOT NULL DEFAULT TRUE,
+    point_in_time_requirements JSONB NOT NULL,
     model_allowed BOOLEAN NOT NULL DEFAULT FALSE,
     model_policy JSONB NOT NULL DEFAULT '{}'::JSONB,
     maximum_cost_usd NUMERIC(12, 6) NOT NULL,
@@ -253,6 +298,7 @@ CREATE TABLE IF NOT EXISTS research_skill_versions (
         CHECK (
             JSONB_TYPEOF(input_schema) = 'object'
             AND JSONB_TYPEOF(output_schema) = 'object'
+            AND JSONB_TYPEOF(point_in_time_requirements) = 'object'
             AND JSONB_TYPEOF(model_policy) = 'object'
         ),
     CONSTRAINT research_skill_versions_collection_bounds_check
@@ -304,7 +350,7 @@ BEGIN
        OR NEW.output_schema IS DISTINCT FROM OLD.output_schema
        OR NEW.allowed_tools IS DISTINCT FROM OLD.allowed_tools
        OR NEW.allowed_source_families IS DISTINCT FROM OLD.allowed_source_families
-       OR NEW.point_in_time_required IS DISTINCT FROM OLD.point_in_time_required
+       OR NEW.point_in_time_requirements IS DISTINCT FROM OLD.point_in_time_requirements
        OR NEW.model_allowed IS DISTINCT FROM OLD.model_allowed
        OR NEW.model_policy IS DISTINCT FROM OLD.model_policy
        OR NEW.maximum_cost_usd IS DISTINCT FROM OLD.maximum_cost_usd
@@ -441,6 +487,23 @@ CREATE TABLE IF NOT EXISTS research_plan_decisions (
 CREATE INDEX IF NOT EXISTS idx_research_plan_decisions_question
     ON research_plan_decisions (question_id, created_at DESC);
 
+CREATE OR REPLACE FUNCTION guard_research_planning_snapshot()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'accepted research planning snapshots are append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS research_plans_append_only ON research_plans;
+CREATE TRIGGER research_plans_append_only
+BEFORE UPDATE OR DELETE ON research_plans
+FOR EACH ROW EXECUTE FUNCTION guard_research_planning_snapshot();
+
+DROP TRIGGER IF EXISTS research_plan_decisions_append_only ON research_plan_decisions;
+CREATE TRIGGER research_plan_decisions_append_only
+BEFORE UPDATE OR DELETE ON research_plan_decisions
+FOR EACH ROW EXECUTE FUNCTION guard_research_planning_snapshot();
+
 -- ---------------------------------------------------------------------------
 -- 4. Work orders: research state anchored to existing durable analysis jobs.
 -- ---------------------------------------------------------------------------
@@ -514,6 +577,12 @@ CREATE INDEX IF NOT EXISTS idx_research_work_orders_status
     WHERE status IN ('planned', 'queued', 'leased', 'running', 'failed_retryable');
 CREATE INDEX IF NOT EXISTS idx_research_work_orders_plan
     ON research_work_orders (plan_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_research_work_orders_updated
+    ON research_work_orders (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_work_orders_list_status
+    ON research_work_orders (status, id);
+CREATE INDEX IF NOT EXISTS idx_research_work_orders_list_question
+    ON research_work_orders (question_id, id);
 
 CREATE OR REPLACE FUNCTION guard_research_work_order_lifecycle()
 RETURNS TRIGGER AS $$
@@ -521,14 +590,20 @@ DECLARE
     old_terminal BOOLEAN;
     transition_allowed BOOLEAN := FALSE;
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'research work orders are retained for audit';
+    END IF;
+
     IF NEW.id IS DISTINCT FROM OLD.id
        OR NEW.question_id IS DISTINCT FROM OLD.question_id
        OR NEW.plan_id IS DISTINCT FROM OLD.plan_id
        OR NEW.skill_version_id IS DISTINCT FROM OLD.skill_version_id
        OR NEW.analysis_job_id IS DISTINCT FROM OLD.analysis_job_id
+       OR NEW.budget_reservation_id IS DISTINCT FROM OLD.budget_reservation_id
        OR NEW.accepted_cutoff IS DISTINCT FROM OLD.accepted_cutoff
        OR NEW.planning_policy_version IS DISTINCT FROM OLD.planning_policy_version
        OR NEW.priority_snapshot IS DISTINCT FROM OLD.priority_snapshot
+       OR NEW.estimated_value IS DISTINCT FROM OLD.estimated_value
        OR NEW.reserved_cost_usd IS DISTINCT FROM OLD.reserved_cost_usd
        OR NEW.reserved_runtime_seconds IS DISTINCT FROM OLD.reserved_runtime_seconds
        OR NEW.input_fingerprint IS DISTINCT FROM OLD.input_fingerprint THEN
@@ -577,7 +652,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS research_work_orders_lifecycle ON research_work_orders;
 CREATE TRIGGER research_work_orders_lifecycle
-BEFORE UPDATE ON research_work_orders
+BEFORE UPDATE OR DELETE ON research_work_orders
 FOR EACH ROW EXECUTE FUNCTION guard_research_work_order_lifecycle();
 
 DROP TRIGGER IF EXISTS research_skill_versions_guard ON research_skill_versions;
@@ -699,6 +774,73 @@ CREATE TABLE IF NOT EXISTS research_source_capabilities (
 
 CREATE INDEX IF NOT EXISTS idx_research_source_capabilities_question
     ON research_source_capabilities USING GIN (supported_question_types);
+CREATE INDEX IF NOT EXISTS idx_research_source_capabilities_checked
+    ON research_source_capabilities (checked_at DESC);
+
+INSERT INTO research_source_capabilities (
+    source_family, source_identifier, supported_question_types,
+    supported_entities, geographic_coverage, asset_coverage,
+    historical_depth_days, point_in_time_safety, freshness_seconds,
+    typical_latency_seconds, cost_usd, rate_limit_per_minute,
+    licensing_restrictions, runtime_available, recent_reliability, detail
+) VALUES
+    (
+        'issuer_filing', 'investment_documents',
+        ARRAY['earnings_guidance_delta', 'filing_peer_readthrough', 'catalyst_confirmation', 'evidence_refresh'],
+        ARRAY['issuer'], ARRAY['US', 'EU', 'ASIA'], ARRAY['equity'],
+        NULL, 'point_in_time', NULL, NULL, 0, NULL,
+        'Persisted source terms govern redistribution.', TRUE, NULL,
+        '{"availability_basis":"investment_documents.created_at","semantic_scope":"issuer filings and filing deltas"}'::JSONB
+    ),
+    (
+        'issuer_material', 'investment_documents',
+        ARRAY['earnings_guidance_delta', 'catalyst_confirmation', 'evidence_refresh'],
+        ARRAY['issuer'], ARRAY['US', 'EU', 'ASIA'], ARRAY['equity'],
+        NULL, 'point_in_time', NULL, NULL, 0, NULL,
+        'Persisted source terms govern redistribution.', TRUE, NULL,
+        '{"availability_basis":"investment_documents.created_at","semantic_scope":"accepted issuer materials"}'::JSONB
+    ),
+    (
+        'market_price', 'market_data',
+        ARRAY['forecast_resolution', 'positioning_divergence'],
+        ARRAY['symbol'], ARRAY[]::TEXT[], ARRAY['equity', 'fx', 'index', 'commodity'],
+        NULL, 'point_in_time', NULL, NULL, 0, NULL,
+        NULL, TRUE, NULL,
+        '{"availability_basis":"market_data.available_at","semantic_scope":"terminal price observations"}'::JSONB
+    ),
+    (
+        'options', 'option_snapshot_features',
+        ARRAY['positioning_divergence'],
+        ARRAY['symbol'], ARRAY['US'], ARRAY['equity', 'index'],
+        NULL, 'point_in_time', NULL, NULL, 0, NULL,
+        'Provider terms govern redistribution.', TRUE, NULL,
+        '{"availability_basis":"option_snapshot_features.available_at","semantic_scope":"options analytics only"}'::JSONB
+    ),
+    (
+        'cftc', 'positioning_reports',
+        ARRAY['positioning_divergence'],
+        ARRAY['market_id'], ARRAY['US'], ARRAY['fx', 'commodity', 'index'],
+        NULL, 'point_in_time', 604800, NULL, 0, NULL,
+        'Public regulatory data; verify source terms before redistribution.', TRUE, NULL,
+        '{"availability_basis":"positioning_reports.acquired_at and created_at","semantic_scope":"reported CFTC positioning"}'::JSONB
+    ),
+    (
+        'finra', 'positioning_reports',
+        ARRAY['positioning_divergence'],
+        ARRAY['market_id'], ARRAY['US'], ARRAY['equity'],
+        NULL, 'point_in_time', 86400, NULL, 0, NULL,
+        'Public regulatory data; verify source terms before redistribution.', TRUE, NULL,
+        '{"availability_basis":"positioning_reports.acquired_at and created_at","semantic_scope":"reported FINRA positioning"}'::JSONB
+    ),
+    (
+        'all_attached_point_in_time_evidence', 'investment_thesis_evidence',
+        ARRAY['thesis_challenge'],
+        ARRAY['thesis'], ARRAY[]::TEXT[], ARRAY[]::TEXT[],
+        NULL, 'point_in_time', NULL, NULL, 0, NULL,
+        'Underlying evidence source terms govern redistribution.', TRUE, NULL,
+        '{"availability_basis":"investment_thesis_evidence.available_at","semantic_scope":"accepted evidence already attached to a thesis"}'::JSONB
+    )
+ON CONFLICT (source_family, source_identifier) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS research_source_gaps (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

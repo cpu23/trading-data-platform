@@ -19,7 +19,7 @@ class ResearchControlPlaneConfigTests(unittest.TestCase):
         self.assertEqual(settings.maximum_questions_per_plan, 20)
         self.assertEqual(settings.maximum_work_orders_per_plan, 8)
         self.assertEqual(settings.maximum_runtime_seconds_per_plan, 900)
-        self.assertEqual(settings.model_budget_usd_per_plan, 1.0)
+        self.assertEqual(settings.model_budget_usd_per_plan, 0.0)
         self.assertEqual(settings.priority_policy_version, "v1")
         self.assertEqual(settings.materiality_policy_version, "v1")
 
@@ -50,6 +50,8 @@ class ResearchControlPlaneConfigTests(unittest.TestCase):
             {"maximum_runtime_seconds_per_plan": 0},
             {"model_budget_usd_per_plan": -0.01},
             {"minimum_priority": float("nan")},
+            {"priority_policy_version": "v2"},
+            {"materiality_policy_version": "latest"},
         ):
             with self.subTest(values=values):
                 with self.assertRaises(ValueError):

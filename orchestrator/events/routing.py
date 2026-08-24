@@ -521,6 +521,121 @@ def initial_handler(session: Any, event: MarketEvent) -> dict[str, Any]:
         # fast-path early returns; the autonomy job enqueue above stays
         # fail-closed and transactional.
         result["playbook_matches"] = _match_due_playbooks(session, event, config)
+    control_plane_settings = config.get("research_control_plane", {})
+    if (
+        isinstance(control_plane_settings, Mapping)
+        and control_plane_settings.get("enabled") is True
+        and event_type in THESIS_AUTONOMY_EVENT_TYPES
+    ):
+        try:
+            with session.begin_nested():
+                from analysis_jobs import enqueue_job
+                from research_control_plane.domain import content_fingerprint
+                from research_control_plane.repository import (
+                    propagate_event_dependencies,
+                    questions_from_event,
+                    upsert_question,
+                )
+
+                event_payload = event.model_dump(mode="python")
+                accepted_cutoff = _event_value(event, "ingested_at")
+                drafts = questions_from_event(
+                    event_payload,
+                    accepted_cutoff=accepted_cutoff,
+                )
+                debounce_seconds = max(
+                    1,
+                    min(
+                        int(control_plane_settings.get("event_debounce_seconds", 120)),
+                        3600,
+                    ),
+                )
+                event_bucket = int(accepted_cutoff.timestamp()) // debounce_seconds
+                target_refs = sorted({draft.candidate.target_ref for draft in drafts})
+                planner_dedupe_key = "research-planner:event"
+                if event_type == "price_tick":
+                    planner_dedupe_key += (
+                        ":" + content_fingerprint({"targets": target_refs})[:24]
+                    )
+                planner = enqueue_job(
+                    session,
+                    job_type="research_planner",
+                    dedupe_key=planner_dedupe_key,
+                    input_fingerprint=content_fingerprint(
+                        {
+                            "event_bucket": event_bucket,
+                            "priority_policy_version": (
+                                control_plane_settings.get(
+                                    "priority_policy_version", "v1"
+                                )
+                            ),
+                        }
+                    ),
+                    payload={
+                        "trigger_kind": "event",
+                        "trigger_ref": str(source_event_id),
+                        "accepted_cutoff": accepted_cutoff.isoformat(),
+                    },
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                    priority=95,
+                    max_attempts=5,
+                    not_before=accepted_cutoff,
+                )
+                # A raw tick burst may contain a new event identity each time.
+                # The durable planner identity gates dependency/question writes
+                # to one target set per acquisition bucket. Other event kinds
+                # preserve event-by-event dirty propagation.
+                should_refresh = event_type != "price_tick" or planner.inserted
+                if should_refresh:
+                    propagation = propagate_event_dependencies(
+                        session,
+                        event_payload,
+                        accepted_cutoff=accepted_cutoff,
+                    )
+                    persisted = sum(
+                        1 for draft in drafts if upsert_question(session, draft)
+                    )
+                else:
+                    propagation = {
+                        "nodes_touched": 0,
+                        "edges_touched": 0,
+                        "theses_affected": 0,
+                    }
+                    persisted = 0
+                if persisted:
+                    from research_control_plane.notifications import (
+                        publish_control_plane_invalidations,
+                    )
+
+                    publish_control_plane_invalidations(
+                        session,
+                        {
+                            "research_questions",
+                            "research_control_plane",
+                            "system_topology",
+                        },
+                    )
+                if planner.job is not None:
+                    jobs.append(planner.job)
+                control_plane_result: dict[str, Any] = {
+                    "status": "accepted",
+                    "questions_created_or_refreshed": persisted,
+                    "planner_job_created": planner.inserted,
+                    "planner_job_coalesced": not planner.inserted,
+                    **propagation,
+                }
+            result["research_control_plane"] = control_plane_result
+        except Exception:
+            result["research_control_plane"] = {
+                "status": "failed",
+                "questions_created_or_refreshed": 0,
+                "planner_job_created": False,
+                "planner_job_coalesced": False,
+                "nodes_touched": 0,
+                "edges_touched": 0,
+                "theses_affected": 0,
+            }
     if not phase5_enabled and not story_enabled:
         return result
 

@@ -171,6 +171,20 @@ class ReservationAdmissionTests(unittest.TestCase):
         self.assertEqual(insert_params["run_kind"], "processor")
         self.assertEqual(insert_params["component"], "briefing")
 
+    def test_existing_session_keeps_reservation_in_caller_transaction(self):
+        session = _session([_sums(1.0, 0.25), _insert(("res-atomic",))])
+        with patch("budgets.get_session") as get_session:
+            reservation_id = _reserve_budget_quota(
+                {},
+                "research_control_plane",
+                cap=2.0,
+                estimate_usd=0.5,
+                ttl_seconds=600,
+                session=session,
+            )
+        self.assertEqual(reservation_id, "res-atomic")
+        get_session.assert_not_called()
+
     def test_blocks_when_spent_plus_reserved_plus_estimate_over_cap(self):
         session = _session([_sums(1.6, 0.25)])
         with patch("budgets.get_session") as get_session:

@@ -737,15 +737,15 @@ class ResearchControlPlaneConfig(FrozenModel):
     maximum_work_orders_per_plan: int = Field(default=8, ge=1, le=100)
     maximum_runtime_seconds_per_plan: int = Field(default=900, ge=1, le=86400)
     model_budget_usd_per_plan: float = Field(
-        default=1.0, ge=0.0, le=100.0, allow_inf_nan=False
+        default=0.0, ge=0.0, le=100.0, allow_inf_nan=False
     )
     minimum_priority: float = Field(
         default=0.0, ge=0.0, le=1_000_000.0, allow_inf_nan=False
     )
     catalyst_lookahead_days: int = Field(default=30, ge=0, le=3650)
     stale_question_days: int = Field(default=14, ge=1, le=3650)
-    priority_policy_version: NonBlankText = Field(default="v1", max_length=64)
-    materiality_policy_version: NonBlankText = Field(default="v1", max_length=64)
+    priority_policy_version: Literal["v1"] = "v1"
+    materiality_policy_version: Literal["v1"] = "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -996,9 +996,9 @@ class CollectorConfig(FrozenModel):
     # source-specific universes.
     include_investment_universe: bool = Field(default=False, strict=True)
     range: Literal["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"] | None = None
-    bootstrap_range: Literal[
-        "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"
-    ] | None = None
+    bootstrap_range: (
+        Literal["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"] | None
+    ) = None
     interval: Literal["1d"] | None = None
     timeout_seconds: float = Field(default=30.0, ge=5.0, le=60.0)
     max_issuers: int = Field(default=20, ge=1, le=200)
@@ -1683,8 +1683,7 @@ class AppConfig(FrozenModel):
             )
         if (
             public_equities is not None
-            and public_equities.max_concurrency
-            > PUBLIC_EQUITIES_HARD_MAX_CONCURRENCY
+            and public_equities.max_concurrency > PUBLIC_EQUITIES_HARD_MAX_CONCURRENCY
         ):
             raise ValueError(
                 "collectors.public_equities.max_concurrency must be at most "
@@ -1813,7 +1812,6 @@ class AppConfig(FrozenModel):
                 "budgets.daily_llm_usd; the global daily budget is authoritative"
             )
         return self
-
 
     @model_validator(mode="after")
     def _check_reservation_ttl_vs_call_deadline(self) -> AppConfig:

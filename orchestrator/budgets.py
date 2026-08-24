@@ -20,6 +20,7 @@ paid call.
 """
 
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -150,6 +151,7 @@ def _reserve_budget_quota(
     run_kind: str | None = None,
     component: str | None = None,
     now: datetime | None = None,
+    session=None,
 ) -> str:
     """Transactionally admit one paid call under the daily cap.
 
@@ -170,19 +172,20 @@ def _reserve_budget_quota(
     lock_key = f"budget_day:{budget_day.isoformat()}"
     expires_at = current + timedelta(seconds=ttl_seconds)
 
-    with get_session(config) as session:
-        session.execute(
+    session_scope = get_session(config) if session is None else nullcontext(session)
+    with session_scope as active_session:
+        active_session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
             {"key": lock_key},
         )
-        session.execute(
+        active_session.execute(
             text(
                 "UPDATE budget_reservations SET status = 'expired' "
                 "WHERE status = 'active' AND expires_at <= :now"
             ),
             {"now": current},
         )
-        row = session.execute(
+        row = active_session.execute(
             text(
                 "SELECT "
                 "(SELECT COALESCE(SUM(unreserved), 0) FROM ( "
@@ -231,7 +234,7 @@ def _reserve_budget_quota(
         reserved = _finite_number(row._mapping.get("reserved_usd"), "budget reserved")
         if estimate_usd > 0 and spent + reserved + estimate_usd > cap:
             raise BudgetExceeded(spent + reserved, cap, processor=processor)
-        inserted = session.execute(
+        inserted = active_session.execute(
             text(
                 "INSERT INTO budget_reservations "
                 "(budget_day, correlation_id, run_kind, component, processor, "
@@ -254,6 +257,42 @@ def _reserve_budget_quota(
             },
         ).fetchone()
         return str(inserted[0])
+
+
+def reserve_budget_quota(
+    config: dict,
+    *,
+    processor: str,
+    estimate_usd: float,
+    ttl_seconds: float,
+    correlation_id: str | None = None,
+    run_kind: str | None = None,
+    component: str | None = None,
+    now: datetime | None = None,
+    session=None,
+) -> str:
+    """Reserve bounded non-model research cost through the global UTC-day ledger."""
+    cap, _warn_at = get_budget_config(config)
+    estimate = _finite_number(estimate_usd, "estimate_usd")
+    ttl = _finite_number(ttl_seconds, "ttl_seconds")
+    if estimate < 0 or estimate > 100:
+        raise ValueError("estimate_usd must be between 0 and 100")
+    if ttl < 1 or ttl > 86400:
+        raise ValueError("ttl_seconds must be between 1 and 86400")
+    if not isinstance(processor, str) or not processor.strip():
+        raise ValueError("processor must be non-empty")
+    return _reserve_budget_quota(
+        config,
+        processor.strip(),
+        cap,
+        estimate,
+        ttl,
+        correlation_id=correlation_id,
+        run_kind=run_kind,
+        component=component,
+        now=now,
+        session=session,
+    )
 
 
 def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:

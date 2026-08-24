@@ -21,6 +21,11 @@ MAX_CLEANUP_BATCH = 100
 EVENT_NAME_BY_SECTION = {
     "watchlist": "watchlist_changed",
     "source_health": "source_health_changed",
+    "research_questions": "research_question_changed",
+    "research_work_orders": "research_work_order_changed",
+    "research_effects": "research_effect_recorded",
+    "research_control_plane": "research_control_plane_changed",
+    "system_topology": "system_topology_changed",
 }
 ALLOWED_EVENT_NAMES = frozenset((*EVENT_NAME_BY_SECTION.values(), "section_changed"))
 

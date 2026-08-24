@@ -279,3 +279,25 @@ class SystemTopologyResponse(ControlPlaneContract):
     edges: list[SystemTopologyEdge] = Field(max_length=128)
     unavailable_components: list[NonBlank] = Field(default_factory=list, max_length=32)
     summary: ShortText
+
+    @model_validator(mode="after")
+    def _validate_graph_state(self) -> SystemTopologyResponse:
+        node_ids = [node.id for node in self.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("topology node IDs must be unique")
+        known_ids = set(node_ids)
+        if any(
+            edge.source not in known_ids or edge.target not in known_ids
+            for edge in self.edges
+        ):
+            raise ValueError("topology edges must reference existing nodes")
+        if self.status == "available" and self.unavailable_components:
+            raise ValueError("available topology cannot name unavailable components")
+        if self.status == "partial" and not self.unavailable_components:
+            raise ValueError("partial topology must name unavailable components")
+        if self.status == "unavailable":
+            if self.nodes or self.edges:
+                raise ValueError("unavailable topology cannot contain graph data")
+            if not self.unavailable_components:
+                raise ValueError("unavailable topology must name an unavailable component")
+        return self

@@ -3186,6 +3186,7 @@ def run_autonomous_thesis_cycle(
     source_gate_rejections = 0
     actionability_gate_rejections = 0
     opposition_gate_rejections = 0
+    question_generation_failures = 0
 
     minimum_families = _bounded(
         settings.get("minimum_supporting_source_families", 1), 1, 10
@@ -3347,6 +3348,28 @@ def run_autonomous_thesis_cycle(
             )
             promoted_ids.append(thesis_id)
             thesis_count += 1
+            if candidate.missing_evidence:
+                try:
+                    from research_control_plane.repository import (
+                        questions_from_promoted_candidate,
+                        upsert_question,
+                    )
+
+                    question_payload = candidate.to_dict()
+                    question_payload["opportunity_score"] = (
+                        ranked.opportunity.opportunity
+                    )
+                    for question in questions_from_promoted_candidate(
+                        question_payload,
+                        thesis_id=thesis_id,
+                        accepted_cutoff=reference,
+                    ):
+                        upsert_question(session, question)
+                except Exception:
+                    # Research maintenance is independently recoverable from
+                    # persisted thesis state.  Its failure must not corrupt or
+                    # downgrade the accepted thesis cycle.
+                    question_generation_failures += 1
             watch_links += _link_watch_positions(session, thesis_id, market_symbol)
             playbook_upserts += _upsert_candidate_playbook(
                 session,
@@ -3606,6 +3629,7 @@ def run_autonomous_thesis_cycle(
         "watch_links": watch_links,
         "playbook_upserts": playbook_upserts,
         "catalyst_upserts": catalyst_upserts,
+        "question_generation_failures": question_generation_failures,
         "group_count": len(groups_used),
         "opportunity_snapshots": opportunity_snapshots,
         "falsification_runs": falsification_runs,

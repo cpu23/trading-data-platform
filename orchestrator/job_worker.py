@@ -53,14 +53,14 @@ class AnalysisJobWorker:
         ):
             return {}
         settings = config["event_pipeline"].get("jobs")
-        return settings if isinstance(settings, Mapping) else {}
+        return dict(settings) if isinstance(settings, Mapping) else {}
 
     def _cfg(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._settings(config if config is not None else self.config)
 
     def _worker_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         worker = settings.get("worker")
-        return worker if isinstance(worker, Mapping) else {}
+        return dict(worker) if isinstance(worker, Mapping) else {}
 
     @staticmethod
     def _batch_size(settings: dict[str, Any], worker: dict[str, Any]) -> int:
@@ -247,6 +247,25 @@ class AnalysisJobWorker:
         }
         return result or None
 
+    @staticmethod
+    def _mirror_research_failure(
+        session: Any,
+        job: AnalysisJob,
+        *,
+        retryable: bool,
+        error: BaseException,
+    ) -> None:
+        if job.job_type != "research_skill":
+            return
+        from research_control_plane.repository import mark_work_order_failure
+
+        mark_work_order_failure(
+            session,
+            analysis_job_id=job.id,
+            retryable=retryable,
+            error_kind=type(error).__name__,
+        )
+
     def _handle(self, job: AnalysisJob, settings: dict[str, Any]) -> None:
         import analysis_job_handlers
 
@@ -283,10 +302,9 @@ class AnalysisJobWorker:
         except Exception as exc:
             self._increment("handler_errors")
             attempts = max(1, int(job.attempt_count))
-            retry_cfg = (
-                settings.get("retry")
-                if isinstance(settings.get("retry"), Mapping)
-                else {}
+            retry_raw = settings.get("retry")
+            retry_cfg: Mapping[str, Any] = (
+                retry_raw if isinstance(retry_raw, Mapping) else {}
             )
             max_attempts = max(1, int(retry_cfg.get("max_attempts", job.max_attempts)))
             if attempts >= max_attempts or attempts >= job.max_attempts:
@@ -294,6 +312,9 @@ class AnalysisJobWorker:
                     with self._session() as session:
                         if terminal_fail_job(session, job.id, self.worker_id, exc):
                             self._increment("failed")
+                            self._mirror_research_failure(
+                                session, job, retryable=False, error=exc
+                            )
                 except Exception:
                     self._increment("poll_errors")
             else:
@@ -316,6 +337,9 @@ class AnalysisJobWorker:
                             exc,
                         ):
                             self._increment("retried")
+                            self._mirror_research_failure(
+                                session, job, retryable=True, error=exc
+                            )
                 except Exception:
                     self._increment("poll_errors")
         finally:
@@ -329,28 +353,32 @@ class AnalysisJobWorker:
         worker = self._worker_settings(settings)
         try:
             with self._session() as session:
-                query = (
-                    settings.get("query")
-                    if isinstance(settings.get("query"), Mapping)
-                    else {}
+                query_raw = settings.get("query")
+                query: Mapping[str, Any] = (
+                    query_raw if isinstance(query_raw, Mapping) else {}
                 )
-                repaired = reconcile_jobs(
-                    session,
-                    max(
-                        1,
-                        min(
-                            int(
-                                settings.get(
-                                    "reconcile_limit",
-                                    query.get("max_reconcile_jobs", 100),
-                                )
-                            ),
-                            1000,
+                reconcile_limit = max(
+                    1,
+                    min(
+                        int(
+                            settings.get("reconcile_limit")
+                            or query.get("max_reconcile_jobs")
+                            or 100
                         ),
+                        1000,
                     ),
                 )
+                repaired = reconcile_jobs(session, reconcile_limit)
+                mirrored = 0
                 if repaired:
-                    self._increment("reconciled", repaired)
+                    from research_control_plane.repository import (
+                        reconcile_terminal_work_order_failures,
+                    )
+
+                    mirrored = reconcile_terminal_work_order_failures(
+                        session, limit=reconcile_limit
+                    )
+                    self._increment("reconciled", repaired + mirrored)
                 lease = float(
                     settings.get("lease_seconds", worker.get("lease_seconds", 120))
                 )

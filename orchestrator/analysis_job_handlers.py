@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -681,6 +682,59 @@ def run_thesis_autonomy_job(session: Any, job: Any) -> dict[str, Any]:
     }
 
 
+def run_research_planner_job(session: Any, job: Any) -> dict[str, Any]:
+    """Register exact skills and plan one bounded durable research agenda."""
+    from research_control_plane.repository import run_planner
+    from research_control_plane.skills import ensure_skill_versions
+
+    payload = _mapping(_job_value(job, "payload", {}))
+    correlation_id = UUID(str(_job_value(job, "correlation_id")))
+    accepted_cutoff = payload.get("accepted_cutoff")
+    if isinstance(accepted_cutoff, str):
+        accepted_cutoff = datetime.fromisoformat(
+            accepted_cutoff.replace("Z", "+00:00")
+        )
+    elif not isinstance(accepted_cutoff, datetime):
+        accepted_cutoff = datetime.now(UTC)
+    ensure_skill_versions(session)
+    result = run_planner(
+        session,
+        dict(_config()),
+        correlation_id=correlation_id,
+        trigger_kind=str(payload.get("trigger_kind") or "scheduled"),
+        trigger_ref=(
+            str(payload["trigger_ref"])[:500]
+            if payload.get("trigger_ref") is not None
+            else None
+        ),
+        accepted_cutoff=accepted_cutoff,
+    )
+    return {
+        "status": result.status,
+        "plan_id": str(result.plan_id) if result.plan_id else None,
+        "selected_count": result.selected_count,
+        "considered_count": result.considered_count,
+        "work_order_ids": [str(value) for value in result.work_order_ids],
+        "coalesced": result.coalesced,
+        "no_op_reason": result.no_op_reason,
+    }
+
+
+def run_research_skill_job(session: Any, job: Any) -> dict[str, Any]:
+    """Execute the exact immutable skill version owned by one work order."""
+    from research_control_plane.skills import execute_work_order
+
+    payload = _mapping(_job_value(job, "payload", {}))
+    work_order_id = UUID(str(payload.get("work_order_id")))
+    worker_id = str(_job_value(job, "worker_id", "") or "analysis-worker")
+    return execute_work_order(
+        session,
+        work_order_id=work_order_id,
+        worker_id=worker_id,
+        config=dict(_config()),
+    )
+
+
 _HANDLERS = {
     "publish_source_health_snapshot": publish_source_health_snapshot,
     "publish_watchlist_snapshot": publish_watchlist_snapshot,
@@ -695,6 +749,8 @@ _HANDLERS = {
     "research_case_update": run_research_case_update_job,
     "investment_analysis": run_investment_analysis_job,
     "thesis_autonomy_run": run_thesis_autonomy_job,
+    "research_planner": run_research_planner_job,
+    "research_skill": run_research_skill_job,
 }
 
 
@@ -720,6 +776,8 @@ __all__ = [
     "run_investment_analysis_job",
     "run_research_case_update_job",
     "run_research_discovery_job",
+    "run_research_planner_job",
+    "run_research_skill_job",
     "run_thesis_autonomy_job",
     "update_macro_release_reactions",
     "update_story_market_confirmation",
