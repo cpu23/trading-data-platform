@@ -55,6 +55,10 @@ flowchart LR
         Intelligence["Regime, event, and<br/>briefing processors"]
         ResearchEngine["Evidence adapters, dynamic cases,<br/>competing theses and falsification"]
         Quality["Data-quality checks<br/>30-second health snapshot"]
+        Events["Source event routing<br/>and dependency propagation"]
+        Planner["Atomic questions and<br/>deterministic VOI planner"]
+        Skills["Durable work orders and<br/>versioned research skills"]
+        Effects["Material effects, justified no-ops,<br/>forecast outcomes and feedback"]
     end
 
     subgraph Storage["PostgreSQL and TimescaleDB"]
@@ -63,6 +67,8 @@ flowchart LR
         Derived["Derived market intelligence"]
         Cases["Versioned cases and theses,<br/>forecasts, playbooks and evidence"]
         Operations["Run history, logs, costs"]
+        ControlPlane["Questions, plans, budgets,<br/>work orders, effects and scorecards"]
+        EventDelivery["Dependency graph, outbox,<br/>and UI invalidations"]
     end
 
     subgraph Delivery["Delivery Layer"]
@@ -75,6 +81,7 @@ flowchart LR
         Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
         Heartbeat["Browser `marketRefresh` heartbeat:<br/>one timer; SSE sections never poll"]
+        OpsTopology["Operations `/operations` —<br/>truthful live system topology"]
     end
 
     FRED --> Collectors
@@ -103,6 +110,19 @@ flowchart LR
     Derived --> API
     Cases --> API
     Operations --> API
+    Raw --> Events
+    Reports --> Events
+    Cases --> Events
+    Events --> Planner --> Skills --> Effects
+    Planner --> ControlPlane
+    Skills --> ControlPlane
+    Effects --> ControlPlane
+    Effects --> Cases
+    Effects --> Planner
+    Events --> EventDelivery
+    ControlPlane --> EventDelivery
+    ControlPlane --> API
+    EventDelivery --> API
     API --> Dashboard
     API --> Markets
     API --> News
@@ -110,9 +130,11 @@ flowchart LR
     API --> Research
     API --> Evaluation
     API --> Health
+    API --> OpsTopology
     Heartbeat --> Dashboard
     Heartbeat --> Markets
     Heartbeat --> News
+    Heartbeat --> OpsTopology
 ```
 
 Every triggered cycle receives a correlation ID that connects collector runs,
@@ -247,18 +269,25 @@ each consume one consolidated system-health response instead of rerunning the
 quality suite, and macro indicator summaries are fetched in one batched
 database query.
 
+The authenticated `/operations` page shows a bounded live topology assembled
+from persisted source, scheduler, queue, worker, control-plane, database,
+outbox, SSE and API state. Nodes are keyboard accessible and status is
+evidence-based; missing query evidence is shown as unknown or unavailable, not
+healthy. See
+[Autonomous Research Control Plane](docs/autonomous-research-control-plane.md)
+for question, planning, skill, budget, recovery and feedback semantics.
+
 ### Read-path baseline
 
-The local read-path measurements recorded in
-[docs/performance-baseline.md](docs/performance-baseline.md) were taken on
-29 July 2026 and predate the lean-dashboard refactor: the dashboard `/` row
-and the browser paint numbers described a heavier page with concurrent
-dataset loading, and they no longer represent the current read path. The
-current `/` renders a compact context and lazy surfaces, and `/markets` is an
-empty shell until its partials load. Re-measuring the refactored read path is
-deferred, so this README claims no updated browser or benchmark numbers. See
-[docs/performance-baseline.md](docs/performance-baseline.md) for the recorded
-environment, samples, cache semantics, and reproduction procedure.
+The local read-path measurements in
+[docs/performance-baseline.md](docs/performance-baseline.md) include historical
+dashboard baselines and the measured autonomous research control-plane surface.
+On the 24 August 2026 deterministic demo, `/operations` measured 20.452 ms warm
+p50 and 22.098 ms warm p95; `/api/system/topology` measured 6.083 ms warm p95;
+and the topology partial measured 13.392 ms warm p95. The populated
+100-question maximum page measured 5.103 ms warm p95. These are local
+acceptance observations, not production SLAs. The document records payload
+bounds, query plans, environment, artifacts and reproduction procedure.
 
 ![System logs](docs/assets/system-logs-full-page.png)
 
@@ -278,6 +307,8 @@ FastAPI exposes JSON endpoints for:
   source status, and durable filing-collection triggers
 - Bounded dynamic research cases, case history, current major-market drivers,
   operational/model-cost status, and durable run/retry controls
+- Durable research-control-plane status, bounded question/work-order lists,
+  coalesced authenticated planning, and the live system-topology contract
 
 Reuters and Kobeissi collection can be invoked through the orchestrator CLI or
 the authenticated durable API trigger. Reuters is scheduled every two hours;
@@ -295,6 +326,7 @@ The database keeps responsibilities explicit:
 | Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache`, `investment_documents` | Normalised source observations, report evidence, and cached upstream payloads |
 | Derived | `regime_classifications`, `structured_opinions`, `daily_briefings`, `investment_analyses`, `research_cases`, `research_causal_edges`, `research_market_drivers` | Versioned market, company, causal, and research-case analytical outputs |
 | Operations | `collection_log`, `processing_log`, `cycle_runs`, `analysis_jobs`, `generation_attempts` | Durable work state, lineage, validation failures, duration, model usage, and cost |
+| Research control plane | `research_questions`, `research_plans`, `research_plan_decisions`, `budget_reservations`, `research_skill_versions`, `research_work_orders`, `research_dependency_nodes`, `research_dependency_edges`, `research_source_capabilities`, `research_source_gaps`, `research_effects`, `research_outcome_attributions` | Atomic question identity, deterministic planning, exact skill/job lineage, incremental dirty propagation, material/no-op effects, productivity, forecast feedback, and source/skill scorecards |
 
 ## Quick Start
 

@@ -22,7 +22,7 @@ The highest existing migration is `057_thesis_metrics_nullable.sql`. The highest
 
 Migration 058 adds:
 
-- `research_questions`: one active row per deterministic question fingerprint, explicit unknown priority components, validated lifecycle, accepted cutoff, blockers, due/expiry bounds and bounded resolution fields;
+- `research_questions`: one immutable row per exact cutoff-sensitive fingerprint, a semantic `question_key` that orders refreshes across cutoffs, explicit unknown priority components, validated lifecycle, accepted cutoff, blockers, due/expiry bounds and bounded resolution fields;
 - `research_skill_versions`: immutable typed specifications identified by `(skill_key, version)` and a content fingerprint;
 - `research_plans` and `research_plan_decisions`: immutable policy/budget snapshots and stable selected/deferred/blocked explanations;
 - `research_work_orders`: a typed extension anchored one-to-one to an existing `analysis_jobs` row; it owns no lease;
@@ -32,7 +32,7 @@ Migration 058 adds:
 - `research_source_gaps`: bounded aggregation of unresolved material capabilities;
 - scorecard views for work productivity, skills, sources and forecast calibration.
 
-Partial unique indexes prevent equivalent active questions and work orders. PostgreSQL transactions reserve a question, create its work order and enqueue the existing analysis job atomically. Planner transactions take one advisory lock, lock eligible questions with `FOR UPDATE SKIP LOCKED`, and enforce per-plan cost/runtime bounds before dispatch. Existing analysis-job lease ownership remains authoritative.
+Unique fingerprints prevent duplicate question snapshots; a transaction-scoped question-upsert lock rejects stale rewinds, cancels superseded pending snapshots, and permits a newer pending successor when older accepted work is already queued or running. Partial unique indexes prevent equivalent active work orders. PostgreSQL transactions reserve a question, create its work order and enqueue the existing analysis job atomically. Planner transactions take one advisory lock, lock eligible questions with `FOR UPDATE SKIP LOCKED`, and enforce per-plan cost/runtime bounds before dispatch. Existing analysis-job lease ownership remains authoritative.
 
 ### Pure domain policy
 
@@ -51,21 +51,21 @@ priority = benefit / penalty
 
 Every component is finite and bounded. Missing required components produce named blockers and no score. Valid numeric zero remains zero. Ordering ends with the immutable question ID. Greedy selection enforces both monetary and runtime budgets and may return a successful empty agenda.
 
-Materiality policy `v1` compares bounded, canonical before/after state. No state change is recorded as a justified no-op; threshold crossings, status/falsification changes, core evidence changes, forecast/catalyst changes and high-materiality unresolved questions are material.
+Materiality policy `v1` uses explicit effect categories rather than arbitrary JSON inequality. Forecast outcomes are material; falsification changes require a newly persisted independent state; guidance/peer effects require non-empty deltas; and core-evidence effects require a changed delta or directional positioning disagreement. No-op and unresolved results are non-material and require a bounded reason. Runtime rejects a skill result whose claimed material flag disagrees with policy.
 
 ### Questions and incremental propagation
 
-`repository.py` generates or refreshes atomic questions from promoted-candidate missing evidence, challenge required data, stale evidence, unconfirmed catalysts, matured forecasts, relevant market/source events and repeated source gaps. Cutoff participates in identity when it defines the answer boundary; refreshable dirty-state questions keep one active identity and advance only to a newer accepted cutoff.
+`repository.py` generates or refreshes atomic questions from promoted-candidate missing evidence, challenge required data, stale evidence, unconfirmed catalysts, matured forecasts, relevant market/source events and repeated source gaps. A cutoff-sensitive fingerprint preserves the exact answer boundary; a cutoff-independent semantic key orders refreshes. Exact and stale replays coalesce without mutation. A newer cutoff cancels an older pending snapshot or persists a distinct pending successor when the older snapshot is already planned, queued or running, so accepted-reference order wins over completion order.
 
 `events.py` maps persisted market-event entities and markets to bounded dependency nodes, marks only matching theses/forecasts/catalysts dirty, refreshes questions and enqueues one debounced planner job. Broad scheduled thesis discovery remains separate.
 
-Research lifecycle events reuse `market_events` plus its transactional outbox under a dedicated `research_control_plane` topic. That handler never routes back into dirty propagation or emits another topology event. UI invalidation uses the existing allowlisted `ui_events` ledger with section key `system_topology`. Equivalent planner jobs and active questions coalesce through deterministic identities.
+Research lifecycle events reuse `market_events` plus its transactional outbox under a dedicated `research_control_plane` topic. That handler never routes back into dirty propagation or emits another topology event. UI invalidation uses the existing allowlisted `ui_events` ledger with section key `system_topology`. Equivalent planner jobs and exact-cutoff question replays coalesce through deterministic identities.
 
 ### Skills and work orders
 
 Five checked-in immutable specifications are registered at startup:
 
-- `earnings.guidance_delta@1`;
+- `filing.earnings_guidance_delta@1`;
 - `filing.peer_readthrough@1`;
 - `expectations.positioning_divergence@1`;
 - `thesis.targeted_challenge@1`;

@@ -332,6 +332,48 @@ Satisfy one by adding or extending a source-owned collector plus a normalized
 evidence adapter; do not paste fabricated evidence into case tables. See
 [Research Intelligence](research-intelligence.md).
 
+## Autonomous research control-plane operations
+
+Incremental maintenance runs every 15 minutes by default and after coalesced
+relevant source events. It is independent of the broad thesis-autonomy cycle.
+The planner may finish successfully with no work and no model call.
+
+Use the authenticated `/operations` topology first, then the bounded JSON
+contracts:
+
+```bash
+curl --user "$DASHBOARD_USER:$DASHBOARD_PASSWORD" \
+  http://127.0.0.1:8000/api/research/control-plane/status
+curl --user "$DASHBOARD_USER:$DASHBOARD_PASSWORD" \
+  'http://127.0.0.1:8000/api/research/questions?limit=20'
+curl --user "$DASHBOARD_USER:$DASHBOARD_PASSWORD" \
+  'http://127.0.0.1:8000/api/research/work-orders?limit=20'
+curl --user "$DASHBOARD_USER:$DASHBOARD_PASSWORD" \
+  http://127.0.0.1:8000/api/system/topology
+```
+
+An operator-triggered `POST /api/research/control-plane/run` requires normal
+authentication and CSRF, is subject to the API and global model-budget gates,
+and only enqueues a coalesced durable planner job. Normal scheduled and
+event-triggered operation does not need the endpoint.
+
+Trace an incident from question UUID and accepted cutoff to plan decision,
+budget reservation, work order, linked `analysis_jobs` lease, immutable skill
+version and append-only effect. Restore the failed database, source or worker
+and allow normal lease reconciliation to run. Do not delete queue, question,
+effect or outbox rows. Retry only `failed_retryable` work; a stale accepted
+cutoff must not be forced over newer research state.
+
+Blocked questions preserve unknown inputs and unavailable or semantically
+insufficient source capabilities. Fix the capability/collector rather than
+substituting zero or fabricated evidence. A justified no-op is a successful
+audited result, not an error.
+
+The control plane cannot place trades, size positions, submit orders, connect
+to execution APIs or mutate read-only portfolio state. Full lifecycle, skill,
+budget, recovery, source-capability, scorecard and topology semantics are in
+[Autonomous Research Control Plane](autonomous-research-control-plane.md).
+
 ## Logging, redaction, and retention
 
 Production emits structured JSON to stdout. Secret-shaped fields and query keys such as `token` are redacted. SSE credentials are cookie-based and therefore absent from request URLs and access logs.
