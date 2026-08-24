@@ -1,5 +1,6 @@
 """Run deterministic, upstream-free failure evidence with native unittest."""
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +45,14 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     ok = True
+    drill_env = dict(os.environ)
+    for key in (
+        "TRUSTED_HOSTS",
+        "EXTERNAL_ORIGIN",
+        "CSRF_SIGNING_KEY",
+        "SESSION_SIGNING_KEY",
+    ):
+        drill_env.pop(key, None)
     for name, project, relative_path, selector in DRILLS:
         cwd = (root / project).resolve()
         interpreter = cwd / ".venv/bin/python"
@@ -53,6 +62,7 @@ def main() -> int:
             cwd=cwd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=drill_env,
         )
         passed = result.returncode == 0
         print(f"{'PASS' if passed else 'FAIL'} {name}")
