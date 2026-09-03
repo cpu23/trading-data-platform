@@ -225,8 +225,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    issuers:\n"
                 '      - cik: "0000320193"\n'
                 "        symbol: AAPL\n"
-                "    transcription:\n"
-                "      model: tiny\n",
+                "    symbols: [AAPL]\n",
             ),
         ]
         for source_id, extra in cases:
@@ -731,9 +730,6 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "  issuer_transcripts:\n"
                 "    enabled: true\n"
                 '    schedule: "0 */6 * * *"\n'
-                "    transcription:\n"
-                "      model: tiny\n"
-                "      beam_size: 2\n"
                 "    issuers:\n"
                 "      - kind: q4_events\n"
                 "        institution: Amazon\n"
@@ -773,7 +769,6 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
             self.assertTrue(feed.get("enabled", True))
             self.assertEqual(feed.get("max_items"), 40)
             transcripts = config["collectors"]["issuer_transcripts"]
-            self.assertEqual(transcripts.get("transcription").get("model"), "tiny")
             self.assertEqual(transcripts.get("issuers")[0].get("ticker"), "AMZN")
             self.assertEqual(transcripts.get("issuers")[0].get("kind"), "q4_events")
             equities = config["collectors"]["public_equities"]
