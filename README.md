@@ -512,13 +512,16 @@ commands, API bounds, lifecycle semantics, and source-adapter extension rules.
 ## Local Verification
 
 The repository uses locked `uv` environments for the API and orchestrator.
+Test commands run through the 4 GiB address-space guard. Set
+`TEST_MEMORY_LIMIT_BYTES` to a positive byte count when a smaller host requires
+a lower ceiling.
 
 ```bash
 python3 -m compileall -q -x '/\.venv/' api orchestrator
-cd api && uv run python -m unittest discover -s tests
-cd ../orchestrator && uv run python -m unittest discover -s tests
+cd api && uv run python ../scripts/run_bounded_tests.py discover -s tests
+cd ../orchestrator && uv run python ../scripts/run_bounded_tests.py discover -s tests
 cd ..
-api/.venv/bin/python -m unittest discover -s tests
+api/.venv/bin/python scripts/run_bounded_tests.py discover -s tests
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 docker compose config --quiet
 docker compose -f docker-compose.demo.yml config --quiet

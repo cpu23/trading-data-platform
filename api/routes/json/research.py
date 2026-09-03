@@ -18,14 +18,19 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
-from budgets import mark_override_dispatch_failed, register_manual_override
-from config import load_config, orchestrator_url
+import config as app_config
+from budgets import (
+    enforce_api_budget,
+    extract_manual_override,
+    get_budget_status,
+    mark_override_dispatch_failed,
+    register_manual_override,
+)
 from contracts import (
     ResearchControlPlaneRunRequest,
     ResearchControlPlaneRunResponse,
@@ -34,12 +39,20 @@ from contracts import (
     ResearchWorkOrderListResponse,
 )
 from db import get_session
-from routes.json.triggers import (
-    _enforce_api_budget,
-    _internal_basic_auth,
-    _manual_override,
-    _post_to_orchestrator,
-)
+from logging_config import get_logger
+from orchestrator_client import orchestrator_post
+
+
+def load_config() -> Mapping[str, Any]:
+    return app_config.load_config()
+
+logger = get_logger("api.research")
+
+
+def _enforce_research_budget(
+    override: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return enforce_api_budget(get_budget_status(), override)
 
 _ORCHESTRATOR_DIR = Path(__file__).resolve().parents[3] / "orchestrator"
 _orchestrator_path = str(_ORCHESTRATOR_DIR)
@@ -775,7 +788,7 @@ async def run_thesis_desk(request: Request, body: dict | None = Body(default=Non
         force = _run_body(body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    _enforce_api_budget(None)
+    _enforce_research_budget(None)
     return await _research_orchestrator_post(
         request, "/research/theses/run", {"force": force}
     )
@@ -801,16 +814,12 @@ def _run_body(value: Any) -> bool:
 async def _research_orchestrator_post(
     request: Request, path: str, payload: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    try:
-        response = await _post_to_orchestrator(
-            request,
-            f"{orchestrator_url()}{path}",
-            json=payload or {},
-            timeout=10.0,
-            auth=_internal_basic_auth(),
-        )
-    except (httpx.TransportError, RuntimeError) as exc:
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
+    response = await orchestrator_post(
+        request,
+        path,
+        json=payload or {},
+        timeout=10.0,
+    )
     if response.status_code != 202:
         status = (
             response.status_code
@@ -1074,7 +1083,7 @@ async def run_intelligence(request: Request, body: dict | None = Body(default=No
         force = _run_body(body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    _enforce_api_budget(None)
+    _enforce_research_budget(None)
     return await _research_orchestrator_post(request, "/research/run", {"force": force})
 
 
@@ -1097,7 +1106,7 @@ async def run_intelligence_case(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
         return JSONResponse(status_code=503, content={"status": "unavailable"})
-    _enforce_api_budget(None)
+    _enforce_research_budget(None)
     return await _research_orchestrator_post(
         request, f"/research/cases/{parsed}/run", {"force": force}
     )
@@ -1109,7 +1118,7 @@ async def retry_intelligence_job(job_id: str, request: Request):
         parsed = _uuid(job_id, "job_id")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    _enforce_api_budget(None)
+    _enforce_research_budget(None)
     return await _research_orchestrator_post(request, f"/research/jobs/{parsed}/retry")
 
 
@@ -1496,8 +1505,8 @@ async def run_control_plane(
     body: ResearchControlPlaneRunRequest,
 ):
     """Enqueue one coalesced manual planner job; execution remains asynchronous."""
-    override = _manual_override(body, request)
-    _enforce_api_budget(override)
+    override = extract_manual_override(body, request)
+    _enforce_research_budget(override)
     config = load_config()
     correlation_id = uuid4()
     accepted_at = datetime.now(UTC)

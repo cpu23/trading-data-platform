@@ -1,0 +1,358 @@
+schema_version: company_benchmark_v1
+case_id: msft.fy2024.q4.capacity_economics
+fixture_version: 2
+as_of: '2024-07-31T23:59:59Z'
+document:
+  company: Microsoft Corporation
+  symbol: MSFT
+  document_type: earnings_transcript
+  region: US
+  industry: Software, Cloud & Communications
+  report_date: '2024-06-30'
+  available_at: '2024-07-30T23:59:59Z'
+  title: Microsoft FY24 Fourth Quarter Earnings Conference Call
+  publisher: Microsoft Investor Relations
+  source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+  release_title: Microsoft Cloud Strength Drives Fourth Quarter Results
+  release_publisher: Microsoft Investor Relations
+  release_date: '2024-07-30'
+  release_source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+excerpt: "AMY HOOD: Thank you, Satya, and good afternoon everyone. This quarter, revenue was $64.7 billion, up 15% and 16% in constant currency. Earnings per share was $2.95 cents and increased 10% and 11% in constant currency. \n\nIn our largest quarter of the year, we again delivered double-digit top and bottom-line growth with continued share gains across many of our businesses and record commitments to our Microsoft Cloud platform.\n\nCommercial bookings were significantly ahead of expectations and increased 17% and 19% in constant currency. This record commitment quarter was driven by growth in the number of 10-million-dollar-plus and 100-million-dollar-plus contracts for both Azure and Microsoft 365 and consistent execution across our core annuity sales motions.\n\nCommercial remaining performance obligation increased 20% and 21% in constant currency to $269 billion. Roughly 40% will be recognized in revenue in the next 12 months, up 18% year-over-year. The remaining portion, recognized beyond the next 12 months, increased 21%. And this quarter, our annuity mix was 97%.\n\nAt a company level, Activision contributed a net impact of approximately 3 points to revenue growth, was a 2 point drag on operating income growth, and had a negative 6 cent impact to earnings per share. A reminder that this net impact includes adjusting for the movement of Activision content from our prior relationship as a third-party partner to first-party, and includes $938 million from purchase accounting adjustments, integration, and transaction-related costs.\n\nFX did not have a significant impact on our results and was roughly in line with our expectations on total company revenue, segment level revenue, COGS, and operating expense growth.\n\nMicrosoft Cloud revenue was $36.8 billion and grew 21% and 22% in constant currency, roughly in line with expectations. \n\nMicrosoft Cloud gross margin percentage decreased roughly 2 points year-over-year to 69% in line with expectations. Excluding the impact of the change in accounting estimate for useful lives, gross margin percentage decreased slightly driven by sales mix shift to Azure, partially offset by improvement in Azure even with the impact of scaling our AI infrastructure. \n\nCompany gross margin dollars increased 14% and 15% in constant currency and gross margin percentage decreased slightly year-over-year to 70%. Excluding the impact of the change in accounting estimate, gross margin percentage increased slightly, even with the impact from purchase accounting adjustments, integration, and transaction-related costs from the Activision acquisition. \n\nOperating expenses increased 13% with 9 points from the Activision acquisition.\n\nAt a total company level, headcount at the end of June was 3% higher than a year ago. \n\nOperating income increased 15% and 16% in constant currency and operating margins were 43%, relatively unchanged year-over-year. Excluding the impact of the change in accounting estimate, operating margins increased slightly driven by the higher gross margin noted earlier and improved operating leverage through continued cost discipline.\n\nNow to our segment results.\n\nRevenue from Productivity and Business Processes was $20.3 billion and grew 11% and 12% in constant currency, slightly ahead of expectations driven by better-than-expected results across all business units.\n\nOffice commercial revenue grew 12% and 13% in constant currency. Office 365 commercial revenue increased 13% and 14% in constant currency with ARPU growth primarily from E5 momentum as well as Copilot for Microsoft 365. Paid Office 365 commercial seats grew 7% year-over-year with installed base expansion across all customer segments. Seat growth was again driven by our small and medium business and frontline worker offerings, although both segments continued to moderate. \n\nOffice commercial licensing declined 9% and 7% in constant currency, with continued customer shift to cloud offerings.\n\nOffice consumer revenue increased 3% and 4% in constant currency with continued momentum in Microsoft 365 subscriptions, which grew 10% to 82.5 million.\n\nLinkedIn revenue increased 10% and 9% in constant currency driven by better-than-expected performance across all businesses.  \n\nDynamics revenue grew 16% driven by Dynamics 365 which grew 19% and 20% in constant currency. We saw continued growth across all workloads and better-than-expected new business. Dynamics 365 now represents roughly 90% of total Dynamics revenue. \n\nSegment gross margin dollars increased 9% and 10% in constant currency and gross margin percentage decreased roughly 1 point year-over-year. Excluding the impact of the change in accounting estimate, gross margin percentage decreased slightly driven by Office 365 as we scale our AI infrastructure. Operating expenses increased 5%, and operating income increased 12% and 13% in constant currency.\n\nNext, the Intelligent Cloud segment. Revenue was $28.5 billion, increasing 19% and 20% in constant currency, in line with expectations. \n\nOverall, server products and cloud services revenue grew 21% and 22% in constant currency. Azure and other cloud services revenue grew 29% and 30% in constant currency, in line with expectations and consistent with Q3 when adjusting for leap year. Azure growth included 8 points from AI services where demand remained higher than our available capacity. In June, we saw slightly lower-than-expected growth in a few European geos. \n\nIn our per-user business, the enterprise mobility and security installed base grew 10% to over 281 million seats with continued impact from moderated growth in seats sold outside the Microsoft 365 suite. \n\nTherefore, our Azure consumption business continues to grow faster than total Azure.\n\nIn our on-premises server business, revenue increased 2% and 3% in constant currency. Growth was driven by demand for our hybrid solutions although with slightly lower-than-expected transactional purchasing.\n\nEnterprise and partner services revenue decreased 7% on a strong prior year comparable for Enterprise Support Services.\n\nSegment gross margin dollars increased 16% and gross margin percentage decreased roughly 2 points year-over-year. Excluding the impact of the change in accounting estimate, gross margin percentage decreased slightly driven by sales mix shift to Azure, partially offset by the improvement in Azure noted earlier, even with the impact of scaling our AI infrastructure. Operating expenses increased 5% and operating income grew 22% and 23% in constant currency.\n\nNow to More Personal Computing. Revenue was $15.9 billion, increasing 14% and 15% in constant currency, with 12 points of net impact from the Activision acquisition. Results were above expectations driven by Windows commercial and Search.\n\nThe PC market was as expected and Windows OEM revenue increased 4% year-over-year. \n\nWindows commercial products and cloud services revenue increased 11% and 12% in constant currency, ahead of expectations due to higher in-period revenue recognition from the mix of contracts. \n\nDevices revenue decreased 11% and 9% in constant currency, roughly in line with expectations, as we remain focused on our higher margin premium products. While early days, we’re excited about the recent launch of our Copilot+ PCs.\n\nSearch and news advertising revenue ex-TAC increased 19%, ahead of expectations, primarily due to improved execution. Healthy volume growth was driven by Bing and Edge.\n\nAnd in Gaming, revenue increased 44% with 48 points of net impact from the Activision acquisition. Xbox content and services revenue increased 61%, slightly ahead of expectations, with 58 points of net impact from the Activision acquisition. Stronger-than-expected performance in first-party content was partially offset by third-party content performance. Xbox hardware revenue decreased 42% and 41% in constant currency.\n\nSegment gross margin dollars increased 21%, with 10 points of net impact from the Activision acquisition. Gross margin percentage increased roughly 3 points year-over-year primarily driven by sales mix shift to higher margin businesses. \n\nOperating expenses increased 43% with 41 points from the Activision acquisition. Operating income increased 5% and 6% in constant currency.\n\nNow back to total company results.\n\nCapital expenditures including finance leases were $19 billion, in line with expectations, and cash paid for P, P, and E was $13.9 billion. Cloud and AI related spend represents nearly all of total capital expenditures. Within that, roughly half is for infrastructure needs where we continue to build and lease datacenters that will support monetization over the next 15 years and beyond. The remaining cloud and AI related spend is primarily for servers, both CPUs and GPUs, to serve customers based on demand signals. For the full fiscal year, the mix of our cloud and AI related spend was similar to Q4.\n\nCash flow from operations was $37.2 billion, up 29% driven by strong cloud billings and collections. Free cash flow was $23.3 billion, up 18% year-over-year, reflecting higher capital expenditures to support our cloud and AI offerings. For the full year, cash flow from operations surpassed $100 billion for the first time, reaching $119 billion. \n\nThis quarter, other income and expense was negative $675 million, more favorable than anticipated with lower-than-expected interest expense and higher-than-expected interest income. Our losses on investments accounted for under the equity method were as expected.\n\nOur effective tax rate was approximately 19%, higher than anticipated due to a state tax law signed in June that was effective retroactively.\n\nAnd finally, we returned $8.4 billion to shareholders through dividends and share repurchases, bringing our total cash returned to shareholders to over $34 billion for the full fiscal year.\n\nNow, moving to our outlook.\n\nMy commentary for both the full year and next quarter is on a US dollar basis unless specifically noted otherwise.\n\nLet me start with some full year commentary for FY25.\n\nFirst, FX. Assuming current rates remain stable, we expect FX to have no meaningful impact to full year revenue, COGS, or operating expense growth.\n\nNext, we continue to expect double-digit revenue and operating income growth as we focus on delivering differentiated value for our customers. To meet the growing demand signal for our AI and cloud products, we will scale our infrastructure investments with FY25 capital expenditures expected to be higher than FY24. As a reminder, these expenditures are dependent on demand signals and adoption of our services that will be managed thru the year. As scaling these investments drive growth in COGS, we will remain disciplined on operating expense management. Therefore, we expect FY25 opex growth to be in the single digits. And given our focused commitment to managing at the operating margin level, we still expect FY25 operating margins to be down only about one point year-over-year. \n\nAnd finally, we expect our FY25 effective tax rate to be around 19%.\n\nNow, to the outlook for our first quarter.\n\nBased on current rates, we expect FX to decrease total revenue and segment level revenue growth by less than one point. We expect FX to decrease COGS growth by less than one point and to have no meaningful impact to operating expense growth.\n\nIn commercial bookings, increased long-term commitments to our platform and strong execution across core annuity sales motions should drive healthy growth on a growing expiry base. As a reminder, larger long-term Azure contracts, which are more unpredictable in their timing, can drive increased quarterly volatility in our bookings growth rate.\n\nMicrosoft Cloud gross margin percentage should be roughly 70%, down year-over-year driven by the impact of scaling our AI infrastructure.\n\nWe expect capital expenditures to increase on a sequential basis given our cloud and AI demand, as well as existing AI capacity constraints. As a reminder, there can be quarterly spend variability from cloud infrastructure buildouts and the timing of delivery of finance leases. \n\nNext to segment guidance. \n\nIn Productivity and Business Processes, we expect revenue to grow between 10% and 11% in constant currency, or $20.3 to $20.6 billion. \n\nIn Office Commercial, revenue growth will again be driven by Office 365 with seat growth across customer segments and ARPU growth through E5 and Copilot for Microsoft 365. We expect Office 365 revenue growth to be approximately 14% in constant currency. In our on-premises business, we expect revenue to decline in the mid to high teens. \n\nIn Office consumer, we expect revenue growth in the low to mid-single digits, driven by Microsoft 365 subscriptions.\n\nFor LinkedIn, we expect revenue growth in the high single digits driven by continued growth across all businesses. \n\nAnd in Dynamics, we expect revenue growth in the low to mid-teens driven by Dynamics 365.\n\nFor Intelligent Cloud we expect revenue to grow between 18% and 20% in constant currency, or $28.6 to $28.9 billion. \n\nRevenue will continue to be driven by Azure which, as a reminder, can have quarterly variability primarily from our per-user business and in-period revenue recognition depending on the mix of contracts.\n\nIn Azure, we expect Q1 revenue growth to be 28% to 29% in constant currency. Growth will continue to be driven by our consumption business, inclusive of AI, which is growing faster than total Azure. We expect the consumption trends from Q4 to continue thru the first half of the year. This includes both AI demand impacted by capacity constraints and non-AI growth trends similar to June. Growth in our per-user business will continue to moderate. And in H2, we expect Azure growth to accelerate as our capital investments create an increase in available AI capacity to serve more of the growing demand. \n\nIn our on-premises server business, we expect revenue to decline in the low single digits as continued hybrid demand will be more than offset by lower transactional purchasing.\n\nAnd in Enterprise and partner services, revenue should decline in the low single digits. \n\nIn More Personal Computing, we expect revenue to grow between 9% and 12% in constant currency, or $14.9 to $15.3 billion. \n\nWindows OEM revenue growth should be relatively flat, roughly in line with the PC market. \n\nIn Windows commercial products and cloud services, customer demand for Microsoft 365 and our advanced security solutions should drive revenue growth in the mid-single digits. As a reminder, our quarterly revenue growth can have variability primarily from in-period revenue recognition depending on the mix of contracts.\n\nIn Devices, revenue growth should be in the low to mid-single digits.\n\nSearch and news advertising ex-TAC revenue growth should be in the mid to high teens. This will be higher than overall Search and news advertising revenue growth, which we expect to be in the low single digits.\n\nAnd in Gaming, we expect revenue growth in the mid-30s, including approximately 40 points of net impact from the Activision acquisition. We expect Xbox content and services revenue growth in the low to mid-50s, driven by the net impact from the Activision acquisition. Hardware revenue will again decline year-over-year.\n\nNow back to company guidance.\n\nWe expect COGS between $19.95 to $20.15 billion, including approximately $700 million from purchase accounting, integration, and transaction-related costs from the Activision acquisition. \n\nWe expect operating expense of $15.2 to $15.3 billion, including approximately $200 million from purchase accounting, integration, and transaction-related costs from the Activision acquisition. \n\nOther income and expense should be roughly negative $650 million driven by losses on investments accounted for under the equity method as interest income will be mostly offset by interest expense. As a reminder, we are required to recognize gains or losses on our equity investments, which can increase quarterly volatility.\n\nWe expect our Q1 effective tax rate to be approximately 19%.\n\nIn closing, we remain focused on delivering innovations that matter to our global customers of every size. That focus extends to delivering on our financial commitments as well. We delivered operating margin growth of nearly three points year over year even as we accelerated our AI investments, completed the Activision acquisition, and had a headwind from the change in useful lives last year. So, as we begin FY25, we will continue to invest in the cloud and AI opportunity ahead aligned, and if needed adjusted, to the demand signals we see. We are committed to growing our leadership across our commercial cloud and within that, the AI platform, and we feel well positioned as we start FY25.\n\nWith that, let’s go to Q&A. Brett.\n\nBRETT IVERSEN: Thanks, Amy. We’ll now move over to Q&A. Out of respect for others on the call, we request the participants. Please only ask one question. Operator, can you please repeat your instructions?\n\n(Operator direction.)\n\nKEITH WEISS, Morgan Stanley: Excellent. Thank you guys for taking the question, and congratulations on another great quarter and really solid overall fiscal year. \n\nRight now, there’s an industry debate raging around the capex requirements around generative AI and whether the monetization is actually going to match with that. And I think the question for you guys from a Microsoft perspective is, is capex still an appropriate leading indicator for cloud growth, or do the shifting gross margin profiles changed that equation; or said another way, maybe can you give us a little bit more help in understanding the timing between the capex investments and the yields on those investments? Thank you.\n\nSATYA NADELLA: Thank you, Keith. Let me start and then Amy can add to this. I think I would say we primarily start right now from the demand side. What I mean by that is what’s the product shape of the product portfolio? What we learned even from the cloud transition, which, as you know, Keith, was similar in the sense it was both a knowledge-intensive and a capital-intensive transition. We needed to have the product portfolio where there was the right mix, I’ll call it, infrastructure meters, as well as SaaS applications. \n\nThat’s the first thing that we’re looking at, and how is that value landing with customers and what’s the growth rate. When I think about what’s happening with M365 Copilot as perhaps the best Office 365 or M365 suite we have had, the fact that we are getting recurring customers or customers coming back, buying more seats, or GitHub Copilot now being bigger than even GitHub when we bought it, what’s happening in the contact center with Dynamics. \n\nI would say, and obviously, the Azure AI growth, that’s the first place we look at. That then drives bulk of the capex spend. Basically, that’s the demand signal, because you’ve got to remember, even in the capital spend, there is land and there is data center built, but 60+% is the kit. That only will be bought for inferencing and everything else if there is demand signal, right? That’s, I think, the key way to think about capital cycle, even. \n\nThe asset, as Amy said, is a long-term asset, which is land and the data center, which, by the way, we don’t even construct things fully. We can even have things which are semi-constructed. We call co-shells and so on. \n\nWe know how to manage our capex spend to build out a long-term asset. And a lot of the hydration of the kit happens when we have the demand signal. There is definitely spend for training. Even there, of course, we will only be scaling our training as we see the demand accrue in any given period in time. \n\nI would say it’s more important to manage to capture the opportunity with the right product portfolio that’s driving value. And on that front, I feel good about the breadth of Microsoft offering, whether it’s in consumer side, whether it’s on commercial per-seat side, or the consumption meters. That’s, I think, the fundamental driver.\n\nAMY HOOD: And Keith, I do think – and I really do appreciate how you phrase the question as well, because I think the timing and some of the questions you all have had really led to how we were talking even about capital expense in our comments, in my comments today. \n\nBeing able to maybe share a little more about that, when we talked about roughly half of FY24’s total capital expense, as well as half of Q4’s expense, it’s really on land and builds, and finance leases. And those things really will be monetized over 15 years and beyond. And they’re incredibly flexible. Because we’ve built a consistent architecture, first with a commercial cloud, and second with the Azure stack for AI, regardless of whether demands at the platform layer or at the app layer, or through third parties and partners, or, frankly, our first-party SaaS, it uses the same infrastructure. \n\nWe’ve got long-lived, flexible assets. And if you think about it, that way, you can see what we’re doing and focused on is building out this network in parallel across the globe, because when we did this last transition, the first transition to the cloud, which seems a long time ago, sometimes – (laughter) – it rolled out quite differently. We rolled out more geo by geo. And this one, because we have demand on a global basis, we are doing it on a global basis, which is important. We have large customers in every geo.\n\nAnd so, hopefully, with that shape of our capital expense, it helps people see how much of that sort of near-term monetization driver as well as much longer duration.\n\nKEITH WEISS: That’s super helpful. Thank you very much. \n\nBRETT IVERSEN: Thanks, Keith. Operator, next question, please.\n\n(Operator direction.)\n\nMARK MOERDLER, Bernstein Research: Thank you very much. Thank you for taking the question, and congrats on a strong year. \n\nGen AI has been a bit of a roller coaster of tech over the last year with periods of acceleration, high expectations and expectations dropped as reality kicked in. With Azure growth we’ve seen this quarter and O365, Commercial not yet fully visible in numbers, even though, Amy, you gave us a lot of color on it, two parts to the question of Satya, how should we think about what it’s going to take for Gen AI to become more real across the industry, and for it to become more visible within your SaaS offerings? \n\nAnd Amy, with cloud, it took time for margins to improve. It looks like with AI, it’s happening quicker. Can you give us a sense of how you think about the margin impact near term and long term from all the investment on AI? Thank you.\n\nSATYA NADELLA: Thanks again, Mark, for the question. To me, look, at the end of the day Gen AI is just software, so it is really translating into fundamentally growth on what has been our M365 SaaS offering with a new offering that is the Copilot SaaS offering, which today is on a growth rate that’s faster than any other previous generation of software we launched as a suite in M365. That’s, I think, the best way to describe it. I mean, the numbers I think we shared even this quarter are indicative of this, Mark.\n\nIf you look at it, we have both the landing of the seats itself, quarter over quarter, that is growing 60%, right? That’s a pretty good, healthy sign. The most healthy sign for me is the fact that customers are coming back there. That is, the same customers with whom we land in the seats coming back and buying more seats, and then the number of customers with 10,000+ seats doubled. It’s 2x, quarter over quarter. That, to me, is a healthy SaaS core business. \n\nAnd on top of that, some of the things that Amy shared are on Dynamics, that’s another exciting place for us, which is one, we’re gaining share. We’re Dynamics with Gen AI built in is sort of really BizApps is probably the category that gets completely transformed with Gen AI, contact centers being a great example. We, ourselves, are on course to save hundreds of millions of dollars in our own Customer Support and Contact Center Operations. I think we can drive that value to our customers. \n\nAnd then on the Azure side, you see the numbers very clearly. In fact, I think last quarter is when we started giving you that. You saw an acceleration of that this quarter. \n\nOne of the other pieces, Mark, is AI doesn’t sit on its own. It’s just, we have a concept of design wins in Azure. In fact, 50% of the folks who are using Azure AI are also using a data meter. That’s very exciting to us because the most important thing in Azure is to win workloads in the enterprise, and that is starting to happen. And these are generational things, once they get going with you. \n\nThat’s, I think, how we think about it, at least when I look at what’s happening on our demand side. \n\nAMY HOOD: And, Mark, to answer the second half of your question on margin improvement looking different than it did through the last cloud cycle, that’s primarily for a reason I’ve mentioned a couple times. We have a consistent platform, so because we’re building to one Azure AI stack, we don’t have to have multiple infrastructure investments. We’re making one. We’re using that internally, first party. And that’s what we’re using with customers to build on as well as ISVs. It does, in fact, make margins start off better and obviously, scale consistently.\n\nMARK MOERDLER: Thank you. \n\nBRETT IVERSEN: Thanks, Mark. Operator, next question, please.\n\n(Operator direction.)\n\nKASH RANGAN, Goldman Sachs: Hi. Thank you very much, and congrats on a great year, fiscal year ending. \n\nA question for you, Amy. When you look at the capex, how do you bring efficiencies out of the capex? You disclose at 50% was infrastructure, the other 50%, tech, is very useful. In other words, do you have to keep going, growing capex at these elevated rates, or could you slow down capex and still get that consistent revenue growth rate in your Azure and generative AI? That’s the main question on my mind. Thank you so much.\n\nAMY HOOD: Thanks, Kash. That’s a very good question. There’s really two pieces, I think, as I heard your question that I would reflect on. \n\nThe first is, could we see sort of consistent revenue growth without maybe what you would say is more of this sort of elevated capital expense number, or something that continues to accelerate. And the answer to that is yes, because there’s two different pieces. You’re seeing half of this go toward long-term builds that Satya mentioned. The pace at which we fill those builds with CPUs, or GPUs, will be demand driven. \n\nAnd so, if we see differences in demand signal, we can throttle that investment on the CPU side, which we’ve done for, I guess, a long time at this point, as I reflect. And we’ll use all that same learning and demand signal understanding to do the same thing on the GPU side. And so, you’re right that you could see relatively consistent revenue patterns, and yet see these inconsistencies and capital spend, quarter to quarter. \n\nThe other thing I would note, Kash, is you’ll also notice there’s a growing distinction between our capex number and, on occasion, the cash that we pay for PP&E. And you’re going to start to see that more often in this period, because it happens when we use leases. Leases sort of show up all at once. And so, you’ll see a little bit more volatility. I’ve mentioned that in my comments before, but I mention it again, just because you’re starting to see that distinction in my comments. And hopefully, that’s helpful context. \n\nSATYA NADELLA: Just one other thing, Amy, I wanted to add. I think as people think about capital spend, I think it’s important to separate out releases from build. And when it comes to build, I think it’s important for us to think about – we think about it in terms of what’s the total percentage of cost that goes into each line item, land, which obviously has a very different duration and a very different lead time. \n\nThose are the other two considerations. We think about lead time and duration of the asset, land, network construction, the system or the kit, and then the ongoing cost. And so, if you think about it that way, then you know how to even adjust, if you will, the capital spend based on demand signal.\n\nKASH RANGAN: Thank you. It was triggered by the jump in capex, and as Amy pointed out, your guiding to accelerating Azure revenue growth rate, which I guess follows the capex. Thank you so much once again.\n\nBRETT IVERSEN: Thanks, Kash. Operator, next question, please.\n\n(Operator direction.) \n\nBRENT THILL, Jefferies: Thanks. Amy, the magnitude of beat this quarter was a little lower than we’ve seen in the past. Was there anything unusual on sales side on the disclosed rate that you saw? Thanks.\n\nAMY HOOD: Thanks, Brent. Actually, no. As I was talking on the quarter, I mean, commercial bookings were much better than we expected going into the quarter. Commitments were very good. Execution across both the core annuity renewal motion was good as expected. The larger long-term commitments were better than we expected. \n\nBrent, I would not say there was anything really unusual in how I thought about it what we saw in our commercial execution through the quarter. \n\nBRENT THILL: Great, thank you.\n\nBRETT IVERSEN: Thanks, Brent. Operator, next question, please.\n\n(Operator direction.)\n\nKARL KEIRSTEAD, UBS: Okay, great. Maybe I’ll direct this to Amy. \n\nAmy, I know when you set your Azure guidance, you’re always looking to meet or beat the high end. The 30% you put up in the June quarter, amazing number given the scale of Azure, but it did come in at the low end of your range. And I’d just love for you to maybe elaborate on the delta. \n\nI guess as I reflect on what you’ve said in your comments, there’s two things that I heard you say. One, it sounded like there’s persistent capacity constraints that you think might get alleviated in the second half. And then secondly, you mentioned perhaps the modest softness in Europe. I presume that’s a little bit more economic rather than Azure specific. Is that the right way to frame the performance in the quarter? Thank you.\n\nAMY HOOD: Thanks, Karl. Yes, that’s exactly right. Maybe I’ll just repeat it just so people can hear it in my words, as well, to that 30% to 31% guide for Q4 and coming in at the lower end at 30%. You’re exactly right, the distinguishing between being at the higher end or at the lower end really was some softness we saw in a few European geos on non-AI consumption, really made the difference in that number. And we’ve assumed that going forward into H1, inclusive of my guide in 28 to 29, going forward.\n\nAnd then let me separate, which was your larger point, which is what are the other factors you see ongoing. Number one, you’re right, capacity constraints, particularly on AI and Azure, remained in Q4 and will remain in H1. Hopefully, that’s helpful.\n\nKARL KEIRSTEAD: Yeah. Thank you, Amy.\n\nBRETT IVERSEN: Thanks, Karl. Operator, next question, please.\n\n(Operator direction.)\n\nBRAD ZELNICK, Deutsche Bank: Great, thank you very much. \n\nAmy, with Azure demand once again greater than available capacity, I appreciate the capex investments in the build out and acceleration you expect in the back half. But as we think about cloud capacity and AI services, specifically, can you talk about both the near-term and long-term strategy around the AI partnerships that you’re signing with the likes of Oracle and CoreWeave, for example? Thank you.\n\nAMY HOOD: Thanks, Brad. Maybe separate a couple of things. \n\nWe are, and we’ve talked about it now for quite a few quarters, we are constrained on AI capacity. And because of that, actually, we, to your point, have signed up with third parties to help us as we are behind with some leases on AI capacity. We’ve done that with partners who are happy to help us extend the Azure platform to be able to serve this Azure AI demand. And you do see us investing quite a bit, as we’ve talked about, in builds so that we can get back in a more balanced place.\n\nSATYA NADELLA: Yeah. I mean, to me, it’s no different than leases that we would have done in the past. You could even say sometimes buying from Oracle, maybe even more efficient leases because they’re even shorter date.\n\nBRAD ZELNICK: Excellent. Thanks for the color.\n\nBRETT IVERSEN: Thanks, Brad. Operator, next question, please.\n\n(Operator direction.)\n\nMARK MURPHY, JP Morgan: Thank you very much. With a couple quarters of Copilot for M365 availability under your belt now, how are you assessing the capability of copilots to replicate the productivity gains that they’ve created for developers, which seem to be very high, and to do something similar for the broader population of knowledge workers? For instance, you’re mentioning the 10,000 seat deals, the repeat purchases. Is it possible to eventually see Copilot penetration rates equally high in Office as they will be in GitHub?\n\nSATYA NADELLA: Yeah, that’s a great question. In fact, the GitHub design system and the GitHub Copilot Workspace design system, which now, for example, you start with an issue, you create a plan, from a plan, you create a spec, or you create a spec and from a spec, you create a plan, and then you go operate across the full repo, that’s effectively the design system that is getting replicated inside of even the M365 Copilot. And you see this even now. \n\nFor example, you get an e-mail. You’re in sales. You want to respond to the customer. The data from the e-mail is essentially context for a prompt, but you expand by bringing in all of your CRM data, right? This customer e-mail is in the context of some order. All of the CRM record gets completed in context, and a reply gets generated with the CRM data. That’s the type of stuff that’s already happening. \n\nThen you take something like Copilot Studio, you can start even grounding it in more data and then completing workflows. You could say, if this e-mail comes from this customer whose order date has got a particular issue with it, you can then go and escalate it to somebody else, who gets a notification in Teams. And those are the kinds of workflows that are getting built within IT or by end users themselves. What used to be line of business applications to us are Copilot extensions going forward. \n\nWe think of this as really, a new design system for knowledge and frontline work to drive productivity, which will be very akin to what has happened in software engineering. When you think about marketing or finance, or sales, or customer service, we will effectively replicate what you just said, which is the type of product you will be seeing and developers will come to all of these functions as they think about their work, workflow and work artifact all being driven by Copilot.\n\nMARK MURPHY: Thank you very much.\n\nBRETT IVERSEN: Thanks, Mark. Operator, we have time for one last question.\n\n(Operator direction.)\n\nKEITH BACHMAN, BMO: Hi. Good evening, and thank you for the opportunity to ask the question. I actually wanted to veer towards gaming, if I could for a second. \n\nXbox content services revenue grew 61%, 58 points help from Activision. Net is about three points of growth. How should investors think about the longer-term growth potential? In this area, you’ve made significant investments including the Activision deal. But how should investors be thinking about the growth potential of the gaming, or what are the puts and takes to help make considerations here? Thank you.\n\nSATYA NADELLA: Yeah. For us, our investment in gaming, fundamentally, was to have, I’d say, the right portfolio of both what we love about gaming and always have loved about gaming, which is Xbox and the content for the console, and expand from there so that we have content for everywhere people play games, starting with the PC. \n\nWhen I think about the Activision portfolio, it comes with great assets for us to cover both the PC and the console, and then, of course, assets to cover mobile sockets, which we never had. We feel that now, we have both the content and the ability to access all the traditional high scale platforms where people play games, which is the console, PC and mobile. But we’re also excited about the new sockets, right? \n\nI mean, the fact that even in this last quarter, we expanded xCloud to Amazon TV, I forget the name of what it’s called, but that’s the type of new axis that really helps us a lot, reach new gamers or the same gamer everywhere they want to play. And that ultimately will show up in that software plus services and transaction revenue for us, which is really our long-term KPI. And that’s what we’re building towards, and that was this strategy behind Activision as an asset. \n\nAmy, if you wanted to add to it?\n\nAMY HOOD: No, I do think the real goal here is to be able to take a broad set of content to more users in more places, and really build what looks more like, to us, a software annuity and subscription business with enhanced transactions and the ownership of IP, which is quite valuable long term. And Satya mentioned things where with the ownership of IP, it can be monetized in multiple ways. And I think we’re really encouraged by some of the progress and how we’re making progress with Game Pass, as well, with some of the new announcements. \n\nThank you, Keith.\n\nBRETT IVERSEN: Thanks, Keith. That wraps up the Q&A portion of today’s earnings call. Thank you for joining us today, and we look forward to speaking with all of you soon.\n\nAMY HOOD: Thank you.\n\nSATYA NADELLA: Thank you, all.\n\n(Operator direction.)\n\nEND"
+deterministic_current:
+  revenue:
+    value: 64727
+    unit: usd_millions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: opening results bullets and Financial Performance Constant Currency Reconciliation table (Three Months Ended June 30)'
+    available_at: '2024-07-30T21:30:00Z'
+    relationship_tags:
+      role: top_line
+      metric_family: revenue
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      qualifiers: []
+    yoy_growth_gaap_percent: 15
+    yoy_growth_constant_currency_percent: 16
+  operating_income:
+    value: 27925
+    unit: usd_millions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: opening results bullets and Financial Performance Constant Currency Reconciliation table (Three Months Ended June 30)'
+    available_at: '2024-07-30T21:30:00Z'
+    yoy_growth_gaap_percent: 15
+  net_income:
+    value: 22036
+    unit: usd_millions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: opening results bullets and Financial Performance Constant Currency Reconciliation table (Three Months Ended June 30)'
+    available_at: '2024-07-30T21:30:00Z'
+    relationship_tags:
+      role: bottom_line
+      metric_family: net_income
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      qualifiers: []
+    yoy_growth_gaap_percent: 10
+  diluted_eps:
+    value: 2.95
+    unit: usd_per_share
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: opening results bullets and Financial Performance Constant Currency Reconciliation table (Three Months Ended June 30)'
+    available_at: '2024-07-30T21:30:00Z'
+    relationship_tags:
+      role: external_recipient
+      metric_family: diluted_eps
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      qualifiers: []
+    yoy_growth_gaap_percent: 10
+  gross_margin_dollars:
+    value: 45043
+    unit: usd_millions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+    company_gross_margin_percent_transcript: 70
+  microsoft_cloud_revenue:
+    value: 36.8
+    unit: usd_billions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, Microsoft Cloud revenue'
+    available_at: '2024-07-30T23:59:59Z'
+  microsoft_cloud_gross_margin_percent:
+    value: 69
+    unit: percent
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, Microsoft Cloud gross margin percentage decreased roughly 2 points year-over-year'
+    available_at: '2024-07-30T23:59:59Z'
+  azure_and_other_cloud_services_growth_gaap_percent:
+    value: 29
+    unit: percent_yoy
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, Intelligent Cloud segment'
+    available_at: '2024-07-30T23:59:59Z'
+  azure_and_other_cloud_services_growth_constant_currency_percent:
+    value: 30
+    unit: percent_yoy
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, Intelligent Cloud segment'
+    available_at: '2024-07-30T23:59:59Z'
+  azure_growth_from_ai_services_points:
+    value: 8
+    unit: percentage_points
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, Intelligent Cloud segment; AI demand higher than available capacity'
+    available_at: '2024-07-30T23:59:59Z'
+  activision_net_revenue_growth_impact_points:
+    value: 3
+    unit: percentage_points
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, company-level Activision net impact (approximately)'
+    available_at: '2024-07-30T23:59:59Z'
+    relationship_tags:
+      role: external_effect
+      metric_family: external_effect
+      leaf: external_effect
+      scope: consolidated
+      comparison_basis: year_over_year_gaap
+      temporal_basis: rate_over_period
+      cash_basis: not_applicable
+      duration_days: 91
+      group_id: company_level_business_combination_net_impact
+      category: business_combination
+      effect_kind: contribution
+      effect_basis: percentage_points
+      recipient_path: current.revenue
+      qualifiers:
+      - approximate
+      - net
+      compatibility: compatible
+      incompatibility_reasons: []
+  activision_operating_income_growth_drag_points:
+    value: 2
+    unit: percentage_points
+    currency: null
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, company-level Activision net impact'
+    available_at: '2024-07-30T23:59:59Z'
+  activision_eps_impact:
+    value: -0.06
+    unit: usd_per_share
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, company-level Activision net impact'
+    available_at: '2024-07-30T23:59:59Z'
+    relationship_tags:
+      role: external_effect
+      metric_family: external_effect
+      leaf: external_effect
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      group_id: company_level_business_combination_net_impact
+      category: business_combination
+      effect_kind: drag
+      effect_basis: per_share
+      recipient_path: current.diluted_eps
+      qualifiers:
+      - net
+      compatibility: compatible
+      incompatibility_reasons: []
+  capital_expenditures_including_finance_leases:
+    value: 19.0
+    unit: usd_billions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, total company results'
+    available_at: '2024-07-30T23:59:59Z'
+  cash_paid_for_property_and_equipment:
+    value: 13.9
+    unit: usd_billions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, total company results'
+    available_at: '2024-07-30T23:59:59Z'
+    relationship_tags:
+      role: cash_investment
+      metric_family: capital_investment
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: cash
+      duration_days: 91
+      qualifiers: []
+  operating_cash_flow:
+    value: 37.2
+    unit: usd_billions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, total company results'
+    available_at: '2024-07-30T23:59:59Z'
+    relationship_tags:
+      role: cash_generation
+      metric_family: operating_cash_flow
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: cash
+      duration_days: 91
+      qualifiers: []
+    yoy_growth_percent: 29
+  free_cash_flow:
+    value: 23.3
+    unit: usd_billions
+    currency: USD
+    period: FY2024-Q4 (three months ended 2024-06-30)
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood prepared remarks, total company results'
+    available_at: '2024-07-30T23:59:59Z'
+    relationship_tags:
+      role: cash_generation
+      metric_family: free_cash_flow
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: cash
+      duration_days: 91
+      qualifiers: []
+    yoy_growth_percent: 18
+  guidance_q1_fy2025_azure_growth_constant_currency:
+    value: 28% to 29%
+    unit: percent_yoy_range
+    currency: null
+    period: FY2025-Q1 guidance issued 2024-07-30
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood outlook, Azure segment guidance'
+    available_at: '2024-07-30T23:59:59Z'
+  guidance_fy2025_capital_expenditures:
+    value: higher than FY24
+    unit: directional
+    currency: null
+    period: FY2025 guidance issued 2024-07-30
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood outlook, full-year FY25 commentary'
+    available_at: '2024-07-30T23:59:59Z'
+  guidance_q1_fy2025_microsoft_cloud_gross_margin:
+    value: 70
+    unit: percent
+    currency: null
+    period: FY2025-Q1 guidance issued 2024-07-30
+    source_url: https://www.microsoft.com/en-us/Investor/events/FY-2024/earnings-fy-2024-q4.aspx
+    source_location: 'transcript: Amy Hood outlook, Microsoft Cloud gross margin roughly 70%'
+    available_at: '2024-07-30T23:59:59Z'
+deterministic_prior:
+  revenue:
+    value: 56189
+    unit: usd_millions
+    currency: USD
+    period: FY2023-Q4 (three months ended 2023-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+    relationship_tags:
+      role: top_line
+      metric_family: revenue
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      qualifiers: []
+  operating_income:
+    value: 24254
+    unit: usd_millions
+    currency: USD
+    period: FY2023-Q4 (three months ended 2023-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+  net_income:
+    value: 20081
+    unit: usd_millions
+    currency: USD
+    period: FY2023-Q4 (three months ended 2023-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+    relationship_tags:
+      role: bottom_line
+      metric_family: net_income
+      leaf: standard_metric
+      scope: consolidated
+      comparison_basis: none
+      temporal_basis: period_flow
+      cash_basis: not_applicable
+      duration_days: 91
+      qualifiers: []
+  diluted_eps:
+    value: 2.69
+    unit: usd_per_share
+    currency: USD
+    period: FY2023-Q4 (three months ended 2023-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+  gross_margin_dollars:
+    value: 39394
+    unit: usd_millions
+    currency: USD
+    period: FY2023-Q4 (three months ended 2023-06-30)
+    source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+    source_location: 'press release: Income Statements table (Three Months Ended June 30, 2024)'
+    available_at: '2024-07-30T21:30:00Z'
+market_inputs:
+  consensus_estimates:
+    status: unavailable_as_of_producer_cutoff
+    note: No sell-side consensus estimates are embedded in this fixture. Consensus data was not obtainable from an official Microsoft Investor Relations primary source as of the producer cutoff, so no analyst estimates are asserted anywhere in this case.
+    consensus_availability_checked_at: '2024-07-31T23:59:59Z'
+prior_facts: {}
+previous_state: null
+prior_count: 0
+news_items: []
+extraction:
+  report_text_source: stored_document

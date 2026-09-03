@@ -28,6 +28,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_rows
+
 HORIZONS: tuple[str, ...] = ("1m", "5m", "15m", "30m", "60m", "end_of_session")
 _HORIZON_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "60m": 60}
 _DIRECTIONS = {"up", "down", "neutral"}
@@ -470,14 +472,6 @@ def classify_reaction_state(prices: Sequence[Any], baseline_price: Any = None) -
     return "reversal" if signs[0] != signs[-1] else "mixed"
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except AttributeError:
-        try:
-            return [dict(row) for row in result.all()]
-        except AttributeError:
-            return []
 
 
 def _price(row: Mapping[str, Any]) -> float | None:
@@ -493,12 +487,10 @@ def _baseline_row(
     event_at: datetime,
 ) -> dict[str, Any] | None:
     """Most recent row strictly before the event (direct latest, unbounded)."""
-    rows = _rows(
-        session.execute(
-            _BASELINE_SQL,
-            {"symbol": symbol, "timeframe": timeframe, "event_at": event_at},
-        )
-    )
+    rows = result_rows(session.execute(
+        _BASELINE_SQL,
+        {"symbol": symbol, "timeframe": timeframe, "event_at": event_at},
+    ))
     return rows[0] if rows else None
 
 
@@ -531,12 +523,10 @@ def _target_row(
     upper: datetime,
 ) -> dict[str, Any] | None:
     """First row at or after the target within the tolerance bound."""
-    rows = _rows(
-        session.execute(
-            _TARGET_SQL,
-            {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "upper": upper},
-        )
-    )
+    rows = result_rows(session.execute(
+        _TARGET_SQL,
+        {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "upper": upper},
+    ))
     return rows[0] if rows else None
 
 
@@ -553,12 +543,10 @@ def _eos_target_row(
     Never selects a post-close tick: the venue close was computed by the
     calendar and the bound is a plain wall-clock ``target_at - tolerance``.
     """
-    rows = _rows(
-        session.execute(
-            _EOS_TARGET_SQL,
-            {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "lower": lower},
-        )
-    )
+    rows = result_rows(session.execute(
+        _EOS_TARGET_SQL,
+        {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "lower": lower},
+    ))
     return rows[0] if rows else None
 
 
@@ -576,18 +564,16 @@ def _pre_rows(
     One (last) sample per ``bucket_seconds`` bucket across the full lookback,
     so the result spans lower..event bounded by ~_VOLATILITY_SAMPLE_LIMIT
     buckets regardless of tick density."""
-    return _rows(
-        session.execute(
-            _PRE_SQL,
-            {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "lower": lower,
-                "event_at": event_at,
-                "bucket_seconds": max(1, int(bucket_seconds)),
-            },
-        )
-    )
+    return result_rows(session.execute(
+        _PRE_SQL,
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "lower": lower,
+            "event_at": event_at,
+            "bucket_seconds": max(1, int(bucket_seconds)),
+        },
+    ))
 
 
 def _classify_path_state(
@@ -601,18 +587,16 @@ def _classify_path_state(
 ) -> str:
     """Classify the post-event path against the baseline in SQL (exact
     classifier semantics over the full interval; no row cap)."""
-    rows = _rows(
-        session.execute(
-            _PATH_STATE_SQL,
-            {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "lower": lower,
-                "upper": upper,
-                "baseline": baseline_price,
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        _PATH_STATE_SQL,
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "lower": lower,
+            "upper": upper,
+            "baseline": baseline_price,
+        },
+    ))
     if not rows:
         return "mixed"
     first = rows[0].get("first_sign")
@@ -912,7 +896,7 @@ def _pending_rows(session: Any, *, now: datetime, limit: int) -> list[dict[str, 
         ),
         {"now": now, "limit": max(1, min(int(limit), _MAX_LIMIT))},
     )
-    return _rows(result)
+    return result_rows(result)
 
 
 def _resolve_window(
@@ -1216,18 +1200,16 @@ def recompute_reaction_windows(
         if legacy_only
         else ""
     )
-    rows = _rows(
-        session.execute(
-            text(
-                """SELECT id,event_id,instrument_symbol,timeframe,horizon,event_at,target_at,baseline_at,baseline_price,target_price,observed_at,observed_price,expected_direction,sensitivity,reaction_state,missing_data_reason,provenance
-                FROM event_reaction_windows
-                WHERE (:event_id IS NULL OR event_id=:event_id)"""
-                + legacy_filter
-                + " ORDER BY target_at NULLS FIRST,id LIMIT :limit"
-            ),
-            {"event_id": event_id, "limit": bounded},
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """SELECT id,event_id,instrument_symbol,timeframe,horizon,event_at,target_at,baseline_at,baseline_price,target_price,observed_at,observed_price,expected_direction,sensitivity,reaction_state,missing_data_reason,provenance
+            FROM event_reaction_windows
+            WHERE (:event_id IS NULL OR event_id=:event_id)"""
+            + legacy_filter
+            + " ORDER BY target_at NULLS FIRST,id LIMIT :limit"
+        ),
+        {"event_id": event_id, "limit": bounded},
+    ))
     completed = unresolved = 0
     for row in rows:
         event_at = _timestamp(row.get("event_at"))
@@ -1272,7 +1254,7 @@ def list_event_reactions(
         ),
         {"event_id": event_id, "limit": bounded},
     )
-    return _rows(result)
+    return result_rows(result)
 
 
 __all__ = [

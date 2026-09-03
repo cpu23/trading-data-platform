@@ -287,7 +287,7 @@ class ResearchControlPlaneApiTests(unittest.TestCase):
         )
         with (
             patch(
-                "routes.json.triggers.get_budget_status",
+                "routes.json.research.get_budget_status",
                 return_value={"available": True, "paid_calls_allowed": True},
             ),
             patch(
@@ -326,7 +326,7 @@ class ResearchControlPlaneApiTests(unittest.TestCase):
 
         with (
             patch(
-                "routes.json.triggers.get_budget_status",
+                "routes.json.research.get_budget_status",
                 return_value={"available": False, "status": "unavailable"},
             ),
             patch(

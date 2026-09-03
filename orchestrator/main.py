@@ -15,7 +15,6 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 
-from analysis_jobs import sanitize_error
 from budgets import BudgetBlock, BudgetExceeded
 from config_loader import config_version, load_config
 from contracts import (
@@ -27,6 +26,7 @@ from contracts import (
 )
 from db import check_connection
 from db import get_session as get_session
+from errors import sanitize_error
 
 try:
     from data_quality import (

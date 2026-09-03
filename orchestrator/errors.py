@@ -29,6 +29,7 @@ taxonomy without rewrites.
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -156,3 +157,45 @@ def classify_error(exc: BaseException) -> ErrorPolicy:
         pass
 
     return ErrorPolicy("failed", ERROR_CLASS_UNKNOWN, False)
+
+
+_URL_CREDENTIALS_RE = re.compile(r"(https?://)([^/\s:@]+:[^/\s:@]+@)", re.IGNORECASE)
+_AUTH_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic)\s+[^\s,;]+")
+_NAMED_SECRET_RE = re.compile(
+    r"(?i)(?<![\w-])"
+    r"(api[_-]?key|apikey|crtfc[_-]?key|access[_-]?token|refresh[_-]?token|token"
+    r"|password|passwd|client[_-]?secret|authorization|secret)"
+    r"(\s*[:=]\s*)"
+    r"(?!\[REDACTED\])"
+    r"(?:(bearer|basic)\s+(?:\[REDACTED\]|[^\s,;]+)|['\"][^'\"]*['\"]|[^\s,;&#}\]\"']+)"
+)
+
+
+def _named_secret_sub(match: re.Match[str]) -> str:
+    prefix = match.group(1) + match.group(2)
+    scheme = match.group(3)
+    if scheme:
+        return f"{prefix}{scheme} [REDACTED]"
+    return f"{prefix}[REDACTED]"
+
+
+def sanitize_error(error: str | BaseException | None) -> str | None:
+    """Return a sanitized, bounded error string safe for durable storage.
+
+    Preserves None, extracts safe type names for BaseException instances,
+    collapses whitespace/control characters, redacts secrets, and bounds
+    maximum length for persisted error strings.
+    """
+    if error is None:
+        return None
+    if isinstance(error, BaseException):
+        name = type(error).__name__
+        name = re.sub(r"[^A-Za-z0-9_.-]", "", name)[:120]
+        return name or "Error"
+    text_value = " ".join(str(error).split())
+    if not text_value:
+        return "error"
+    text_value = _URL_CREDENTIALS_RE.sub(r"\1[REDACTED]@", text_value)
+    text_value = _AUTH_SCHEME_RE.sub(r"\1 [REDACTED]", text_value)
+    text_value = _NAMED_SECRET_RE.sub(_named_secret_sub, text_value)
+    return text_value[:500] or "error"

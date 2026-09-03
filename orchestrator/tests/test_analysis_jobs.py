@@ -15,10 +15,16 @@ from analysis_jobs import (
     AnalysisJob,
     enqueue_job,
     retry_job,
-    sanitize_error,
     succeed_job,
     terminal_fail_job,
 )
+from contracts.runtime_config import (
+    AppConfig,
+    DatabaseConfig,
+    LlmConfig,
+    ResearchIntelligenceConfig,
+)
+from errors import sanitize_error
 from job_worker import AnalysisJobWorker
 from research_intelligence.operations import (
     enqueue_research_job,
@@ -124,12 +130,12 @@ class AnalysisJobRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(session.calls[-1][1]["last_error"], "ValueError")
         self.assertTrue(terminal_fail_job(session, 3, "worker-a", "private payload"))
-        self.assertEqual(session.calls[-1][1]["last_error"], "Error")
+        self.assertEqual(session.calls[-1][1]["last_error"], "private payload")
 
     def test_error_sanitization_never_returns_exception_text(self):
         self.assertEqual(sanitize_error(RuntimeError("token=secret")), "RuntimeError")
-        self.assertEqual(sanitize_error("password=secret"), "Error")
-
+        self.assertEqual(sanitize_error("password=secret"), "password=[REDACTED]")
+        self.assertIsNone(sanitize_error(None))
 
 class AnalysisJobWorkerTests(unittest.TestCase):
     def test_disabled_configuration_does_not_open_a_session(self):
@@ -307,7 +313,17 @@ class AnalysisJobWorkerTests(unittest.TestCase):
 
 
 class ResearchOperationsTests(unittest.TestCase):
-    CONFIG = {"research_intelligence": {"enabled": True}}
+    CONFIG = AppConfig(
+        database=DatabaseConfig(
+            host="localhost",
+            port=5432,
+            name="test",
+            user="research_runner_ci",
+            password="s9V!q2K#x7Lm4P@t",
+        ),
+        llm=LlmConfig(api_key="rI8nW3qY5vT2mK7pL9sF4dH6"),
+        research_intelligence=ResearchIntelligenceConfig(enabled=True),
+    )
 
     @staticmethod
     @contextmanager
@@ -443,16 +459,14 @@ class ResearchIntelligenceJobTests(unittest.TestCase):
         self,
     ):
         session = object()
+        config = object()
         job = SimpleNamespace(
             job_type="research_discovery",
             payload={"force": True},
             correlation_id="correlation",
         )
         with (
-            patch(
-                "analysis_job_handlers._config",
-                return_value={"research_intelligence": {}},
-            ),
+            patch("analysis_job_handlers.load_config", return_value=config),
             patch(
                 "research_intelligence.service.run_macro_transmission",
                 return_value={"driver_count": 3, "model_cost_usd": 0.25},
@@ -487,24 +501,25 @@ class ResearchIntelligenceJobTests(unittest.TestCase):
         )
         macro.assert_called_once_with(
             session,
-            {"research_intelligence": {}},
+            config,
             correlation_id="correlation",
             force=True,
         )
         discovery.assert_called_once_with(
             session,
-            {"research_intelligence": {}},
+            config,
             correlation_id="correlation",
             force=True,
         )
 
     def test_one_macro_stage_failure_is_inspectable_without_losing_case_work(self):
         session = object()
+        config = object()
         job = SimpleNamespace(
             job_type="research_discovery", payload={}, correlation_id=None
         )
         with (
-            patch("analysis_job_handlers._config", return_value={}),
+            patch("analysis_job_handlers.load_config", return_value=config),
             patch(
                 "research_intelligence.service.run_macro_transmission",
                 side_effect=RuntimeError("unavailable"),

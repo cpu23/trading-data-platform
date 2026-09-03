@@ -8,11 +8,13 @@ never commits, rolls back, or closes the caller's transaction.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from datetime import datetime
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
+
+from contracts.db_results import result_first, result_rows
 
 REPLAY_RETENTION_HOURS = 48
 MAX_REPLAY_BATCH = 100
@@ -142,8 +144,33 @@ def append_ui_invalidation(
             "expires_at": expires_at,
         },
     )
-    row = _first_mapping(result)
+    row = result_first(result)
     return parse_ui_event_row(row) if row is not None else None
+
+
+def append_ui_invalidations(
+    session: Any,
+    sections: Iterable[str],
+    *,
+    scope_key: str = "global",
+    expires_at: datetime | None = None,
+) -> int:
+    """Append at most one wakeup per allowlisted section in caller transaction."""
+    bounded = sorted(set(sections) & EVENT_NAME_BY_SECTION.keys())[:8]
+    if not bounded:
+        return 0
+    base_version = int(datetime.now(UTC).timestamp() * 1_000_000)
+    published = 0
+    for offset, section in enumerate(bounded):
+        event = append_ui_invalidation(
+            session,
+            section_key=section,
+            scope_key=scope_key,
+            section_version=base_version + offset,
+            expires_at=expires_at,
+        )
+        published += int(event is not None)
+    return published
 
 
 def append_ui_event(
@@ -172,35 +199,6 @@ def append_ui_event(
         expires_at=expires_at,
     )
 
-
-def _first_mapping(result: Any) -> Mapping[str, Any] | None:
-    try:
-        result = result.mappings()
-    except (AttributeError, TypeError):
-        pass
-    try:
-        row = result.first()
-    except AttributeError:
-        try:
-            row = next(iter(result), None)
-        except TypeError:
-            row = None
-    return row if isinstance(row, Mapping) else None
-
-
-def _all_mappings(result: Any) -> list[Mapping[str, Any]]:
-    try:
-        result = result.mappings()
-    except (AttributeError, TypeError):
-        pass
-    try:
-        rows = result.all()
-    except AttributeError:
-        try:
-            rows = list(result)
-        except TypeError:
-            rows = []
-    return [row for row in rows if isinstance(row, Mapping)]
 
 
 def parse_ui_event_row(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -263,7 +261,7 @@ def list_ui_event_replay(
     )
     return [
         parsed
-        for row in _all_mappings(result)
+        for row in result_rows(result)
         if (parsed := parse_ui_event_row(row)) is not None
     ]
 
@@ -277,7 +275,7 @@ def get_ui_event_bounds(session: Any) -> tuple[int | None, int | None]:
                WHERE expires_at > CURRENT_TIMESTAMP"""
         )
     )
-    row = _first_mapping(result) or {}
+    row = result_first(result) or {}
 
     def _id(value: Any) -> int | None:
         try:
@@ -310,25 +308,17 @@ def delete_expired_ui_events(session: Any, *, limit: int = MAX_CLEANUP_BATCH) ->
         return 0
 
 
-# Names kept deliberately descriptive for callers and focused tests.
-list_replay_rows = list_ui_event_replay
-get_replay_bounds = get_ui_event_bounds
-cleanup_expired_ui_events = delete_expired_ui_events
-
-
 __all__ = [
     "ALLOWED_EVENT_NAMES",
     "EVENT_NAME_BY_SECTION",
     "MAX_REPLAY_BATCH",
     "append_ui_event",
     "append_ui_invalidation",
-    "cleanup_expired_ui_events",
+    "append_ui_invalidations",
     "delete_expired_ui_events",
     "event_name_for_section",
-    "get_replay_bounds",
     "get_ui_event_bounds",
     "invalidation_payload",
-    "list_replay_rows",
     "list_ui_event_replay",
     "parse_ui_event_row",
 ]

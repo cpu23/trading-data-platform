@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 import config as app_config
 from auth import setup_complete
-from budgets import DEFAULT_DAILY_LLM_USD
+from contracts.budgets import DEFAULT_DAILY_LLM_USD
 from db import query_one
 from routes.json.settings import _read_secrets, active_model, timezone_context
 from routes.views.dashboard import _data_status, _get_dashboard_health

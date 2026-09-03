@@ -604,11 +604,9 @@ def initial_handler(session: Any, event: MarketEvent) -> dict[str, Any]:
                     }
                     persisted = 0
                 if persisted:
-                    from research_control_plane.notifications import (
-                        publish_control_plane_invalidations,
-                    )
+                    from ui_events import append_ui_invalidations
 
-                    publish_control_plane_invalidations(
+                    append_ui_invalidations(
                         session,
                         {
                             "research_questions",

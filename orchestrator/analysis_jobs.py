@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
+
+from contracts.db_results import result_first, result_rows
+from errors import sanitize_error
 
 ACTIVE_STATES = ("queued", "leased", "running", "failed_retryable")
 TERMINAL_STATES = (
@@ -111,33 +113,6 @@ def _supports_skip_locked(session: Any) -> bool:
         return True
 
 
-def _first(result: Any) -> Mapping[str, Any] | None:
-    try:
-        result = result.mappings()
-    except (AttributeError, TypeError):
-        pass
-    try:
-        return result.first()
-    except AttributeError:
-        try:
-            return next(iter(result), None)
-        except TypeError:
-            return None
-
-
-def _rows(result: Any) -> list[Mapping[str, Any]]:
-    try:
-        result = result.mappings()
-    except (AttributeError, TypeError):
-        pass
-    try:
-        return list(result.all())
-    except AttributeError:
-        try:
-            return list(result)
-        except TypeError:
-            return []
-
 
 def _canonical_payload(payload: Mapping[str, Any] | Sequence[Any] | None) -> str:
     return json.dumps(
@@ -149,19 +124,10 @@ def _canonical_payload(payload: Mapping[str, Any] | Sequence[Any] | None) -> str
     )
 
 
-def sanitize_error(error: str | BaseException | None) -> str | None:
-    """Return only a safe error type; never persist untrusted exception text."""
-    if error is None:
-        return None
-    name = type(error).__name__ if isinstance(error, BaseException) else "Error"
-    name = re.sub(r"[^A-Za-z0-9_.-]", "", name)[:120]
-    return name or "Error"
-
-
 def _identity_select(
     session: Any, identity: Mapping[str, Any]
 ) -> Mapping[str, Any] | None:
-    return _first(
+    return result_first(
         session.execute(
             text(
                 f"SELECT {_FIELDS} FROM analysis_jobs WHERE job_type = :job_type AND dedupe_key = :dedupe_key AND input_fingerprint = :input_fingerprint ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -211,7 +177,7 @@ def enqueue_job(
         "max_attempts": max(1, int(max_attempts)),
         "not_before": not_before or _utcnow(),
     }
-    row = _first(
+    row = result_first(
         session.execute(
             text(
                 "INSERT INTO analysis_jobs (job_type, state, priority, source_event_id, dedupe_key, input_fingerprint, not_before, max_attempts, payload, correlation_id) VALUES (:job_type, 'queued', :priority, :source_event_id, :dedupe_key, :input_fingerprint, :not_before, :max_attempts, CAST(:payload AS JSONB), :correlation_id) ON CONFLICT DO NOTHING RETURNING "
@@ -247,7 +213,7 @@ def claim_jobs(
             params[key] = str(value)
         where += " AND job_type IN (" + ", ".join(names) + ")"
     lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
-    rows = _rows(
+    rows = result_rows(
         session.execute(
             text(
                 f"SELECT id FROM analysis_jobs WHERE {where} ORDER BY priority DESC, not_before ASC, created_at ASC, id ASC LIMIT :limit"
@@ -258,7 +224,7 @@ def claim_jobs(
     )
     claims: list[AnalysisJob] = []
     for row in rows:
-        updated = _first(
+        updated = result_first(
             session.execute(
                 text(
                     "UPDATE analysis_jobs SET state = 'leased', claimed_by = :worker_id, lease_expires_at = :lease_until, attempt_count = attempt_count + 1 WHERE id = :id AND attempt_count < max_attempts AND ((state IN ('queued','failed_retryable') AND not_before <= :now) OR (state = 'leased' AND lease_expires_at <= :now)) RETURNING "
@@ -426,5 +392,4 @@ __all__ = [
     "terminal_fail_job",
     "suppress_job",
     "reconcile_jobs",
-    "sanitize_error",
 ]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from http_client import get_shared_client
+from http_client import get_shared_client, make_request
 from logging_config import get_logger
 from sources.news_result import NewsCollectionResult, NewsPublication
 from sources.news_storage import atomic_write_json, read_json
@@ -82,18 +82,6 @@ def _is_markets_relevant(
     return bool(matched), matched
 
 
-def _read_bounded_sitemap(response, cap: int = MAX_SITEMAP_BYTES) -> bytes:
-    """Read a sitemap response with a hard byte cap."""
-    chunks = []
-    total = 0
-    for chunk in response.iter_bytes():
-        total += len(chunk)
-        if total > cap:
-            raise ValueError(f"sitemap response exceeds {cap // 1_000_000} MB")
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def _fetch_bytes(
     url: str,
     *,
@@ -108,16 +96,17 @@ def _fetch_bytes(
     validated address, and re-validates each redirect hop; the body is hard
     size-bounded. Tests inject fake fetchers here to exercise parsing.
     """
-    client = get_shared_client()
-    with client.stream(
+    resp = make_request(
         "GET",
         url,
         headers=headers,
-        follow_redirects=True,
         timeout=timeout,
-    ) as resp:
-        resp.raise_for_status()
-        return _read_bounded_sitemap(resp, cap)
+        follow_redirects=True,
+        client=get_shared_client(),
+        max_response_bytes=cap,
+    )
+    resp.raise_for_status()
+    return resp.content
 
 
 def _validated_sitemap_url(url: str) -> str:

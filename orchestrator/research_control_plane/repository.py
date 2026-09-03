@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy import text
 
 from analysis_jobs import enqueue_job
+from contracts.db_results import result_first, result_rows
+from ui_events import append_ui_invalidations
 
 from .domain import (
     PriorityInputs,
@@ -53,22 +55,6 @@ class PlannerRunResult:
     no_op_reason: str | None
 
 
-def _first(result: Any) -> Mapping[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    if row is None:
-        return None
-    return row if isinstance(row, Mapping) else row._mapping
-
-
-def _rows(result: Any) -> list[Mapping[str, Any]]:
-    try:
-        return list(result.mappings().all())
-    except AttributeError:
-        rows = result.fetchall()
-        return [row if isinstance(row, Mapping) else row._mapping for row in rows]
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -321,70 +307,68 @@ def _upsert_dependency_node(
     state_fingerprint = content_fingerprint(
         {"node_type": node_type, "node_key": node_key, "metadata": metadata}
     )
-    row = _first(
-        session.execute(
-            text(
-                """
-                INSERT INTO research_dependency_nodes (
-                    node_type, node_key, state_fingerprint, accepted_cutoff,
-                    dirty_since, metadata, created_at, updated_at
-                ) VALUES (
-                    :node_type, :node_key, :state_fingerprint, :accepted_cutoff,
-                    CASE
-                        WHEN :dirty_since IS NULL THEN NULL
-                        ELSE GREATEST(
-                            :dirty_since, LEAST(:accepted_cutoff, NOW())
-                        )
-                    END,
-                    CAST(:metadata AS JSONB), LEAST(:accepted_cutoff, NOW()), NOW()
-                )
-                ON CONFLICT (node_type, node_key) DO UPDATE
-                SET state_fingerprint = CASE
-                        WHEN research_dependency_nodes.accepted_cutoff IS NULL
-                          OR EXCLUDED.accepted_cutoff >=
-                             research_dependency_nodes.accepted_cutoff
-                        THEN EXCLUDED.state_fingerprint
-                        ELSE research_dependency_nodes.state_fingerprint
-                    END,
-                    accepted_cutoff = GREATEST(
-                        COALESCE(
-                            research_dependency_nodes.accepted_cutoff,
-                            EXCLUDED.accepted_cutoff
-                        ),
+    row = result_first(session.execute(
+        text(
+            """
+            INSERT INTO research_dependency_nodes (
+                node_type, node_key, state_fingerprint, accepted_cutoff,
+                dirty_since, metadata, created_at, updated_at
+            ) VALUES (
+                :node_type, :node_key, :state_fingerprint, :accepted_cutoff,
+                CASE
+                    WHEN :dirty_since IS NULL THEN NULL
+                    ELSE GREATEST(
+                        :dirty_since, LEAST(:accepted_cutoff, NOW())
+                    )
+                END,
+                CAST(:metadata AS JSONB), LEAST(:accepted_cutoff, NOW()), NOW()
+            )
+            ON CONFLICT (node_type, node_key) DO UPDATE
+            SET state_fingerprint = CASE
+                    WHEN research_dependency_nodes.accepted_cutoff IS NULL
+                      OR EXCLUDED.accepted_cutoff >=
+                         research_dependency_nodes.accepted_cutoff
+                    THEN EXCLUDED.state_fingerprint
+                    ELSE research_dependency_nodes.state_fingerprint
+                END,
+                accepted_cutoff = GREATEST(
+                    COALESCE(
+                        research_dependency_nodes.accepted_cutoff,
                         EXCLUDED.accepted_cutoff
                     ),
-                    dirty_since = CASE
-                        WHEN EXCLUDED.dirty_since IS NULL
-                        THEN research_dependency_nodes.dirty_since
-                        ELSE LEAST(
-                            COALESCE(
-                                research_dependency_nodes.dirty_since,
-                                GREATEST(
-                                    EXCLUDED.dirty_since,
-                                    research_dependency_nodes.created_at
-                                )
-                            ),
+                    EXCLUDED.accepted_cutoff
+                ),
+                dirty_since = CASE
+                    WHEN EXCLUDED.dirty_since IS NULL
+                    THEN research_dependency_nodes.dirty_since
+                    ELSE LEAST(
+                        COALESCE(
+                            research_dependency_nodes.dirty_since,
                             GREATEST(
                                 EXCLUDED.dirty_since,
                                 research_dependency_nodes.created_at
                             )
+                        ),
+                        GREATEST(
+                            EXCLUDED.dirty_since,
+                            research_dependency_nodes.created_at
                         )
-                    END,
-                    metadata = research_dependency_nodes.metadata || EXCLUDED.metadata,
-                    updated_at = NOW()
-                RETURNING id
-                """
-            ),
-            {
-                "node_type": node_type,
-                "node_key": node_key[:500],
-                "state_fingerprint": state_fingerprint,
-                "accepted_cutoff": accepted_cutoff,
-                "dirty_since": dirty_since,
-                "metadata": canonical_json(metadata),
-            },
-        )
-    )
+                    )
+                END,
+                metadata = research_dependency_nodes.metadata || EXCLUDED.metadata,
+                updated_at = NOW()
+            RETURNING id
+            """
+        ),
+        {
+            "node_type": node_type,
+            "node_key": node_key[:500],
+            "state_fingerprint": state_fingerprint,
+            "accepted_cutoff": accepted_cutoff,
+            "dirty_since": dirty_since,
+            "metadata": canonical_json(metadata),
+        },
+    ))
     if row is None:
         raise RuntimeError("dependency node upsert returned no row")
     return uuid.UUID(str(row["id"]))
@@ -448,80 +432,78 @@ def _upsert_dependency_nodes(
         }
     if not deduplicated:
         return {}
-    rows = _rows(
-        session.execute(
-            text(
-                """
-                WITH input AS (
-                    SELECT *
-                    FROM JSONB_TO_RECORDSET(CAST(:nodes AS JSONB)) AS item(
-                        node_type TEXT,
-                        node_key TEXT,
-                        state_fingerprint TEXT,
-                        accepted_cutoff TIMESTAMPTZ,
-                        dirty_since TIMESTAMPTZ,
-                        metadata JSONB
+    rows = result_rows(session.execute(
+        text(
+            """
+            WITH input AS (
+                SELECT *
+                FROM JSONB_TO_RECORDSET(CAST(:nodes AS JSONB)) AS item(
+                    node_type TEXT,
+                    node_key TEXT,
+                    state_fingerprint TEXT,
+                    accepted_cutoff TIMESTAMPTZ,
+                    dirty_since TIMESTAMPTZ,
+                    metadata JSONB
+                )
+            )
+            INSERT INTO research_dependency_nodes (
+                node_type, node_key, state_fingerprint, accepted_cutoff,
+                dirty_since, metadata, created_at, updated_at
+            )
+            SELECT
+                node_type,
+                node_key,
+                state_fingerprint,
+                accepted_cutoff,
+                CASE
+                    WHEN dirty_since IS NULL THEN NULL
+                    ELSE GREATEST(
+                        dirty_since, LEAST(accepted_cutoff, NOW())
                     )
-                )
-                INSERT INTO research_dependency_nodes (
-                    node_type, node_key, state_fingerprint, accepted_cutoff,
-                    dirty_since, metadata, created_at, updated_at
-                )
-                SELECT
-                    node_type,
-                    node_key,
-                    state_fingerprint,
-                    accepted_cutoff,
-                    CASE
-                        WHEN dirty_since IS NULL THEN NULL
-                        ELSE GREATEST(
-                            dirty_since, LEAST(accepted_cutoff, NOW())
-                        )
-                    END,
-                    metadata,
-                    LEAST(accepted_cutoff, NOW()),
-                    NOW()
-                FROM input
-                ON CONFLICT (node_type, node_key) DO UPDATE
-                SET state_fingerprint = CASE
-                        WHEN research_dependency_nodes.accepted_cutoff IS NULL
-                          OR EXCLUDED.accepted_cutoff >=
-                             research_dependency_nodes.accepted_cutoff
-                        THEN EXCLUDED.state_fingerprint
-                        ELSE research_dependency_nodes.state_fingerprint
-                    END,
-                    accepted_cutoff = GREATEST(
-                        COALESCE(
-                            research_dependency_nodes.accepted_cutoff,
-                            EXCLUDED.accepted_cutoff
-                        ),
+                END,
+                metadata,
+                LEAST(accepted_cutoff, NOW()),
+                NOW()
+            FROM input
+            ON CONFLICT (node_type, node_key) DO UPDATE
+            SET state_fingerprint = CASE
+                    WHEN research_dependency_nodes.accepted_cutoff IS NULL
+                      OR EXCLUDED.accepted_cutoff >=
+                         research_dependency_nodes.accepted_cutoff
+                    THEN EXCLUDED.state_fingerprint
+                    ELSE research_dependency_nodes.state_fingerprint
+                END,
+                accepted_cutoff = GREATEST(
+                    COALESCE(
+                        research_dependency_nodes.accepted_cutoff,
                         EXCLUDED.accepted_cutoff
                     ),
-                    dirty_since = CASE
-                        WHEN EXCLUDED.dirty_since IS NULL
-                        THEN research_dependency_nodes.dirty_since
-                        ELSE LEAST(
-                            COALESCE(
-                                research_dependency_nodes.dirty_since,
-                                GREATEST(
-                                    EXCLUDED.dirty_since,
-                                    research_dependency_nodes.created_at
-                                )
-                            ),
+                    EXCLUDED.accepted_cutoff
+                ),
+                dirty_since = CASE
+                    WHEN EXCLUDED.dirty_since IS NULL
+                    THEN research_dependency_nodes.dirty_since
+                    ELSE LEAST(
+                        COALESCE(
+                            research_dependency_nodes.dirty_since,
                             GREATEST(
                                 EXCLUDED.dirty_since,
                                 research_dependency_nodes.created_at
                             )
+                        ),
+                        GREATEST(
+                            EXCLUDED.dirty_since,
+                            research_dependency_nodes.created_at
                         )
-                    END,
-                    metadata = research_dependency_nodes.metadata || EXCLUDED.metadata,
-                    updated_at = NOW()
-                RETURNING id, node_type, node_key
-                """
-            ),
-            {"nodes": canonical_json(list(deduplicated.values()))},
-        )
-    )
+                    )
+                END,
+                metadata = research_dependency_nodes.metadata || EXCLUDED.metadata,
+                updated_at = NOW()
+            RETURNING id, node_type, node_key
+            """
+        ),
+        {"nodes": canonical_json(list(deduplicated.values()))},
+    ))
     return {
         (str(row["node_type"]), str(row["node_key"])): uuid.UUID(str(row["id"]))
         for row in rows
@@ -647,34 +629,32 @@ def propagate_event_dependencies(
     edges_touched = _upsert_dependency_edges(session, initial_edges)
 
     bounded = max(1, min(int(limit), 100))
-    theses = _rows(
-        session.execute(
-            text(
-                """
-                SELECT t.id, t.claim, t.company, t.symbol, t.status,
-                       (
-                           SELECT MAX(v.version)
-                           FROM investment_thesis_versions v
-                           WHERE v.thesis_id = t.id
-                             AND v.created_at <= :cutoff
-                       ) AS version,
-                       t.confidence_score, t.opportunity_score, t.updated_at
-                FROM investment_theses t
-                WHERE t.created_at <= :cutoff
-                  AND t.updated_at <= :cutoff
-                  AND (
-                      LOWER(COALESCE(t.symbol, '')) =
-                          ANY(CAST(:targets AS TEXT[]))
-                      OR LOWER(COALESCE(t.company, '')) =
-                          ANY(CAST(:targets AS TEXT[]))
-                  )
-                ORDER BY t.updated_at DESC, t.id
-                LIMIT :limit
-                """
-            ),
-            {"cutoff": accepted_cutoff, "targets": list(targets), "limit": bounded},
-        )
-    )
+    theses = result_rows(session.execute(
+        text(
+            """
+            SELECT t.id, t.claim, t.company, t.symbol, t.status,
+                   (
+                       SELECT MAX(v.version)
+                       FROM investment_thesis_versions v
+                       WHERE v.thesis_id = t.id
+                         AND v.created_at <= :cutoff
+                   ) AS version,
+                   t.confidence_score, t.opportunity_score, t.updated_at
+            FROM investment_theses t
+            WHERE t.created_at <= :cutoff
+              AND t.updated_at <= :cutoff
+              AND (
+                  LOWER(COALESCE(t.symbol, '')) =
+                      ANY(CAST(:targets AS TEXT[]))
+                  OR LOWER(COALESCE(t.company, '')) =
+                      ANY(CAST(:targets AS TEXT[]))
+              )
+            ORDER BY t.updated_at DESC, t.id
+            LIMIT :limit
+            """
+        ),
+        {"cutoff": accepted_cutoff, "targets": list(targets), "limit": bounded},
+    ))
     thesis_specs: list[Mapping[str, Any]] = []
     for thesis in theses:
         thesis_id = str(thesis["id"])
@@ -737,106 +717,104 @@ def propagate_event_dependencies(
     edges_touched += _upsert_dependency_edges(session, thesis_edges)
 
     if thesis_nodes:
-        children = _rows(
-            session.execute(
-                text(
-                    """
-                    SELECT *
-                    FROM (
-                        SELECT 'scenario'::TEXT AS node_type, s.id::TEXT AS node_key,
-                               s.thesis_id::TEXT AS thesis_id,
-                               JSONB_BUILD_OBJECT(
-                                   'name', s.name, 'description', s.description,
-                                   'probability', s.probability,
-                                   'expected_return', s.expected_return
-                               ) AS metadata,
-                               'derived_from'::TEXT AS edge_kind
-                        FROM investment_thesis_scenarios s
-                        WHERE s.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND s.created_at <= :cutoff
-                          AND (s.superseded_at IS NULL OR s.superseded_at > :cutoff)
-                        UNION ALL
-                        SELECT 'forecast', f.id::TEXT, f.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'forecast_key', f.forecast_key,
-                                   'target_date', f.target_date,
-                                   'target_value', f.target_value
-                               ), 'derived_from'
-                        FROM investment_thesis_forecasts f
-                        WHERE f.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND f.created_at <= :cutoff
-                          AND (f.superseded_at IS NULL OR f.superseded_at > :cutoff)
-                        UNION ALL
-                        SELECT 'catalyst', c.id::TEXT, c.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'description', c.description,
-                                   'expected_at', c.expected_at, 'state', c.state
-                               ), 'affects'
-                        FROM investment_catalysts c
-                        WHERE c.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND c.created_at <= :cutoff AND c.updated_at <= :cutoff
-                        UNION ALL
-                        SELECT 'risk', r.id::TEXT, r.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'description', r.description,
-                                   'kind', r.kind, 'severity', r.severity
-                               ), 'invalidates'
-                        FROM investment_risks r
-                        WHERE r.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND r.created_at <= :cutoff AND r.updated_at <= :cutoff
-                        UNION ALL
-                        SELECT 'playbook', p.id::TEXT, p.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'playbook_key', p.playbook_key,
-                                   'version', p.version, 'horizon', p.horizon
-                               ), 'depends_on'
-                        FROM investment_thesis_event_playbooks p
-                        WHERE p.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND p.created_at <= :cutoff
-                          AND (p.superseded_at IS NULL OR p.superseded_at > :cutoff)
-                        UNION ALL
-                        SELECT 'watchlist', w.id::TEXT, w.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'label', w.label, 'source_kind', w.source_kind,
-                                   'source_id', w.source_id
-                               ), 'depends_on'
-                        FROM investment_watch_items w
-                        WHERE w.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND w.created_at <= :cutoff
-                        UNION ALL
-                        SELECT 'evidence',
-                               e.evidence_type || ':' || e.evidence_id,
-                               e.thesis_id::TEXT,
-                               JSONB_BUILD_OBJECT(
-                                   'evidence_type', e.evidence_type,
-                                   'evidence_id', e.evidence_id,
-                                   'relationship', e.relationship,
-                                   'source_family', e.source_family
-                               ),
-                               CASE
-                                   WHEN e.relationship = 'contradicts'
-                                   THEN 'contradicts'
-                                   WHEN e.relationship = 'supports'
-                                   THEN 'supports'
-                                   ELSE 'mentions'
-                               END
-                        FROM investment_thesis_evidence e
-                        WHERE e.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
-                          AND e.created_at <= :cutoff
-                          AND COALESCE(
-                              e.available_at, e.source_timestamp, e.created_at
-                          ) <= :cutoff
-                    ) children
-                    ORDER BY node_type, node_key
-                    LIMIT 1000
-                    """
-                ),
-                {
-                    "thesis_ids": list(thesis_nodes),
-                    "cutoff": accepted_cutoff,
-                },
-            )
-        )
+        children = result_rows(session.execute(
+            text(
+                """
+                SELECT *
+                FROM (
+                    SELECT 'scenario'::TEXT AS node_type, s.id::TEXT AS node_key,
+                           s.thesis_id::TEXT AS thesis_id,
+                           JSONB_BUILD_OBJECT(
+                               'name', s.name, 'description', s.description,
+                               'probability', s.probability,
+                               'expected_return', s.expected_return
+                           ) AS metadata,
+                           'derived_from'::TEXT AS edge_kind
+                    FROM investment_thesis_scenarios s
+                    WHERE s.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND s.created_at <= :cutoff
+                      AND (s.superseded_at IS NULL OR s.superseded_at > :cutoff)
+                    UNION ALL
+                    SELECT 'forecast', f.id::TEXT, f.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'forecast_key', f.forecast_key,
+                               'target_date', f.target_date,
+                               'target_value', f.target_value
+                           ), 'derived_from'
+                    FROM investment_thesis_forecasts f
+                    WHERE f.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND f.created_at <= :cutoff
+                      AND (f.superseded_at IS NULL OR f.superseded_at > :cutoff)
+                    UNION ALL
+                    SELECT 'catalyst', c.id::TEXT, c.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'description', c.description,
+                               'expected_at', c.expected_at, 'state', c.state
+                           ), 'affects'
+                    FROM investment_catalysts c
+                    WHERE c.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND c.created_at <= :cutoff AND c.updated_at <= :cutoff
+                    UNION ALL
+                    SELECT 'risk', r.id::TEXT, r.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'description', r.description,
+                               'kind', r.kind, 'severity', r.severity
+                           ), 'invalidates'
+                    FROM investment_risks r
+                    WHERE r.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND r.created_at <= :cutoff AND r.updated_at <= :cutoff
+                    UNION ALL
+                    SELECT 'playbook', p.id::TEXT, p.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'playbook_key', p.playbook_key,
+                               'version', p.version, 'horizon', p.horizon
+                           ), 'depends_on'
+                    FROM investment_thesis_event_playbooks p
+                    WHERE p.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND p.created_at <= :cutoff
+                      AND (p.superseded_at IS NULL OR p.superseded_at > :cutoff)
+                    UNION ALL
+                    SELECT 'watchlist', w.id::TEXT, w.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'label', w.label, 'source_kind', w.source_kind,
+                               'source_id', w.source_id
+                           ), 'depends_on'
+                    FROM investment_watch_items w
+                    WHERE w.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND w.created_at <= :cutoff
+                    UNION ALL
+                    SELECT 'evidence',
+                           e.evidence_type || ':' || e.evidence_id,
+                           e.thesis_id::TEXT,
+                           JSONB_BUILD_OBJECT(
+                               'evidence_type', e.evidence_type,
+                               'evidence_id', e.evidence_id,
+                               'relationship', e.relationship,
+                               'source_family', e.source_family
+                           ),
+                           CASE
+                               WHEN e.relationship = 'contradicts'
+                               THEN 'contradicts'
+                               WHEN e.relationship = 'supports'
+                               THEN 'supports'
+                               ELSE 'mentions'
+                           END
+                    FROM investment_thesis_evidence e
+                    WHERE e.thesis_id = ANY(CAST(:thesis_ids AS UUID[]))
+                      AND e.created_at <= :cutoff
+                      AND COALESCE(
+                          e.available_at, e.source_timestamp, e.created_at
+                      ) <= :cutoff
+                ) children
+                ORDER BY node_type, node_key
+                LIMIT 1000
+                """
+            ),
+            {
+                "thesis_ids": list(thesis_nodes),
+                "cutoff": accepted_cutoff,
+            },
+        ))
         child_specs: list[Mapping[str, Any]] = []
         for child in children:
             node_type = str(child["node_type"])
@@ -1004,40 +982,36 @@ def upsert_question(session: Any, draft: QuestionDraft) -> Mapping[str, Any] | N
         text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
         {"lock_key": _QUESTION_UPSERT_LOCK_KEY},
     )
-    existing = _first(
-        session.execute(
-            text(
-                """
-                SELECT *
-                FROM research_questions
-                WHERE fingerprint = :fingerprint
-                LIMIT 1
-                FOR UPDATE
-                """
-            ),
-            params,
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            """
+            SELECT *
+            FROM research_questions
+            WHERE fingerprint = :fingerprint
+            LIMIT 1
+            FOR UPDATE
+            """
+        ),
+        params,
+    ))
     if existing is not None:
         return existing
 
-    newer_active = _first(
-        session.execute(
-            text(
-                """
-                SELECT *
-                FROM research_questions
-                WHERE question_key = :question_key
-                  AND status IN ('pending', 'planned', 'queued', 'running')
-                  AND accepted_cutoff >= :accepted_cutoff
-                ORDER BY accepted_cutoff DESC, created_at DESC, id
-                LIMIT 1
-                FOR UPDATE
-                """
-            ),
-            params,
-        )
-    )
+    newer_active = result_first(session.execute(
+        text(
+            """
+            SELECT *
+            FROM research_questions
+            WHERE question_key = :question_key
+              AND status IN ('pending', 'planned', 'queued', 'running')
+              AND accepted_cutoff >= :accepted_cutoff
+            ORDER BY accepted_cutoff DESC, created_at DESC, id
+            LIMIT 1
+            FOR UPDATE
+            """
+        ),
+        params,
+    ))
     if newer_active is not None:
         return newer_active
 
@@ -1055,53 +1029,49 @@ def upsert_question(session: Any, draft: QuestionDraft) -> Mapping[str, Any] | N
         params,
     )
 
-    row = _first(
-        session.execute(
+    row = result_first(session.execute(
+        text(
+            """
+            INSERT INTO research_questions (
+                fingerprint, question_key, origin_kind, question_type,
+                atomic_question, target_kind, target_ref, accepted_cutoff,
+                required_evidence_shape, acceptable_source_families,
+                materiality, uncertainty, discrimination_power, urgency,
+                freshness_gap, resolvability, estimated_cost_usd,
+                estimated_runtime_seconds, expected_human_review_minutes,
+                priority_policy_version, priority_score, priority_blockers,
+                status, not_before, due_at, expires_at, dirty_since,
+                latest_source_event_id
+            ) VALUES (
+                :fingerprint, :question_key, :origin_kind, :question_type,
+                :atomic_question, :target_kind, :target_ref, :accepted_cutoff,
+                CAST(:required_evidence_shape AS JSONB), :acceptable_source_families,
+                :materiality, :uncertainty, :discrimination_power, :urgency,
+                :freshness_gap, :resolvability, :estimated_cost_usd,
+                :estimated_runtime_seconds, :expected_human_review_minutes,
+                :priority_policy_version, :priority_score, :priority_blockers,
+                'pending', :not_before, :due_at, :expires_at, :dirty_since,
+                :source_event_id
+            )
+            ON CONFLICT DO NOTHING
+            RETURNING *
+            """
+        ),
+        params,
+    ))
+    if row is None:
+        row = result_first(session.execute(
             text(
                 """
-                INSERT INTO research_questions (
-                    fingerprint, question_key, origin_kind, question_type,
-                    atomic_question, target_kind, target_ref, accepted_cutoff,
-                    required_evidence_shape, acceptable_source_families,
-                    materiality, uncertainty, discrimination_power, urgency,
-                    freshness_gap, resolvability, estimated_cost_usd,
-                    estimated_runtime_seconds, expected_human_review_minutes,
-                    priority_policy_version, priority_score, priority_blockers,
-                    status, not_before, due_at, expires_at, dirty_since,
-                    latest_source_event_id
-                ) VALUES (
-                    :fingerprint, :question_key, :origin_kind, :question_type,
-                    :atomic_question, :target_kind, :target_ref, :accepted_cutoff,
-                    CAST(:required_evidence_shape AS JSONB), :acceptable_source_families,
-                    :materiality, :uncertainty, :discrimination_power, :urgency,
-                    :freshness_gap, :resolvability, :estimated_cost_usd,
-                    :estimated_runtime_seconds, :expected_human_review_minutes,
-                    :priority_policy_version, :priority_score, :priority_blockers,
-                    'pending', :not_before, :due_at, :expires_at, :dirty_since,
-                    :source_event_id
-                )
-                ON CONFLICT DO NOTHING
-                RETURNING *
+                SELECT *
+                FROM research_questions
+                WHERE fingerprint = :fingerprint
+                LIMIT 1
+                FOR UPDATE
                 """
             ),
             params,
-        )
-    )
-    if row is None:
-        row = _first(
-            session.execute(
-                text(
-                    """
-                    SELECT *
-                    FROM research_questions
-                    WHERE fingerprint = :fingerprint
-                    LIMIT 1
-                    FOR UPDATE
-                    """
-                ),
-                params,
-            )
-        )
+        ))
     if row is None:
         return None
     question_node = _upsert_dependency_node(
@@ -1151,23 +1121,21 @@ def refresh_questions_from_state(
     limit = max(1, min(int(limit), MAX_GENERATED_QUESTIONS))
     inserted: list[Mapping[str, Any]] = []
 
-    falsification_rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT r.thesis_id, r.findings, t.opportunity_score,
-                       t.confidence_score
-                FROM investment_thesis_falsification_runs r
-                JOIN investment_theses t ON t.id = r.thesis_id
-                WHERE r.created_at <= :cutoff
-                  AND r.findings ? 'required_data'
-                ORDER BY r.created_at DESC, r.id DESC
-                LIMIT :limit
-                """
-            ),
-            {"cutoff": accepted_cutoff, "limit": limit},
-        )
-    )
+    falsification_rows = result_rows(session.execute(
+        text(
+            """
+            SELECT r.thesis_id, r.findings, t.opportunity_score,
+                   t.confidence_score
+            FROM investment_thesis_falsification_runs r
+            JOIN investment_theses t ON t.id = r.thesis_id
+            WHERE r.created_at <= :cutoff
+              AND r.findings ? 'required_data'
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT :limit
+            """
+        ),
+        {"cutoff": accepted_cutoff, "limit": limit},
+    ))
     for row in falsification_rows:
         findings = row.get("findings")
         if isinstance(findings, str):
@@ -1189,102 +1157,100 @@ def refresh_questions_from_state(
             if len(inserted) >= limit:
                 return tuple(inserted)
 
-    source_rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT kind, target_kind, target_ref, question_text, source_family,
-                       materiality, uncertainty, discrimination_power, urgency,
-                       freshness_gap, resolvability, estimated_cost_usd,
-                       estimated_runtime_seconds, due_at, expires_at
-                FROM (
-                    SELECT
-                        'stale_dependency'::TEXT AS kind,
-                        'source'::TEXT AS target_kind,
-                        n.node_key AS target_ref,
-                        COALESCE(
-                            n.metadata->>'question',
-                            'Which accepted evidence dependency for ' || n.node_key || ' is now stale?'
-                        ) AS question_text,
-                        COALESCE(n.metadata->>'source_family', 'unknown') AS source_family,
-                        NULLIF(n.metadata->>'materiality', '')::NUMERIC AS materiality,
-                        NULLIF(n.metadata->>'uncertainty', '')::NUMERIC AS uncertainty,
-                        0.7::NUMERIC AS discrimination_power,
-                        0.7::NUMERIC AS urgency,
-                        1.0::NUMERIC AS freshness_gap,
-                        0.7::NUMERIC AS resolvability,
-                        0.0::NUMERIC AS estimated_cost_usd,
-                        30::INTEGER AS estimated_runtime_seconds,
-                        :cutoff + INTERVAL '3 days' AS due_at,
-                        :cutoff + INTERVAL '30 days' AS expires_at
-                    FROM research_dependency_nodes n
-                    WHERE n.dirty_since IS NOT NULL
-                      AND n.dirty_since <= :cutoff - (:stale_days * INTERVAL '1 day')
-                      AND n.node_type IN ('source_observation', 'source', 'evidence')
-                    UNION ALL
-                    SELECT
-                        'catalyst_confirmation', 'catalyst'::TEXT AS target_kind,
-                        c.id::TEXT,
-                        'Has the upcoming catalyst been independently confirmed: ' || c.description || '?',
-                        'issuer_material', t.catalyst_score, 1.0 - t.confidence_score,
-                        0.9, 1.0, 1.0, 0.8, 0.0, 30,
-                        c.expected_at,
-                        c.expected_at + INTERVAL '7 days'
-                    FROM investment_catalysts c
-                    JOIN investment_theses t ON t.id = c.thesis_id
-                    WHERE c.state = 'pending'
-                      AND c.created_at <= :cutoff
-                      AND c.expected_at > :cutoff
-                      AND c.expected_at <= :cutoff + (:lookahead_days * INTERVAL '1 day')
-                      AND c.updated_at <= :cutoff
-                      AND t.created_at <= :cutoff
-                      AND t.updated_at <= :cutoff
-                    UNION ALL
-                    SELECT
-                        'forecast_resolution', 'forecast'::TEXT AS target_kind,
-                        f.id::TEXT,
-                        'Did forecast ' || f.forecast_key || ' resolve at its accepted target boundary?',
-                        'market_price', t.opportunity_score, 1.0 - t.confidence_score,
-                        1.0, 1.0, 1.0, 1.0, 0.0, 5,
-                        :cutoff, :cutoff + INTERVAL '7 days'
-                    FROM investment_thesis_forecasts f
-                    JOIN investment_theses t ON t.id = f.thesis_id
-                    LEFT JOIN investment_forecast_outcomes o
-                      ON o.forecast_id = f.id
-                     AND o.created_at <= :cutoff
-                     AND o.measured_at <= :cutoff
-                    WHERE f.created_at <= :cutoff
-                      AND f.as_of <= :cutoff
-                      AND (f.superseded_at IS NULL OR f.superseded_at > :cutoff)
-                      AND f.target_date IS NOT NULL
-                      AND f.target_date < (:cutoff AT TIME ZONE 'UTC')::DATE
-                      AND t.created_at <= :cutoff
-                      AND t.updated_at <= :cutoff
-                      AND o.id IS NULL
-                    UNION ALL
-                    SELECT
-                        'source_gap', g.target_kind,
-                        g.target_ref,
-                        'Can the repeated source gap be resolved: ' || g.bounded_summary || '?',
-                        'unknown', NULL, NULL, 0.8, 0.6, 1.0, NULL, 0.0, 30,
-                        :cutoff + INTERVAL '7 days',
-                        :cutoff + INTERVAL '30 days'
-                    FROM research_source_gaps g
-                    WHERE g.active AND g.occurrence_count >= 2
-                      AND g.last_observed_at <= :cutoff
-                ) candidates
-                ORDER BY due_at NULLS LAST, kind, target_ref
-                LIMIT :limit
-                """
-            ),
-            {
-                "cutoff": accepted_cutoff,
-                "lookahead_days": max(0, min(int(catalyst_lookahead_days), 3650)),
-                "stale_days": max(1, min(int(stale_question_days), 3650)),
-                "limit": limit - len(inserted),
-            },
-        )
-    )
+    source_rows = result_rows(session.execute(
+        text(
+            """
+            SELECT kind, target_kind, target_ref, question_text, source_family,
+                   materiality, uncertainty, discrimination_power, urgency,
+                   freshness_gap, resolvability, estimated_cost_usd,
+                   estimated_runtime_seconds, due_at, expires_at
+            FROM (
+                SELECT
+                    'stale_dependency'::TEXT AS kind,
+                    'source'::TEXT AS target_kind,
+                    n.node_key AS target_ref,
+                    COALESCE(
+                        n.metadata->>'question',
+                        'Which accepted evidence dependency for ' || n.node_key || ' is now stale?'
+                    ) AS question_text,
+                    COALESCE(n.metadata->>'source_family', 'unknown') AS source_family,
+                    NULLIF(n.metadata->>'materiality', '')::NUMERIC AS materiality,
+                    NULLIF(n.metadata->>'uncertainty', '')::NUMERIC AS uncertainty,
+                    0.7::NUMERIC AS discrimination_power,
+                    0.7::NUMERIC AS urgency,
+                    1.0::NUMERIC AS freshness_gap,
+                    0.7::NUMERIC AS resolvability,
+                    0.0::NUMERIC AS estimated_cost_usd,
+                    30::INTEGER AS estimated_runtime_seconds,
+                    :cutoff + INTERVAL '3 days' AS due_at,
+                    :cutoff + INTERVAL '30 days' AS expires_at
+                FROM research_dependency_nodes n
+                WHERE n.dirty_since IS NOT NULL
+                  AND n.dirty_since <= :cutoff - (:stale_days * INTERVAL '1 day')
+                  AND n.node_type IN ('source_observation', 'source', 'evidence')
+                UNION ALL
+                SELECT
+                    'catalyst_confirmation', 'catalyst'::TEXT AS target_kind,
+                    c.id::TEXT,
+                    'Has the upcoming catalyst been independently confirmed: ' || c.description || '?',
+                    'issuer_material', t.catalyst_score, 1.0 - t.confidence_score,
+                    0.9, 1.0, 1.0, 0.8, 0.0, 30,
+                    c.expected_at,
+                    c.expected_at + INTERVAL '7 days'
+                FROM investment_catalysts c
+                JOIN investment_theses t ON t.id = c.thesis_id
+                WHERE c.state = 'pending'
+                  AND c.created_at <= :cutoff
+                  AND c.expected_at > :cutoff
+                  AND c.expected_at <= :cutoff + (:lookahead_days * INTERVAL '1 day')
+                  AND c.updated_at <= :cutoff
+                  AND t.created_at <= :cutoff
+                  AND t.updated_at <= :cutoff
+                UNION ALL
+                SELECT
+                    'forecast_resolution', 'forecast'::TEXT AS target_kind,
+                    f.id::TEXT,
+                    'Did forecast ' || f.forecast_key || ' resolve at its accepted target boundary?',
+                    'market_price', t.opportunity_score, 1.0 - t.confidence_score,
+                    1.0, 1.0, 1.0, 1.0, 0.0, 5,
+                    :cutoff, :cutoff + INTERVAL '7 days'
+                FROM investment_thesis_forecasts f
+                JOIN investment_theses t ON t.id = f.thesis_id
+                LEFT JOIN investment_forecast_outcomes o
+                  ON o.forecast_id = f.id
+                 AND o.created_at <= :cutoff
+                 AND o.measured_at <= :cutoff
+                WHERE f.created_at <= :cutoff
+                  AND f.as_of <= :cutoff
+                  AND (f.superseded_at IS NULL OR f.superseded_at > :cutoff)
+                  AND f.target_date IS NOT NULL
+                  AND f.target_date < (:cutoff AT TIME ZONE 'UTC')::DATE
+                  AND t.created_at <= :cutoff
+                  AND t.updated_at <= :cutoff
+                  AND o.id IS NULL
+                UNION ALL
+                SELECT
+                    'source_gap', g.target_kind,
+                    g.target_ref,
+                    'Can the repeated source gap be resolved: ' || g.bounded_summary || '?',
+                    'unknown', NULL, NULL, 0.8, 0.6, 1.0, NULL, 0.0, 30,
+                    :cutoff + INTERVAL '7 days',
+                    :cutoff + INTERVAL '30 days'
+                FROM research_source_gaps g
+                WHERE g.active AND g.occurrence_count >= 2
+                  AND g.last_observed_at <= :cutoff
+            ) candidates
+            ORDER BY due_at NULLS LAST, kind, target_ref
+            LIMIT :limit
+            """
+        ),
+        {
+            "cutoff": accepted_cutoff,
+            "lookahead_days": max(0, min(int(catalyst_lookahead_days), 3650)),
+            "stale_days": max(1, min(int(stale_question_days), 3650)),
+            "limit": limit - len(inserted),
+        },
+    ))
     type_by_kind = {
         "stale_dependency": "evidence_refresh",
         "catalyst_confirmation": "catalyst_confirmation",
@@ -1350,59 +1316,55 @@ def load_planner_questions(
         {"now": now},
     )
     if int(getattr(expired, "rowcount", 0) or 0) > 0:
-        from .notifications import publish_control_plane_invalidations
-
-        publish_control_plane_invalidations(
+        append_ui_invalidations(
             session,
             {"research_questions", "research_control_plane", "system_topology"},
         )
-    rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT q.*,
-                       CASE WHEN EXISTS (
-                           SELECT 1 FROM research_skill_versions s
-                           WHERE s.promotion_status = 'active'
-                             AND q.question_type = ANY(s.supported_question_types)
-                       ) THEN FALSE ELSE TRUE END AS missing_skill,
-                       EXISTS (
-                           SELECT 1 FROM research_work_orders w
-                           WHERE w.question_id = q.id
-                             AND w.status IN (
-                                 'planned', 'queued', 'leased', 'running',
-                                 'failed_retryable'
-                             )
-                       ) AS active_work_exists,
-                       CASE WHEN EXISTS (
-                           SELECT 1 FROM research_skill_versions s
-                           WHERE s.promotion_status = 'active'
-                             AND q.question_type = ANY(s.supported_question_types)
-                       ) AND NOT EXISTS (
-                           SELECT 1
-                           FROM research_skill_versions s
-                           WHERE s.promotion_status = 'active'
-                             AND q.question_type = ANY(s.supported_question_types)
-                             AND EXISTS (
-                                 SELECT 1
-                                 FROM research_source_capabilities c
-                                 WHERE c.runtime_available
-                                   AND c.source_family = ANY(s.allowed_source_families)
-                                   AND q.question_type = ANY(c.supported_question_types)
-                             )
-                       ) THEN TRUE ELSE FALSE END AS source_unavailable
-                FROM research_questions q
-                WHERE q.status IN ('pending', 'planned')
-                  AND q.not_before <= :now
-                ORDER BY q.priority_score DESC NULLS LAST,
-                         q.due_at NULLS LAST, q.created_at, q.id
-                LIMIT :limit
-                FOR UPDATE OF q SKIP LOCKED
-                """
-            ),
-            {"now": now, "limit": max(1, min(int(limit), 1000))},
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """
+            SELECT q.*,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM research_skill_versions s
+                       WHERE s.promotion_status = 'active'
+                         AND q.question_type = ANY(s.supported_question_types)
+                   ) THEN FALSE ELSE TRUE END AS missing_skill,
+                   EXISTS (
+                       SELECT 1 FROM research_work_orders w
+                       WHERE w.question_id = q.id
+                         AND w.status IN (
+                             'planned', 'queued', 'leased', 'running',
+                             'failed_retryable'
+                         )
+                   ) AS active_work_exists,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM research_skill_versions s
+                       WHERE s.promotion_status = 'active'
+                         AND q.question_type = ANY(s.supported_question_types)
+                   ) AND NOT EXISTS (
+                       SELECT 1
+                       FROM research_skill_versions s
+                       WHERE s.promotion_status = 'active'
+                         AND q.question_type = ANY(s.supported_question_types)
+                         AND EXISTS (
+                             SELECT 1
+                             FROM research_source_capabilities c
+                             WHERE c.runtime_available
+                               AND c.source_family = ANY(s.allowed_source_families)
+                               AND q.question_type = ANY(c.supported_question_types)
+                         )
+                   ) THEN TRUE ELSE FALSE END AS source_unavailable
+            FROM research_questions q
+            WHERE q.status IN ('pending', 'planned')
+              AND q.not_before <= :now
+            ORDER BY q.priority_score DESC NULLS LAST,
+                     q.due_at NULLS LAST, q.created_at, q.id
+            LIMIT :limit
+            FOR UPDATE OF q SKIP LOCKED
+            """
+        ),
+        {"now": now, "limit": max(1, min(int(limit), 1000))},
+    ))
     output: list[QuestionForPlanning] = []
     for row in rows:
         blockers = list(row.get("priority_blockers") or [])
@@ -1606,30 +1568,26 @@ def _create_work_orders(
     work_order_ids: list[uuid.UUID] = []
     for decision in agenda.selected:
         question = by_id[decision.question_id]
-        question_row = _first(
-            session.execute(
-                text("SELECT question_type FROM research_questions WHERE id = :id"),
-                {"id": question.id},
-            )
-        )
+        question_row = result_first(session.execute(
+            text("SELECT question_type FROM research_questions WHERE id = :id"),
+            {"id": question.id},
+        ))
         if question_row is None:
             continue
-        skill = _first(
-            session.execute(
-                text(
-                    """
-                    SELECT id, skill_key, version, content_fingerprint,
-                           maximum_attempts
-                    FROM research_skill_versions
-                    WHERE promotion_status = 'active'
-                      AND :question_type = ANY(supported_question_types)
-                    ORDER BY skill_key, version DESC
-                    LIMIT 1
-                    """
-                ),
-                {"question_type": question_row["question_type"]},
-            )
-        )
+        skill = result_first(session.execute(
+            text(
+                """
+                SELECT id, skill_key, version, content_fingerprint,
+                       maximum_attempts
+                FROM research_skill_versions
+                WHERE promotion_status = 'active'
+                  AND :question_type = ANY(supported_question_types)
+                ORDER BY skill_key, version DESC
+                LIMIT 1
+                """
+            ),
+            {"question_type": question_row["question_type"]},
+        ))
         if skill is None:
             continue
         work_order_id = uuid.uuid4()
@@ -1656,64 +1614,60 @@ def _create_work_orders(
         if job_result.job is None:
             continue
         job_id = job_result.job.id
-        row = _first(
-            session.execute(
+        row = result_first(session.execute(
+            text(
+                """
+                INSERT INTO research_work_orders (
+                    id, question_id, plan_id, skill_version_id,
+                    analysis_job_id, budget_reservation_id, accepted_cutoff,
+                    planning_policy_version, priority_snapshot,
+                    estimated_value, reserved_cost_usd,
+                    reserved_runtime_seconds, input_fingerprint,
+                    status, queued_at
+                ) VALUES (
+                    :id, :question_id, :plan_id, :skill_version_id,
+                    :analysis_job_id, :budget_reservation_id, :accepted_cutoff,
+                    :planning_policy_version, CAST(:priority_snapshot AS JSONB),
+                    :estimated_value, :reserved_cost_usd,
+                    :reserved_runtime_seconds, :input_fingerprint,
+                    'queued', NOW()
+                )
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """
+            ),
+            {
+                "id": work_order_id,
+                "question_id": question.id,
+                "plan_id": plan_id,
+                "skill_version_id": skill["id"],
+                "analysis_job_id": job_id,
+                "budget_reservation_id": budget_reservation_id,
+                "accepted_cutoff": question.accepted_cutoff,
+                "planning_policy_version": agenda.policy_version,
+                "priority_snapshot": _priority_snapshot(
+                    question,
+                    decision,
+                    policy_version=agenda.policy_version,
+                ),
+                "estimated_value": decision.score,
+                "reserved_cost_usd": decision.estimated_cost_usd,
+                "reserved_runtime_seconds": decision.estimated_runtime_seconds,
+                "input_fingerprint": input_fingerprint,
+            },
+        ))
+        if row is None:
+            existing = result_first(session.execute(
                 text(
                     """
-                    INSERT INTO research_work_orders (
-                        id, question_id, plan_id, skill_version_id,
-                        analysis_job_id, budget_reservation_id, accepted_cutoff,
-                        planning_policy_version, priority_snapshot,
-                        estimated_value, reserved_cost_usd,
-                        reserved_runtime_seconds, input_fingerprint,
-                        status, queued_at
-                    ) VALUES (
-                        :id, :question_id, :plan_id, :skill_version_id,
-                        :analysis_job_id, :budget_reservation_id, :accepted_cutoff,
-                        :planning_policy_version, CAST(:priority_snapshot AS JSONB),
-                        :estimated_value, :reserved_cost_usd,
-                        :reserved_runtime_seconds, :input_fingerprint,
-                        'queued', NOW()
-                    )
-                    ON CONFLICT DO NOTHING
-                    RETURNING id
+                    SELECT id FROM research_work_orders
+                    WHERE question_id = :question_id
+                      AND status IN ('planned', 'queued', 'leased', 'running', 'failed_retryable')
+                    ORDER BY created_at DESC, id DESC LIMIT 1
                     """
                 ),
-                {
-                    "id": work_order_id,
-                    "question_id": question.id,
-                    "plan_id": plan_id,
-                    "skill_version_id": skill["id"],
-                    "analysis_job_id": job_id,
-                    "budget_reservation_id": budget_reservation_id,
-                    "accepted_cutoff": question.accepted_cutoff,
-                    "planning_policy_version": agenda.policy_version,
-                    "priority_snapshot": _priority_snapshot(
-                        question,
-                        decision,
-                        policy_version=agenda.policy_version,
-                    ),
-                    "estimated_value": decision.score,
-                    "reserved_cost_usd": decision.estimated_cost_usd,
-                    "reserved_runtime_seconds": decision.estimated_runtime_seconds,
-                    "input_fingerprint": input_fingerprint,
-                },
-            )
-        )
-        if row is None:
-            existing = _first(
-                session.execute(
-                    text(
-                        """
-                        SELECT id FROM research_work_orders
-                        WHERE question_id = :question_id
-                          AND status IN ('planned', 'queued', 'leased', 'running', 'failed_retryable')
-                        ORDER BY created_at DESC, id DESC LIMIT 1
-                        """
-                    ),
-                    {"question_id": question.id},
-                )
-            )
+                {"question_id": question.id},
+            ))
             if existing is not None:
                 work_order_ids.append(uuid.UUID(str(existing["id"])))
             continue
@@ -1731,9 +1685,7 @@ def _create_work_orders(
         )
         work_order_ids.append(work_order_id)
     if work_order_ids:
-        from .notifications import publish_control_plane_invalidations
-
-        publish_control_plane_invalidations(
+        append_ui_invalidations(
             session,
             {
                 "research_questions",
@@ -1748,22 +1700,20 @@ def _create_work_orders(
 def _has_trusted_manual_budget_override(
     session: Any, correlation_id: uuid.UUID, now: datetime
 ) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                """
-                SELECT summary -> 'budget_override' AS budget_override
-                FROM cycle_runs
-                WHERE correlation_id = :correlation_id
-                  AND triggered_by = 'api_manual_override'
-                  AND status = 'running'
-                  AND run_kind = 'research'
-                  AND requested_component = 'research_control_plane'
-                """
-            ),
-            {"correlation_id": correlation_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """
+            SELECT summary -> 'budget_override' AS budget_override
+            FROM cycle_runs
+            WHERE correlation_id = :correlation_id
+              AND triggered_by = 'api_manual_override'
+              AND status = 'running'
+              AND run_kind = 'research'
+              AND requested_component = 'research_control_plane'
+            """
+        ),
+        {"correlation_id": correlation_id},
+    ))
     override = row.get("budget_override") if row else None
     if not isinstance(override, Mapping) or override.get("requested") is not True:
         return False
@@ -1814,12 +1764,10 @@ def run_planner(
     """Generate, rank and atomically enqueue a bounded agenda in one transaction."""
     cutoff = accepted_cutoff or datetime.now(UTC)
     admission_time = datetime.now(UTC)
-    acquired = _first(
-        session.execute(
-            text("SELECT pg_try_advisory_xact_lock(hashtext(:key)) AS acquired"),
-            {"key": _PLANNER_LOCK_KEY},
-        )
-    )
+    acquired = result_first(session.execute(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key)) AS acquired"),
+        {"key": _PLANNER_LOCK_KEY},
+    ))
     if not acquired or not acquired.get("acquired"):
         return PlannerRunResult(
             None, correlation_id, "coalesced", 0, 0, (), True, "planner_already_running"
@@ -1933,7 +1881,7 @@ def mark_work_order_running(
         ),
         {"work_order_id": work_order_id, "worker_id": worker_id[:200]},
     )
-    row = _first(result)
+    row = result_first(result)
     if row is None:
         return False
     session.execute(
@@ -1993,24 +1941,22 @@ def complete_work_order(
     resolution_evidence_refs: Sequence[str],
 ) -> str:
     """Accept completion only while the question still matches its cutoff."""
-    matched = _first(
-        session.execute(
-            text(
-                """
-                SELECT w.id
-                FROM research_work_orders w
-                JOIN research_questions q ON q.id = w.question_id
-                WHERE w.id = :work_order_id
-                  AND w.status = 'running'
-                  AND q.status = 'running'
-                  AND w.accepted_cutoff = :accepted_cutoff
-                  AND q.accepted_cutoff = :accepted_cutoff
-                FOR UPDATE OF w, q
-                """
-            ),
-            {"work_order_id": work_order_id, "accepted_cutoff": accepted_cutoff},
-        )
-    )
+    matched = result_first(session.execute(
+        text(
+            """
+            SELECT w.id
+            FROM research_work_orders w
+            JOIN research_questions q ON q.id = w.question_id
+            WHERE w.id = :work_order_id
+              AND w.status = 'running'
+              AND q.status = 'running'
+              AND w.accepted_cutoff = :accepted_cutoff
+              AND q.accepted_cutoff = :accepted_cutoff
+            FOR UPDATE OF w, q
+            """
+        ),
+        {"work_order_id": work_order_id, "accepted_cutoff": accepted_cutoff},
+    ))
     if matched is None:
         session.execute(
             text(
@@ -2087,24 +2033,22 @@ def mark_work_order_failure(
 ) -> bool:
     """Mirror durable-job failure without persisting exception text."""
     status = "failed_retryable" if retryable else "failed_terminal"
-    row = _first(
-        session.execute(
-            text(
-                """
-                UPDATE research_work_orders
-                SET status = :status, error_kind = :error_kind
-                WHERE analysis_job_id = :analysis_job_id
-                  AND status IN ('queued', 'leased', 'running', 'failed_retryable')
-                RETURNING id, question_id
-                """
-            ),
-            {
-                "analysis_job_id": analysis_job_id,
-                "status": status,
-                "error_kind": error_kind[:200],
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """
+            UPDATE research_work_orders
+            SET status = :status, error_kind = :error_kind
+            WHERE analysis_job_id = :analysis_job_id
+              AND status IN ('queued', 'leased', 'running', 'failed_retryable')
+            RETURNING id, question_id
+            """
+        ),
+        {
+            "analysis_job_id": analysis_job_id,
+            "status": status,
+            "error_kind": error_kind[:200],
+        },
+    ))
     if row is None:
         return False
     if not retryable:
@@ -2127,9 +2071,7 @@ def mark_work_order_failure(
             },
         )
         _settle_work_order_budget(session, uuid.UUID(str(row["id"])))
-    from .notifications import publish_control_plane_invalidations
-
-    publish_control_plane_invalidations(
+    append_ui_invalidations(
         session,
         {
             "research_questions",
@@ -2144,26 +2086,24 @@ def mark_work_order_failure(
 def reconcile_terminal_work_order_failures(session: Any, *, limit: int = 100) -> int:
     """Mirror bounded terminal durable-job recovery into research state."""
     bounded_limit = max(1, min(int(limit), 1000))
-    rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT j.id
-                FROM analysis_jobs j
-                JOIN research_work_orders w ON w.analysis_job_id = j.id
-                WHERE j.job_type = 'research_skill'
-                  AND j.state = 'failed_terminal'
-                  AND w.status IN (
-                      'queued', 'leased', 'running', 'failed_retryable'
-                  )
-                ORDER BY j.completed_at NULLS LAST, j.created_at, j.id
-                LIMIT :limit
-                FOR UPDATE OF w SKIP LOCKED
-                """
-            ),
-            {"limit": bounded_limit},
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """
+            SELECT j.id
+            FROM analysis_jobs j
+            JOIN research_work_orders w ON w.analysis_job_id = j.id
+            WHERE j.job_type = 'research_skill'
+              AND j.state = 'failed_terminal'
+              AND w.status IN (
+                  'queued', 'leased', 'running', 'failed_retryable'
+              )
+            ORDER BY j.completed_at NULLS LAST, j.created_at, j.id
+            LIMIT :limit
+            FOR UPDATE OF w SKIP LOCKED
+            """
+        ),
+        {"limit": bounded_limit},
+    ))
     mirrored = 0
     for row in rows:
         if mark_work_order_failure(

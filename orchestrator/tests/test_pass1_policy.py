@@ -130,6 +130,30 @@ class PassOneValidatorTests(unittest.TestCase):
         )
         self.assertEqual(findings, [])
 
+    def test_scanner_rejects_imperative_exposure_sizing_and_allocation(self):
+        examples = [
+            "Size exposure to reflect downside risk.",
+            "Reduce portfolio exposure ahead of earnings.",
+        ]
+        for example in examples:
+            with self.subTest(example=example):
+                findings = scan_prohibited_language(example)
+                self.assertTrue(
+                    any("sizing_allocation" in finding for finding in findings),
+                    findings,
+                )
+
+    def test_scanner_allows_monitoring_and_company_descriptions(self):
+        examples = [
+            "Monitor inventory levels for signs of oversupply.",
+            "Customer exposure remains concentrated among large enterprises.",
+            "Company capital allocation remains focused on data centers.",
+        ]
+        for example in examples:
+            with self.subTest(example=example):
+                self.assertEqual(scan_prohibited_language(example), [])
+
+
     def test_scanner_rejects_execution_and_technical_analysis(self):
         findings = scan_prohibited_language(
             "Buy at support with a stop-loss after the RSI breakout."

@@ -52,6 +52,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
 from events.contracts import MarketEventType
 from research_intelligence.contracts import (
     NormalizedEvidence,
@@ -153,19 +154,6 @@ _SOURCE_KEYWORD_EVENT_TYPES = MappingProxyType(
 )
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except AttributeError:
-        return [dict(row) for row in result]
-
-
-def _first(result: Any) -> dict[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    return dict(row) if row is not None else None
 
 
 def _uuid(value: Any, field: str) -> str:
@@ -287,15 +275,13 @@ def _normalized_text(value: Any) -> str:
 
 
 def _thesis_exists(session: Any, thesis_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_theses "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_theses "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": thesis_id},
+    ))
     return row is not None
 
 
@@ -707,17 +693,15 @@ def upsert_event_playbook(session: Any, draft: Any) -> dict[str, Any]:
         raise ValueError("draft must be a PlaybookDraft or mapping")
     if not _thesis_exists(session, draft.thesis_id):
         raise ValueError("unknown thesis")
-    active = _first(
-        session.execute(
-            text(
-                """SELECT id, thesis_id, version, input_fingerprint
-                   FROM investment_thesis_event_playbooks
-                   WHERE playbook_key = :playbook_key
-                     AND superseded_at IS NULL LIMIT 1"""
-            ),
-            {"playbook_key": draft.playbook_key},
-        )
-    )
+    active = result_first(session.execute(
+        text(
+            """SELECT id, thesis_id, version, input_fingerprint
+               FROM investment_thesis_event_playbooks
+               WHERE playbook_key = :playbook_key
+                 AND superseded_at IS NULL LIMIT 1"""
+        ),
+        {"playbook_key": draft.playbook_key},
+    ))
     if active is not None:
         if str(active["thesis_id"]) != draft.thesis_id:
             raise ValueError("playbook_key already in use by another thesis")
@@ -738,64 +722,62 @@ def upsert_event_playbook(session: Any, draft: Any) -> dict[str, Any]:
         next_version = int(active["version"]) + 1
     else:
         next_version = 1
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_thesis_event_playbooks
-                   (thesis_id, playbook_key, version, thesis_version, catalyst,
-                    horizon, expected_at, event_types, trigger_conditions,
-                    confirmation_conditions, invalidation_conditions,
-                    bull_scenario, base_scenario, bear_scenario,
-                    cited_evidence_refs, input_fingerprint)
-                   VALUES (CAST(:thesis_id AS UUID), :playbook_key, :version,
-                           :thesis_version, :catalyst, :horizon, :expected_at,
-                           CAST(:event_types AS TEXT[]),
-                           CAST(:trigger_conditions AS JSONB),
-                           CAST(:confirmation_conditions AS JSONB),
-                           CAST(:invalidation_conditions AS JSONB),
-                           CAST(:bull_scenario AS JSONB),
-                           CAST(:base_scenario AS JSONB),
-                           CAST(:bear_scenario AS JSONB),
-                           CAST(:cited_evidence_refs AS TEXT[]),
-                           :input_fingerprint)
-                   RETURNING id, version"""
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_thesis_event_playbooks
+               (thesis_id, playbook_key, version, thesis_version, catalyst,
+                horizon, expected_at, event_types, trigger_conditions,
+                confirmation_conditions, invalidation_conditions,
+                bull_scenario, base_scenario, bear_scenario,
+                cited_evidence_refs, input_fingerprint)
+               VALUES (CAST(:thesis_id AS UUID), :playbook_key, :version,
+                       :thesis_version, :catalyst, :horizon, :expected_at,
+                       CAST(:event_types AS TEXT[]),
+                       CAST(:trigger_conditions AS JSONB),
+                       CAST(:confirmation_conditions AS JSONB),
+                       CAST(:invalidation_conditions AS JSONB),
+                       CAST(:bull_scenario AS JSONB),
+                       CAST(:base_scenario AS JSONB),
+                       CAST(:bear_scenario AS JSONB),
+                       CAST(:cited_evidence_refs AS TEXT[]),
+                       :input_fingerprint)
+               RETURNING id, version"""
+        ),
+        {
+            "thesis_id": draft.thesis_id,
+            "playbook_key": draft.playbook_key,
+            "version": next_version,
+            "thesis_version": draft.thesis_version,
+            "catalyst": draft.catalyst,
+            "horizon": draft.horizon,
+            "expected_at": draft.expected_at,
+            "event_types": list(draft.event_types),
+            "trigger_conditions": json.dumps(list(draft.trigger_conditions)),
+            "confirmation_conditions": json.dumps(
+                list(draft.confirmation_conditions)
             ),
-            {
-                "thesis_id": draft.thesis_id,
-                "playbook_key": draft.playbook_key,
-                "version": next_version,
-                "thesis_version": draft.thesis_version,
-                "catalyst": draft.catalyst,
-                "horizon": draft.horizon,
-                "expected_at": draft.expected_at,
-                "event_types": list(draft.event_types),
-                "trigger_conditions": json.dumps(list(draft.trigger_conditions)),
-                "confirmation_conditions": json.dumps(
-                    list(draft.confirmation_conditions)
-                ),
-                "invalidation_conditions": json.dumps(
-                    list(draft.invalidation_conditions)
-                ),
-                "bull_scenario": (
-                    json.dumps(dict(draft.bull_scenario))
-                    if draft.bull_scenario is not None
-                    else None
-                ),
-                "base_scenario": (
-                    json.dumps(dict(draft.base_scenario))
-                    if draft.base_scenario is not None
-                    else None
-                ),
-                "bear_scenario": (
-                    json.dumps(dict(draft.bear_scenario))
-                    if draft.bear_scenario is not None
-                    else None
-                ),
-                "cited_evidence_refs": list(draft.cited_evidence_refs),
-                "input_fingerprint": draft.input_fingerprint,
-            },
-        )
-    )
+            "invalidation_conditions": json.dumps(
+                list(draft.invalidation_conditions)
+            ),
+            "bull_scenario": (
+                json.dumps(dict(draft.bull_scenario))
+                if draft.bull_scenario is not None
+                else None
+            ),
+            "base_scenario": (
+                json.dumps(dict(draft.base_scenario))
+                if draft.base_scenario is not None
+                else None
+            ),
+            "bear_scenario": (
+                json.dumps(dict(draft.bear_scenario))
+                if draft.bear_scenario is not None
+                else None
+            ),
+            "cited_evidence_refs": list(draft.cited_evidence_refs),
+            "input_fingerprint": draft.input_fingerprint,
+        },
+    ))
     return {
         "id": str(row["id"]),
         "version": int(row["version"]),
@@ -835,43 +817,37 @@ def record_event_match(
         raise ValueError("observed_at is required")
     assessment_value = _assessment(assessment) if assessment is not None else {}
 
-    playbook = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_thesis_event_playbooks "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": playbook_uuid},
-        )
-    )
+    playbook = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_thesis_event_playbooks "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": playbook_uuid},
+    ))
     if playbook is None:
         raise ValueError("unknown playbook")
-    event = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM market_events "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": event_uuid},
-        )
-    )
+    event = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM market_events "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": event_uuid},
+    ))
     if event is None:
         raise ValueError("unknown market event")
-    existing = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present FROM investment_thesis_event_matches
-                   WHERE playbook_id = CAST(:playbook_id AS UUID)
-                     AND market_event_id = CAST(:market_event_id AS UUID)
-                     AND match_kind = :match_kind LIMIT 1"""
-            ),
-            {
-                "playbook_id": playbook_uuid,
-                "market_event_id": event_uuid,
-                "match_kind": kind,
-            },
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            """SELECT 1 AS present FROM investment_thesis_event_matches
+               WHERE playbook_id = CAST(:playbook_id AS UUID)
+                 AND market_event_id = CAST(:market_event_id AS UUID)
+                 AND match_kind = :match_kind LIMIT 1"""
+        ),
+        {
+            "playbook_id": playbook_uuid,
+            "market_event_id": event_uuid,
+            "match_kind": kind,
+        },
+    ))
     if existing is not None:
         return False
     session.execute(
@@ -913,29 +889,27 @@ def list_due_playbooks(
     if reference_at is None:
         raise ValueError("reference is required")
     bounded_limit = max(1, min(_MAX_LIST_LIMIT, int(limit)))
-    return _rows(
-        session.execute(
-            text(
-                """SELECT p.id, p.thesis_id, p.playbook_key, p.version,
-                          p.thesis_version, p.catalyst, p.horizon,
-                          p.expected_at, p.event_types, p.trigger_conditions,
-                          p.confirmation_conditions, p.invalidation_conditions,
-                          p.bull_scenario, p.base_scenario, p.bear_scenario,
-                          p.cited_evidence_refs, p.input_fingerprint,
-                          p.superseded_at, p.created_at,
-                          ARRAY_REMOVE(ARRAY[t.company, t.symbol], NULL)
-                              AS entity_keys
-                   FROM investment_thesis_event_playbooks AS p
-                   JOIN investment_theses AS t ON t.id = p.thesis_id
-                   WHERE p.superseded_at IS NULL
-                     AND (p.expected_at IS NULL OR p.expected_at <= :reference)
-                   ORDER BY p.expected_at ASC NULLS LAST,
-                            p.created_at ASC, p.id ASC
-                   LIMIT :limit"""
-            ),
-            {"reference": reference_at, "limit": bounded_limit},
-        )
-    )
+    return result_rows(session.execute(
+        text(
+            """SELECT p.id, p.thesis_id, p.playbook_key, p.version,
+                      p.thesis_version, p.catalyst, p.horizon,
+                      p.expected_at, p.event_types, p.trigger_conditions,
+                      p.confirmation_conditions, p.invalidation_conditions,
+                      p.bull_scenario, p.base_scenario, p.bear_scenario,
+                      p.cited_evidence_refs, p.input_fingerprint,
+                      p.superseded_at, p.created_at,
+                      ARRAY_REMOVE(ARRAY[t.company, t.symbol], NULL)
+                          AS entity_keys
+               FROM investment_thesis_event_playbooks AS p
+               JOIN investment_theses AS t ON t.id = p.thesis_id
+               WHERE p.superseded_at IS NULL
+                 AND (p.expected_at IS NULL OR p.expected_at <= :reference)
+               ORDER BY p.expected_at ASC NULLS LAST,
+                        p.created_at ASC, p.id ASC
+               LIMIT :limit"""
+        ),
+        {"reference": reference_at, "limit": bounded_limit},
+    ))
 
 
 def list_playbook_history(
@@ -968,25 +942,23 @@ def list_playbook_history(
     if key is not None:
         filters.append("playbook_key = :playbook_key")
         params["playbook_key"] = key
-    return _rows(
-        session.execute(
-            text(
-                """SELECT id, thesis_id, playbook_key, version, thesis_version,
-                          catalyst, horizon, expected_at, event_types,
-                          trigger_conditions, confirmation_conditions,
-                          invalidation_conditions, bull_scenario, base_scenario,
-                          bear_scenario, cited_evidence_refs, input_fingerprint,
-                          superseded_at, created_at
-                   FROM investment_thesis_event_playbooks
-                   WHERE """
-                + " AND ".join(filters)
-                + """
-                   ORDER BY playbook_key ASC, version DESC, id ASC
-                   LIMIT :limit"""
-            ),
-            params,
-        )
-    )
+    return result_rows(session.execute(
+        text(
+            """SELECT id, thesis_id, playbook_key, version, thesis_version,
+                      catalyst, horizon, expected_at, event_types,
+                      trigger_conditions, confirmation_conditions,
+                      invalidation_conditions, bull_scenario, base_scenario,
+                      bear_scenario, cited_evidence_refs, input_fingerprint,
+                      superseded_at, created_at
+               FROM investment_thesis_event_playbooks
+               WHERE """
+            + " AND ".join(filters)
+            + """
+               ORDER BY playbook_key ASC, version DESC, id ASC
+               LIMIT :limit"""
+        ),
+        params,
+    ))
 
 
 # ---------------------------------------------------------------------------

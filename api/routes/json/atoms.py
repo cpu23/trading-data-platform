@@ -1,6 +1,5 @@
 """Bounded, allowlisted analysis-atom queries for JSON and HTMX consumers."""
 
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -8,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from config import load_config
 from db import query_many
+from serializers import isoformat
 
 router = APIRouter()
 
@@ -46,12 +46,6 @@ _ATOM_SELECT = """
 """
 
 
-def _iso(value):
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value) if value is not None else None
-
-
 def _validate_subject(subject_type: str | None, subject_id: str | None) -> None:
     if subject_type is not None and subject_type not in SUBJECT_TYPES:
         raise ValueError("unsupported subject_type")
@@ -76,12 +70,12 @@ def _serialize_atom(row: dict) -> dict:
         "affected_assets": row.get("affected_assets") or [],
         "time_horizon": row["time_horizon"],
         "confidence": row.get("confidence"),
-        "valid_from": _iso(row.get("valid_from")),
-        "expires_at": _iso(row.get("expires_at")),
+        "valid_from": isoformat(row.get("valid_from")),
+        "expires_at": isoformat(row.get("expires_at")),
         "status": row["status"],
         "model_slug": row.get("model_slug"),
         "prompt_version": row.get("prompt_version"),
-        "published_at": _iso(row.get("published_at")),
+        "published_at": isoformat(row.get("published_at")),
         "evidence": [
             {
                 "evidence_type": item.get("evidence_type"),
@@ -139,9 +133,9 @@ def load_atom_context(
                 {
                     "status": row["status"],
                     "confidence": row.get("confidence"),
-                    "valid_from": _iso(row.get("valid_from")),
-                    "expires_at": _iso(row.get("expires_at")),
-                    "updated_at": _iso(row.get("updated_at")),
+                    "valid_from": isoformat(row.get("valid_from")),
+                    "expires_at": isoformat(row.get("expires_at")),
+                    "updated_at": isoformat(row.get("updated_at")),
                     "supersedes_atom_id": str(row["supersedes_atom_id"])
                     if row.get("supersedes_atom_id")
                     else None,
@@ -186,9 +180,9 @@ def load_atom_detail(config: dict, atom_id: str) -> dict | None:
             "id": str(row["id"]),
             "status": row["status"],
             "confidence": row.get("confidence"),
-            "valid_from": _iso(row.get("valid_from")),
-            "expires_at": _iso(row.get("expires_at")),
-            "updated_at": _iso(row.get("updated_at")),
+            "valid_from": isoformat(row.get("valid_from")),
+            "expires_at": isoformat(row.get("expires_at")),
+            "updated_at": isoformat(row.get("updated_at")),
             "supersedes_atom_id": str(row["supersedes_atom_id"])
             if row.get("supersedes_atom_id")
             else None,

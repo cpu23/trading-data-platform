@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import fields, is_dataclass, replace
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 
 from budgets import BudgetContext
+from contracts.runtime_config import AppConfig
 from logging_config import get_logger
 from research_intelligence.adversarial import validate_adversarial_output
 from research_intelligence.claims import (
@@ -27,6 +28,8 @@ from research_intelligence.contracts import (
     NormalizedEntity,
     NormalizedEvidence,
     canonical_fingerprint,
+    clean_payload,
+    parse_json_payload,
 )
 from research_intelligence.deliverable import validate_deliverable_output
 from research_intelligence.discovery import (
@@ -82,32 +85,9 @@ from research_intelligence.value_capture import validate_value_capture_output
 logger = get_logger("research_intelligence.service")
 
 
-
 def _savepoint(session: Any):
     begin = getattr(session, "begin_nested", None)
     return begin() if callable(begin) else nullcontext()
-
-
-def _clean(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: _clean(getattr(value, item.name)) for item in fields(value)}
-    if isinstance(value, datetime):
-        normalized = value if value.tzinfo else value.replace(tzinfo=UTC)
-        return normalized.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, Mapping):
-        return {str(key): _clean(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_clean(item) for item in value]
-    return value
-
-
-def _parse_cached(value: Any) -> Any:
-    if not isinstance(value, str):
-        raise ValueError("cached model response is not text")
-    content = value.strip()
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-    return json.loads(content)
 
 
 def run_model_stage[T](
@@ -152,7 +132,7 @@ def run_model_stage[T](
             row = None
         if row and row.get("raw_response"):
             try:
-                value = validator(_parse_cached(row["raw_response"]))
+                value = validator(parse_json_payload(row["raw_response"]))
             except (TypeError, ValueError):
                 pass
             else:
@@ -174,11 +154,7 @@ def run_model_stage[T](
 
 
 def _stage_fingerprint(stage: str, payload: Any) -> str:
-    return canonical_fingerprint(
-        {"stage": STAGE_VERSIONS[stage], "input": payload}
-    )
-
-
+    return canonical_fingerprint({"stage": STAGE_VERSIONS[stage], "input": payload})
 
 
 def _extract_claims(
@@ -191,20 +167,21 @@ def _extract_claims(
     eligible = tuple(
         item
         for item in evidence
-        if item.evidence_type in CLAIM_ELIGIBLE_EVIDENCE_TYPES
-        and item.bounded_excerpt
+        if item.evidence_type in CLAIM_ELIGIBLE_EVIDENCE_TYPES and item.bounded_excerpt
     )[: runner.settings.maximum_claim_documents_per_run]
     if not eligible or not runner.settings.claim_extraction_enabled:
         return ()
     payload = {"evidence": [item.to_dict() for item in eligible]}
     fingerprint = _stage_fingerprint("claim_extraction", payload)
-    result = run_model_stage(session,
-    runner,
-    "claim_extraction",
-    payload,
-    lambda output: validate_claim_output(output, eligible),
-    fingerprint,
-    force=force,)
+    result = run_model_stage(
+        session,
+        runner,
+        "claim_extraction",
+        payload,
+        lambda output: validate_claim_output(output, eligible),
+        fingerprint,
+        force=force,
+    )
     claims = result.value or ()
     if claims:
         with _savepoint(session):
@@ -243,7 +220,9 @@ def _edge_fingerprints(edges: Sequence[Any]) -> tuple[str, ...]:
     )
 
 
-def _validate_value_nodes(output: Any, evidence: Sequence[NormalizedEvidence], nodes: set[tuple[str, str]]):
+def _validate_value_nodes(
+    output: Any, evidence: Sequence[NormalizedEvidence], nodes: set[tuple[str, str]]
+):
     assessments = validate_value_capture_output(output, evidence)
     unsupported = [
         (item.node_type, item.node_key)
@@ -251,7 +230,9 @@ def _validate_value_nodes(output: Any, evidence: Sequence[NormalizedEvidence], n
         if nodes and (item.node_type, item.node_key) not in nodes
     ]
     if unsupported:
-        raise ValueError("value-capture output references a node outside the causal graph")
+        raise ValueError(
+            "value-capture output references a node outside the causal graph"
+        )
     return assessments
 
 
@@ -299,13 +280,15 @@ def _process_group(
             }
     pattern_payload = _pattern_payload(group)
     pattern_fingerprint = _stage_fingerprint("pattern_discovery", pattern_payload)
-    pattern_result = run_model_stage(session,
-    runner,
-    "pattern_discovery",
-    pattern_payload,
-    lambda output: validate_pattern_output(output, group),
-    pattern_fingerprint,
-    force=force,)
+    pattern_result = run_model_stage(
+        session,
+        runner,
+        "pattern_discovery",
+        pattern_payload,
+        lambda output: validate_pattern_output(output, group),
+        pattern_fingerprint,
+        force=force,
+    )
     assessment: PatternAssessment | None = pattern_result.value
     if assessment is None:
         return {"case_id": None, "status": "abstained"}
@@ -325,7 +308,7 @@ def _process_group(
     case_id = mutation.case_id
     case_context = {
         "case_id": case_id,
-        "case": _clean(assessment),
+        "case": clean_payload(assessment),
         "evidence": [item.to_dict() for item in group.evidence],
     }
 
@@ -337,15 +320,17 @@ def _process_group(
         },
     }
     causal_fp = _stage_fingerprint("causal_chain", causal_payload)
-    causal_result = run_model_stage(session,
-    runner,
-    "causal_chain",
-    causal_payload,
-    lambda output: validate_causal_output(
-        output, group.evidence, settings, seed_entities=assessment.entities
-    ),
-    causal_fp,
-    force=force,)
+    causal_result = run_model_stage(
+        session,
+        runner,
+        "causal_chain",
+        causal_payload,
+        lambda output: validate_causal_output(
+            output, group.evidence, settings, seed_entities=assessment.entities
+        ),
+        causal_fp,
+        force=force,
+    )
     edges = causal_result.value or ()
     with _savepoint(session):
         persist_causal_edges(
@@ -356,13 +341,13 @@ def _process_group(
             session, case_id, edges, group.evidence
         )
     edge_fingerprints = _edge_fingerprints(edges)
-    allowed_nodes = {
-        (edge.from_type, edge.from_key) for edge in edges
-    } | {(edge.to_type, edge.to_key) for edge in edges}
+    allowed_nodes = {(edge.from_type, edge.from_key) for edge in edges} | {
+        (edge.to_type, edge.to_key) for edge in edges
+    }
 
     value_payload = {
         **case_context,
-        "causal_edges": _clean(edges),
+        "causal_edges": clean_payload(edges),
         "dimensions": [
             "demand_impulse",
             "revenue_exposure",
@@ -386,13 +371,15 @@ def _process_group(
         ],
     }
     value_fp = _stage_fingerprint("value_capture", value_payload)
-    value_result = run_model_stage(session,
-    runner,
-    "value_capture",
-    value_payload,
-    lambda output: _validate_value_nodes(output, group.evidence, allowed_nodes),
-    value_fp,
-    force=force,)
+    value_result = run_model_stage(
+        session,
+        runner,
+        "value_capture",
+        value_payload,
+        lambda output: _validate_value_nodes(output, group.evidence, allowed_nodes),
+        value_fp,
+        force=force,
+    )
     value_assessments = value_result.value or ()
     with _savepoint(session):
         assessment_nodes = persist_value_capture(
@@ -406,25 +393,27 @@ def _process_group(
     current_detail = get_case(session, case_id, detail_limit=100) or {}
     adversarial_payload = {
         **case_context,
-        "causal_edges": _clean(edges),
+        "causal_edges": clean_payload(edges),
         "edge_fingerprints": edge_fingerprints,
-        "value_capture": _clean(value_assessments),
+        "value_capture": clean_payload(value_assessments),
         "existing_data_requests": current_detail.get("data_requests", []),
     }
     adversarial_fp = _stage_fingerprint("adversarial", adversarial_payload)
-    adversarial_result = run_model_stage(session,
-    runner,
-    "adversarial",
-    adversarial_payload,
-    lambda output: validate_adversarial_output(
-        output,
-        group.evidence,
-        edge_fingerprints=edge_fingerprints,
-        maximum_counterevidence=30,
-        maximum_requests=20,
-    ),
-    adversarial_fp,
-    force=force,)
+    adversarial_result = run_model_stage(
+        session,
+        runner,
+        "adversarial",
+        adversarial_payload,
+        lambda output: validate_adversarial_output(
+            output,
+            group.evidence,
+            edge_fingerprints=edge_fingerprints,
+            maximum_counterevidence=30,
+            maximum_requests=20,
+        ),
+        adversarial_fp,
+        force=force,
+    )
     adversarial = adversarial_result.value
     adversarial_counts = {"counterevidence": 0, "data_requests": 0}
     if adversarial is not None:
@@ -439,24 +428,26 @@ def _process_group(
 
     deliverable_payload = {
         **case_context,
-        "causal_edges": _clean(edges),
+        "causal_edges": clean_payload(edges),
         "edge_fingerprints": edge_fingerprints,
-        "value_capture": _clean(value_assessments),
-        "counterevidence": _clean(adversarial),
+        "value_capture": clean_payload(value_assessments),
+        "counterevidence": clean_payload(adversarial),
     }
     deliverable_fp = _stage_fingerprint("deliverable", deliverable_payload)
-    deliverable_result = run_model_stage(session,
-    runner,
-    "deliverable",
-    deliverable_payload,
-    lambda output: validate_deliverable_output(
-        output,
-        group.evidence,
-        edge_fingerprints=edge_fingerprints,
-        assessment_nodes=assessment_nodes,
-    ),
-    deliverable_fp,
-    force=force,)
+    deliverable_result = run_model_stage(
+        session,
+        runner,
+        "deliverable",
+        deliverable_payload,
+        lambda output: validate_deliverable_output(
+            output,
+            group.evidence,
+            edge_fingerprints=edge_fingerprints,
+            assessment_nodes=assessment_nodes,
+        ),
+        deliverable_fp,
+        force=force,
+    )
     deliverable = deliverable_result.value
 
     stats = load_case_stats(session, case_id)
@@ -479,14 +470,14 @@ def _process_group(
         "pipeline_input_fingerprint": pipeline_fingerprint,
         "evidence_input_fingerprint": group.input_fingerprint,
         "blocking_key": group.blocking_key,
-        "case": _clean(assessment),
+        "case": clean_payload(assessment),
         "lifecycle_state": lifecycle,
         "evidence": [item.to_dict() for item in group.evidence],
-        "causal_edges": _clean(edges),
-        "value_capture": _clean(value_assessments),
-        "adversarial": _clean(adversarial),
+        "causal_edges": clean_payload(edges),
+        "value_capture": clean_payload(value_assessments),
+        "adversarial": clean_payload(adversarial),
         "adversarial_counts": adversarial_counts,
-        "deliverable": _clean(deliverable),
+        "deliverable": clean_payload(deliverable),
         "macro_drivers": list(assessment.macro_drivers),
         "invalidation_conditions": list(
             adversarial.invalidation_conditions if adversarial is not None else ()
@@ -494,11 +485,11 @@ def _process_group(
         "unresolved_material_hypotheses": unresolved_hypotheses,
         "hypothesis_request_counts": hypothesis_request_counts,
         "model_provenance": {
-            "pattern_discovery": _clean(pattern_result.provenance),
-            "causal_chain": _clean(causal_result.provenance),
-            "value_capture": _clean(value_result.provenance),
-            "adversarial": _clean(adversarial_result.provenance),
-            "deliverable": _clean(deliverable_result.provenance),
+            "pattern_discovery": clean_payload(pattern_result.provenance),
+            "causal_chain": clean_payload(causal_result.provenance),
+            "value_capture": clean_payload(value_result.provenance),
+            "adversarial": clean_payload(adversarial_result.provenance),
+            "deliverable": clean_payload(deliverable_result.provenance),
         },
     }
     snapshot_fingerprint = canonical_fingerprint(
@@ -553,8 +544,7 @@ def _process_group(
         "value_capture_count": len(value_assessments),
         "counterevidence_count": adversarial_counts["counterevidence"],
         "data_request_count": (
-            adversarial_counts["data_requests"]
-            + hypothesis_request_counts["requests"]
+            adversarial_counts["data_requests"] + hypothesis_request_counts["requests"]
         ),
         "unresolved_material_hypotheses": unresolved_hypotheses,
         "model_cost_usd": runner.cost_usd,
@@ -563,7 +553,7 @@ def _process_group(
 
 def run_discovery(
     session: Any,
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     correlation_id: str | None = None,
     budget_context: BudgetContext | None = None,
@@ -571,7 +561,7 @@ def run_discovery(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Discover and fully investigate bounded dynamic case candidates."""
-    settings = ResearchSettings.from_config(config)
+    settings = ResearchSettings.from_config(config.research_intelligence)
     if not settings.enabled:
         return {"status": "disabled", "cases": [], "errors": []}
     errors: list[dict[str, str]] = []
@@ -585,9 +575,7 @@ def run_discovery(
             )
     except Exception as exc:
         lifecycle_transitions = []
-        errors.append(
-            {"stage": "lifecycle_refresh", "error": type(exc).__name__}
-        )
+        errors.append({"stage": "lifecycle_refresh", "error": type(exc).__name__})
         logger.warning(
             "research_lifecycle_refresh_failed", error_type=type(exc).__name__
         )
@@ -607,14 +595,14 @@ def run_discovery(
     evidence = list(collection.items)
     # Adapter and candidate failures remain isolated from lifecycle maintenance.
     try:
-        extracted = _extract_claims(
-            session, runner, collection.items, force=force
-        )
+        extracted = _extract_claims(session, runner, collection.items, force=force)
         known = {item.ref for item in evidence}
         evidence.extend(item for item in extracted if item.ref not in known)
     except Exception as exc:
         errors.append({"stage": "claim_extraction", "error": type(exc).__name__})
-        logger.warning("research_claim_extraction_failed", error_type=type(exc).__name__)
+        logger.warning(
+            "research_claim_extraction_failed", error_type=type(exc).__name__
+        )
     groups = build_candidate_groups(
         evidence,
         settings,
@@ -658,7 +646,9 @@ def run_discovery(
                     "aliases": [],
                     "semantic_fingerprint": outcome.get("semantic_fingerprint"),
                     "blocking_key": group.blocking_key,
-                    "pipeline_input_fingerprint": _pipeline_fingerprint(group, settings),
+                    "pipeline_input_fingerprint": _pipeline_fingerprint(
+                        group, settings
+                    ),
                     "pipeline_complete": "true",
                 }
             )
@@ -706,7 +696,7 @@ def _stored_evidence(detail: Mapping[str, Any]) -> list[NormalizedEvidence]:
 
 def run_case_update(
     session: Any,
-    config: dict[str, Any],
+    config: AppConfig,
     case_id: str,
     *,
     correlation_id: str | None = None,
@@ -715,7 +705,7 @@ def run_case_update(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Update one case with linked history and newly related bounded evidence."""
-    settings = ResearchSettings.from_config(config)
+    settings = ResearchSettings.from_config(config.research_intelligence)
     detail = get_case(session, case_id, detail_limit=200)
     if detail is None:
         raise ValueError("research case not found")
@@ -733,8 +723,13 @@ def run_case_update(
     }
     related = []
     for item in collection.items:
-        item_keys = {(entity.entity_type, entity.normalized_key) for entity in item.entities}
-        if entity_keys & item_keys or token_similarity(case.get("title"), item.title) >= 0.2:
+        item_keys = {
+            (entity.entity_type, entity.normalized_key) for entity in item.entities
+        }
+        if (
+            entity_keys & item_keys
+            or token_similarity(case.get("title"), item.title) >= 0.2
+        ):
             related.append(item)
     merged: dict[str, NormalizedEvidence] = {
         item.ref: item for item in _stored_evidence(detail)
@@ -802,7 +797,7 @@ def run_case_update(
 
 def run_macro_transmission(
     session: Any,
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     correlation_id: str | None = None,
     budget_context: BudgetContext | None = None,
@@ -810,7 +805,7 @@ def run_macro_transmission(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Synthesize configured major-market context without changing release semantics."""
-    settings = ResearchSettings.from_config(config)
+    settings = ResearchSettings.from_config(config.research_intelligence)
     if not settings.enabled or not settings.macro_drivers_enabled:
         return {"status": "disabled", "driver_count": 0}
     registry = EvidenceRegistry(
@@ -826,9 +821,7 @@ def run_macro_transmission(
     collection = registry.collect(
         session,
         rolling_window_days=settings.rolling_window_days,
-        limit=min(
-            settings.maximum_candidate_evidence, settings.maximum_macro_evidence
-        ),
+        limit=min(settings.maximum_candidate_evidence, settings.maximum_macro_evidence),
         now=now,
     )
     if not collection.items:
@@ -841,8 +834,10 @@ def run_macro_transmission(
     fingerprint = market_driver_input_fingerprint(
         collection.items, settings.hot_market_universe
     )
-    if not force and prior and all(
-        row.get("input_fingerprint") == fingerprint for row in prior
+    if (
+        not force
+        and prior
+        and all(row.get("input_fingerprint") == fingerprint for row in prior)
     ):
         return {"status": "unchanged", "driver_count": len(prior)}
     payload = {

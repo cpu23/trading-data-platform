@@ -41,10 +41,6 @@ def _get_templates(request: Request):
     return request.app.state.templates
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
-
 def _freshness_dot(
     stale: bool = False, failed: bool = False, title: str | None = None
 ) -> dict:
@@ -215,7 +211,7 @@ def partial_markets_cross_asset(request: Request):
         {
             "request": request,
             "cross_asset": load_cross_asset(config),
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
@@ -231,7 +227,7 @@ def partial_markets_catalysts(request: Request):
         {
             "request": request,
             "catalysts": load_catalysts(config),
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
@@ -251,7 +247,7 @@ def partial_markets_macro_releases(request: Request):
         {
             "request": request,
             "macro_releases": releases,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 

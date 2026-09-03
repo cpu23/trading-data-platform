@@ -19,45 +19,30 @@ configured fails closed — the orchestrator never guesses an estimate for a
 paid call.
 """
 
-import math
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
+from contracts.budgets import (
+    DEFAULT_RESERVATION_TTL_SECONDS,
+    coerce_finite_number,
+    get_budget_config,
+    utc_day_bounds,
+)
 from db import get_session
 from logging_config import get_logger
 
 logger = get_logger("budgets")
-DEFAULT_DAILY_LLM_USD = 2.0
-DEFAULT_WARN_AT_PCT = 80
-# No generic estimate fallback for paid calls: a paid model whose pricing is
-# not explicitly configured fails closed instead of guessing.
-DEFAULT_RESERVATION_TTL_SECONDS = 600.0
 # Mirrors llm_client.DEFAULT_STAGE_TIMEOUT_SECONDS without importing it
 # (llm_client imports this module). The reservation must outlive the single
 # make_request deadline: stage_timeout + 30s slack (paid calls are
 # single-attempt; validation retries are separately-budgeted calls).
 _DEFAULT_STAGE_TIMEOUT_SECONDS = 90.0
 _REQUEST_DEADLINE_SLACK_SECONDS = 30.0
-BUDGET_OVERRIDE_TTL_SECONDS = 600
 _TRUSTED_MANUAL_AUTHORIZATION = object()
 _BUDGET_PERMIT = object()
-
-
-def _finite_number(value, name: str) -> float:
-    if value is None or isinstance(value, (bool, str)):
-        raise ValueError(f"{name} must be a finite number")
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite number") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite number")
-    return number
-
-
 def _known_free_model(model: str | None) -> bool:
     """True when the model slug is a known-free variant.
 
@@ -100,7 +85,7 @@ def _reservation_policy(
             f"no configured pricing for paid model {processor!r}; "
             "set budgets.estimates or budgets.reservation_estimate_usd"
         )
-    estimate = _finite_number(estimate, "budgets.reservation_estimate_usd")
+    estimate = coerce_finite_number(estimate, "budgets.reservation_estimate_usd")
     if estimate <= 0:
         raise ValueError("budgets.reservation_estimate_usd must be positive")
     return estimate, _reservation_ttl(config)
@@ -113,7 +98,7 @@ def _reservation_ttl(config: dict) -> float:
     budget_cfg = config.get("budgets", {})
     if not isinstance(budget_cfg, Mapping):
         raise ValueError("budgets must be an object")
-    ttl = _finite_number(
+    ttl = coerce_finite_number(
         budget_cfg.get("reservation_ttl_seconds", DEFAULT_RESERVATION_TTL_SECONDS),
         "budgets.reservation_ttl_seconds",
     )
@@ -230,8 +215,8 @@ def _reserve_budget_quota(
                 "now": current,
             },
         ).fetchone()
-        spent = _finite_number(row._mapping.get("spent_usd"), "budget spent")
-        reserved = _finite_number(row._mapping.get("reserved_usd"), "budget reserved")
+        spent = coerce_finite_number(row._mapping.get("spent_usd"), "budget spent")
+        reserved = coerce_finite_number(row._mapping.get("reserved_usd"), "budget reserved")
         if estimate_usd > 0 and spent + reserved + estimate_usd > cap:
             raise BudgetExceeded(spent + reserved, cap, processor=processor)
         inserted = active_session.execute(
@@ -273,8 +258,8 @@ def reserve_budget_quota(
 ) -> str:
     """Reserve bounded non-model research cost through the global UTC-day ledger."""
     cap, _warn_at = get_budget_config(config)
-    estimate = _finite_number(estimate_usd, "estimate_usd")
-    ttl = _finite_number(ttl_seconds, "ttl_seconds")
+    estimate = coerce_finite_number(estimate_usd, "estimate_usd")
+    ttl = coerce_finite_number(ttl_seconds, "ttl_seconds")
     if estimate < 0 or estimate > 100:
         raise ValueError("estimate_usd must be between 0 and 100")
     if ttl < 1 or ttl > 86400:
@@ -293,34 +278,6 @@ def reserve_budget_quota(
         now=now,
         session=session,
     )
-
-
-def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    current = now or datetime.now(UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    current = current.astimezone(UTC)
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, start + timedelta(days=1)
-
-
-def get_budget_config(config: dict) -> tuple[float, float]:
-    configured = config.get("budgets", {})
-    cap = _finite_number(
-        configured.get("daily_llm_usd", DEFAULT_DAILY_LLM_USD),
-        "budgets.daily_llm_usd",
-    )
-    # A negative cap is malformed, never unlimited; a zero cap denies all
-    # paid calls (fail closed, no unlimited mode).
-    if cap < 0:
-        raise ValueError("budgets.daily_llm_usd must be non-negative")
-    warn_at = _finite_number(
-        configured.get("warn_at_pct", DEFAULT_WARN_AT_PCT), "budgets.warn_at_pct"
-    )
-    if not 0 <= warn_at <= 100:
-        raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    return cap, warn_at
-
 
 def get_today_spend(config: dict, *, now: datetime | None = None) -> tuple[float, int]:
     today_start, tomorrow_start = utc_day_bounds(now)
@@ -341,40 +298,6 @@ def get_today_spend(config: dict, *, now: datetime | None = None) -> tuple[float
     if row is None:
         return 0.0, 0
     return float(row.get("total_cost") or 0), int(row.get("total_tokens") or 0)
-
-
-def budget_status(
-    today_cost: float, cap, warn_at_pct: float = DEFAULT_WARN_AT_PCT
-) -> dict:
-    daily_cap = _finite_number(cap, "budgets.daily_llm_usd")
-    cost = _finite_number(today_cost, "today_cost")
-    warn_at = _finite_number(warn_at_pct, "budgets.warn_at_pct")
-    if not 0 <= warn_at <= 100:
-        raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    if daily_cap < 0:
-        raise ValueError("budgets.daily_llm_usd must be non-negative")
-    # A zero cap denies all paid calls (fail closed); there is no unlimited
-    # mode unless one is explicitly configured in the future.
-    if daily_cap == 0:
-        return {
-            "budget_cap_usd": daily_cap,
-            "unlimited": False,
-            "warn_at_pct": warn_at,
-            "usage_pct": 0.0,
-            "warning": False,
-            "exceeded": True,
-        }
-    usage_pct = round((cost / daily_cap) * 100, 2)
-    exceeded = cost >= daily_cap
-    warning = not exceeded and usage_pct >= warn_at
-    return {
-        "budget_cap_usd": daily_cap,
-        "unlimited": False,
-        "warn_at_pct": warn_at,
-        "usage_pct": usage_pct,
-        "warning": warning,
-        "exceeded": exceeded,
-    }
 
 
 class BudgetBlock(RuntimeError):
@@ -555,7 +478,7 @@ def settle_budget_reservation(
     """
     if not isinstance(reservation_id, str) or not reservation_id:
         return True
-    actual = _finite_number(actual_usd, "settled_usd")
+    actual = coerce_finite_number(actual_usd, "settled_usd")
     if actual < 0:
         raise ValueError("settled_usd must be non-negative")
     try:

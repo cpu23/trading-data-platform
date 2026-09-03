@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from config import load_config
+from config import live_updates_enabled, load_config
 from db import query_many
 from routes.views.cockpit_panels import direction, json_obj, pct_display
 from routes.views.dashboard_strip import iso, time_display
@@ -35,10 +35,6 @@ STORY_LANE_LABELS = {
 MAX_STORY_CLUSTERS = 100
 MAX_STORY_EVIDENCE = 5
 MAX_STORY_CONFIRMATIONS = 20
-
-
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
 def _read_json_bounded(path: Path, max_bytes: int):
@@ -631,7 +627,7 @@ def partial_news_change_feed(
             "feed": feed,
             "append": before is not None,
             "news_page": request.url.path == "/partials/news/change-feed",
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 

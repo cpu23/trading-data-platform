@@ -22,18 +22,28 @@ class CIWorkflowTests(unittest.TestCase):
 
     def test_unit_jobs_use_python_312_uv_cache_and_exact_suites(self):
         jobs = self.workflow["jobs"]
-        for name, directory in (("api-unit", "api"), ("orchestrator-unit", "orchestrator")):
+        for name, directory in (
+            ("api-unit", "api"),
+            ("orchestrator-unit", "orchestrator"),
+        ):
             job = jobs[name]
             rendered = yaml.safe_dump(job)
             self.assertRegex(rendered, r"actions/setup-python@[0-9a-f]{40}")
             self.assertRegex(rendered, r"astral-sh/setup-uv@[0-9a-f]{40}")
-            self.assertIn('python-version: \'3.12\'', rendered)
+            self.assertIn("python-version: '3.12'", rendered)
             self.assertIn("enable-cache: 'true'", rendered)
             commands = "\n".join(step.get("run", "") for step in job["steps"])
             self.assertIn("uv sync --frozen", commands)
-            self.assertIn("uv run python -m unittest discover -s tests -v", commands)
+            self.assertIn(
+                "uv run python ../scripts/run_bounded_tests.py discover -s tests -v",
+                commands,
+            )
             self.assertEqual(
-                [step.get("working-directory") for step in job["steps"] if "unittest discover" in step.get("run", "")],
+                [
+                    step.get("working-directory")
+                    for step in job["steps"]
+                    if "run_bounded_tests.py" in step.get("run", "")
+                ],
                 [directory],
             )
 

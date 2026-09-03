@@ -19,6 +19,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
+
 STAGES = ("t0", "developing", "reaction", "final")
 _MAX_READ = 500
 
@@ -395,20 +397,6 @@ def build_macro_release_card(
     }
 
 
-def _first_row(result: Any) -> Mapping[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first() if hasattr(result, "first") else None
-    return row
-
-
-def _rows(result: Any) -> list[Mapping[str, Any]]:
-    try:
-        return list(result.mappings().all())
-    except AttributeError:
-        return list(result.all()) if hasattr(result, "all") else []
-
 
 def upsert_macro_release_card(
     session: Any,
@@ -421,7 +409,7 @@ def upsert_macro_release_card(
     if card["source_event_id"] is None:
         raise ValueError("market event id is required")
     identity = card["release_identity"]
-    existing = _first_row(
+    existing = result_first(
         session.execute(
             text(
                 "SELECT * FROM macro_release_cards WHERE release_identity = :identity AND source_event_id = :source_event_id LIMIT 1"
@@ -431,7 +419,7 @@ def upsert_macro_release_card(
     )
     if existing is not None:
         return dict(existing)
-    current = _first_row(
+    current = result_first(
         session.execute(
             text(
                 "SELECT c.*, p.stage AS pointer_stage FROM macro_release_cards_current p "
@@ -441,7 +429,7 @@ def upsert_macro_release_card(
             {"identity": identity},
         )
     )
-    history = _rows(
+    history = result_rows(
         session.execute(
             text(
                 "SELECT actual, consensus, absolute_surprise FROM macro_release_cards "
@@ -499,7 +487,7 @@ def upsert_macro_release_card(
         "source_payload": _json_text(card["source_payload"]),
         "created_at": _timestamp(card["created_at"]),
     }
-    inserted = _first_row(
+    inserted = result_first(
         session.execute(
             text("""INSERT INTO macro_release_cards
         (release_identity, series_id, revision_number, source_event_id, revision_of_event_id, supersedes_card_id,
@@ -516,7 +504,7 @@ def upsert_macro_release_card(
         )
     )
     if inserted is None:
-        duplicate = _first_row(
+        duplicate = result_first(
             session.execute(
                 text(
                     "SELECT * FROM macro_release_cards WHERE release_identity = :identity AND source_event_id = :source_event_id LIMIT 1"
@@ -554,7 +542,7 @@ def advance_macro_release_stage(
     now: Any = None,
 ) -> dict[str, Any] | None:
     """Advance the mutable current pointer without rewriting immutable history."""
-    row = _first_row(
+    row = result_first(
         session.execute(
             text(
                 "SELECT c.*, p.stage AS pointer_stage, p.reaction_summary AS pointer_reaction_summary "
@@ -627,7 +615,7 @@ def list_macro_release_cards(
     if where:
         query += " WHERE " + " AND ".join(where)
     query += " ORDER BY c.observed_at DESC NULLS LAST, c.created_at DESC, c.id DESC LIMIT :limit OFFSET :offset"
-    rows = _rows(session.execute(text(query), params))
+    rows = result_rows(session.execute(text(query), params))
     if current_only:
         normalized: list[Mapping[str, Any]] = []
         for row in rows:
@@ -644,7 +632,7 @@ def list_macro_release_cards(
 def current_macro_release_card(
     session: Any, release_identity: str
 ) -> Mapping[str, Any] | None:
-    row = _first_row(
+    row = result_first(
         session.execute(
             text(
                 "SELECT c.*, p.stage AS pointer_stage, p.reaction_summary AS pointer_reaction_summary "

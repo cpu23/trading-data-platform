@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+from config import live_updates_enabled, load_config
 from db import query_many
 from routes.json.atoms import load_atom_context
 from routes.json.settings import timezone_context
@@ -14,10 +14,6 @@ from topology import build_system_topology, unavailable_system_topology
 
 router = APIRouter()
 OVERVIEW_LIMIT = 10
-
-
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
 
 
 async def _source_state(request: Request) -> dict:
@@ -234,7 +230,7 @@ def _local_snapshot(request: Request) -> dict:
         "runs": runs,
         "event_pipeline": event_pipeline,
         "claim_history": claim_history,
-        "live_updates_enabled": _live_updates_enabled(config),
+        "live_updates_enabled": live_updates_enabled(config),
         "topology": topology,
     }
 
@@ -272,7 +268,7 @@ async def partial_source_health(request: Request):
         {
             "request": request,
             "source_state": source_state,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 
@@ -281,9 +277,9 @@ async def partial_source_health(request: Request):
 async def partial_system_topology(request: Request):
     try:
         config = await run_in_threadpool(load_config)
-        live_updates_enabled = _live_updates_enabled(config)
+        is_live_enabled = live_updates_enabled(config)
     except Exception:
-        live_updates_enabled = False
+        is_live_enabled = False
     try:
         topology = await run_in_threadpool(build_system_topology)
     except Exception:
@@ -294,7 +290,7 @@ async def partial_system_topology(request: Request):
         {
             "request": request,
             "topology": topology.model_dump(mode="json"),
-            "live_updates_enabled": live_updates_enabled,
+            "live_updates_enabled": is_live_enabled,
         },
     )
 

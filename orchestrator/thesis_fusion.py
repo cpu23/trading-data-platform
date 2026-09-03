@@ -64,6 +64,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
 from research_intelligence.contracts import (
     EvidenceSignal,
     Scenario,
@@ -174,19 +175,6 @@ _LIQUIDITY_LOG_FLOOR = 6.0
 _LIQUIDITY_LOG_CEILING = 9.0
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except AttributeError:
-        return [dict(row) for row in result]
-
-
-def _first(result: Any) -> dict[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    return dict(row) if row is not None else None
 
 
 def _bounded(value: Any, default: int, maximum: int) -> int:
@@ -336,41 +324,35 @@ def _same(a: Any, b: Any) -> bool:
 
 
 def _theme_exists(session: Any, theme_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_themes "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": theme_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_themes "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": theme_id},
+    ))
     return row is not None
 
 
 def _thesis_exists(session: Any, thesis_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_theses "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_theses "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": thesis_id},
+    ))
     return row is not None
 
 
 def _group_exists(session: Any, group_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_thesis_groups "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": group_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_thesis_groups "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": group_id},
+    ))
     return row is not None
 
 
@@ -431,32 +413,28 @@ def create_find_group(
     if status not in GROUP_STATUSES:
         raise ValueError(f"unsupported group status:{str(status)[:32]}")
     for _ in range(2):
-        row = _first(
-            session.execute(
-                text(
-                    """INSERT INTO investment_thesis_groups
-                       (name, description, status)
-                       VALUES (:name, :description, :status)
-                       ON CONFLICT (name) DO NOTHING
-                       RETURNING id"""
-                ),
-                {
-                    "name": group_name,
-                    "description": group_description,
-                    "status": status,
-                },
-            )
-        )
+        row = result_first(session.execute(
+            text(
+                """INSERT INTO investment_thesis_groups
+                   (name, description, status)
+                   VALUES (:name, :description, :status)
+                   ON CONFLICT (name) DO NOTHING
+                   RETURNING id"""
+            ),
+            {
+                "name": group_name,
+                "description": group_description,
+                "status": status,
+            },
+        ))
         if row is not None:
             return {"id": str(row["id"]), "created": True}
-        existing = _first(
-            session.execute(
-                text(
-                    "SELECT id FROM investment_thesis_groups WHERE name = :name LIMIT 1"
-                ),
-                {"name": group_name},
-            )
-        )
+        existing = result_first(session.execute(
+            text(
+                "SELECT id FROM investment_thesis_groups WHERE name = :name LIMIT 1"
+            ),
+            {"name": group_name},
+        ))
         if existing is not None:
             return {"id": str(existing["id"]), "created": False}
     raise RuntimeError(f"group creation failed for name:{group_name[:64]}")
@@ -486,16 +464,14 @@ def _append_version(
     sentiment_context: str | None = None,
     citation_map: Mapping[str, Any] | None = None,
 ) -> int:
-    version_row = _first(
-        session.execute(
-            text(
-                "SELECT COALESCE(MAX(version), 0) AS max_version "
-                "FROM investment_thesis_versions "
-                "WHERE thesis_id = CAST(:id AS UUID)"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    version_row = result_first(session.execute(
+        text(
+            "SELECT COALESCE(MAX(version), 0) AS max_version "
+            "FROM investment_thesis_versions "
+            "WHERE thesis_id = CAST(:id AS UUID)"
+        ),
+        {"id": thesis_id},
+    ))
     next_version = int(version_row["max_version"]) + 1
     session.execute(
         text(
@@ -646,37 +622,33 @@ def merge_or_create_thesis(
         # thesis identity + inputs, so an identical candidate submission
         # must merge into the thesis that produced it.  The row is locked
         # so the accepted-reference claim below is race-free.
-        existing = _first(
-            session.execute(
-                text(
-                    """SELECT id, claim, variant_perception, confidence, status,
-                              trend_context, valuation_context, sentiment_context,
-                              citation_map, canonical_key, fusion_reference_at,
-                              fusion_candidate_fingerprint
-                       FROM investment_theses
-                       WHERE input_fingerprint = :fingerprint
-                       LIMIT 1 FOR UPDATE"""
-                ),
-                {"fingerprint": fingerprint},
-            )
-        )
+        existing = result_first(session.execute(
+            text(
+                """SELECT id, claim, variant_perception, confidence, status,
+                          trend_context, valuation_context, sentiment_context,
+                          citation_map, canonical_key, fusion_reference_at,
+                          fusion_candidate_fingerprint
+                   FROM investment_theses
+                   WHERE input_fingerprint = :fingerprint
+                   LIMIT 1 FOR UPDATE"""
+            ),
+            {"fingerprint": fingerprint},
+        ))
         if existing is not None and str(existing.get("canonical_key")) != key:
             raise ValueError("input_fingerprint conflicts with thesis identity")
     if existing is None:
-        existing = _first(
-            session.execute(
-                text(
-                    """SELECT id, claim, variant_perception, confidence, status,
-                              trend_context, valuation_context, sentiment_context,
-                              citation_map, canonical_key, fusion_reference_at,
-                              fusion_candidate_fingerprint
-                       FROM investment_theses
-                       WHERE canonical_key = :key
-                       LIMIT 1 FOR UPDATE"""
-                ),
-                {"key": key},
-            )
-        )
+        existing = result_first(session.execute(
+            text(
+                """SELECT id, claim, variant_perception, confidence, status,
+                          trend_context, valuation_context, sentiment_context,
+                          citation_map, canonical_key, fusion_reference_at,
+                          fusion_candidate_fingerprint
+                   FROM investment_theses
+                   WHERE canonical_key = :key
+                   LIMIT 1 FOR UPDATE"""
+            ),
+            {"key": key},
+        ))
     if existing is not None:
         thesis_id = str(existing["id"])
         stored_reference = _timestamp(
@@ -705,16 +677,14 @@ def merge_or_create_thesis(
             # mutation -- and the explicit outcome lets the caller skip
             # every child-state write (evidence, catalyst, scenarios,
             # playbook, position link, forecast, evaluation, challenge).
-            current_version = _first(
-                session.execute(
-                    text(
-                        "SELECT COALESCE(MAX(version), 0) AS max_version "
-                        "FROM investment_thesis_versions "
-                        "WHERE thesis_id = CAST(:id AS UUID)"
-                    ),
-                    {"id": thesis_id},
-                )
-            )
+            current_version = result_first(session.execute(
+                text(
+                    "SELECT COALESCE(MAX(version), 0) AS max_version "
+                    "FROM investment_thesis_versions "
+                    "WHERE thesis_id = CAST(:id AS UUID)"
+                ),
+                {"id": thesis_id},
+            ))
             return {
                 "id": thesis_id,
                 "created": False,
@@ -823,16 +793,14 @@ def merge_or_create_thesis(
                         "accepted_fingerprint": fingerprint,
                     },
                 )
-            next_version = _first(
-                session.execute(
-                    text(
-                        "SELECT COALESCE(MAX(version), 0) AS max_version "
-                        "FROM investment_thesis_versions "
-                        "WHERE thesis_id = CAST(:id AS UUID)"
-                    ),
-                    {"id": thesis_id},
-                )
-            )
+            next_version = result_first(session.execute(
+                text(
+                    "SELECT COALESCE(MAX(version), 0) AS max_version "
+                    "FROM investment_thesis_versions "
+                    "WHERE thesis_id = CAST(:id AS UUID)"
+                ),
+                {"id": thesis_id},
+            ))
             next_version = int(next_version["max_version"]) or 1
         return {
             "id": thesis_id,
@@ -842,54 +810,52 @@ def merge_or_create_thesis(
             "stale": False,
             "canonical_key": key,
         }
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_theses
-                   (theme_id, company, symbol, claim, variant_perception,
-                    horizon, mechanism, direction, catalyst_summary, confidence,
-                    trend_context, valuation_context, sentiment_context, citation_map,
-                    invalidation_conditions, origin, canonical_key,
-                    input_fingerprint, fusion_reference_at,
-                    fusion_candidate_fingerprint)
-                   VALUES (:theme_id, :company, :symbol, :claim,
-                           :variant_perception, :horizon, :mechanism, :direction,
-                           :catalyst_summary, :confidence, :trend_context,
-                           :valuation_context, :sentiment_context,
-                           CAST(:citation_map AS JSONB),
-                           CAST(:invalidation_conditions AS JSONB), :origin,
-                           :canonical_key, :input_fingerprint, :fusion_reference_at,
-                           :fusion_candidate_fingerprint)
-                   RETURNING id"""
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_theses
+               (theme_id, company, symbol, claim, variant_perception,
+                horizon, mechanism, direction, catalyst_summary, confidence,
+                trend_context, valuation_context, sentiment_context, citation_map,
+                invalidation_conditions, origin, canonical_key,
+                input_fingerprint, fusion_reference_at,
+                fusion_candidate_fingerprint)
+               VALUES (:theme_id, :company, :symbol, :claim,
+                       :variant_perception, :horizon, :mechanism, :direction,
+                       :catalyst_summary, :confidence, :trend_context,
+                       :valuation_context, :sentiment_context,
+                       CAST(:citation_map AS JSONB),
+                       CAST(:invalidation_conditions AS JSONB), :origin,
+                       :canonical_key, :input_fingerprint, :fusion_reference_at,
+                       :fusion_candidate_fingerprint)
+               RETURNING id"""
+        ),
+        {
+            "theme_id": theme_id,
+            "company": _text(company, 200),
+            "symbol": _text(symbol, 20),
+            "claim": claim_text,
+            "variant_perception": variant,
+            "horizon": _text(horizon, 50),
+            "mechanism": _text(mechanism, 1000),
+            "direction": direction,
+            "catalyst_summary": _text(catalyst_summary, 2000),
+            "confidence": thesis_confidence,
+            "trend_context": trend,
+            "valuation_context": valuation,
+            "sentiment_context": sentiment,
+            "citation_map": json.dumps(citations, sort_keys=True),
+            "invalidation_conditions": json.dumps(conditions),
+            "origin": origin,
+            "canonical_key": key,
+            "input_fingerprint": _text(input_fingerprint, 200),
+            "fusion_reference_at": reference,
+            # The fingerprint pair is meaningful only under an accepted
+            # reference: manual creations stay outside the guard.
+            "fusion_candidate_fingerprint": (
+                fingerprint if reference is not None else None
             ),
-            {
-                "theme_id": theme_id,
-                "company": _text(company, 200),
-                "symbol": _text(symbol, 20),
-                "claim": claim_text,
-                "variant_perception": variant,
-                "horizon": _text(horizon, 50),
-                "mechanism": _text(mechanism, 1000),
-                "direction": direction,
-                "catalyst_summary": _text(catalyst_summary, 2000),
-                "confidence": thesis_confidence,
-                "trend_context": trend,
-                "valuation_context": valuation,
-                "sentiment_context": sentiment,
-                "citation_map": json.dumps(citations, sort_keys=True),
-                "invalidation_conditions": json.dumps(conditions),
-                "origin": origin,
-                "canonical_key": key,
-                "input_fingerprint": _text(input_fingerprint, 200),
-                "fusion_reference_at": reference,
-                # The fingerprint pair is meaningful only under an accepted
-                # reference: manual creations stay outside the guard.
-                "fusion_candidate_fingerprint": (
-                    fingerprint if reference is not None else None
-                ),
-            },
-        )
-    )
+        },
+    ))
     thesis_id = str(row["id"])
     _append_version(
         session,
@@ -942,41 +908,35 @@ def add_group_membership(
         raise ValueError("unknown thesis")
     # Serialize concurrent membership changes for this thesis: the row lock
     # makes the probe/insert below race-free across transactions.
-    _first(
-        session.execute(
-            text(
-                "SELECT id FROM investment_theses "
-                "WHERE id = CAST(:id AS UUID) FOR UPDATE"
-            ),
-            {"id": thesis_id},
-        )
-    )
-    active = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present
-                   FROM investment_thesis_group_members
-                   WHERE group_id = CAST(:group_id AS UUID)
-                     AND thesis_id = CAST(:thesis_id AS UUID)
-                     AND removed_at IS NULL LIMIT 1"""
-            ),
-            {"group_id": group_id, "thesis_id": thesis_id},
-        )
-    )
+    result_first(session.execute(
+        text(
+            "SELECT id FROM investment_theses "
+            "WHERE id = CAST(:id AS UUID) FOR UPDATE"
+        ),
+        {"id": thesis_id},
+    ))
+    active = result_first(session.execute(
+        text(
+            """SELECT 1 AS present
+               FROM investment_thesis_group_members
+               WHERE group_id = CAST(:group_id AS UUID)
+                 AND thesis_id = CAST(:thesis_id AS UUID)
+                 AND removed_at IS NULL LIMIT 1"""
+        ),
+        {"group_id": group_id, "thesis_id": thesis_id},
+    ))
     if active is not None:
         return False
-    other = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present
-                   FROM investment_thesis_group_members
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND group_id <> CAST(:group_id AS UUID)
-                     AND removed_at IS NULL LIMIT 1"""
-            ),
-            {"group_id": group_id, "thesis_id": thesis_id},
-        )
-    )
+    other = result_first(session.execute(
+        text(
+            """SELECT 1 AS present
+               FROM investment_thesis_group_members
+               WHERE thesis_id = CAST(:thesis_id AS UUID)
+                 AND group_id <> CAST(:group_id AS UUID)
+                 AND removed_at IS NULL LIMIT 1"""
+        ),
+        {"group_id": group_id, "thesis_id": thesis_id},
+    ))
     if other is not None:
         raise ValueError("thesis already belongs to another group")
     session.execute(
@@ -1015,17 +975,15 @@ def remove_group_membership(
     """
     group_id = _uuid(group_id, "group_id")
     thesis_id = _uuid(thesis_id, "thesis_id")
-    active = _first(
-        session.execute(
-            text(
-                """SELECT id FROM investment_thesis_group_members
-                   WHERE group_id = CAST(:group_id AS UUID)
-                     AND thesis_id = CAST(:thesis_id AS UUID)
-                     AND removed_at IS NULL LIMIT 1"""
-            ),
-            {"group_id": group_id, "thesis_id": thesis_id},
-        )
-    )
+    active = result_first(session.execute(
+        text(
+            """SELECT id FROM investment_thesis_group_members
+               WHERE group_id = CAST(:group_id AS UUID)
+                 AND thesis_id = CAST(:thesis_id AS UUID)
+                 AND removed_at IS NULL LIMIT 1"""
+        ),
+        {"group_id": group_id, "thesis_id": thesis_id},
+    ))
     if active is None:
         return False
     session.execute(
@@ -1049,20 +1007,18 @@ def remove_group_membership(
 
 
 def _existing_evidence_keys(session: Any, thesis_id: str) -> tuple[set[str], set[str]]:
-    rows = _rows(
-        session.execute(
-            text(
-                """SELECT evidence_fingerprint, independence_key
-                   FROM investment_thesis_evidence
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND (evidence_fingerprint IS NOT NULL
-                          OR independence_key IS NOT NULL)
-                   ORDER BY created_at, evidence_type, evidence_id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": _MAX_LOAD_EVIDENCE},
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """SELECT evidence_fingerprint, independence_key
+               FROM investment_thesis_evidence
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND (evidence_fingerprint IS NOT NULL
+                      OR independence_key IS NOT NULL)
+               ORDER BY created_at, evidence_type, evidence_id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": _MAX_LOAD_EVIDENCE},
+    ))
     fingerprints = {
         str(row["evidence_fingerprint"])
         for row in rows
@@ -1244,18 +1200,16 @@ def upsert_scenario(
     base_case = bool(is_base_case)
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    active = _first(
-        session.execute(
-            text(
-                """SELECT id, version, description, probability,
-                          expected_return, is_base_case
-                   FROM investment_thesis_scenarios
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND name = :name AND superseded_at IS NULL LIMIT 1"""
-            ),
-            {"thesis_id": thesis_id, "name": scenario_name},
-        )
-    )
+    active = result_first(session.execute(
+        text(
+            """SELECT id, version, description, probability,
+                      expected_return, is_base_case
+               FROM investment_thesis_scenarios
+               WHERE thesis_id = CAST(:thesis_id AS UUID)
+                 AND name = :name AND superseded_at IS NULL LIMIT 1"""
+        ),
+        {"thesis_id": thesis_id, "name": scenario_name},
+    ))
     if active is not None and (
         _same(active.get("description"), scenario_description)
         and _same(active.get("probability"), scenario_probability)
@@ -1273,19 +1227,17 @@ def upsert_scenario(
         # successor with identical content (never update it in place);
         # when the promoted scenario is the base row itself, its revision
         # below replaces it directly and no successor is needed.
-        base = _first(
-            session.execute(
-                text(
-                    """SELECT id, name, version, description, probability,
-                              expected_return
-                       FROM investment_thesis_scenarios
-                       WHERE thesis_id = CAST(:thesis_id AS UUID)
-                         AND is_base_case AND superseded_at IS NULL
-                       LIMIT 1 FOR UPDATE"""
-                ),
-                {"thesis_id": thesis_id},
-            )
-        )
+        base = result_first(session.execute(
+            text(
+                """SELECT id, name, version, description, probability,
+                          expected_return
+                   FROM investment_thesis_scenarios
+                   WHERE thesis_id = CAST(:thesis_id AS UUID)
+                     AND is_base_case AND superseded_at IS NULL
+                   LIMIT 1 FOR UPDATE"""
+            ),
+            {"thesis_id": thesis_id},
+        ))
         if base is not None and (
             active is None or str(base["id"]) != str(active["id"])
         ):
@@ -1297,28 +1249,26 @@ def upsert_scenario(
                 ),
                 {"id": str(base["id"])},
             )
-            _first(
-                session.execute(
-                    text(
-                        """INSERT INTO investment_thesis_scenarios
-                           (thesis_id, name, description, probability,
-                            expected_return, is_base_case, version)
-                           VALUES (CAST(:thesis_id AS UUID), :name, :description,
-                                   :probability, :expected_return, :is_base_case,
-                                   :version)
-                           RETURNING id"""
-                    ),
-                    {
-                        "thesis_id": thesis_id,
-                        "name": str(base["name"]),
-                        "description": base.get("description"),
-                        "probability": base.get("probability"),
-                        "expected_return": base.get("expected_return"),
-                        "is_base_case": False,
-                        "version": int(base["version"]) + 1,
-                    },
-                )
-            )
+            result_first(session.execute(
+                text(
+                    """INSERT INTO investment_thesis_scenarios
+                       (thesis_id, name, description, probability,
+                        expected_return, is_base_case, version)
+                       VALUES (CAST(:thesis_id AS UUID), :name, :description,
+                               :probability, :expected_return, :is_base_case,
+                               :version)
+                       RETURNING id"""
+                ),
+                {
+                    "thesis_id": thesis_id,
+                    "name": str(base["name"]),
+                    "description": base.get("description"),
+                    "probability": base.get("probability"),
+                    "expected_return": base.get("expected_return"),
+                    "is_base_case": False,
+                    "version": int(base["version"]) + 1,
+                },
+            ))
     if active is not None:
         session.execute(
             text(
@@ -1331,28 +1281,26 @@ def upsert_scenario(
         next_version = int(active["version"]) + 1
     else:
         next_version = 1
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_thesis_scenarios
-                   (thesis_id, name, description, probability,
-                    expected_return, is_base_case, version)
-                   VALUES (CAST(:thesis_id AS UUID), :name, :description,
-                           :probability, :expected_return, :is_base_case,
-                           :version)
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "name": scenario_name,
-                "description": scenario_description,
-                "probability": scenario_probability,
-                "expected_return": scenario_return,
-                "is_base_case": base_case,
-                "version": next_version,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_thesis_scenarios
+               (thesis_id, name, description, probability,
+                expected_return, is_base_case, version)
+               VALUES (CAST(:thesis_id AS UUID), :name, :description,
+                       :probability, :expected_return, :is_base_case,
+                       :version)
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "name": scenario_name,
+            "description": scenario_description,
+            "probability": scenario_probability,
+            "expected_return": scenario_return,
+            "is_base_case": base_case,
+            "version": next_version,
+        },
+    ))
     return {
         "id": str(row["id"]),
         "version": next_version,
@@ -1438,16 +1386,14 @@ def freeze_forecast(
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
     if scenario is not None:
-        known = _first(
-            session.execute(
-                text(
-                    """SELECT 1 AS present FROM investment_thesis_scenarios
-                       WHERE id = CAST(:id AS UUID)
-                         AND thesis_id = CAST(:thesis_id AS UUID) LIMIT 1"""
-                ),
-                {"id": scenario, "thesis_id": thesis_id},
-            )
-        )
+        known = result_first(session.execute(
+            text(
+                """SELECT 1 AS present FROM investment_thesis_scenarios
+                   WHERE id = CAST(:id AS UUID)
+                     AND thesis_id = CAST(:thesis_id AS UUID) LIMIT 1"""
+            ),
+            {"id": scenario, "thesis_id": thesis_id},
+        ))
         if known is None:
             raise ValueError("unknown scenario for thesis")
         # Lock the target scenario's own row for every freeze: the single
@@ -1464,18 +1410,16 @@ def freeze_forecast(
             ),
             {"id": scenario, "thesis_id": thesis_id},
         )
-    active = _first(
-        session.execute(
-            text(
-                """SELECT id, thesis_id, scenario_id, version, forecast_type,
-                          direction, target_value, target_date
-                   FROM investment_thesis_forecasts
-                   WHERE forecast_key = :key AND superseded_at IS NULL LIMIT 1
-                   FOR UPDATE"""
-            ),
-            {"key": key},
-        )
-    )
+    active = result_first(session.execute(
+        text(
+            """SELECT id, thesis_id, scenario_id, version, forecast_type,
+                      direction, target_value, target_date
+               FROM investment_thesis_forecasts
+               WHERE forecast_key = :key AND superseded_at IS NULL LIMIT 1
+               FOR UPDATE"""
+        ),
+        {"key": key},
+    ))
     values = {
         "forecast_type": forecast_type,
         "direction": direction,
@@ -1503,17 +1447,15 @@ def freeze_forecast(
         # leave the caller's active row untouched.  Every conforming
         # freeze takes this lock before writing, so the ownership read
         # cannot go stale before the supersede/INSERT below.
-        owner = _first(
-            session.execute(
-                text(
-                    """SELECT id, thesis_id, forecast_key, version
-                       FROM investment_thesis_forecasts
-                       WHERE scenario_id = CAST(:scenario_id AS UUID)
-                         AND superseded_at IS NULL LIMIT 1"""
-                ),
-                {"scenario_id": scenario},
-            )
-        )
+        owner = result_first(session.execute(
+            text(
+                """SELECT id, thesis_id, forecast_key, version
+                   FROM investment_thesis_forecasts
+                   WHERE scenario_id = CAST(:scenario_id AS UUID)
+                     AND superseded_at IS NULL LIMIT 1"""
+            ),
+            {"scenario_id": scenario},
+        ))
         if owner is not None and str(owner["forecast_key"]) != key:
             if str(owner["thesis_id"]) != thesis_id:
                 raise ValueError("forecast_key already in use by another thesis")
@@ -1527,31 +1469,29 @@ def freeze_forecast(
         # Atomic insert guarded by the partial unique indexes (one active
         # row per forecast_key and per non-null scenario); a loser gets a
         # no-op, never an aborted transaction.
-        return _first(
-            session.execute(
-                text(
-                    """INSERT INTO investment_thesis_forecasts
-                       (thesis_id, scenario_id, forecast_key, forecast_type,
-                        direction, target_value, target_date, as_of, version)
-                       VALUES (CAST(:thesis_id AS UUID), :scenario_id,
-                               :forecast_key, :forecast_type, :direction,
-                               :target_value, :target_date, :as_of, :version)
-                       ON CONFLICT DO NOTHING
-                       RETURNING id"""
-                ),
-                {
-                    "thesis_id": thesis_id,
-                    "scenario_id": scenario,
-                    "forecast_key": key,
-                    "forecast_type": forecast_type,
-                    "direction": direction,
-                    "target_value": target,
-                    "target_date": target_day,
-                    "as_of": frozen_at,
-                    "version": next_version,
-                },
-            )
-        )
+        return result_first(session.execute(
+            text(
+                """INSERT INTO investment_thesis_forecasts
+                   (thesis_id, scenario_id, forecast_key, forecast_type,
+                    direction, target_value, target_date, as_of, version)
+                   VALUES (CAST(:thesis_id AS UUID), :scenario_id,
+                           :forecast_key, :forecast_type, :direction,
+                           :target_value, :target_date, :as_of, :version)
+                   ON CONFLICT DO NOTHING
+                   RETURNING id"""
+            ),
+            {
+                "thesis_id": thesis_id,
+                "scenario_id": scenario,
+                "forecast_key": key,
+                "forecast_type": forecast_type,
+                "direction": direction,
+                "target_value": target,
+                "target_date": target_day,
+                "as_of": frozen_at,
+                "version": next_version,
+            },
+        ))
 
     if active is not None:
         # The partial active-key index allows at most one unsuperseded row
@@ -1599,16 +1539,14 @@ def freeze_forecast(
     # values win; nothing is superseded or overwritten here.  In the
     # revision path the savepoint rollback restored the caller's own row,
     # so a key-leg hit on that own row falls through to the scenario leg.
-    winner = _first(
-        session.execute(
-            text(
-                """SELECT id, thesis_id, version
-                   FROM investment_thesis_forecasts
-                   WHERE forecast_key = :key AND superseded_at IS NULL LIMIT 1"""
-            ),
-            {"key": key},
-        )
-    )
+    winner = result_first(session.execute(
+        text(
+            """SELECT id, thesis_id, version
+               FROM investment_thesis_forecasts
+               WHERE forecast_key = :key AND superseded_at IS NULL LIMIT 1"""
+        ),
+        {"key": key},
+    ))
     if winner is not None and (
         active is None or str(winner["id"]) != str(active["id"])
     ):
@@ -1623,17 +1561,15 @@ def freeze_forecast(
         # The collision was on the active-scenario unique index with a
         # different forecast_key (rerun fingerprint/target drift): locate
         # the winner through the scenario leg instead.
-        winner = _first(
-            session.execute(
-                text(
-                    """SELECT id, thesis_id, version
-                       FROM investment_thesis_forecasts
-                       WHERE scenario_id = CAST(:scenario_id AS UUID)
-                         AND superseded_at IS NULL LIMIT 1"""
-                ),
-                {"scenario_id": scenario},
-            )
-        )
+        winner = result_first(session.execute(
+            text(
+                """SELECT id, thesis_id, version
+                   FROM investment_thesis_forecasts
+                   WHERE scenario_id = CAST(:scenario_id AS UUID)
+                     AND superseded_at IS NULL LIMIT 1"""
+            ),
+            {"scenario_id": scenario},
+        ))
         if winner is not None:
             if str(winner["thesis_id"]) != thesis_id:
                 raise ValueError("forecast_key already in use by another thesis")
@@ -1677,47 +1613,41 @@ def record_forecast_outcome(
     # never NULL.
     measured = _timestamp(measured_at, "measured_at") or datetime.now(UTC)
     notes_text = _text(notes, 2000)
-    known = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_thesis_forecasts "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": forecast_id},
-        )
-    )
+    known = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_thesis_forecasts "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": forecast_id},
+    ))
     if known is None:
         raise ValueError("unknown forecast")
-    existing = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_forecast_outcomes "
-                "WHERE forecast_id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": forecast_id},
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_forecast_outcomes "
+            "WHERE forecast_id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": forecast_id},
+    ))
     if existing is not None:
         return False
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_forecast_outcomes
-                   (forecast_id, status, actual_value, measured_at, notes)
-                   VALUES (CAST(:forecast_id AS UUID), :status, :actual_value,
-                           :measured_at, :notes)
-                   ON CONFLICT (forecast_id) DO NOTHING
-                   RETURNING id"""
-            ),
-            {
-                "forecast_id": forecast_id,
-                "status": status,
-                "actual_value": actual,
-                "measured_at": measured,
-                "notes": notes_text,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_forecast_outcomes
+               (forecast_id, status, actual_value, measured_at, notes)
+               VALUES (CAST(:forecast_id AS UUID), :status, :actual_value,
+                       :measured_at, :notes)
+               ON CONFLICT (forecast_id) DO NOTHING
+               RETURNING id"""
+        ),
+        {
+            "forecast_id": forecast_id,
+            "status": status,
+            "actual_value": actual,
+            "measured_at": measured,
+            "notes": notes_text,
+        },
+    ))
     # A concurrent winner makes the INSERT a no-op: report the truthful
     # insertion result instead of claiming a write that never happened.
     return row is not None
@@ -1768,52 +1698,48 @@ def append_opportunity_snapshot(
     captured = _timestamp(captured_at, "captured_at") or datetime.now(UTC)
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    existing = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present FROM investment_opportunity_snapshots
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND snapshot_key = :snapshot_key LIMIT 1"""
-            ),
-            {"thesis_id": thesis_id, "snapshot_key": key},
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            """SELECT 1 AS present FROM investment_opportunity_snapshots
+               WHERE thesis_id = CAST(:thesis_id AS UUID)
+                 AND snapshot_key = :snapshot_key LIMIT 1"""
+        ),
+        {"thesis_id": thesis_id, "snapshot_key": key},
+    ))
     if existing is not None:
         return False
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_opportunity_snapshots
-                   (thesis_id, snapshot_key, input_fingerprint, opportunity_score,
-                    expected_value, expected_shortfall, confidence_score,
-                    neglect_score, catalyst_score, evidence_strength,
-                    contradiction_strength, captured_at)
-                   VALUES (CAST(:thesis_id AS UUID), :snapshot_key,
-                           :input_fingerprint, :opportunity_score, :expected_value,
-                           :expected_shortfall, :confidence_score, :neglect_score,
-                           :catalyst_score, :evidence_strength,
-                           :contradiction_strength, :captured_at)
-                   ON CONFLICT (thesis_id, snapshot_key) DO NOTHING
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "snapshot_key": key,
-                "input_fingerprint": _text(input_fingerprint, 200),
-                # Unknown sub-metrics stay NULL (migration 057) so a frozen
-                # snapshot never turns an absent input into a favorable zero.
-                "opportunity_score": scores["opportunity_score"],
-                "expected_value": expected["expected_value"],
-                "expected_shortfall": expected["expected_shortfall"],
-                "confidence_score": scores["confidence_score"],
-                "neglect_score": scores["neglect_score"],
-                "catalyst_score": scores["catalyst_score"],
-                "evidence_strength": scores["evidence_strength"],
-                "contradiction_strength": scores["contradiction_strength"],
-                "captured_at": captured,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_opportunity_snapshots
+               (thesis_id, snapshot_key, input_fingerprint, opportunity_score,
+                expected_value, expected_shortfall, confidence_score,
+                neglect_score, catalyst_score, evidence_strength,
+                contradiction_strength, captured_at)
+               VALUES (CAST(:thesis_id AS UUID), :snapshot_key,
+                       :input_fingerprint, :opportunity_score, :expected_value,
+                       :expected_shortfall, :confidence_score, :neglect_score,
+                       :catalyst_score, :evidence_strength,
+                       :contradiction_strength, :captured_at)
+               ON CONFLICT (thesis_id, snapshot_key) DO NOTHING
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "snapshot_key": key,
+            "input_fingerprint": _text(input_fingerprint, 200),
+            # Unknown sub-metrics stay NULL (migration 057) so a frozen
+            # snapshot never turns an absent input into a favorable zero.
+            "opportunity_score": scores["opportunity_score"],
+            "expected_value": expected["expected_value"],
+            "expected_shortfall": expected["expected_shortfall"],
+            "confidence_score": scores["confidence_score"],
+            "neglect_score": scores["neglect_score"],
+            "catalyst_score": scores["catalyst_score"],
+            "evidence_strength": scores["evidence_strength"],
+            "contradiction_strength": scores["contradiction_strength"],
+            "captured_at": captured,
+        },
+    ))
     # A concurrent winner makes the INSERT a no-op: report the truthful
     # insertion result instead of claiming a write that never happened.
     return row is not None
@@ -1844,51 +1770,45 @@ def record_falsification_run(
     started = _timestamp(started_at, "started_at") or datetime.now(UTC)
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    existing = _first(
-        session.execute(
-            text(
-                """SELECT id FROM investment_thesis_falsification_runs
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND run_key = :run_key LIMIT 1"""
-            ),
-            {"thesis_id": thesis_id, "run_key": key},
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            """SELECT id FROM investment_thesis_falsification_runs
+               WHERE thesis_id = CAST(:thesis_id AS UUID)
+                 AND run_key = :run_key LIMIT 1"""
+        ),
+        {"thesis_id": thesis_id, "run_key": key},
+    ))
     if existing is not None:
         return str(existing["id"])
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_thesis_falsification_runs
-                   (thesis_id, run_key, status, findings, started_at)
-                   VALUES (CAST(:thesis_id AS UUID), :run_key, :status,
-                           CAST(:findings AS JSONB), :started_at)
-                   ON CONFLICT (thesis_id, run_key) DO NOTHING
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "run_key": key,
-                "status": status,
-                "findings": json.dumps(findings_list),
-                "started_at": started,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_thesis_falsification_runs
+               (thesis_id, run_key, status, findings, started_at)
+               VALUES (CAST(:thesis_id AS UUID), :run_key, :status,
+                       CAST(:findings AS JSONB), :started_at)
+               ON CONFLICT (thesis_id, run_key) DO NOTHING
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "run_key": key,
+            "status": status,
+            "findings": json.dumps(findings_list),
+            "started_at": started,
+        },
+    ))
     if row is not None:
         return str(row["id"])
     # A concurrent winner made the INSERT a no-op: return the winner's id
     # through a bounded lookup and never mutate the existing run.
-    winner = _first(
-        session.execute(
-            text(
-                """SELECT id FROM investment_thesis_falsification_runs
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND run_key = :run_key LIMIT 1"""
-            ),
-            {"thesis_id": thesis_id, "run_key": key},
-        )
-    )
+    winner = result_first(session.execute(
+        text(
+            """SELECT id FROM investment_thesis_falsification_runs
+               WHERE thesis_id = CAST(:thesis_id AS UUID)
+                 AND run_key = :run_key LIMIT 1"""
+        ),
+        {"thesis_id": thesis_id, "run_key": key},
+    ))
     if winner is None:
         raise RuntimeError("falsification run insert lost without a winner")
     return str(winner["id"])
@@ -1914,16 +1834,14 @@ def update_falsification_run(
         raise ValueError(f"unsupported run status:{str(status)[:32]}")
     findings_list = _json_list(findings or [], "findings", _MAX_FINDINGS)
     completed = _timestamp(completed_at, "completed_at")
-    current = _first(
-        session.execute(
-            text(
-                """SELECT status, started_at, completed_at
-                   FROM investment_thesis_falsification_runs
-                   WHERE id = CAST(:id AS UUID) LIMIT 1"""
-            ),
-            {"id": run_id},
-        )
-    )
+    current = result_first(session.execute(
+        text(
+            """SELECT status, started_at, completed_at
+               FROM investment_thesis_falsification_runs
+               WHERE id = CAST(:id AS UUID) LIMIT 1"""
+        ),
+        {"id": run_id},
+    ))
     if current is None:
         raise ValueError("unknown falsification run")
     if str(current.get("status")) not in ("pending", "in_progress"):
@@ -1974,54 +1892,48 @@ def link_position(
         raise ValueError(f"unsupported link_type:{str(link_type)[:32]}")
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    holding = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM portfolio_holdings "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": position_id},
-        )
-    )
+    holding = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM portfolio_holdings "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": position_id},
+    ))
     if holding is None:
         raise ValueError("unknown position")
-    existing = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present FROM position_thesis_links
-                   WHERE position_id = CAST(:position_id AS UUID)
-                     AND thesis_id = CAST(:thesis_id AS UUID)
-                     AND link_type = :link_type
-                     AND removed_at IS NULL LIMIT 1"""
-            ),
-            {
-                "position_id": position_id,
-                "thesis_id": thesis_id,
-                "link_type": link_type,
-            },
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            """SELECT 1 AS present FROM position_thesis_links
+               WHERE position_id = CAST(:position_id AS UUID)
+                 AND thesis_id = CAST(:thesis_id AS UUID)
+                 AND link_type = :link_type
+                 AND removed_at IS NULL LIMIT 1"""
+        ),
+        {
+            "position_id": position_id,
+            "thesis_id": thesis_id,
+            "link_type": link_type,
+        },
+    ))
     if existing is not None:
         return False
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO position_thesis_links
-                   (position_id, thesis_id, link_type)
-                   VALUES (CAST(:position_id AS UUID), CAST(:thesis_id AS UUID),
-                           :link_type)
-                   ON CONFLICT (position_id, thesis_id, link_type)
-                       WHERE removed_at IS NULL
-                   DO NOTHING
-                   RETURNING id"""
-            ),
-            {
-                "position_id": position_id,
-                "thesis_id": thesis_id,
-                "link_type": link_type,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO position_thesis_links
+               (position_id, thesis_id, link_type)
+               VALUES (CAST(:position_id AS UUID), CAST(:thesis_id AS UUID),
+                       :link_type)
+               ON CONFLICT (position_id, thesis_id, link_type)
+                   WHERE removed_at IS NULL
+               DO NOTHING
+               RETURNING id"""
+        ),
+        {
+            "position_id": position_id,
+            "thesis_id": thesis_id,
+            "link_type": link_type,
+        },
+    ))
     # A concurrent active-link winner makes the INSERT a no-op: report the
     # truthful insertion result instead of claiming a write that never
     # happened.  The precheck above still short-circuits the common case.
@@ -2047,22 +1959,20 @@ def unlink_position(
     position_id = _uuid(position_id, "position_id")
     if link_type not in LINK_TYPES:
         raise ValueError(f"unsupported link_type:{str(link_type)[:32]}")
-    active = _first(
-        session.execute(
-            text(
-                """SELECT id FROM position_thesis_links
-                   WHERE position_id = CAST(:position_id AS UUID)
-                     AND thesis_id = CAST(:thesis_id AS UUID)
-                     AND link_type = :link_type
-                     AND removed_at IS NULL LIMIT 1"""
-            ),
-            {
-                "position_id": position_id,
-                "thesis_id": thesis_id,
-                "link_type": link_type,
-            },
-        )
-    )
+    active = result_first(session.execute(
+        text(
+            """SELECT id FROM position_thesis_links
+               WHERE position_id = CAST(:position_id AS UUID)
+                 AND thesis_id = CAST(:thesis_id AS UUID)
+                 AND link_type = :link_type
+                 AND removed_at IS NULL LIMIT 1"""
+        ),
+        {
+            "position_id": position_id,
+            "thesis_id": thesis_id,
+            "link_type": link_type,
+        },
+    ))
     if active is None:
         return False
     session.execute(
@@ -2153,29 +2063,27 @@ def _market_liquidity_score(
     never changes a historical score, and neither does a pre-reference row
     revised after the reference (any row mutation bumps ``updated_at``).
     """
-    rows = _rows(
-        session.execute(
-            text(
-                """SELECT m.close, m.volume
-                   FROM investment_theses t
-                   JOIN market_data m ON m.symbol = t.symbol
-                   WHERE t.id = CAST(:id AS UUID)
-                     AND t.symbol IS NOT NULL
-                     AND m.timeframe = '1d'
-                     AND m.timestamp <= :as_of
-                     AND COALESCE(m.updated_at, m.created_at) <= :as_of
-                     AND m.close IS NOT NULL
-                     AND m.volume IS NOT NULL
-                   ORDER BY m.timestamp DESC, m.source, m.created_at DESC
-                   LIMIT :limit"""
-            ),
-            {
-                "id": thesis_id,
-                "as_of": reference,
-                "limit": _LIQUIDITY_LOOKBACK_BARS,
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """SELECT m.close, m.volume
+               FROM investment_theses t
+               JOIN market_data m ON m.symbol = t.symbol
+               WHERE t.id = CAST(:id AS UUID)
+                 AND t.symbol IS NOT NULL
+                 AND m.timeframe = '1d'
+                 AND m.timestamp <= :as_of
+                 AND COALESCE(m.updated_at, m.created_at) <= :as_of
+                 AND m.close IS NOT NULL
+                 AND m.volume IS NOT NULL
+               ORDER BY m.timestamp DESC, m.source, m.created_at DESC
+               LIMIT :limit"""
+        ),
+        {
+            "id": thesis_id,
+            "as_of": reference,
+            "limit": _LIQUIDITY_LOOKBACK_BARS,
+        },
+    ))
     notionals: list[float] = []
     for row in rows:
         try:
@@ -2334,42 +2242,38 @@ def evaluate_thesis(
     returns = dict(expected_returns or {})
     for name, value in returns.items():
         _finite_number(value, f"expected_return:{str(name)[:64]}")
-    evidence_rows = _rows(
-        session.execute(
-            text(
-                """SELECT evidence_type, evidence_id, relationship, excerpt,
-                          source_family, origin_key, independence_key,
-                          evidence_fingerprint, source_timestamp, available_at,
-                          quality_score, entailment_score, freshness_score,
-                          effective_weight, created_at
-                   FROM investment_thesis_evidence
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND created_at <= :as_of
-                     AND COALESCE(source_timestamp, created_at) <= :as_of
-                     AND COALESCE(available_at, source_timestamp, created_at) <= :as_of
-                   ORDER BY created_at, evidence_type, evidence_id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_EVIDENCE},
-        )
-    )
+    evidence_rows = result_rows(session.execute(
+        text(
+            """SELECT evidence_type, evidence_id, relationship, excerpt,
+                      source_family, origin_key, independence_key,
+                      evidence_fingerprint, source_timestamp, available_at,
+                      quality_score, entailment_score, freshness_score,
+                      effective_weight, created_at
+               FROM investment_thesis_evidence
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND created_at <= :as_of
+                 AND COALESCE(source_timestamp, created_at) <= :as_of
+                 AND COALESCE(available_at, source_timestamp, created_at) <= :as_of
+               ORDER BY created_at, evidence_type, evidence_id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_EVIDENCE},
+    ))
     signals = [_evidence_signal_from_row(row) for row in evidence_rows]
     if current_evidence:
         signals = _merge_current_cycle_evidence(signals, current_evidence)
-    catalyst_rows = _rows(
-        session.execute(
-            text(
-                """SELECT description, state, expected_at
-                   FROM investment_catalysts
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND created_at <= :as_of
-                     AND updated_at <= :as_of
-                   ORDER BY expected_at NULLS LAST, created_at, id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_CATALYSTS},
-        )
-    )
+    catalyst_rows = result_rows(session.execute(
+        text(
+            """SELECT description, state, expected_at
+               FROM investment_catalysts
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND created_at <= :as_of
+                 AND updated_at <= :as_of
+               ORDER BY expected_at NULLS LAST, created_at, id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_CATALYSTS},
+    ))
     catalysts = [
         CatalystSignal.create(
             description=row.get("description"),
@@ -2380,20 +2284,18 @@ def evaluate_thesis(
     ]
     if current_catalysts:
         catalysts = _merge_current_cycle_catalysts(catalysts, current_catalysts)
-    scenario_rows = _rows(
-        session.execute(
-            text(
-                """SELECT name, probability, expected_return
-                   FROM investment_thesis_scenarios
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND created_at <= :as_of
-                     AND (superseded_at IS NULL OR superseded_at > :as_of)
-                   ORDER BY is_base_case DESC, created_at, name
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_SCENARIOS},
-        )
-    )
+    scenario_rows = result_rows(session.execute(
+        text(
+            """SELECT name, probability, expected_return
+               FROM investment_thesis_scenarios
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND created_at <= :as_of
+                 AND (superseded_at IS NULL OR superseded_at > :as_of)
+               ORDER BY is_base_case DESC, created_at, name
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "as_of": reference, "limit": _MAX_LOAD_SCENARIOS},
+    ))
     scenarios = [
         Scenario.create(
             label=row.get("name") or "scenario",
@@ -2578,115 +2480,102 @@ def list_ranked_opportunities(
         params["group_id"] = _uuid(group_id, "group_id")
     if not include_all:
         conditions.append("eligibility.eligible")
-    rows = _rows(
-        session.execute(
-            text(
-                """WITH base_eligibility AS (
-                       SELECT thesis_id, symbol_key, company_key, direction_key,
-                              horizon_key, status_ok, score_ok, scenarios_ok,
-                              risks_ok, evidence_ok, falsification_ok,
-                              actionability_ok,
-                              status_ok AND score_ok AND scenarios_ok AND risks_ok
-                                  AND evidence_ok AND falsification_ok
-                                  AND actionability_ok AS base_eligible
-                       FROM (
-                           SELECT t.id AS thesis_id,
-                                  LOWER(BTRIM(COALESCE(t.symbol, ''))) AS symbol_key,
-                                  LOWER(BTRIM(COALESCE(t.company, ''))) AS company_key,
-                                  LOWER(BTRIM(COALESCE(t.direction, '')))
-                                      AS direction_key,
-                                  LOWER(BTRIM(COALESCE(t.horizon, ''))) AS horizon_key,
-                                  t.status IN ('candidate', 'active') AS status_ok,
-                                  t.opportunity_score > 0 AS score_ok,
-                                  EXISTS (
+    rows = result_rows(session.execute(
+        text(
+            """WITH base_eligibility AS (
+                   SELECT thesis_id, symbol_key, company_key, direction_key,
+                          horizon_key, status_ok, score_ok, scenarios_ok,
+                          risks_ok, evidence_ok, falsification_ok,
+                          actionability_ok,
+                          status_ok AND score_ok AND scenarios_ok AND risks_ok
+                              AND evidence_ok AND falsification_ok
+                              AND actionability_ok AS base_eligible
+                   FROM (
+                       SELECT t.id AS thesis_id,
+                              LOWER(BTRIM(COALESCE(t.symbol, ''))) AS symbol_key,
+                              LOWER(BTRIM(COALESCE(t.company, ''))) AS company_key,
+                              LOWER(BTRIM(COALESCE(t.direction, '')))
+                                  AS direction_key,
+                              LOWER(BTRIM(COALESCE(t.horizon, ''))) AS horizon_key,
+                              t.status IN ('candidate', 'active') AS status_ok,
+                              t.opportunity_score > 0 AS score_ok,
+                              EXISTS (
+                                  SELECT 1
+                                  FROM (
+                                      SELECT s.name, s.probability,
+                                             s.expected_return, s.description
+                                      FROM investment_thesis_scenarios s
+                                      WHERE s.thesis_id = t.id
+                                        AND s.superseded_at IS NULL
+                                        AND s.name IN ('bull', 'base', 'bear')
+                                  ) legs
+                                  HAVING COUNT(*) = 3
+                                     AND COUNT(*) FILTER (
+                                         WHERE legs.probability IS NOT NULL
+                                           AND legs.expected_return IS NOT NULL
+                                           AND BTRIM(COALESCE(legs.description, ''))
+                                               <> ''
+                                     ) = 3
+                                     AND ABS(SUM(legs.probability) - 1.0) < 1e-9
+                              ) AS scenarios_ok,
+                              EXISTS (
+                                  SELECT 1 FROM investment_risks r
+                                  WHERE r.thesis_id = t.id
+                                    AND BTRIM(r.description) <> ''
+                              ) AS risks_ok,
+                              EXISTS (
+                                  SELECT 1 FROM investment_thesis_evidence e
+                                  WHERE e.thesis_id = t.id
+                                    AND e.relationship = 'supports'
+                                    AND BTRIM(COALESCE(e.excerpt, '')) <> ''
+                                    AND e.quality_score > 0
+                                    AND e.entailment_score > 0
+                              ) AS evidence_ok,
+                              EXISTS (
+                                  SELECT 1
+                                  FROM (
+                                      SELECT DISTINCT ON (f.thesis_id)
+                                             f.status
+                                      FROM investment_thesis_falsification_runs f
+                                      WHERE f.thesis_id = t.id
+                                      ORDER BY f.thesis_id, f.started_at DESC,
+                                               f.run_key
+                                  ) latest_run
+                                  WHERE latest_run.status = 'not_falsified'
+                              ) AS falsification_ok,
+                              (
+                                  BTRIM(COALESCE(t.trend_context, '')) <> ''
+                                  AND BTRIM(COALESCE(t.valuation_context, '')) <> ''
+                                  AND BTRIM(COALESCE(t.sentiment_context, '')) <> ''
+                                  AND t.citation_map ?& ARRAY[
+                                      'claim', 'consensus', 'variant_perception',
+                                      'mechanism', 'catalyst', 'trend',
+                                      'valuation', 'sentiment'
+                                  ]::TEXT[]
+                                  AND NOT EXISTS (
                                       SELECT 1
-                                      FROM (
-                                          SELECT s.name, s.probability,
-                                                 s.expected_return, s.description
-                                          FROM investment_thesis_scenarios s
-                                          WHERE s.thesis_id = t.id
-                                            AND s.superseded_at IS NULL
-                                            AND s.name IN ('bull', 'base', 'bear')
-                                      ) legs
-                                      HAVING COUNT(*) = 3
-                                         AND COUNT(*) FILTER (
-                                             WHERE legs.probability IS NOT NULL
-                                               AND legs.expected_return IS NOT NULL
-                                               AND BTRIM(COALESCE(legs.description, ''))
-                                                   <> ''
-                                         ) = 3
-                                         AND ABS(SUM(legs.probability) - 1.0) < 1e-9
-                                  ) AS scenarios_ok,
-                                  EXISTS (
-                                      SELECT 1 FROM investment_risks r
-                                      WHERE r.thesis_id = t.id
-                                        AND BTRIM(r.description) <> ''
-                                  ) AS risks_ok,
-                                  EXISTS (
-                                      SELECT 1 FROM investment_thesis_evidence e
-                                      WHERE e.thesis_id = t.id
-                                        AND e.relationship = 'supports'
-                                        AND BTRIM(COALESCE(e.excerpt, '')) <> ''
-                                        AND e.quality_score > 0
-                                        AND e.entailment_score > 0
-                                  ) AS evidence_ok,
-                                  EXISTS (
+                                      FROM JSONB_EACH(t.citation_map) field
+                                      WHERE JSONB_TYPEOF(field.value) <> 'array'
+                                         OR JSONB_ARRAY_LENGTH(
+                                             CASE
+                                               WHEN JSONB_TYPEOF(field.value) = 'array'
+                                                 THEN field.value
+                                               ELSE '[]'::JSONB
+                                             END
+                                         ) = 0
+                                  )
+                                  AND NOT EXISTS (
                                       SELECT 1
-                                      FROM (
-                                          SELECT DISTINCT ON (f.thesis_id)
-                                                 f.status
-                                          FROM investment_thesis_falsification_runs f
-                                          WHERE f.thesis_id = t.id
-                                          ORDER BY f.thesis_id, f.started_at DESC,
-                                                   f.run_key
-                                      ) latest_run
-                                      WHERE latest_run.status = 'not_falsified'
-                                  ) AS falsification_ok,
-                                  (
-                                      BTRIM(COALESCE(t.trend_context, '')) <> ''
-                                      AND BTRIM(COALESCE(t.valuation_context, '')) <> ''
-                                      AND BTRIM(COALESCE(t.sentiment_context, '')) <> ''
-                                      AND t.citation_map ?& ARRAY[
-                                          'claim', 'consensus', 'variant_perception',
-                                          'mechanism', 'catalyst', 'trend',
-                                          'valuation', 'sentiment'
-                                      ]::TEXT[]
-                                      AND NOT EXISTS (
+                                      FROM JSONB_EACH(t.citation_map) field
+                                      CROSS JOIN LATERAL JSONB_ARRAY_ELEMENTS_TEXT(
+                                          CASE
+                                            WHEN JSONB_TYPEOF(field.value) = 'array'
+                                              THEN field.value
+                                            ELSE '[]'::JSONB
+                                          END
+                                      ) cited(ref)
+                                      WHERE NOT EXISTS (
                                           SELECT 1
-                                          FROM JSONB_EACH(t.citation_map) field
-                                          WHERE JSONB_TYPEOF(field.value) <> 'array'
-                                             OR JSONB_ARRAY_LENGTH(
-                                                 CASE
-                                                   WHEN JSONB_TYPEOF(field.value) = 'array'
-                                                     THEN field.value
-                                                   ELSE '[]'::JSONB
-                                                 END
-                                             ) = 0
-                                      )
-                                      AND NOT EXISTS (
-                                          SELECT 1
-                                          FROM JSONB_EACH(t.citation_map) field
-                                          CROSS JOIN LATERAL JSONB_ARRAY_ELEMENTS_TEXT(
-                                              CASE
-                                                WHEN JSONB_TYPEOF(field.value) = 'array'
-                                                  THEN field.value
-                                                ELSE '[]'::JSONB
-                                              END
-                                          ) cited(ref)
-                                          WHERE NOT EXISTS (
-                                              SELECT 1
-                                              FROM investment_thesis_evidence e
-                                              WHERE e.thesis_id = t.id
-                                                AND e.relationship = 'supports'
-                                                AND BTRIM(COALESCE(e.excerpt, '')) <> ''
-                                                AND e.quality_score > 0
-                                                AND e.entailment_score > 0
-                                                AND e.evidence_type || ':' ||
-                                                    e.evidence_id = cited.ref
-                                          )
-                                      )
-                                      AND (
-                                          SELECT COUNT(DISTINCT LOWER(e.source_family))
                                           FROM investment_thesis_evidence e
                                           WHERE e.thesis_id = t.id
                                             AND e.relationship = 'supports'
@@ -2694,116 +2583,127 @@ def list_ranked_opportunities(
                                             AND e.quality_score > 0
                                             AND e.entailment_score > 0
                                             AND e.evidence_type || ':' ||
-                                                e.evidence_id IN (
-                                                    SELECT cited.ref
-                                                    FROM JSONB_EACH(t.citation_map) field
-                                                    CROSS JOIN LATERAL
-                                                        JSONB_ARRAY_ELEMENTS_TEXT(
-                                                            CASE
-                                                              WHEN JSONB_TYPEOF(field.value) = 'array'
-                                                                THEN field.value
-                                                              ELSE '[]'::JSONB
-                                                            END
-                                                        ) cited(ref)
-                                                )
-                                      ) >= 3
-                                  ) AS actionability_ok
-                           FROM investment_theses t
-                       ) gates
-                   ),
-                   eligibility AS (
-                       SELECT candidate.thesis_id, candidate.status_ok,
-                              candidate.score_ok, candidate.scenarios_ok,
-                              candidate.risks_ok, candidate.evidence_ok,
-                              candidate.falsification_ok,
-                              candidate.actionability_ok,
-                              opposition.opposition_ok,
-                              candidate.base_eligible
-                                  AND opposition.opposition_ok AS eligible
-                       FROM base_eligibility candidate
-                       CROSS JOIN LATERAL (
-                           SELECT EXISTS (
-                               SELECT 1
-                               FROM base_eligibility opponent
-                               WHERE opponent.thesis_id <> candidate.thesis_id
-                                 AND opponent.base_eligible
-                                 AND opponent.horizon_key = candidate.horizon_key
-                                 AND (
-                                     (
-                                         candidate.symbol_key <> ''
-                                         AND opponent.symbol_key
-                                             = candidate.symbol_key
-                                     )
-                                     OR (
-                                         candidate.symbol_key = ''
-                                         AND opponent.symbol_key = ''
-                                         AND candidate.company_key <> ''
-                                         AND opponent.company_key
-                                             = candidate.company_key
-                                     )
+                                                e.evidence_id = cited.ref
+                                      )
+                                  )
+                                  AND (
+                                      SELECT COUNT(DISTINCT LOWER(e.source_family))
+                                      FROM investment_thesis_evidence e
+                                      WHERE e.thesis_id = t.id
+                                        AND e.relationship = 'supports'
+                                        AND BTRIM(COALESCE(e.excerpt, '')) <> ''
+                                        AND e.quality_score > 0
+                                        AND e.entailment_score > 0
+                                        AND e.evidence_type || ':' ||
+                                            e.evidence_id IN (
+                                                SELECT cited.ref
+                                                FROM JSONB_EACH(t.citation_map) field
+                                                CROSS JOIN LATERAL
+                                                    JSONB_ARRAY_ELEMENTS_TEXT(
+                                                        CASE
+                                                          WHEN JSONB_TYPEOF(field.value) = 'array'
+                                                            THEN field.value
+                                                          ELSE '[]'::JSONB
+                                                        END
+                                                    ) cited(ref)
+                                            )
+                                  ) >= 3
+                              ) AS actionability_ok
+                       FROM investment_theses t
+                   ) gates
+               ),
+               eligibility AS (
+                   SELECT candidate.thesis_id, candidate.status_ok,
+                          candidate.score_ok, candidate.scenarios_ok,
+                          candidate.risks_ok, candidate.evidence_ok,
+                          candidate.falsification_ok,
+                          candidate.actionability_ok,
+                          opposition.opposition_ok,
+                          candidate.base_eligible
+                              AND opposition.opposition_ok AS eligible
+                   FROM base_eligibility candidate
+                   CROSS JOIN LATERAL (
+                       SELECT EXISTS (
+                           SELECT 1
+                           FROM base_eligibility opponent
+                           WHERE opponent.thesis_id <> candidate.thesis_id
+                             AND opponent.base_eligible
+                             AND opponent.horizon_key = candidate.horizon_key
+                             AND (
+                                 (
+                                     candidate.symbol_key <> ''
+                                     AND opponent.symbol_key
+                                         = candidate.symbol_key
                                  )
-                                 AND (
-                                     (
-                                         candidate.direction_key = 'long'
-                                         AND opponent.direction_key = 'short'
-                                     )
-                                     OR (
-                                         candidate.direction_key = 'short'
-                                         AND opponent.direction_key = 'long'
-                                     )
+                                 OR (
+                                     candidate.symbol_key = ''
+                                     AND opponent.symbol_key = ''
+                                     AND candidate.company_key <> ''
+                                     AND opponent.company_key
+                                         = candidate.company_key
                                  )
-                           ) AS opposition_ok
-                       ) opposition
-                   )
-                   SELECT t.id, t.theme_id, t.company, t.symbol, t.claim,
-                          t.direction, t.mechanism, t.horizon, t.status,
-                          t.origin, t.trend_context, t.valuation_context,
-                          t.sentiment_context, t.citation_map,
-                          t.evidence_strength, t.contradiction_strength,
-                          t.neglect_score, t.catalyst_score, t.confidence_score,
-                          t.expected_value, t.expected_shortfall,
-                          t.opportunity_score, t.last_evaluated_at,
-                          t.last_evidence_at, g.group_id, g.group_name,
-                          eligibility.status_ok AS eligibility_status,
-                          eligibility.score_ok AS eligibility_score,
-                          eligibility.scenarios_ok AS eligibility_scenarios,
-                          eligibility.risks_ok AS eligibility_risks,
-                          eligibility.evidence_ok AS eligibility_evidence,
-                          eligibility.falsification_ok
-                              AS eligibility_falsification,
-                          eligibility.actionability_ok
-                              AS eligibility_actionability,
-                          eligibility.opposition_ok
-                              AS eligibility_opposition,
-                          eligibility.eligible
-                   FROM investment_theses t
-                   JOIN eligibility ON eligibility.thesis_id = t.id
-                   LEFT JOIN LATERAL (
-                       SELECT m.group_id, gr.name AS group_name
-                       FROM investment_thesis_group_members m
-                       JOIN investment_thesis_groups gr ON gr.id = m.group_id
-                       WHERE m.thesis_id = t.id AND m.removed_at IS NULL
-                       ORDER BY m.added_at, m.group_id
-                       LIMIT 1
-                   ) g ON TRUE
-                   WHERE """
-                + " AND ".join(conditions)
-                # Every DESC column pins NULLS LAST explicitly: an unknown
-                # metric (NULL) must rank after every measured value,
-                # including zero, and can never be a favorable zero rank.
-                + """ ORDER BY (t.opportunity_score > 0) DESC NULLS LAST,
-                          eligibility.eligible DESC NULLS LAST,
-                          t.expected_value DESC NULLS LAST,
-                          t.opportunity_score DESC NULLS LAST,
-                          t.confidence_score DESC NULLS LAST,
-                          t.catalyst_score DESC NULLS LAST,
-                          t.neglect_score DESC NULLS LAST,
-                          t.last_evaluated_at DESC NULLS LAST, t.id
-                   LIMIT :limit"""
-            ),
-            params,
-        )
-    )
+                             )
+                             AND (
+                                 (
+                                     candidate.direction_key = 'long'
+                                     AND opponent.direction_key = 'short'
+                                 )
+                                 OR (
+                                     candidate.direction_key = 'short'
+                                     AND opponent.direction_key = 'long'
+                                 )
+                             )
+                       ) AS opposition_ok
+                   ) opposition
+               )
+               SELECT t.id, t.theme_id, t.company, t.symbol, t.claim,
+                      t.direction, t.mechanism, t.horizon, t.status,
+                      t.origin, t.trend_context, t.valuation_context,
+                      t.sentiment_context, t.citation_map,
+                      t.evidence_strength, t.contradiction_strength,
+                      t.neglect_score, t.catalyst_score, t.confidence_score,
+                      t.expected_value, t.expected_shortfall,
+                      t.opportunity_score, t.last_evaluated_at,
+                      t.last_evidence_at, g.group_id, g.group_name,
+                      eligibility.status_ok AS eligibility_status,
+                      eligibility.score_ok AS eligibility_score,
+                      eligibility.scenarios_ok AS eligibility_scenarios,
+                      eligibility.risks_ok AS eligibility_risks,
+                      eligibility.evidence_ok AS eligibility_evidence,
+                      eligibility.falsification_ok
+                          AS eligibility_falsification,
+                      eligibility.actionability_ok
+                          AS eligibility_actionability,
+                      eligibility.opposition_ok
+                          AS eligibility_opposition,
+                      eligibility.eligible
+               FROM investment_theses t
+               JOIN eligibility ON eligibility.thesis_id = t.id
+               LEFT JOIN LATERAL (
+                   SELECT m.group_id, gr.name AS group_name
+                   FROM investment_thesis_group_members m
+                   JOIN investment_thesis_groups gr ON gr.id = m.group_id
+                   WHERE m.thesis_id = t.id AND m.removed_at IS NULL
+                   ORDER BY m.added_at, m.group_id
+                   LIMIT 1
+               ) g ON TRUE
+               WHERE """
+            + " AND ".join(conditions)
+            # Every DESC column pins NULLS LAST explicitly: an unknown
+            # metric (NULL) must rank after every measured value,
+            # including zero, and can never be a favorable zero rank.
+            + """ ORDER BY (t.opportunity_score > 0) DESC NULLS LAST,
+                      eligibility.eligible DESC NULLS LAST,
+                      t.expected_value DESC NULLS LAST,
+                      t.opportunity_score DESC NULLS LAST,
+                      t.confidence_score DESC NULLS LAST,
+                      t.catalyst_score DESC NULLS LAST,
+                      t.neglect_score DESC NULLS LAST,
+                      t.last_evaluated_at DESC NULLS LAST, t.id
+               LIMIT :limit"""
+        ),
+        params,
+    ))
     canonical: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for row in rows:
@@ -2852,34 +2752,32 @@ def list_thesis_groups(
     bounded = _bounded(limit, 50, _MAX_RANKED_OPPORTUNITIES)
     if status is not None and status not in GROUP_STATUSES:
         raise ValueError(f"unsupported group status:{str(status)[:32]}")
-    return _rows(
-        session.execute(
-            text(
-                """SELECT g.id, g.name, g.description, g.status,
-                          g.created_at, g.updated_at,
-                          COUNT(m.thesis_id) AS active_members,
-                          COUNT(*) FILTER (WHERE t.direction = 'long')
-                              AS long_count,
-                          COUNT(*) FILTER (WHERE t.direction = 'short')
-                              AS short_count,
-                          COUNT(*) FILTER (WHERE t.direction = 'neutral')
-                              AS neutral_count,
-                          MAX(t.opportunity_score) AS max_opportunity,
-                          MAX(t.contradiction_strength) AS max_contradiction,
-                          MAX(t.last_evaluated_at) AS last_evaluation
-                   FROM investment_thesis_groups g
-                   LEFT JOIN investment_thesis_group_members m
-                          ON m.group_id = g.id AND m.removed_at IS NULL
-                   LEFT JOIN investment_theses t ON t.id = m.thesis_id
-                   WHERE (:status IS NULL OR g.status = :status)
-                   GROUP BY g.id, g.name, g.description, g.status,
-                            g.created_at, g.updated_at
-                   ORDER BY g.name, g.id
-                   LIMIT :limit"""
-            ),
-            {"status": status, "limit": bounded},
-        )
-    )
+    return result_rows(session.execute(
+        text(
+            """SELECT g.id, g.name, g.description, g.status,
+                      g.created_at, g.updated_at,
+                      COUNT(m.thesis_id) AS active_members,
+                      COUNT(*) FILTER (WHERE t.direction = 'long')
+                          AS long_count,
+                      COUNT(*) FILTER (WHERE t.direction = 'short')
+                          AS short_count,
+                      COUNT(*) FILTER (WHERE t.direction = 'neutral')
+                          AS neutral_count,
+                      MAX(t.opportunity_score) AS max_opportunity,
+                      MAX(t.contradiction_strength) AS max_contradiction,
+                      MAX(t.last_evaluated_at) AS last_evaluation
+               FROM investment_thesis_groups g
+               LEFT JOIN investment_thesis_group_members m
+                      ON m.group_id = g.id AND m.removed_at IS NULL
+               LEFT JOIN investment_theses t ON t.id = m.thesis_id
+               WHERE (:status IS NULL OR g.status = :status)
+               GROUP BY g.id, g.name, g.description, g.status,
+                        g.created_at, g.updated_at
+               ORDER BY g.name, g.id
+               LIMIT :limit"""
+        ),
+        {"status": status, "limit": bounded},
+    ))
 
 
 def load_thesis_detail(
@@ -2901,217 +2799,189 @@ def load_thesis_detail(
     """
     thesis_id = _uuid(thesis_id, "thesis_id")
     bounded = _bounded(limit, _MAX_DETAIL_ROWS, _MAX_DETAIL_ROWS)
-    thesis = _first(
-        session.execute(
-            text(
-                """SELECT id, theme_id, company, symbol, claim,
-                          variant_perception, status, horizon, direction,
-                          mechanism, catalyst_summary, confidence, origin,
-                          trend_context, valuation_context, sentiment_context,
-                          citation_map, canonical_key, evidence_strength,
-                          contradiction_strength, neglect_score,
-                          catalyst_score, confidence_score, expected_value,
-                          expected_shortfall, opportunity_score,
-                          last_evaluated_at, last_evidence_at, created_at,
-                          updated_at
-                   FROM investment_theses
-                   WHERE id = CAST(:id AS UUID) LIMIT 1"""
-            ),
-            {"id": thesis_id},
-        )
-    )
+    thesis = result_first(session.execute(
+        text(
+            """SELECT id, theme_id, company, symbol, claim,
+                      variant_perception, status, horizon, direction,
+                      mechanism, catalyst_summary, confidence, origin,
+                      trend_context, valuation_context, sentiment_context,
+                      citation_map, canonical_key, evidence_strength,
+                      contradiction_strength, neglect_score,
+                      catalyst_score, confidence_score, expected_value,
+                      expected_shortfall, opportunity_score,
+                      last_evaluated_at, last_evidence_at, created_at,
+                      updated_at
+               FROM investment_theses
+               WHERE id = CAST(:id AS UUID) LIMIT 1"""
+        ),
+        {"id": thesis_id},
+    ))
     if thesis is None:
         return None
-    versions = _rows(
-        session.execute(
-            text(
-                """SELECT version, claim, variant_perception, confidence,
-                          trend_context, valuation_context, sentiment_context,
-                          citation_map, rationale, changed_by, created_at
-                   FROM investment_thesis_versions
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY version DESC
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    scenarios = _rows(
-        session.execute(
-            text(
-                """SELECT id, name, description, probability,
-                          expected_return, is_base_case, version, created_at
-                   FROM investment_thesis_scenarios
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND superseded_at IS NULL
-                   ORDER BY is_base_case DESC, created_at, name
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    evidence = _rows(
-        session.execute(
-            text(
-                """SELECT evidence_type, evidence_id, relationship, excerpt,
-                          source_family, origin_key, independence_key,
-                          evidence_fingerprint, source_timestamp,
-                          available_at, quality_score, entailment_score,
-                          freshness_score, effective_weight, created_at
-                   FROM investment_thesis_evidence
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY created_at, evidence_type, evidence_id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    catalysts = _rows(
-        session.execute(
-            text(
-                """SELECT id, description, expected_at, state, created_at,
-                          updated_at
-                   FROM investment_catalysts
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY expected_at NULLS LAST, created_at, id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    risks = _rows(
-        session.execute(
-            text(
-                """SELECT id, description, kind, severity, created_at,
-                          updated_at
-                   FROM investment_risks
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY created_at, id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    forecasts = _rows(
-        session.execute(
-            text(
-                """SELECT id, scenario_id, forecast_key, forecast_type,
-                          direction, target_value, target_date, as_of,
-                          version, created_at
-                   FROM investment_thesis_forecasts
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND superseded_at IS NULL
-                   ORDER BY as_of DESC, forecast_key
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    outcomes = _rows(
-        session.execute(
-            text(
-                """SELECT o.id, o.forecast_id, f.forecast_key, o.status,
-                          o.actual_value, o.measured_at, o.notes, o.created_at
-                   FROM investment_forecast_outcomes o
-                   JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
-                   WHERE f.thesis_id = CAST(:id AS UUID)
-                   ORDER BY o.measured_at DESC, f.forecast_key
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    snapshots = _rows(
-        session.execute(
-            text(
-                """SELECT id, snapshot_key, captured_at, input_fingerprint,
-                          opportunity_score, expected_value,
-                          expected_shortfall, confidence_score, neglect_score,
-                          catalyst_score, evidence_strength,
-                          contradiction_strength, created_at
-                   FROM investment_opportunity_snapshots
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY captured_at DESC, snapshot_key
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    falsification_runs = _rows(
-        session.execute(
-            text(
-                """SELECT id, run_key, status, started_at, completed_at,
-                          findings, created_at
-                   FROM investment_thesis_falsification_runs
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY started_at DESC, run_key
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    groups = _rows(
-        session.execute(
-            text(
-                """SELECT g.id, g.name, g.status, gm.added_at, gm.note
-                   FROM investment_thesis_group_members gm
-                   JOIN investment_thesis_groups g ON g.id = gm.group_id
-                   WHERE gm.thesis_id = CAST(:id AS UUID)
-                     AND gm.removed_at IS NULL
-                   ORDER BY gm.added_at, g.id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    positions = _rows(
-        session.execute(
-            text(
-                """SELECT position_id, link_type, created_at
-                   FROM position_thesis_links
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND removed_at IS NULL
-                   ORDER BY created_at, position_id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    playbooks = _rows(
-        session.execute(
-            text(
-                """SELECT id, playbook_key AS key, version, thesis_version,
-                          catalyst, horizon, expected_at, event_types,
-                          trigger_conditions, confirmation_conditions,
-                          invalidation_conditions, bull_scenario,
-                          base_scenario, bear_scenario, cited_evidence_refs,
-                          superseded_at, created_at
-                   FROM investment_thesis_event_playbooks
-                   WHERE thesis_id = CAST(:id AS UUID)
-                   ORDER BY created_at DESC, playbook_key, version DESC
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
-    playbook_matches = _rows(
-        session.execute(
-            text(
-                """SELECT m.id, m.playbook_id, m.market_event_id AS event_id,
-                          m.match_kind AS kind, m.evidence_refs,
-                          m.assessment, m.created_at, e.event_type, e.source,
-                          e.observed_at
-                   FROM investment_thesis_event_matches m
-                   JOIN investment_thesis_event_playbooks p
-                        ON p.id = m.playbook_id
-                   JOIN market_events e ON e.id = m.market_event_id
-                   WHERE p.thesis_id = CAST(:id AS UUID)
-                   ORDER BY m.created_at DESC, m.id
-                   LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": bounded},
-        )
-    )
+    versions = result_rows(session.execute(
+        text(
+            """SELECT version, claim, variant_perception, confidence,
+                      trend_context, valuation_context, sentiment_context,
+                      citation_map, rationale, changed_by, created_at
+               FROM investment_thesis_versions
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY version DESC
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    scenarios = result_rows(session.execute(
+        text(
+            """SELECT id, name, description, probability,
+                      expected_return, is_base_case, version, created_at
+               FROM investment_thesis_scenarios
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND superseded_at IS NULL
+               ORDER BY is_base_case DESC, created_at, name
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    evidence = result_rows(session.execute(
+        text(
+            """SELECT evidence_type, evidence_id, relationship, excerpt,
+                      source_family, origin_key, independence_key,
+                      evidence_fingerprint, source_timestamp,
+                      available_at, quality_score, entailment_score,
+                      freshness_score, effective_weight, created_at
+               FROM investment_thesis_evidence
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY created_at, evidence_type, evidence_id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    catalysts = result_rows(session.execute(
+        text(
+            """SELECT id, description, expected_at, state, created_at,
+                      updated_at
+               FROM investment_catalysts
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY expected_at NULLS LAST, created_at, id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    risks = result_rows(session.execute(
+        text(
+            """SELECT id, description, kind, severity, created_at,
+                      updated_at
+               FROM investment_risks
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY created_at, id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    forecasts = result_rows(session.execute(
+        text(
+            """SELECT id, scenario_id, forecast_key, forecast_type,
+                      direction, target_value, target_date, as_of,
+                      version, created_at
+               FROM investment_thesis_forecasts
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND superseded_at IS NULL
+               ORDER BY as_of DESC, forecast_key
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    outcomes = result_rows(session.execute(
+        text(
+            """SELECT o.id, o.forecast_id, f.forecast_key, o.status,
+                      o.actual_value, o.measured_at, o.notes, o.created_at
+               FROM investment_forecast_outcomes o
+               JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
+               WHERE f.thesis_id = CAST(:id AS UUID)
+               ORDER BY o.measured_at DESC, f.forecast_key
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    snapshots = result_rows(session.execute(
+        text(
+            """SELECT id, snapshot_key, captured_at, input_fingerprint,
+                      opportunity_score, expected_value,
+                      expected_shortfall, confidence_score, neglect_score,
+                      catalyst_score, evidence_strength,
+                      contradiction_strength, created_at
+               FROM investment_opportunity_snapshots
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY captured_at DESC, snapshot_key
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    falsification_runs = result_rows(session.execute(
+        text(
+            """SELECT id, run_key, status, started_at, completed_at,
+                      findings, created_at
+               FROM investment_thesis_falsification_runs
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY started_at DESC, run_key
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    groups = result_rows(session.execute(
+        text(
+            """SELECT g.id, g.name, g.status, gm.added_at, gm.note
+               FROM investment_thesis_group_members gm
+               JOIN investment_thesis_groups g ON g.id = gm.group_id
+               WHERE gm.thesis_id = CAST(:id AS UUID)
+                 AND gm.removed_at IS NULL
+               ORDER BY gm.added_at, g.id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    positions = result_rows(session.execute(
+        text(
+            """SELECT position_id, link_type, created_at
+               FROM position_thesis_links
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND removed_at IS NULL
+               ORDER BY created_at, position_id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    playbooks = result_rows(session.execute(
+        text(
+            """SELECT id, playbook_key AS key, version, thesis_version,
+                      catalyst, horizon, expected_at, event_types,
+                      trigger_conditions, confirmation_conditions,
+                      invalidation_conditions, bull_scenario,
+                      base_scenario, bear_scenario, cited_evidence_refs,
+                      superseded_at, created_at
+               FROM investment_thesis_event_playbooks
+               WHERE thesis_id = CAST(:id AS UUID)
+               ORDER BY created_at DESC, playbook_key, version DESC
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
+    playbook_matches = result_rows(session.execute(
+        text(
+            """SELECT m.id, m.playbook_id, m.market_event_id AS event_id,
+                      m.match_kind AS kind, m.evidence_refs,
+                      m.assessment, m.created_at, e.event_type, e.source,
+                      e.observed_at
+               FROM investment_thesis_event_matches m
+               JOIN investment_thesis_event_playbooks p
+                    ON p.id = m.playbook_id
+               JOIN market_events e ON e.id = m.market_event_id
+               WHERE p.thesis_id = CAST(:id AS UUID)
+               ORDER BY m.created_at DESC, m.id
+               LIMIT :limit"""
+        ),
+        {"id": thesis_id, "limit": bounded},
+    ))
     return {
         "thesis": thesis,
         "versions": versions,
@@ -3179,12 +3049,10 @@ def thesis_desk_status(
     through explicit ``never_run``/empty/unavailable states.
     """
     bounded = _bounded(limit, 20, _MAX_STATUS_JOBS)
-    schema = _first(
-        session.execute(
-            text("SELECT to_regclass(:name) AS present"),
-            {"name": "investment_thesis_groups"},
-        )
-    )
+    schema = result_first(session.execute(
+        text("SELECT to_regclass(:name) AS present"),
+        {"name": "investment_thesis_groups"},
+    ))
     unavailable_sources = {
         source: {
             "collection": {
@@ -3230,91 +3098,69 @@ def thesis_desk_status(
             "sources": unavailable_sources,
             "autonomy_jobs": [],
         }
-    thesis_total = _first(
-        session.execute(text("SELECT COUNT(*) AS total FROM investment_theses"))
-    )
-    thesis_statuses = _rows(
-        session.execute(
-            text(
-                "SELECT status, COUNT(*) AS count FROM investment_theses "
-                "GROUP BY status ORDER BY status"
-            )
+    thesis_total = result_first(session.execute(text("SELECT COUNT(*) AS total FROM investment_theses")))
+    thesis_statuses = result_rows(session.execute(
+        text(
+            "SELECT status, COUNT(*) AS count FROM investment_theses "
+            "GROUP BY status ORDER BY status"
         )
-    )
-    group_total = _first(
-        session.execute(text("SELECT COUNT(*) AS total FROM investment_thesis_groups"))
-    )
-    group_statuses = _rows(
-        session.execute(
-            text(
-                "SELECT status, COUNT(*) AS count FROM investment_thesis_groups "
-                "GROUP BY status ORDER BY status"
-            )
+    ))
+    group_total = result_first(session.execute(text("SELECT COUNT(*) AS total FROM investment_thesis_groups")))
+    group_statuses = result_rows(session.execute(
+        text(
+            "SELECT status, COUNT(*) AS count FROM investment_thesis_groups "
+            "GROUP BY status ORDER BY status"
         )
-    )
-    ranked = _first(
-        session.execute(
-            text(
-                "SELECT COUNT(*) AS total FROM investment_theses "
-                "WHERE opportunity_score > 0"
-            )
+    ))
+    ranked = result_first(session.execute(
+        text(
+            "SELECT COUNT(*) AS total FROM investment_theses "
+            "WHERE opportunity_score > 0"
         )
-    )
-    linked = _first(
-        session.execute(
-            text(
-                "SELECT COUNT(DISTINCT thesis_id) AS total "
-                "FROM position_thesis_links WHERE removed_at IS NULL"
-            )
+    ))
+    linked = result_first(session.execute(
+        text(
+            "SELECT COUNT(DISTINCT thesis_id) AS total "
+            "FROM position_thesis_links WHERE removed_at IS NULL"
         )
-    )
-    evidence_total = _first(
-        session.execute(
-            text("SELECT COUNT(*) AS total FROM investment_thesis_evidence")
+    ))
+    evidence_total = result_first(session.execute(
+        text("SELECT COUNT(*) AS total FROM investment_thesis_evidence")
+    ))
+    evidence_relationships = result_rows(session.execute(
+        text(
+            "SELECT relationship, COUNT(*) AS count "
+            "FROM investment_thesis_evidence "
+            "GROUP BY relationship ORDER BY relationship"
         )
-    )
-    evidence_relationships = _rows(
-        session.execute(
-            text(
-                "SELECT relationship, COUNT(*) AS count "
-                "FROM investment_thesis_evidence "
-                "GROUP BY relationship ORDER BY relationship"
-            )
+    ))
+    active_forecasts = result_first(session.execute(
+        text(
+            """SELECT COUNT(*) AS total
+               FROM investment_thesis_forecasts f
+               WHERE f.superseded_at IS NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM investment_forecast_outcomes o
+                     WHERE o.forecast_id = f.id
+                 )"""
         )
-    )
-    active_forecasts = _first(
-        session.execute(
-            text(
-                """SELECT COUNT(*) AS total
-                   FROM investment_thesis_forecasts f
-                   WHERE f.superseded_at IS NULL
-                     AND NOT EXISTS (
-                         SELECT 1 FROM investment_forecast_outcomes o
-                         WHERE o.forecast_id = f.id
-                     )"""
-            )
+    ))
+    matured_forecasts = result_first(session.execute(
+        text(
+            """SELECT COUNT(*) AS total
+               FROM investment_thesis_forecasts f
+               WHERE EXISTS (
+                   SELECT 1 FROM investment_forecast_outcomes o
+                   WHERE o.forecast_id = f.id
+               )"""
         )
-    )
-    matured_forecasts = _first(
-        session.execute(
-            text(
-                """SELECT COUNT(*) AS total
-                   FROM investment_thesis_forecasts f
-                   WHERE EXISTS (
-                       SELECT 1 FROM investment_forecast_outcomes o
-                       WHERE o.forecast_id = f.id
-                   )"""
-            )
+    ))
+    outcome_counts = result_rows(session.execute(
+        text(
+            "SELECT status, COUNT(*) AS count FROM investment_forecast_outcomes "
+            "GROUP BY status ORDER BY status"
         )
-    )
-    outcome_counts = _rows(
-        session.execute(
-            text(
-                "SELECT status, COUNT(*) AS count FROM investment_forecast_outcomes "
-                "GROUP BY status ORDER BY status"
-            )
-        )
-    )
+    ))
     outcome_by_status = {
         str(row["status"]): int(row["count"]) for row in outcome_counts
     }
@@ -3324,80 +3170,78 @@ def thesis_desk_status(
     # Empirical hit rate only when a terminal hit/miss exists: null (never
     # zero) while there is nothing to measure.
     hit_rate = hits / resolved if resolved > 0 else None
-    calibration_rows = _rows(
-        session.execute(
-            text(
-                """
-                WITH resolved AS (
-                    SELECT f.thesis_id, f.as_of, f.target_date, s.name,
-                           s.probability, f.target_value, o.actual_value
-                    FROM investment_forecast_outcomes o
-                    JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
-                    JOIN investment_thesis_scenarios s ON s.id = f.scenario_id
-                    WHERE o.status IN ('hit', 'miss')
-                      AND s.name IN ('bull', 'base', 'bear')
-                      AND s.probability IS NOT NULL
-                      AND s.probability BETWEEN 0 AND 1
-                      AND f.target_value IS NOT NULL
-                      AND o.actual_value IS NOT NULL
-                ),
-                complete_sets AS (
-                    SELECT thesis_id, as_of, target_date,
-                           MIN(actual_value) AS actual_value
-                    FROM resolved
-                    GROUP BY thesis_id, as_of, target_date
-                    HAVING COUNT(*) = 3
-                       AND COUNT(DISTINCT name) = 3
-                       AND ABS(SUM(probability) - 1.0) < 1e-9
-                       AND ABS(MAX(actual_value) - MIN(actual_value)) < 1e-9
-                ),
-                ranked AS (
-                    SELECT r.*,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY r.thesis_id, r.as_of, r.target_date
-                               ORDER BY ABS(r.target_value - sets.actual_value),
-                                        r.name
-                           ) AS realized_rank
-                    FROM resolved r
-                    JOIN complete_sets sets
-                      ON sets.thesis_id = r.thesis_id
-                     AND sets.as_of = r.as_of
-                     AND sets.target_date = r.target_date
-                ),
-                scored AS (
-                    SELECT thesis_id, as_of, target_date, probability,
-                           CASE WHEN realized_rank = 1 THEN 1.0 ELSE 0.0 END
-                               AS actual
-                    FROM ranked
-                ),
-                set_scores AS (
-                    SELECT thesis_id, as_of, target_date,
-                           SUM(POWER(probability - actual, 2)) AS brier_score
-                    FROM scored
-                    GROUP BY thesis_id, as_of, target_date
-                ),
-                binned AS (
-                    SELECT LEAST(
-                               4,
-                               GREATEST(0, FLOOR(probability * 5)::INTEGER)
-                           ) AS bucket,
-                           COUNT(*) AS count,
-                           AVG(probability) AS mean_probability,
-                           AVG(actual) AS observed_hit_rate,
-                           AVG(POWER(probability - actual, 2)) AS brier_score
-                    FROM scored
-                    GROUP BY bucket
-                )
-                SELECT bucket, count, mean_probability, observed_hit_rate,
-                       brier_score,
-                       (SELECT COUNT(*) FROM set_scores) AS set_count,
-                       (SELECT AVG(brier_score) FROM set_scores) AS overall_brier
-                FROM binned
-                ORDER BY bucket
-                """
+    calibration_rows = result_rows(session.execute(
+        text(
+            """
+            WITH resolved AS (
+                SELECT f.thesis_id, f.as_of, f.target_date, s.name,
+                       s.probability, f.target_value, o.actual_value
+                FROM investment_forecast_outcomes o
+                JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
+                JOIN investment_thesis_scenarios s ON s.id = f.scenario_id
+                WHERE o.status IN ('hit', 'miss')
+                  AND s.name IN ('bull', 'base', 'bear')
+                  AND s.probability IS NOT NULL
+                  AND s.probability BETWEEN 0 AND 1
+                  AND f.target_value IS NOT NULL
+                  AND o.actual_value IS NOT NULL
+            ),
+            complete_sets AS (
+                SELECT thesis_id, as_of, target_date,
+                       MIN(actual_value) AS actual_value
+                FROM resolved
+                GROUP BY thesis_id, as_of, target_date
+                HAVING COUNT(*) = 3
+                   AND COUNT(DISTINCT name) = 3
+                   AND ABS(SUM(probability) - 1.0) < 1e-9
+                   AND ABS(MAX(actual_value) - MIN(actual_value)) < 1e-9
+            ),
+            ranked AS (
+                SELECT r.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY r.thesis_id, r.as_of, r.target_date
+                           ORDER BY ABS(r.target_value - sets.actual_value),
+                                    r.name
+                       ) AS realized_rank
+                FROM resolved r
+                JOIN complete_sets sets
+                  ON sets.thesis_id = r.thesis_id
+                 AND sets.as_of = r.as_of
+                 AND sets.target_date = r.target_date
+            ),
+            scored AS (
+                SELECT thesis_id, as_of, target_date, probability,
+                       CASE WHEN realized_rank = 1 THEN 1.0 ELSE 0.0 END
+                           AS actual
+                FROM ranked
+            ),
+            set_scores AS (
+                SELECT thesis_id, as_of, target_date,
+                       SUM(POWER(probability - actual, 2)) AS brier_score
+                FROM scored
+                GROUP BY thesis_id, as_of, target_date
+            ),
+            binned AS (
+                SELECT LEAST(
+                           4,
+                           GREATEST(0, FLOOR(probability * 5)::INTEGER)
+                       ) AS bucket,
+                       COUNT(*) AS count,
+                       AVG(probability) AS mean_probability,
+                       AVG(actual) AS observed_hit_rate,
+                       AVG(POWER(probability - actual, 2)) AS brier_score
+                FROM scored
+                GROUP BY bucket
             )
+            SELECT bucket, count, mean_probability, observed_hit_rate,
+                   brier_score,
+                   (SELECT COUNT(*) FROM set_scores) AS set_count,
+                   (SELECT AVG(brier_score) FROM set_scores) AS overall_brier
+            FROM binned
+            ORDER BY bucket
+            """
         )
-    )
+    ))
     calibrated_count = (
         int(calibration_rows[0].get("set_count") or 0) if calibration_rows else 0
     )
@@ -3417,84 +3261,76 @@ def thesis_desk_status(
         }
         for row in calibration_rows
     ]
-    latest_evaluation = _first(
-        session.execute(
-            text("SELECT MAX(last_evaluated_at) AS latest FROM investment_theses")
+    latest_evaluation = result_first(session.execute(
+        text("SELECT MAX(last_evaluated_at) AS latest FROM investment_theses")
+    ))
+    latest_falsification = result_first(session.execute(
+        text(
+            "SELECT MAX(started_at) AS latest "
+            "FROM investment_thesis_falsification_runs"
         )
-    )
-    latest_falsification = _first(
-        session.execute(
-            text(
-                "SELECT MAX(started_at) AS latest "
-                "FROM investment_thesis_falsification_runs"
-            )
-        )
-    )
+    ))
     today = datetime.now(UTC).date()
     today_start = datetime.combine(today, time.min, tzinfo=UTC)
-    model_cost = _first(
-        session.execute(
-            text(
-                """SELECT COUNT(*) AS attempts,
-                          COUNT(cost_usd) AS known_cost_attempts,
-                          COUNT(*) - COUNT(cost_usd) AS unknown_cost_attempts,
-                          SUM(cost_usd) AS today_usd,
-                          MAX(created_at) AS latest_attempt_at
-                   FROM generation_attempts
-                   WHERE processor = :processor
-                     AND created_at >= :today_start
-                     AND created_at < :tomorrow_start"""
-            ),
-            {
-                "processor": "thesis_autonomy",
-                "today_start": today_start,
-                "tomorrow_start": today_start + timedelta(days=1),
-            },
-        )
-    )
-    collection_rows = _rows(
-        session.execute(
-            text(
-                """WITH latest_collections AS (
-                       SELECT DISTINCT ON (collector) collector, status,
-                              completed_at, records_written
-                       FROM collection_log
-                       WHERE collector IN ("""
-                + ", ".join(f":s{index}" for index in range(len(_INGESTION_SOURCES)))
-                + """)
-                       ORDER BY collector, started_at DESC
-                   ),
-                   latest_filings AS (
-                       SELECT 'filings' AS collector,
-                              CASE
-                                WHEN completed_at IS NULL THEN status
-                                WHEN COALESCE(result_status, status) IN
-                                     ('completed', 'success') THEN 'success'
-                                WHEN COALESCE(result_status, status) = 'partial'
-                                     THEN 'partial'
-                                ELSE 'failed'
-                              END AS status,
-                              completed_at,
-                              CASE
-                                WHEN JSONB_TYPEOF(summary->'ingested') = 'number'
-                                  THEN (summary->>'ingested')::INTEGER
-                                ELSE 0
-                              END AS records_written
-                       FROM cycle_runs
-                       WHERE run_kind = 'filings'
-                         AND requested_component = 'investment_filings'
-                       ORDER BY accepted_at DESC
-                       LIMIT 1
-                   )
-                   SELECT collector, status, completed_at, records_written
-                   FROM latest_collections
-                   UNION ALL
-                   SELECT collector, status, completed_at, records_written
-                   FROM latest_filings"""
-            ),
-            {f"s{index}": source for index, source in enumerate(_INGESTION_SOURCES)},
-        )
-    )
+    model_cost = result_first(session.execute(
+        text(
+            """SELECT COUNT(*) AS attempts,
+                      COUNT(cost_usd) AS known_cost_attempts,
+                      COUNT(*) - COUNT(cost_usd) AS unknown_cost_attempts,
+                      SUM(cost_usd) AS today_usd,
+                      MAX(created_at) AS latest_attempt_at
+               FROM generation_attempts
+               WHERE processor = :processor
+                 AND created_at >= :today_start
+                 AND created_at < :tomorrow_start"""
+        ),
+        {
+            "processor": "thesis_autonomy",
+            "today_start": today_start,
+            "tomorrow_start": today_start + timedelta(days=1),
+        },
+    ))
+    collection_rows = result_rows(session.execute(
+        text(
+            """WITH latest_collections AS (
+                   SELECT DISTINCT ON (collector) collector, status,
+                          completed_at, records_written
+                   FROM collection_log
+                   WHERE collector IN ("""
+            + ", ".join(f":s{index}" for index in range(len(_INGESTION_SOURCES)))
+            + """)
+                   ORDER BY collector, started_at DESC
+               ),
+               latest_filings AS (
+                   SELECT 'filings' AS collector,
+                          CASE
+                            WHEN completed_at IS NULL THEN status
+                            WHEN COALESCE(result_status, status) IN
+                                 ('completed', 'success') THEN 'success'
+                            WHEN COALESCE(result_status, status) = 'partial'
+                                 THEN 'partial'
+                            ELSE 'failed'
+                          END AS status,
+                          completed_at,
+                          CASE
+                            WHEN JSONB_TYPEOF(summary->'ingested') = 'number'
+                              THEN (summary->>'ingested')::INTEGER
+                            ELSE 0
+                          END AS records_written
+                   FROM cycle_runs
+                   WHERE run_kind = 'filings'
+                     AND requested_component = 'investment_filings'
+                   ORDER BY accepted_at DESC
+                   LIMIT 1
+               )
+               SELECT collector, status, completed_at, records_written
+               FROM latest_collections
+               UNION ALL
+               SELECT collector, status, completed_at, records_written
+               FROM latest_filings"""
+        ),
+        {f"s{index}": source for index, source in enumerate(_INGESTION_SOURCES)},
+    ))
     collection_by_source = {str(row["collector"]): row for row in collection_rows}
     sources: dict[str, Any] = {}
     for source in _INGESTION_SOURCES:
@@ -3512,7 +3348,7 @@ def thesis_desk_status(
                 f"MAX({availability_ts}) AS acquired_at FROM {table}"
             )
             data_params = {}
-        data_row = _first(session.execute(data_sql, data_params)) or {}
+        data_row = result_first(session.execute(data_sql, data_params)) or {}
         entry: dict[str, Any] = {
             "collection": {
                 "status": "never_run",
@@ -3535,36 +3371,32 @@ def thesis_desk_status(
                 "error_class": _collection_error_class(latest["status"]),
             }
         if source == "issuer_transcripts":
-            transcript_rows = _rows(
-                session.execute(
-                    text(
-                        """SELECT COALESCE(metadata->>'state', 'available')
-                                  AS state, COUNT(*) AS count
-                           FROM source_documents
-                           WHERE source = 'issuer_transcripts'
-                           GROUP BY state ORDER BY state LIMIT 20"""
-                    )
+            transcript_rows = result_rows(session.execute(
+                text(
+                    """SELECT COALESCE(metadata->>'state', 'available')
+                              AS state, COUNT(*) AS count
+                       FROM source_documents
+                       WHERE source = 'issuer_transcripts'
+                       GROUP BY state ORDER BY state LIMIT 20"""
                 )
-            )
+            ))
             entry["transcript_states"] = {
                 str(row["state"]): int(row["count"]) for row in transcript_rows
             }
         sources[source] = entry
-    autonomy_jobs = _rows(
-        session.execute(
-            text(
-                """SELECT id, job_type, state, priority, dedupe_key,
-                          input_fingerprint, not_before, attempt_count,
-                          max_attempts, correlation_id, created_at,
-                          started_at, completed_at, result_ref, payload
-                   FROM analysis_jobs
-                   WHERE job_type = :job_type
-                   ORDER BY created_at DESC, id DESC
-                   LIMIT :limit"""
-            ),
-            {"job_type": _AUTONOMY_JOB_TYPE, "limit": bounded},
-        )
-    )
+    autonomy_jobs = result_rows(session.execute(
+        text(
+            """SELECT id, job_type, state, priority, dedupe_key,
+                      input_fingerprint, not_before, attempt_count,
+                      max_attempts, correlation_id, created_at,
+                      started_at, completed_at, result_ref, payload
+               FROM analysis_jobs
+               WHERE job_type = :job_type
+               ORDER BY created_at DESC, id DESC
+               LIMIT :limit"""
+        ),
+        {"job_type": _AUTONOMY_JOB_TYPE, "limit": bounded},
+    ))
     return {
         "available": True,
         "theses": {
@@ -3635,149 +3467,131 @@ def load_group_tournament(
     """
     group_id = _uuid(group_id, "group_id")
     bounded = _bounded(limit, _MAX_TOURNAMENT_THESES, _MAX_TOURNAMENT_THESES)
-    group = _first(
-        session.execute(
-            text(
-                """SELECT id, name, description, status, created_at, updated_at
-                   FROM investment_thesis_groups
-                   WHERE id = CAST(:id AS UUID) LIMIT 1"""
-            ),
-            {"id": group_id},
-        )
-    )
+    group = result_first(session.execute(
+        text(
+            """SELECT id, name, description, status, created_at, updated_at
+               FROM investment_thesis_groups
+               WHERE id = CAST(:id AS UUID) LIMIT 1"""
+        ),
+        {"id": group_id},
+    ))
     if group is None:
         return None
-    members = _rows(
-        session.execute(
-            text(
-                """SELECT thesis_id, added_at, note
-                   FROM investment_thesis_group_members
-                   WHERE group_id = CAST(:group_id AS UUID)
-                     AND removed_at IS NULL
-                   ORDER BY added_at, thesis_id
-                   LIMIT :limit"""
-            ),
-            {"group_id": group_id, "limit": bounded},
-        )
-    )
+    members = result_rows(session.execute(
+        text(
+            """SELECT thesis_id, added_at, note
+               FROM investment_thesis_group_members
+               WHERE group_id = CAST(:group_id AS UUID)
+                 AND removed_at IS NULL
+               ORDER BY added_at, thesis_id
+               LIMIT :limit"""
+        ),
+        {"group_id": group_id, "limit": bounded},
+    ))
     theses: list[dict[str, Any]] = []
     thesis_ids: list[str] = []
     for member in members:
         thesis_id = str(member["thesis_id"])
         thesis_ids.append(thesis_id)
-        thesis = _first(
-            session.execute(
-                text(
-                    """SELECT id, theme_id, company, symbol, claim,
-                              variant_perception, status, horizon, direction,
-                              mechanism, catalyst_summary, confidence, origin,
-                              trend_context, valuation_context, sentiment_context,
-                              citation_map, canonical_key, evidence_strength,
-                              contradiction_strength, neglect_score,
-                              catalyst_score, confidence_score, expected_value,
-                              expected_shortfall, opportunity_score,
-                              last_evaluated_at, last_evidence_at, created_at,
-                              updated_at
-                       FROM investment_theses
-                       WHERE id = CAST(:id AS UUID) LIMIT 1"""
-                ),
-                {"id": thesis_id},
-            )
-        )
+        thesis = result_first(session.execute(
+            text(
+                """SELECT id, theme_id, company, symbol, claim,
+                          variant_perception, status, horizon, direction,
+                          mechanism, catalyst_summary, confidence, origin,
+                          trend_context, valuation_context, sentiment_context,
+                          citation_map, canonical_key, evidence_strength,
+                          contradiction_strength, neglect_score,
+                          catalyst_score, confidence_score, expected_value,
+                          expected_shortfall, opportunity_score,
+                          last_evaluated_at, last_evidence_at, created_at,
+                          updated_at
+                   FROM investment_theses
+                   WHERE id = CAST(:id AS UUID) LIMIT 1"""
+            ),
+            {"id": thesis_id},
+        ))
         if thesis is None:
             continue
-        thesis["evidence_counts"] = _rows(
-            session.execute(
-                text(
-                    """SELECT relationship, COUNT(*) AS count
-                       FROM investment_thesis_evidence
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       GROUP BY relationship ORDER BY relationship LIMIT 10"""
-                ),
-                {"id": thesis_id},
-            )
-        )
-        thesis["latest_version"] = _first(
-            session.execute(
-                text(
-                    """SELECT version, claim, variant_perception, confidence,
-                              trend_context, valuation_context, sentiment_context,
-                              citation_map, rationale, changed_by, created_at
-                       FROM investment_thesis_versions
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       ORDER BY version DESC LIMIT 1"""
-                ),
-                {"id": thesis_id},
-            )
-        )
-        thesis["scenarios"] = _rows(
-            session.execute(
-                text(
-                    """SELECT id, name, description, probability,
-                              expected_return, is_base_case, version, created_at
-                       FROM investment_thesis_scenarios
-                       WHERE thesis_id = CAST(:id AS UUID)
-                         AND superseded_at IS NULL
-                       ORDER BY is_base_case DESC, created_at, name
-                       LIMIT :limit"""
-                ),
-                {"id": thesis_id, "limit": _MAX_TOURNAMENT_CHILDREN},
-            )
-        )
-        thesis["forecasts"] = _rows(
-            session.execute(
-                text(
-                    """SELECT id, scenario_id, forecast_key, forecast_type,
-                              direction, target_value, target_date, as_of,
-                              version, created_at
-                       FROM investment_thesis_forecasts
-                       WHERE thesis_id = CAST(:id AS UUID)
-                         AND superseded_at IS NULL
-                       ORDER BY as_of DESC, forecast_key
-                       LIMIT :limit"""
-                ),
-                {"id": thesis_id, "limit": _MAX_TOURNAMENT_CHILDREN},
-            )
-        )
+        thesis["evidence_counts"] = result_rows(session.execute(
+            text(
+                """SELECT relationship, COUNT(*) AS count
+                   FROM investment_thesis_evidence
+                   WHERE thesis_id = CAST(:id AS UUID)
+                   GROUP BY relationship ORDER BY relationship LIMIT 10"""
+            ),
+            {"id": thesis_id},
+        ))
+        thesis["latest_version"] = result_first(session.execute(
+            text(
+                """SELECT version, claim, variant_perception, confidence,
+                          trend_context, valuation_context, sentiment_context,
+                          citation_map, rationale, changed_by, created_at
+                   FROM investment_thesis_versions
+                   WHERE thesis_id = CAST(:id AS UUID)
+                   ORDER BY version DESC LIMIT 1"""
+            ),
+            {"id": thesis_id},
+        ))
+        thesis["scenarios"] = result_rows(session.execute(
+            text(
+                """SELECT id, name, description, probability,
+                          expected_return, is_base_case, version, created_at
+                   FROM investment_thesis_scenarios
+                   WHERE thesis_id = CAST(:id AS UUID)
+                     AND superseded_at IS NULL
+                   ORDER BY is_base_case DESC, created_at, name
+                   LIMIT :limit"""
+            ),
+            {"id": thesis_id, "limit": _MAX_TOURNAMENT_CHILDREN},
+        ))
+        thesis["forecasts"] = result_rows(session.execute(
+            text(
+                """SELECT id, scenario_id, forecast_key, forecast_type,
+                          direction, target_value, target_date, as_of,
+                          version, created_at
+                   FROM investment_thesis_forecasts
+                   WHERE thesis_id = CAST(:id AS UUID)
+                     AND superseded_at IS NULL
+                   ORDER BY as_of DESC, forecast_key
+                   LIMIT :limit"""
+            ),
+            {"id": thesis_id, "limit": _MAX_TOURNAMENT_CHILDREN},
+        ))
         theses.append(thesis)
     outcomes: list[dict[str, Any]] = []
     falsification_runs: list[dict[str, Any]] = []
     if thesis_ids:
-        outcomes = _rows(
-            session.execute(
-                text(
-                    """SELECT o.id, o.forecast_id, f.thesis_id, f.forecast_key,
-                              o.status, o.actual_value, o.measured_at, o.notes,
-                              o.created_at
-                       FROM investment_forecast_outcomes o
-                       JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
-                       JOIN investment_thesis_group_members m
-                            ON m.thesis_id = f.thesis_id
-                       WHERE m.group_id = CAST(:group_id AS UUID)
-                         AND m.removed_at IS NULL
-                       ORDER BY o.measured_at DESC, f.forecast_key
-                       LIMIT :limit"""
-                ),
-                {"group_id": group_id, "limit": _MAX_TOURNAMENT_CHILDREN * 2},
-            )
-        )
-        falsification_runs = _rows(
-            session.execute(
-                text(
-                    """SELECT r.id, r.thesis_id, r.run_key, r.status,
-                              r.started_at, r.completed_at, r.findings,
-                              r.created_at
-                       FROM investment_thesis_falsification_runs r
-                       JOIN investment_thesis_group_members m
-                            ON m.thesis_id = r.thesis_id
-                       WHERE m.group_id = CAST(:group_id AS UUID)
-                         AND m.removed_at IS NULL
-                       ORDER BY r.started_at DESC, r.run_key
-                       LIMIT :limit"""
-                ),
-                {"group_id": group_id, "limit": _MAX_TOURNAMENT_CHILDREN * 2},
-            )
-        )
+        outcomes = result_rows(session.execute(
+            text(
+                """SELECT o.id, o.forecast_id, f.thesis_id, f.forecast_key,
+                          o.status, o.actual_value, o.measured_at, o.notes,
+                          o.created_at
+                   FROM investment_forecast_outcomes o
+                   JOIN investment_thesis_forecasts f ON f.id = o.forecast_id
+                   JOIN investment_thesis_group_members m
+                        ON m.thesis_id = f.thesis_id
+                   WHERE m.group_id = CAST(:group_id AS UUID)
+                     AND m.removed_at IS NULL
+                   ORDER BY o.measured_at DESC, f.forecast_key
+                   LIMIT :limit"""
+            ),
+            {"group_id": group_id, "limit": _MAX_TOURNAMENT_CHILDREN * 2},
+        ))
+        falsification_runs = result_rows(session.execute(
+            text(
+                """SELECT r.id, r.thesis_id, r.run_key, r.status,
+                          r.started_at, r.completed_at, r.findings,
+                          r.created_at
+                   FROM investment_thesis_falsification_runs r
+                   JOIN investment_thesis_group_members m
+                        ON m.thesis_id = r.thesis_id
+                   WHERE m.group_id = CAST(:group_id AS UUID)
+                     AND m.removed_at IS NULL
+                   ORDER BY r.started_at DESC, r.run_key
+                   LIMIT :limit"""
+            ),
+            {"group_id": group_id, "limit": _MAX_TOURNAMENT_CHILDREN * 2},
+        ))
     return {
         "group": {
             "id": str(group["id"]),

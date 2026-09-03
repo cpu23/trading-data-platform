@@ -139,39 +139,38 @@ class TestComponentIdValidation(unittest.TestCase):
         resp = client.post("/api/triggers/process/not-real", headers=AUTH)
         self.assertEqual(resp.status_code, 404)
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_news_validates_exact_source_before_forwarding(self, post):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_news_validates_exact_source_before_forwarding(self, mock_client):
         response = client.post("/api/triggers/news/not-real", headers=AUTH)
         self.assertEqual(response.status_code, 404)
-        post.assert_not_awaited()
+        mock_client.post.assert_not_awaited()
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_news_forwards_with_shared_client_and_status_url(self, post):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_news_forwards_with_shared_client_and_status_url(self, mock_client):
         upstream = MagicMock(status_code=202)
         upstream.json.return_value = {"job_id": "news-job", "accepted_at": "now"}
-        post.return_value = upstream
+        mock_client.post.return_value = upstream
 
         response = client.post("/api/triggers/news/reuters", headers=AUTH)
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(
-            post.await_args.args[0], "http://orchestrator:8000/run_news/reuters"
+            mock_client.post.await_args.args[0], "http://orchestrator:8000/run_news/reuters"
         )
         self.assertEqual(
             response.json()["status_url"], "/api/system/logs?correlation_id=news-job"
         )
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_news_maps_safe_orchestrator_statuses(self, post):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_news_maps_safe_orchestrator_statuses(self, mock_client):
         for status in (409, 503):
             with self.subTest(status=status):
                 upstream = MagicMock(status_code=status)
                 upstream.json.return_value = {"detail": "safe rejection"}
-                post.return_value = upstream
+                mock_client.post.return_value = upstream
                 response = client.post("/api/triggers/news/kobeissi", headers=AUTH)
                 self.assertEqual(response.status_code, status)
                 self.assertEqual(response.json()["detail"], "safe rejection")
-
 
 class TestCycleModes(unittest.TestCase):
     def _accepted(self):
@@ -179,20 +178,20 @@ class TestCycleModes(unittest.TestCase):
         response.json.return_value = {"job_id": "job-1", "accepted_at": "now"}
         return response
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_cycle_defaults_to_refresh_and_propagates_safe_confirmation(self, post):
-        post.return_value = self._accepted()
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_cycle_defaults_to_refresh_and_propagates_safe_confirmation(self, mock_client):
+        mock_client.post.return_value = self._accepted()
 
         response = client.post("/api/triggers/cycle", headers=AUTH, json={})
 
         self.assertEqual(response.status_code, 202)
-        payload = post.await_args.kwargs["json"]
+        payload = mock_client.post.await_args.kwargs["json"]
         self.assertEqual(payload["mode"], "refresh")
         self.assertFalse(payload["budget_confirmed"])
-        self.assertIn("auth", post.await_args.kwargs)
+        self.assertIn("auth", mock_client.post.await_args.kwargs)
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(self, post):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(self, mock_client):
         for mode in ("everything", ["refresh"], {"mode": "refresh"}, 1, True, None):
             with self.subTest(mode=mode):
                 response = client.post(
@@ -200,11 +199,11 @@ class TestCycleModes(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 422)
 
-        post.assert_not_awaited()
+        mock_client.post.assert_not_awaited()
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_invalid_body_and_confirmation_types_are_422_before_orchestrator_call(
-        self, post
+        self, mock_client
     ):
         for body in (
             ["refresh"],
@@ -219,11 +218,11 @@ class TestCycleModes(unittest.TestCase):
                 response = client.post("/api/triggers/cycle", headers=AUTH, json=body)
                 self.assertEqual(response.status_code, 422)
 
-        post.assert_not_awaited()
+        mock_client.post.assert_not_awaited()
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_absent_or_null_body_defaults_to_refresh(self, post):
-        post.return_value = self._accepted()
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_absent_or_null_body_defaults_to_refresh(self, mock_client):
+        mock_client.post.return_value = self._accepted()
         for send_null in (False, True):
             with self.subTest(send_null=send_null):
                 if send_null:
@@ -235,20 +234,20 @@ class TestCycleModes(unittest.TestCase):
                 else:
                     response = client.post("/api/triggers/cycle", headers=AUTH)
                 self.assertEqual(response.status_code, 202)
-                self.assertEqual(post.await_args.kwargs["json"]["mode"], "refresh")
+                self.assertEqual(mock_client.post.await_args.kwargs["json"]["mode"], "refresh")
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_force_full_requires_explicit_confirmation_before_call(self, post):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_force_full_requires_explicit_confirmation_before_call(self, mock_client):
         response = client.post(
             "/api/triggers/cycle", headers=AUTH, json={"mode": "force_full"}
         )
 
         self.assertEqual(response.status_code, 422)
-        post.assert_not_awaited()
+        mock_client.post.assert_not_awaited()
 
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_force_full_forwards_internal_basic_auth_after_global_auth(self, post):
-        post.return_value = self._accepted()
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_force_full_forwards_internal_basic_auth_after_global_auth(self, mock_client):
+        mock_client.post.return_value = self._accepted()
 
         response = client.post(
             "/api/triggers/cycle",
@@ -257,14 +256,14 @@ class TestCycleModes(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 202)
-        request = post.await_args
+        request = mock_client.post.await_args
         self.assertEqual(request.kwargs["json"]["mode"], "force_full")
         self.assertTrue(request.kwargs["json"]["budget_confirmed"])
         self.assertIsInstance(request.kwargs["auth"], httpx.BasicAuth)
 
-    @patch("routes.json.triggers._internal_basic_auth", side_effect=RuntimeError)
-    @patch.object(app.state.orchestrator_client, "post", new_callable=AsyncMock)
-    def test_force_full_missing_internal_credentials_fails_closed(self, post, _auth):
+    @patch("orchestrator_client.internal_basic_auth", side_effect=RuntimeError)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_force_full_missing_internal_credentials_fails_closed(self, mock_client, _auth):
         response = client.post(
             "/api/triggers/cycle",
             headers=AUTH,
@@ -272,8 +271,7 @@ class TestCycleModes(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 503)
-        post.assert_not_awaited()
-
+        mock_client.post.assert_not_awaited()
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Test cases
@@ -284,8 +282,8 @@ class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_health_returns_200(self, mock_httpx_get, _mock_qm):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_health_returns_200(self, mock_client, _mock_qm):
         """GET /api/system/health with empty DB should return 200 + contract keys."""
         mock_health_resp = MagicMock()
         mock_health_resp.json.return_value = {
@@ -303,7 +301,7 @@ class TestSystemRoutes(unittest.TestCase):
                 },
             },
         }
-        mock_httpx_get.return_value = mock_health_resp
+        mock_client.get.return_value = mock_health_resp
 
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -317,12 +315,12 @@ class TestSystemRoutes(unittest.TestCase):
         # With healthy stream and no stale components, should be ready/healthy
         self.assertEqual(data["readiness"], "ready")
         self.assertEqual(data["data_health"], "healthy")
-        mock_httpx_get.assert_awaited_once()
+        mock_client.get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_disabled_optional_quote_stream_does_not_fail_readiness(
-        self, mock_get, _query
+        self, mock_client, _query
     ):
         health = MagicMock()
         health.json.return_value = {
@@ -337,7 +335,7 @@ class TestSystemRoutes(unittest.TestCase):
                 "checks": {"fred": {"healthy": True}},
             },
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
 
         response = client.get("/api/system/health", headers=AUTH)
 
@@ -346,8 +344,8 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(response.json()["data_health"], "healthy")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_disabled_required_quote_stream_fails_readiness(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_disabled_required_quote_stream_fails_readiness(self, mock_client, _query):
         health = MagicMock()
         health.json.return_value = {
             "liveness": "ok",
@@ -361,7 +359,7 @@ class TestSystemRoutes(unittest.TestCase):
                 "checks": {"fred": {"healthy": True}},
             },
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
         config = {
             **MOCK_CONFIG,
             "collectors": {"oanda": {"enabled": True, "stream_enabled": True}},
@@ -375,9 +373,9 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(response.json()["data_health"], "degraded")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_degraded_quality_without_source_id_degrades_api_health(
-        self, mock_get, _query
+        self, mock_client, _query
     ):
         health = MagicMock()
         health.json.return_value = {
@@ -393,7 +391,7 @@ class TestSystemRoutes(unittest.TestCase):
                 "checks": {"fred_freshness": {"healthy": False, "detail": "stale"}},
             },
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -406,11 +404,11 @@ class TestSystemRoutes(unittest.TestCase):
         )
         self.assertEqual(quality_component["last_status"], "degraded")
         self.assertIn("fred_freshness", quality_component["error_message"])
-        mock_get.assert_awaited_once()
+        mock_client.get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_empty_quality_checks_are_unknown(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_empty_quality_checks_are_unknown(self, mock_client, _query):
         """An empty check result is unknown, never silently healthy."""
         health = MagicMock()
         health.json.return_value = {
@@ -423,7 +421,7 @@ class TestSystemRoutes(unittest.TestCase):
             "stream": {"status": "connected"},
             "quality": {"overall": "healthy", "checks": {}},
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -433,8 +431,8 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(data["quality"]["overall"], "unknown")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_quality_unknown_remains_unknown(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_quality_unknown_remains_unknown(self, mock_client, _query):
         """Unknown quality remains distinct from known degradation."""
         health = MagicMock()
         health.json.return_value = {
@@ -447,7 +445,7 @@ class TestSystemRoutes(unittest.TestCase):
             "stream": {"status": "connected"},
             "quality": {"overall": "unknown", "checks": {}},
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -456,13 +454,9 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(data["data_health"], "unknown")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(
-        app.state.orchestrator_client,
-        "get",
-        new_callable=AsyncMock,
-        side_effect=httpx.ConnectError("connection refused"),
-    )
-    def test_orchestrator_network_failure_returns_503(self, _get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_orchestrator_network_failure_returns_503(self, mock_client, _query):
+        mock_client.get.side_effect = httpx.ConnectError("connection refused")
         resp = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(resp.status_code, 503)
@@ -477,15 +471,15 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertNotIn("connection refused", resp.text)
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_orchestrator_http_500_returns_503(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_orchestrator_http_500_returns_503(self, mock_client, _query):
         request = httpx.Request("GET", "http://orchestrator:8000/health")
         response = httpx.Response(500, request=request)
         failed = MagicMock()
         failed.raise_for_status.side_effect = httpx.HTTPStatusError(
             "server error", request=request, response=response
         )
-        mock_get.return_value = failed
+        mock_client.get.return_value = failed
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -496,11 +490,11 @@ class TestSystemRoutes(unittest.TestCase):
         )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_invalid_orchestrator_contract_returns_503(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_invalid_orchestrator_contract_returns_503(self, mock_client, _query):
         invalid = MagicMock()
         invalid.json.return_value = {"status": "ok"}
-        mock_get.return_value = invalid
+        mock_client.get.return_value = invalid
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -512,9 +506,9 @@ class TestSystemRoutes(unittest.TestCase):
         )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_malformed_complete_orchestrator_health_contract_returns_503(
-        self, mock_get, _query
+        self, mock_client, _query
     ):
         malformed_payloads = {
             "invalid data_health": {
@@ -571,8 +565,7 @@ class TestSystemRoutes(unittest.TestCase):
             with self.subTest(case=case):
                 health = MagicMock()
                 health.json.return_value = payload
-                mock_get.return_value = health
-
+                mock_client.get.return_value = health
                 resp = client.get("/api/system/health", headers=AUTH)
 
                 self.assertEqual(resp.status_code, 503)
@@ -591,8 +584,8 @@ class TestSystemRoutes(unittest.TestCase):
                 )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_invalid_component_enums_return_controlled_503(self, mock_get, _query):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_invalid_component_enums_return_controlled_503(self, mock_client, _query):
         malformed_components = {
             "invalid status": {
                 "name": "database",
@@ -619,8 +612,8 @@ class TestSystemRoutes(unittest.TestCase):
                     "stream": {"status": "connected"},
                     "quality": {"overall": "healthy", "checks": {}},
                 }
-                mock_get.reset_mock()
-                mock_get.return_value = health
+                mock_client.get.reset_mock()
+                mock_client.get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -635,9 +628,9 @@ class TestSystemRoutes(unittest.TestCase):
                 )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_invalid_scheduler_and_stream_contracts_return_controlled_503(
-        self, mock_get, _query
+        self, mock_client, _query
     ):
         malformed_fields = {
             "scalar scheduler": {
@@ -679,8 +672,8 @@ class TestSystemRoutes(unittest.TestCase):
                     **fields,
                     "quality": {"overall": "healthy", "checks": {}},
                 }
-                mock_get.reset_mock()
-                mock_get.return_value = health
+                mock_client.get.reset_mock()
+                mock_client.get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -695,9 +688,9 @@ class TestSystemRoutes(unittest.TestCase):
                 )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_malformed_nested_orchestrator_quality_contract_returns_503(
-        self, mock_get, _query
+        self, mock_client, _query
     ):
         health = MagicMock()
 
@@ -731,8 +724,8 @@ class TestSystemRoutes(unittest.TestCase):
                     "stream": {"status": "connected"},
                     "quality": {"overall": "healthy", "checks": checks},
                 }
-                mock_get.reset_mock()
-                mock_get.return_value = health
+                mock_client.get.reset_mock()
+                mock_client.get.return_value = health
 
                 resp = client.get("/api/system/health", headers=AUTH)
 
@@ -1579,8 +1572,8 @@ class TestNewsRoutes(unittest.TestCase):
 class TestQualityPage(unittest.TestCase):
     """Task 11: Quality page returns 200 with mocked orchestrator response."""
 
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_quality_page_returns_200_with_orchestrator_response(self, mock_get):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_quality_page_returns_200_with_orchestrator_response(self, mock_client):
         """GET /quality returns 200 when orchestrator quality is healthy."""
         orchestrator_response = MagicMock()
         orchestrator_response.is_success = True
@@ -1591,7 +1584,7 @@ class TestQualityPage(unittest.TestCase):
                 "oanda_freshness": {"healthy": True, "detail": "fresh"},
             },
         }
-        mock_get.return_value = orchestrator_response
+        mock_client.get.return_value = orchestrator_response
 
         resp = client.get("/quality", headers=AUTH)
         self.assertEqual(
@@ -1612,8 +1605,8 @@ class TestHealthContract(unittest.TestCase):
     """Task 12: Separate liveness/readiness/data-health contract."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
-    def test_health_returns_contract_shape(self, mock_get, _mock_qm):
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    def test_health_returns_contract_shape(self, mock_client, _mock_qm):
         """GET /api/system/health returns liveness, readiness, data_health keys."""
         health = MagicMock()
         health.json.return_value = {
@@ -1630,7 +1623,7 @@ class TestHealthContract(unittest.TestCase):
                 },
             },
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -1658,9 +1651,9 @@ class TestHealthContract(unittest.TestCase):
         self.assertIsInstance(data["components"], list)
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state.orchestrator_client, "get", new_callable=AsyncMock)
+    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
     def test_stale_data_yields_liveness_ok_data_health_degraded(
-        self, mock_get, _mock_qm
+        self, mock_client, _mock_qm
     ):
         """Stale data keeps liveness 'ok' but degrades data_health."""
         health = MagicMock()
@@ -1681,7 +1674,7 @@ class TestHealthContract(unittest.TestCase):
                 },
             },
         }
-        mock_get.return_value = health
+        mock_client.get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -1885,7 +1878,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
             }
         )
         with (
-            patch("routes.json.research._enforce_api_budget") as budget,
+            patch("routes.json.research._enforce_research_budget") as budget,
             patch("routes.json.research._research_orchestrator_post", upstream),
         ):
             response = client.post(
@@ -1901,7 +1894,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
         self.assertEqual(upstream.await_args.args[2], {"force": True})
 
         with (
-            patch("routes.json.research._enforce_api_budget") as budget,
+            patch("routes.json.research._enforce_research_budget") as budget,
             patch(
                 "routes.json.research._research_orchestrator_post",
                 new_callable=AsyncMock,
@@ -1928,7 +1921,7 @@ class TestResearchIntelligenceRoutes(unittest.TestCase):
         with (
             patch("routes.json.research._research_queries", helpers),
             patch("routes.json.research.get_session"),
-            patch("routes.json.research._enforce_api_budget"),
+            patch("routes.json.research._enforce_research_budget"),
             patch("routes.json.research._research_orchestrator_post", upstream),
         ):
             response = client.post(

@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from investment_facts import (
+    _extract_external_effect_facts,
     _parse_number,
     _parse_number_pair,
     extract_ixbrl_facts,
@@ -92,6 +93,7 @@ Total equity                                  24,117     28,533
 CONSOLIDATED CASH FLOW STATEMENT
 for the year ended 31 December 2025
 US$ million                          Note       2025       2024
+Net cash from operating activities              13       6,000      5,500
 Expenditure on property, plant and equipment    14      (3,340)    (3,974)
 """
         current, prior, metadata = extract_report_text_facts(text)
@@ -100,6 +102,77 @@ Expenditure on property, plant and equipment    14      (3,340)    (3,974)
         self.assertEqual(prior["revenue"]["value"], 17_745)
         self.assertEqual(current["total_liabilities"]["value"], 31_877)
         self.assertEqual(current["capex"]["value"], 3_340)
+        self.assertEqual(current["operating_cash_flow"]["value"], 6_000)
+        self.assertEqual(current["free_cash_flow"]["value"], 2_660)
+        for metric, family, cash_basis in (
+            ("revenue", "revenue", "not_applicable"),
+            ("operating_cash_flow", "operating_cash_flow", "cash"),
+            ("capex", "capital_investment", "cash"),
+            ("free_cash_flow", "free_cash_flow", "cash"),
+        ):
+            with self.subTest(metric=metric):
+                tags = current[metric]["relationship_tags"]
+                self.assertEqual(tags["leaf"], "standard_metric")
+                self.assertEqual(tags["metric_family"], family)
+                self.assertEqual(tags["scope"], "consolidated")
+                self.assertEqual(tags["comparison_basis"], "none")
+                self.assertEqual(tags["temporal_basis"], "period_flow")
+                self.assertEqual(tags["cash_basis"], cash_basis)
+        self.assertNotIn("lease_inclusive_investment", current)
+
+    def test_layout_text_tags_cash_and_broader_investment_bases_generically(self):
+        text = """CONSOLIDATED CASH FLOW STATEMENT
+for the year ended 31 December 2025
+US$ million                          Note       2025       2024
+Net cash from operating activities              10      8,000      7,000
+Purchase of property, plant and equipment        11     (2,500)    (2,000)
+Capital expenditures including finance lease additions  12      3,100      2,600
+"""
+
+        current, prior, metadata = extract_report_text_facts(text)
+
+        self.assertEqual(metadata["status"], "success")
+        self.assertEqual(current["operating_cash_flow"]["value"], 8_000)
+        self.assertEqual(current["capex"]["value"], 2_500)
+        self.assertEqual(current["lease_inclusive_investment"]["value"], 3_100)
+        self.assertEqual(prior["capex"]["value"], 2_000)
+        self.assertEqual(prior["lease_inclusive_investment"]["value"], 2_600)
+        cash_tags = current["capex"]["relationship_tags"]
+        broader_tags = current["lease_inclusive_investment"]["relationship_tags"]
+        self.assertEqual(cash_tags["metric_family"], "capital_investment")
+        self.assertEqual(broader_tags["metric_family"], "capital_investment")
+        self.assertEqual(cash_tags["cash_basis"], "cash")
+        self.assertEqual(
+            broader_tags["cash_basis"], "cash_plus_finance_leases"
+        )
+        self.assertEqual(cash_tags["scope"], broader_tags["scope"])
+        self.assertEqual(cash_tags["temporal_basis"], "period_flow")
+        self.assertEqual(broader_tags["temporal_basis"], "period_flow")
+        self.assertEqual(current["free_cash_flow"]["value"], 5_500)
+        self.assertEqual(
+            current["free_cash_flow"]["concept"],
+            "derived:operating_cash_flow-capex",
+        )
+        self.assertNotIn(
+            "finance lease",
+            current["free_cash_flow"]["evidence"].lower(),
+        )
+        self.assertEqual(
+            set(current),
+            {
+                "operating_cash_flow",
+                "capex",
+                "lease_inclusive_investment",
+                "free_cash_flow",
+            },
+        )
+        self.assertFalse(
+            any(
+                fact.get("source") == "derived"
+                for name, fact in current.items()
+                if name != "free_cash_flow"
+            )
+        )
 
     def test_layout_text_preserves_unknown_report_currency_for_total_columns(self):
         text = """CONSOLIDATED INCOME STATEMENT
@@ -205,6 +278,133 @@ Gross profit                    1,100       700
         self.assertEqual(current["gross_profit"]["value"], 1_100)
         self.assertEqual(prior["gross_profit"]["value"], 700)
 
+
+    def test_external_effect_extraction_accepts_generic_contribution_and_drag(self):
+        current = {
+            "revenue": {
+                "period": "2025",
+                "relationship_tags": {
+                    "scope": "consolidated",
+                    "duration_days": 365,
+                },
+            },
+            "net_income": {
+                "period": "2025",
+                "relationship_tags": {
+                    "scope": "consolidated",
+                    "duration_days": 365,
+                },
+            },
+        }
+        text = (
+            "For the year ended 2025, a neutral event contributed 2 percentage "
+            "points to revenue year-over-year growth due to a business combination. "
+            "For the year ended 2025, a separate neutral event was a 1 point drag "
+            "on net income year-over-year growth due to restructuring."
+        )
+        effects = _extract_external_effect_facts(text, current, ["2025", "2024"])
+
+        self.assertEqual(len(effects), 2)
+        contribution, drag = effects.values()
+        self.assertEqual(contribution["value"], 2.0)
+        self.assertEqual(drag["value"], -1.0)
+        self.assertEqual(contribution["unit"], "percentage_points")
+        self.assertEqual(drag["unit"], "percentage_points")
+        self.assertEqual(contribution["period"], "2025")
+        self.assertEqual(drag["period"], "2025")
+        self.assertEqual(contribution["relationship_tags"]["duration_days"], 365)
+        self.assertEqual(drag["relationship_tags"]["duration_days"], 365)
+        self.assertEqual(
+            contribution["relationship_tags"]["effect_kind"], "contribution"
+        )
+        self.assertEqual(drag["relationship_tags"]["effect_kind"], "drag")
+        self.assertEqual(
+            contribution["relationship_tags"]["category"], "business_combination"
+        )
+        self.assertEqual(drag["relationship_tags"]["category"], "restructuring")
+        self.assertEqual(
+            contribution["relationship_tags"]["recipient_path"], "current.revenue"
+        )
+        self.assertEqual(
+            drag["relationship_tags"]["recipient_path"], "current.net_income"
+        )
+        self.assertEqual(
+            contribution["relationship_tags"]["comparison_basis"],
+            "year_over_year_gaap",
+        )
+        self.assertEqual(
+            contribution["relationship_tags"]["temporal_basis"], "rate_over_period"
+        )
+        self.assertEqual(
+            contribution["relationship_tags"]["compatibility"], "compatible"
+        )
+
+        period_silent = _extract_external_effect_facts(
+            "A neutral event contributed 2 percentage points to revenue "
+            "year-over-year growth due to a business combination.",
+            current,
+            ["2025", "2024"],
+        )
+        silent_tags = next(iter(period_silent.values()))["relationship_tags"]
+        self.assertEqual(silent_tags["compatibility"], "incompatible")
+        self.assertIn("period_mismatch", silent_tags["incompatibility_reasons"])
+
+    def test_external_reclassification_groups_both_explicit_recipient_legs(self):
+        current = {
+            metric: {
+                "period": "2025",
+                "relationship_tags": {"scope": "consolidated"},
+            }
+            for metric in ("revenue", "operating_income")
+        }
+
+        effects = _extract_external_effect_facts(
+            "$5 million was reclassified from revenue to operating income "
+            "in 2025.",
+            current,
+            ["2025", "2024"],
+        )
+
+        self.assertEqual(len(effects), 2)
+        from_leg, to_leg = effects.values()
+        self.assertEqual((from_leg["value"], to_leg["value"]), (-5.0, 5.0))
+        from_tags = from_leg["relationship_tags"]
+        to_tags = to_leg["relationship_tags"]
+        self.assertEqual(from_tags["group_id"], to_tags["group_id"])
+        self.assertEqual(from_tags["effect_kind"], "reclassification")
+        self.assertEqual(to_tags["effect_kind"], "reclassification")
+        self.assertEqual(from_tags["recipient_path"], "current.revenue")
+        self.assertEqual(to_tags["recipient_path"], "current.operating_income")
+        self.assertIn("includes_reclassification", from_tags["qualifiers"])
+        self.assertIn("includes_reclassification", to_tags["qualifiers"])
+
+    def test_external_effect_with_absent_exact_recipient_is_incompatible(self):
+        effects = _extract_external_effect_facts(
+            "On a consolidated basis, a neutral event contributed 2 percentage "
+            "points to revenue year-over-year growth in 2025.",
+            {},
+            ["2025", "2024"],
+        )
+
+        self.assertEqual(len(effects), 1)
+        tags = effects["external_effect_1"]["relationship_tags"]
+        self.assertIsNone(tags["recipient_path"])
+        self.assertEqual(tags["compatibility"], "incompatible")
+        self.assertEqual(tags["incompatibility_reasons"], ["unresolved_recipient"])
+
+    def test_external_effect_ignores_names_without_explicit_quantified_grammar(self):
+        effects = _extract_external_effect_facts(
+            "The acquisition contribution improved results and a currency "
+            "headwind affected growth.",
+            {
+                "revenue": {
+                    "period": "2025",
+                    "relationship_tags": {"scope": "consolidated"},
+                }
+            },
+            ["2025", "2024"],
+        )
+        self.assertEqual(effects, {})
 
 if __name__ == "__main__":
     unittest.main()

@@ -619,59 +619,146 @@ class AnalysisRoutingConfig(FrozenModel):
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_STAGE_NAMES: tuple[str, ...] = (
+    "claim_extraction",
+    "pattern_discovery",
+    "causal_chain",
+    "value_capture",
+    "adversarial",
+    "deliverable",
+    "macro_transmission",
+)
+KNOWN_RESEARCH_STAGES: frozenset[str] = frozenset(DEFAULT_STAGE_NAMES)
+
+DEFAULT_PROMPT_TEMPLATES: dict[str, str] = {
+    "claim_extraction": "prompts/research_claim_extraction_v2.txt",
+    "pattern_discovery": "prompts/research_pattern_discovery_v2.txt",
+    "causal_chain": "prompts/research_causal_chain_v2.txt",
+    "value_capture": "prompts/research_value_capture_v2.txt",
+    "adversarial": "prompts/research_adversarial_v2.txt",
+    "deliverable": "prompts/research_deliverable_v2.txt",
+    "macro_transmission": "prompts/macro_transmission_v3.txt",
+}
+
+DEFAULT_STAGE_MAX_TOKENS: dict[str, int] = {
+    "claim_extraction": 4096,
+    "pattern_discovery": 4096,
+    "causal_chain": 4096,
+    "value_capture": 4096,
+    "adversarial": 4096,
+    "deliverable": 4096,
+    "macro_transmission": 4096,
+}
+
+DEFAULT_LIFECYCLE_THRESHOLDS: dict[str, int] = {
+    "forming_evidence": 3,
+    "corroborated_evidence": 5,
+    "corroborated_days": 7,
+    "research_ready_evidence": 6,
+    "mature_evidence": 10,
+    "mature_snapshots": 3,
+    "weakening_days": 45,
+    "archive_days": 120,
+}
+
+DEFAULT_MARKETS: tuple[str, ...] = (
+    "EURUSD",
+    "DXY",
+    "AUDJPY",
+    "USDJPY",
+    "SP500",
+    "XAUUSD",
+    "XPTUSD",
+    "GER40",
+    "UK100",
+)
+
+DEFAULT_REGIONS: tuple[str, ...] = ("US", "euro_area", "UK", "Japan")
+RESEARCH_REASONING_EFFORT_LEVELS: frozenset[str] = frozenset(
+    {"minimal", "low", "medium", "high", "xhigh"}
+)
+
+
 class ResearchStageConfig(FrozenModel):
     enabled: bool = True
-    prompt_template: str | None = None
-    max_output_tokens: int | None = Field(default=None, ge=1, le=100000)
+    prompt_template: NonBlankText | None = Field(default=None, max_length=500)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=4096)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_from_raw(cls, data: Any) -> Any:
+        if isinstance(data, bool):
+            return {"enabled": data}
+        return data
 
 
 class ResearchLimitsConfig(FrozenModel):
-    maximum_candidate_evidence: int = Field(default=240, ge=1, le=100000)
-    maximum_macro_evidence: int = Field(default=48, ge=1, le=100000)
-    maximum_market_drivers: int = Field(default=8, ge=1, le=100000)
-    maximum_cases_per_run: int = Field(default=8, ge=1, le=100000)
-    maximum_claim_documents_per_run: int = Field(default=8, ge=1, le=100000)
-    evidence_per_candidate: int = Field(default=24, ge=1, le=100000)
-    publication_limit: int = Field(default=20, ge=1, le=100000)
-    history_limit: int = Field(default=50, ge=1, le=100000)
+    maximum_candidate_evidence: int = Field(default=240, ge=10, le=2000)
+    maximum_macro_evidence: int = Field(default=48, ge=10, le=200)
+    maximum_market_drivers: int = Field(default=8, ge=1, le=8)
+    maximum_cases_per_run: int = Field(default=8, ge=1, le=100)
+    maximum_claim_documents_per_run: int = Field(default=8, ge=0, le=100)
+    evidence_per_candidate: int = Field(default=24, ge=3, le=100)
+    publication_limit: int = Field(default=20, ge=1, le=100)
+    history_limit: int = Field(default=50, ge=1, le=200)
 
 
 class ResearchDiscoveryConfig(FrozenModel):
-    minimum_evidence_count: int = Field(default=3, ge=1, le=100000)
-    minimum_source_diversity: int = Field(default=2, ge=1, le=100000)
-    candidate_similarity_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
-    merge_similarity_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    minimum_evidence_count: int = Field(default=3, ge=2, le=50)
+    minimum_source_diversity: int = Field(default=2, ge=1, le=10)
+    candidate_similarity_threshold: float = Field(default=0.35, ge=0.05, le=1.0)
+    merge_similarity_threshold: float = Field(default=0.72, ge=0.1, le=1.0)
 
 
 class ResearchGraphConfig(FrozenModel):
-    depth: int = Field(default=3, ge=1, le=100)
-    hard_depth: int = Field(default=5, ge=1, le=100)
-    maximum_nodes: int = Field(default=40, ge=1, le=100000)
-    maximum_edges: int = Field(default=60, ge=1, le=100000)
+    depth: int = Field(default=3, ge=1, le=8)
+    hard_depth: int = Field(default=5, ge=1, le=8)
+    maximum_nodes: int = Field(default=40, ge=2, le=200)
+    maximum_edges: int = Field(default=60, ge=1, le=400)
+
+    @model_validator(mode="after")
+    def _validate_depths(self) -> ResearchGraphConfig:
+        if self.depth > self.hard_depth:
+            raise ValueError(
+                f"graph.depth ({self.depth}) cannot exceed hard_depth ({self.hard_depth})"
+            )
+        return self
 
 
 class ResearchLifecycleThresholdsConfig(FrozenModel):
-    forming_evidence: int = Field(default=3, ge=0, le=100000)
-    corroborated_evidence: int = Field(default=5, ge=0, le=100000)
-    corroborated_days: int = Field(default=7, ge=0, le=36500)
-    research_ready_evidence: int = Field(default=6, ge=0, le=100000)
-    mature_evidence: int = Field(default=10, ge=0, le=100000)
-    mature_snapshots: int = Field(default=3, ge=0, le=100000)
-    weakening_days: int = Field(default=45, ge=0, le=36500)
-    archive_days: int = Field(default=120, ge=0, le=36500)
+    forming_evidence: int = Field(default=3, ge=1, le=10000)
+    corroborated_evidence: int = Field(default=5, ge=1, le=10000)
+    corroborated_days: int = Field(default=7, ge=1, le=3650)
+    research_ready_evidence: int = Field(default=6, ge=1, le=10000)
+    mature_evidence: int = Field(default=10, ge=1, le=10000)
+    mature_snapshots: int = Field(default=3, ge=1, le=10000)
+    weakening_days: int = Field(default=45, ge=1, le=3650)
+    archive_days: int = Field(default=120, ge=1, le=3650)
+
+    @model_validator(mode="after")
+    def _validate_lifecycle_days(self) -> ResearchLifecycleThresholdsConfig:
+        if self.archive_days <= self.weakening_days:
+            raise ValueError(
+                f"research lifecycle archive_days ({self.archive_days}) must exceed weakening_days ({self.weakening_days})"
+            )
+        return self
 
 
 class ResearchIntelligenceConfig(FrozenModel):
     enabled: bool = True
     schedule_enabled: bool = True
-    schedule: str | None = None
-    rolling_window_days: int = Field(default=45, ge=1, le=36500)
-    model_budget_usd_per_run: float = Field(default=0.75, ge=0.0)
+    schedule: str = "15 8 * * 1-5"
+    rolling_window_days: int = Field(default=45, ge=1, le=730)
+    model_budget_usd_per_run: float = Field(default=0.75, ge=0.0, le=100.0)
     claim_extraction_enabled: bool = True
     macro_drivers_enabled: bool = True
     promote_discovered_themes: bool = True
-    hot_market_universe: list[str] = Field(default_factory=list)
-    region_universe: list[str] = Field(default_factory=list)
+    hot_market_universe: list[NonBlankText] = Field(
+        default_factory=lambda: list(DEFAULT_MARKETS)
+    )
+    region_universe: list[NonBlankText] = Field(
+        default_factory=lambda: list(DEFAULT_REGIONS)
+    )
     limits: ResearchLimitsConfig = Field(default_factory=ResearchLimitsConfig)
     discovery: ResearchDiscoveryConfig = Field(default_factory=ResearchDiscoveryConfig)
     graph: ResearchGraphConfig = Field(default_factory=ResearchGraphConfig)
@@ -681,6 +768,82 @@ class ResearchIntelligenceConfig(FrozenModel):
     stages: dict[str, ResearchStageConfig] = Field(default_factory=dict)
     model_overrides: dict[str, str] = Field(default_factory=dict)
     reasoning_effort: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("schedule")
+    @classmethod
+    def _validate_schedule(cls, value: str) -> str:
+        cleaned = str(value or "").strip()
+        if len(cleaned.split()) != 5:
+            raise ValueError("research_intelligence.schedule must be a five-field cron")
+        return cleaned
+
+    @field_validator("hot_market_universe", mode="before")
+    @classmethod
+    def _validate_hot_market_universe(cls, value: Any) -> list[str]:
+        if value is None:
+            return list(DEFAULT_MARKETS)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(
+                "research_intelligence.hot_market_universe must be an array"
+            )
+        cleaned: list[str] = []
+        for item in value[:50]:
+            text = str(item or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text[:80])
+        return cleaned
+
+    @field_validator("region_universe", mode="before")
+    def _validate_region_universe(cls, value: Any) -> list[str]:
+        if value is None:
+            return list(DEFAULT_REGIONS)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("research_intelligence.region_universe must be an array")
+        cleaned: list[str] = []
+        for item in value[:20]:
+            text = str(item or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text[:80])
+        return cleaned
+
+    @field_validator("stages")
+    @classmethod
+    def _validate_stages(
+        cls, value: dict[str, ResearchStageConfig]
+    ) -> dict[str, ResearchStageConfig]:
+        for stage in value:
+            if stage not in KNOWN_RESEARCH_STAGES:
+                raise ValueError(f"unknown research stage: {stage}")
+        return value
+
+    @field_validator("model_overrides")
+    @classmethod
+    def _validate_model_overrides(cls, value: dict[str, str]) -> dict[str, str]:
+        cleaned: dict[str, str] = {}
+        for stage, model in value.items():
+            if stage not in KNOWN_RESEARCH_STAGES:
+                raise ValueError(f"unknown research stage in model_overrides: {stage}")
+            if not isinstance(model, str) or not model.strip():
+                raise ValueError(f"model_overrides.{stage} must be non-blank")
+            cleaned[stage] = model.strip()
+        return cleaned
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _validate_reasoning_effort(cls, value: dict[str, str]) -> dict[str, str]:
+        cleaned: dict[str, str] = {}
+        for stage, effort in value.items():
+            if stage not in KNOWN_RESEARCH_STAGES:
+                raise ValueError(f"unknown research stage in reasoning_effort: {stage}")
+            if effort is None:
+                continue
+            norm = str(effort).strip().casefold()
+            if norm not in RESEARCH_REASONING_EFFORT_LEVELS:
+                raise ValueError(
+                    f"research_intelligence.reasoning_effort.{stage} is invalid"
+                )
+            cleaned[stage] = norm
+        return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -2687,6 +2850,12 @@ __all__ = [
     "ConfigSnapshot",
     "ConfigSource",
     "ConfigStore",
+    "DEFAULT_LIFECYCLE_THRESHOLDS",
+    "DEFAULT_MARKETS",
+    "DEFAULT_PROMPT_TEMPLATES",
+    "DEFAULT_REGIONS",
+    "DEFAULT_STAGE_MAX_TOKENS",
+    "DEFAULT_STAGE_NAMES",
     "DashboardConfig",
     "DashboardIndicatorConfig",
     "DataQualitySourceConfig",
@@ -2707,8 +2876,8 @@ __all__ = [
     "KNOWN_COLLECTORS",
     "KNOWN_NEWS_SOURCES",
     "KNOWN_PROCESSORS",
+    "KNOWN_RESEARCH_STAGES",
     "InvestingWatchlistConfig",
-    "InvestmentDocumentsConfig",
     "InvestmentFilingsConfig",
     "InvestmentCompanyConfig",
     "KobeissiConfig",
@@ -2728,6 +2897,7 @@ __all__ = [
     "ReactionWindowsConfig",
     "ReadinessConfig",
     "RejectedConfig",
+    "RESEARCH_REASONING_EFFORT_LEVELS",
     "ResearchDiscoveryConfig",
     "ResearchGraphConfig",
     "ResearchIntelligenceConfig",

@@ -7,6 +7,7 @@ chooses, changes, or normalizes these values.
 from __future__ import annotations
 
 import html
+import hashlib
 import io
 import math
 import re
@@ -71,6 +72,7 @@ _DURATION_METRICS = frozenset(
         "revenue",
         "operating_cash_flow",
         "capex",
+        "lease_inclusive_investment",
         "net_income",
         "diluted_eps",
         "shares_outstanding",
@@ -82,6 +84,7 @@ _MONETARY_METRICS = frozenset(
         "revenue",
         "operating_cash_flow",
         "capex",
+        "lease_inclusive_investment",
         "net_income",
         "inventory",
         "gross_profit",
@@ -94,6 +97,99 @@ _MONETARY_METRICS = frozenset(
         "current_liabilities",
     }
 )
+
+_RELATIONSHIP_METRIC_FAMILIES: dict[str, str] = {
+    "revenue": "revenue",
+    "net_income": "net_income",
+    "diluted_eps": "diluted_eps",
+    "operating_cash_flow": "operating_cash_flow",
+    "free_cash_flow": "free_cash_flow",
+    "capex": "capital_investment",
+    "lease_inclusive_investment": "capital_investment",
+    "gross_profit": "gross_profit",
+    "gross_margin": "gross_margin",
+}
+
+def _relationship_tags_for_metric(
+    metric: str, *, scope: str = "consolidated"
+) -> dict[str, Any] | None:
+    """Return issuer-agnostic relationship semantics for a canonical metric."""
+    metric_family = _RELATIONSHIP_METRIC_FAMILIES.get(metric)
+    if metric_family is None:
+        return None
+    return {
+        "leaf": "standard_metric",
+        "metric_family": metric_family,
+        "scope": scope,
+        "comparison_basis": "none",
+        "temporal_basis": (
+            "rate_over_period" if metric == "gross_margin" else "period_flow"
+        ),
+        "cash_basis": (
+            "cash_plus_finance_leases"
+            if metric == "lease_inclusive_investment"
+            else (
+                "cash"
+                if metric in {"operating_cash_flow", "free_cash_flow", "capex"}
+                else "not_applicable"
+            )
+        ),
+        "qualifiers": [],
+    }
+
+
+def _tag_relationship_metric(
+    metric: str,
+    record: dict[str, Any],
+    *,
+    scope: str = "consolidated",
+    duration_days: int | None = None,
+) -> None:
+    tags = _relationship_tags_for_metric(metric, scope=scope)
+    if tags is not None:
+        if isinstance(duration_days, int) and duration_days > 0:
+            tags["duration_days"] = duration_days
+        record["relationship_tags"] = tags
+
+
+def _derive_free_cash_flow(
+    target: dict[str, dict[str, Any]],
+    source: str,
+) -> None:
+    operating_cash_flow = target.get("operating_cash_flow")
+    capital_investment = target.get("capex")
+    if not operating_cash_flow or not capital_investment:
+        return
+    operating_tags = operating_cash_flow.get("relationship_tags", {})
+    investment_tags = capital_investment.get("relationship_tags", {})
+    if (
+        operating_cash_flow["unit"] != capital_investment["unit"]
+        or operating_cash_flow["period"] != capital_investment["period"]
+        or operating_tags.get("duration_days")
+        != investment_tags.get("duration_days")
+    ):
+        return
+    record = {
+        "value": operating_cash_flow["value"] - abs(capital_investment["value"]),
+        "unit": operating_cash_flow["unit"],
+        "period": operating_cash_flow["period"],
+        "evidence": (
+            "Deterministic operating cash flow less cash capital investment "
+            f"from {operating_cash_flow['concept']} and {capital_investment['concept']}"
+        ),
+        "source": f"derived_{source}",
+        "concept": "derived:operating_cash_flow-capex",
+    }
+    scope = (
+        operating_tags.get("scope")
+        if operating_tags.get("scope") == investment_tags.get("scope")
+        else "other"
+    )
+    duration_days = operating_tags.get("duration_days")
+    _tag_relationship_metric(
+        "free_cash_flow", record, scope=scope, duration_days=duration_days
+    )
+    target["free_cash_flow"] = record
 
 
 def sec_cik(document: dict[str, Any]) -> str | None:
@@ -156,6 +252,7 @@ def _concept_entries(
                     for value in values
                     if isinstance(value, dict)
                     and value.get("accn") == accession
+                    and not value.get("segment")
                     and isinstance(value.get("val"), (int, float))
                     and not isinstance(value.get("val"), bool)
                     and math.isfinite(float(value["val"]))
@@ -204,7 +301,7 @@ def _records(
     def record(entry: dict[str, Any]) -> dict[str, Any]:
         value, normalized_unit = _normalize_value(metric, float(entry["val"]), unit)
         period = str(entry["end"])
-        return {
+        result = {
             "value": value,
             "unit": normalized_unit,
             "period": period,
@@ -212,6 +309,11 @@ def _records(
             "source": "sec_xbrl",
             "concept": f"us-gaap:{concept}",
         }
+        start = _iso(entry.get("start"))
+        end = _iso(entry.get("end"))
+        duration_days = (end - start).days if start is not None and end is not None else None
+        _tag_relationship_metric(metric, result, duration_days=duration_days)
+        return result
 
     return record(periods[0]), record(periods[1]) if len(periods) > 1 else None, concept
 
@@ -255,6 +357,17 @@ def extract_sec_facts(
                 "source": "derived_sec_xbrl",
                 "concept": "derived:gross_profit/revenue",
             }
+            revenue_duration = revenue.get("relationship_tags", {}).get("duration_days")
+            gross_duration = gross_profit.get("relationship_tags", {}).get(
+                "duration_days"
+            )
+            _tag_relationship_metric(
+                "gross_margin",
+                target["gross_margin"],
+                duration_days=(
+                    revenue_duration if revenue_duration == gross_duration else None
+                ),
+            )
         debt = target.get("total_debt")
         cash = target.get("cash")
         if debt and cash and debt["unit"] == cash["unit"]:
@@ -266,6 +379,7 @@ def extract_sec_facts(
                 "source": "derived_sec_xbrl",
                 "concept": "derived:debt-cash",
             }
+        _derive_free_cash_flow(target, "sec_xbrl")
 
     derive(current, include_prior=False)
     derive(prior, include_prior=True)
@@ -303,6 +417,11 @@ _REPORT_ALIASES: dict[str, tuple[str, ...]] = {
         "paymentsforadditions topropertyplantandequipment".replace(" ", ""),
         "capitalexpenditure",
         "purchaseofpropertyplantandequipment",
+    ),
+    "lease_inclusive_investment": (
+        "capitalexpenditureincludingfinanceleaseadditions",
+        "capitalexpendituresincludingfinanceleaseadditions",
+        "purchasesofpropertyplantandequipmentandfinanceleaseadditions",
     ),
     "net_income": (
         "netincomeloss",
@@ -388,6 +507,14 @@ _TEXT_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "revenues",
             "turnover",
             "sales",
+        ),
+    ),
+    (
+        "lease_inclusive_investment",
+        (
+            "capital expenditure including finance lease additions",
+            "capital expenditures including finance lease additions",
+            "purchases of property, plant and equipment and finance lease additions",
         ),
     ),
     (
@@ -663,6 +790,18 @@ def _derive_report_metrics(
                 "source": f"derived_{source}",
                 "concept": "derived:gross_profit/revenue",
             }
+            revenue_scope = revenue.get("relationship_tags", {}).get("scope")
+            gross_scope = gross.get("relationship_tags", {}).get("scope")
+            revenue_duration = revenue.get("relationship_tags", {}).get("duration_days")
+            gross_duration = gross.get("relationship_tags", {}).get("duration_days")
+            _tag_relationship_metric(
+                "gross_margin",
+                target["gross_margin"],
+                scope=revenue_scope if revenue_scope == gross_scope else "other",
+                duration_days=(
+                    revenue_duration if revenue_duration == gross_duration else None
+                ),
+            )
         debt = target.get("total_debt")
         cash = target.get("cash")
         if (
@@ -679,6 +818,7 @@ def _derive_report_metrics(
                 "source": f"derived_{source}",
                 "concept": "derived:debt-cash",
             }
+        _derive_free_cash_flow(target, source)
 
 
 class _InlineFactParser(HTMLParser):
@@ -929,17 +1069,20 @@ def extract_ixbrl_facts(
         if metric not in _DURATION_METRICS and not context["instant"]:
             continue
         key = (metric, str(context["end"]))
-        candidates.setdefault(key, []).append(
-            {
-                "value": value,
-                "unit": normalized_unit,
-                "period": str(context["end"]),
-                "evidence": fact["evidence"],
-                "source": "uk_ixbrl",
-                "concept": concept,
-                "_rank": rank,
-            }
-        )
+        candidate = {
+            "value": value,
+            "unit": normalized_unit,
+            "period": str(context["end"]),
+            "evidence": fact["evidence"],
+            "source": "uk_ixbrl",
+            "concept": concept,
+            "_rank": rank,
+        }
+        start = _iso(context.get("start"))
+        end = _iso(context.get("end"))
+        duration_days = (end - start).days if start is not None and end is not None else None
+        _tag_relationship_metric(metric, candidate, duration_days=duration_days)
+        candidates.setdefault(key, []).append(candidate)
     selected: dict[str, list[dict[str, Any]]] = {}
     for (metric, _period), values in candidates.items():
         best_rank = min(item["_rank"] for item in values)
@@ -981,6 +1124,503 @@ def extract_ixbrl_facts(
     )
 
 
+_MAX_EXTERNAL_EFFECT_TEXT_CHARS = 100_000
+_MAX_EXTERNAL_EFFECT_SENTENCES = 64
+_MAX_EXTERNAL_EFFECT_SENTENCE_CHARS = 1_200
+_MAX_EXTERNAL_EFFECT_CLAUSES = 4
+_MAX_EXTERNAL_EFFECT_FACTS = 8
+
+_EXTERNAL_RECIPIENTS: tuple[tuple[str, str], ...] = (
+    ("diluted earnings per share", "diluted_eps"),
+    ("diluted eps", "diluted_eps"),
+    ("earnings per share", "diluted_eps"),
+    ("operating cash flow", "operating_cash_flow"),
+    ("cash flow from operations", "operating_cash_flow"),
+    ("free cash flow", "free_cash_flow"),
+    ("operating margin", "operating_margin"),
+    ("gross margin", "gross_margin"),
+    ("operating income", "operating_income"),
+    ("operating profit", "operating_income"),
+    ("net income", "net_income"),
+    ("net profit", "net_income"),
+    ("gross profit", "gross_profit"),
+    ("net revenue", "revenue"),
+    ("revenue", "revenue"),
+    ("sales", "revenue"),
+)
+_EXTERNAL_RECIPIENT_PATTERN = (
+    r"(?:(?P<recipient_scope>consolidated|segment|product)\s+)?(?P<recipient>"
+    + "|".join(re.escape(label) for label, _ in _EXTERNAL_RECIPIENTS)
+    + r")(?:'s)?(?:\s+(?:year[- ]over[- ]year|yoy|reported|organic|"
+    r"constant[- ]currency))?(?:\s+(?:growth|margin|change))?\b"
+)
+_EXTERNAL_AMOUNT_PATTERN = (
+    r"(?P<amount>(?:(?:GBP|USD|EUR|CAD|AUD|CHF|JPY)\s*|[£$€¥]\s*)?"
+    r"\(?[+-]?(?:\d[\d,]*(?:\.\d+)?|\.\d+)\)?)"
+)
+_EXTERNAL_BASIS_PATTERN = (
+    r"(?P<basis>percentage points?|percent points?|points?|per share|"
+    r"cents? per share|thousand|million|billion|k|m|bn)"
+)
+_EXTERNAL_EFFECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "contribution",
+        re.compile(
+            rf"\bcontribut(?:ed|ion of)\s+{_EXTERNAL_AMOUNT_PATTERN}\s*"
+            rf"{_EXTERNAL_BASIS_PATTERN}\s+(?:to|toward)\s+"
+            rf"{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "contribution",
+        re.compile(
+            rf"{_EXTERNAL_AMOUNT_PATTERN}\s*{_EXTERNAL_BASIS_PATTERN}\s+"
+            rf"contribution\s+to\s+{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "drag",
+        re.compile(
+            rf"{_EXTERNAL_AMOUNT_PATTERN}\s*{_EXTERNAL_BASIS_PATTERN}\s+"
+            rf"(?:of\s+)?(?:drag|headwind)\s+on\s+"
+            rf"{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "drag",
+        re.compile(
+            rf"\b(?:drag|headwind)\s+of\s+{_EXTERNAL_AMOUNT_PATTERN}\s*"
+            rf"{_EXTERNAL_BASIS_PATTERN}\s+on\s+"
+            rf"{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "contribution",
+        re.compile(
+            rf"\bpositive impact of\s+{_EXTERNAL_AMOUNT_PATTERN}\s*"
+            rf"{_EXTERNAL_BASIS_PATTERN}\s+on\s+{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "drag",
+        re.compile(
+            rf"\bnegative impact of\s+{_EXTERNAL_AMOUNT_PATTERN}\s*"
+            rf"{_EXTERNAL_BASIS_PATTERN}\s+on\s+{_EXTERNAL_RECIPIENT_PATTERN}",
+            re.I,
+        ),
+    ),
+    (
+        "reclassification",
+        re.compile(
+            rf"{_EXTERNAL_AMOUNT_PATTERN}\s*{_EXTERNAL_BASIS_PATTERN}\s+"
+            rf"(?:was|were)\s+reclassified\s+from\s+"
+            rf"{_EXTERNAL_RECIPIENT_PATTERN}\s+to\s+"
+            rf"(?:(?P<recipient_to_scope>consolidated|segment|product)\s+)?"
+            rf"(?P<recipient_to>"
+            + "|".join(re.escape(label) for label, _ in _EXTERNAL_RECIPIENTS)
+            + r")\b",
+            re.I,
+        ),
+    ),
+)
+
+
+def _external_recipient_metric(label: str) -> str | None:
+    normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
+    for recipient, metric in _EXTERNAL_RECIPIENTS:
+        if normalized == recipient:
+            return metric
+    return None
+
+
+def _external_category(clause: str, effect_kind: str) -> str:
+    categories = (
+        (
+            r"\b(?:due to|from|related to)\s+(?:a\s+)?business combination\b",
+            "business_combination",
+        ),
+        (
+            r"\b(?:due to|from|related to)\s+(?:foreign exchange|currency translation)\b",
+            "foreign_exchange",
+        ),
+        (
+            r"\b(?:due to|from|related to)\s+(?:a\s+)?change in accounting estimate\b",
+            "accounting_estimate",
+        ),
+        (
+            r"\b(?:due to|from|related to)\s+(?:a\s+)?(?:disposition|divestiture)\b",
+            "disposition",
+        ),
+        (
+            r"\b(?:due to|from|related to)\s+restructuring\b",
+            "restructuring",
+        ),
+    )
+    for pattern, category in categories:
+        if re.search(pattern, clause, re.I):
+            return category
+    return "other"
+
+
+def _external_qualifiers(sentence: str, effect_kind: str) -> list[str]:
+    qualifiers: list[str] = []
+    checks = (
+        (r"\b(?:approximately|approx\.?|about)\b", "approximate"),
+        (r"\bnet (?:impact|effect|contribution|drag)\b", "net"),
+        (r"\bgross (?:impact|effect|contribution|drag)\b", "gross"),
+        (r"\breported\b", "reported"),
+        (r"\bpurchase accounting\b", "includes_purchase_accounting"),
+        (r"\bintegration costs?\b", "includes_integration_costs"),
+        (r"\btransaction costs?\b", "includes_transaction_costs"),
+    )
+    for pattern, qualifier in checks:
+        if re.search(pattern, sentence, re.I):
+            qualifiers.append(qualifier)
+    if effect_kind == "reclassification":
+        qualifiers.append("includes_reclassification")
+    return qualifiers[:8]
+
+
+_EXTERNAL_MONTH_PATTERN = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?"
+)
+_EXTERNAL_ISO_DATE_RE = re.compile(
+    r"\b(19\d{2}|20\d{2})-(0?[1-9]|1[0-2])-([0-2]?\d|3[01])\b"
+)
+_EXTERNAL_MDY_DATE_RE = re.compile(
+    rf"\b({_EXTERNAL_MONTH_PATTERN})\s+([0-2]?\d|3[01])(?:st|nd|rd|th)?"
+    r",?\s+(19\d{2}|20\d{2})\b",
+    re.I,
+)
+_EXTERNAL_DMY_DATE_RE = re.compile(
+    rf"\b([0-2]?\d|3[01])(?:st|nd|rd|th)?\s+({_EXTERNAL_MONTH_PATTERN})"
+    r"\s+(19\d{2}|20\d{2})\b",
+    re.I,
+)
+_EXTERNAL_MONTH_NUMBERS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _external_period(clause: str) -> str | None:
+    iso_match = _EXTERNAL_ISO_DATE_RE.search(clause)
+    if iso_match:
+        year, month, day = (int(value) for value in iso_match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    mdy_match = _EXTERNAL_MDY_DATE_RE.search(clause)
+    if mdy_match:
+        month_label, day_label, year_label = mdy_match.groups()
+        try:
+            return date(
+                int(year_label),
+                _EXTERNAL_MONTH_NUMBERS[month_label[:3].casefold()],
+                int(day_label),
+            ).isoformat()
+        except (KeyError, ValueError):
+            return None
+    dmy_match = _EXTERNAL_DMY_DATE_RE.search(clause)
+    if dmy_match:
+        day_label, month_label, year_label = dmy_match.groups()
+        try:
+            return date(
+                int(year_label),
+                _EXTERNAL_MONTH_NUMBERS[month_label[:3].casefold()],
+                int(day_label),
+            ).isoformat()
+        except (KeyError, ValueError):
+            return None
+    explicit = _YEAR_RE.search(clause)
+    return explicit.group(1) if explicit else None
+
+def _external_duration_days(
+    clause: str,
+    current: dict[str, dict[str, Any]],
+    metric: str | None,
+    period: str | None,
+) -> int | None:
+    if period is None or not re.search(r"\byear ended\b", clause, re.I):
+        return None
+    recipient = current.get(metric or "")
+    if not isinstance(recipient, dict) or str(recipient.get("period") or "") != period:
+        return None
+    tags = recipient.get("relationship_tags")
+    duration = tags.get("duration_days") if isinstance(tags, dict) else None
+    if isinstance(duration, int) and not isinstance(duration, bool) and duration > 0:
+        return duration
+    return None
+
+
+def _external_scope(
+    clause: str,
+    current: dict[str, dict[str, Any]],
+    metric: str | None,
+    *,
+    recipient_scope: str | None = None,
+    use_clause_scope: bool = True,
+) -> str | None:
+    if recipient_scope is not None:
+        return recipient_scope.casefold()
+    if not use_clause_scope:
+        clause = ""
+    if re.search(r"\bconsolidated\b", clause, re.I):
+        return "consolidated"
+    if re.search(r"\bsegment\b", clause, re.I):
+        return "segment"
+    if re.search(r"\bproduct\b", clause, re.I):
+        return "product"
+    fact = current.get(metric or "")
+    tags = fact.get("relationship_tags") if isinstance(fact, dict) else None
+    scope = tags.get("scope") if isinstance(tags, dict) else None
+    return scope if scope in {"consolidated", "segment", "product"} else None
+
+
+def _external_comparison_basis(clause: str) -> str:
+    if re.search(r"\bconstant[- ]currency\b", clause, re.I):
+        return "year_over_year_constant_currency"
+    if re.search(r"\b(?:year[- ]over[- ]year|yoy|reported)\b", clause, re.I):
+        return "year_over_year_gaap"
+    if re.search(r"\bsequential(?:ly)?\b", clause, re.I):
+        return "sequential"
+    return "none"
+
+def _external_effect_basis(match: re.Match[str]) -> str:
+    basis = match.group("basis").casefold()
+    if "point" in basis:
+        return "percentage_points"
+    if "per share" in basis:
+        return "per_share"
+    return "monetary"
+
+
+def _external_temporal_basis(match: re.Match[str]) -> str:
+    return (
+        "rate_over_period"
+        if _external_effect_basis(match) == "percentage_points"
+        else "period_flow"
+    )
+
+
+def _external_value_and_unit(
+    match: re.Match[str], effect_kind: str
+) -> tuple[float, str] | None:
+    raw = match.group("amount")
+    numeric_raw = re.sub(
+        r"^(?:GBP|USD|EUR|CAD|AUD|CHF|JPY)\s*", "", raw, flags=re.I
+    )
+    value = _parse_number(numeric_raw)
+    if value is None:
+        return None
+    basis = match.group("basis").casefold()
+    if "point" in basis:
+        unit = "percentage_points"
+    elif "per share" in basis:
+        if "cent" in basis:
+            value /= 100.0
+        currency = next(
+            (code for token, code in _CURRENCY_CODES.items() if token in raw.upper()),
+            None,
+        )
+        unit = f"{currency}/share" if currency else "per_share"
+    else:
+        value *= {
+            "thousand": 0.001,
+            "k": 0.001,
+            "million": 1.0,
+            "m": 1.0,
+            "billion": 1_000.0,
+            "bn": 1_000.0,
+        }[basis]
+        currency = next(
+            (code for token, code in _CURRENCY_CODES.items() if token in raw.upper()),
+            None,
+        )
+        unit = f"{currency}m" if currency else "report_millions"
+    if effect_kind == "drag":
+        value = -abs(value)
+    return value, unit
+
+
+def _external_effect_leaf(
+    *,
+    match: re.Match[str],
+    effect_kind: str,
+    sentence: str,
+    clause: str,
+    group_id: str,
+    current: dict[str, dict[str, Any]],
+    recipient_label: str,
+    sign: int = 1,
+    recipient_scope: str | None = None,
+    use_clause_scope: bool = True,
+) -> dict[str, Any] | None:
+    parsed = _external_value_and_unit(match, effect_kind)
+    if parsed is None:
+        return None
+    value, unit = parsed
+    if effect_kind == "reclassification":
+        value = abs(value)
+    metric = _external_recipient_metric(recipient_label)
+    recipient_path = f"current.{metric}" if metric and metric in current else None
+    period = _external_period(clause)
+    scope = _external_scope(
+        clause,
+        current,
+        metric,
+        recipient_scope=recipient_scope,
+        use_clause_scope=use_clause_scope,
+    )
+    reasons = []
+    if effect_kind == "contribution" and value < 0:
+        reasons.append("unsupported_derivation")
+    if recipient_path is None:
+        reasons.append("unresolved_recipient")
+    if period is None:
+        reasons.append("period_mismatch")
+    if scope is None:
+        reasons.append("scope_mismatch")
+    basis = _external_effect_basis(match)
+    recipient_text = match.group(0).casefold()
+    if (
+        basis == "percentage_points"
+        and metric not in {"gross_margin", "operating_margin"}
+        and not re.search(r"\b(?:growth|change)\b", recipient_text)
+    ):
+        reasons.append("unit_mismatch")
+    if basis == "per_share" and metric != "diluted_eps":
+        reasons.append("unit_mismatch")
+    if basis == "monetary" and unit == "report_millions":
+        reasons.append("currency_mismatch")
+    if re.search(r"\borganic\b", recipient_text):
+        reasons.append("unsupported_derivation")
+    tags = {
+        "leaf": "external_effect",
+        "metric_family": "external_effect",
+        "scope": scope or "other",
+        "comparison_basis": _external_comparison_basis(clause),
+        "temporal_basis": _external_temporal_basis(match),
+        "cash_basis": "not_applicable",
+        "group_id": group_id,
+        "category": _external_category(clause, effect_kind),
+        "effect_kind": effect_kind,
+        "effect_basis": _external_effect_basis(match),
+        "recipient_path": recipient_path,
+        "qualifiers": _external_qualifiers(sentence, effect_kind),
+        "compatibility": "incompatible" if reasons else "compatible",
+        "incompatibility_reasons": reasons,
+    }
+    duration_days = _external_duration_days(clause, current, metric, period)
+    if duration_days is not None:
+        tags["duration_days"] = duration_days
+    return {
+        "value": value * sign,
+        "unit": unit,
+        "period": period or "unresolved",
+        "evidence": sentence,
+        "source": "report_text",
+        "concept": f"text:external_{effect_kind}",
+        "relationship_tags": tags,
+    }
+
+
+def _extract_external_effect_facts(
+    text: str,
+    current: dict[str, dict[str, Any]],
+    periods: list[str] | tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    """Extract bounded explicit quantified effects without interpreting subjects."""
+    del periods  # Do not invent a period when neither clause nor recipient supplies one.
+    sentences = re.split(
+        r"(?<=[.!?])\s+|\n+", text[:_MAX_EXTERNAL_EFFECT_TEXT_CHARS]
+    )
+    trigger = re.compile(r"\b(?:contribut|drag|headwind|impact|reclassif)", re.I)
+    candidate_sentences = [
+        (index, sentence)
+        for index, sentence in enumerate(sentences)
+        if trigger.search(sentence)
+    ][:_MAX_EXTERNAL_EFFECT_SENTENCES]
+    output: dict[str, dict[str, Any]] = {}
+    for sentence_index, raw_sentence in candidate_sentences:
+        sentence = " ".join(raw_sentence.split())
+        if not sentence or len(sentence) > _MAX_EXTERNAL_EFFECT_SENTENCE_CHARS:
+            continue
+        evidence = sentence
+        if sentence_index + 1 < len(sentences):
+            attached = " ".join(sentences[sentence_index + 1].split())
+            if re.match(r"^this net impact includes\b", attached, re.I):
+                evidence = f"{sentence} {attached}"
+        group_id = "external_" + hashlib.sha256(
+            f"external-effect:{sentence_index}:{sentence.casefold()}".encode()
+        ).hexdigest()[:16]
+        clauses = re.split(r"\s*(?:;|,\s+(?:and|while|but)\s+)\s*", sentence)
+        for clause in clauses[:_MAX_EXTERNAL_EFFECT_CLAUSES]:
+            for effect_kind, pattern in _EXTERNAL_EFFECT_PATTERNS:
+                for match in pattern.finditer(clause):
+                    recipient_label = match.group("recipient")
+                    if effect_kind == "reclassification":
+                        legs = (
+                            (
+                                recipient_label,
+                                -1,
+                                match.groupdict().get("recipient_scope"),
+                                True,
+                            ),
+                            (
+                                match.group("recipient_to"),
+                                1,
+                                match.groupdict().get("recipient_to_scope"),
+                                True,
+                            ),
+                        )
+                    else:
+                        legs = (
+                            (
+                                recipient_label,
+                                1,
+                                match.groupdict().get("recipient_scope"),
+                                False,
+                            ),
+                        )
+                    for label, sign, recipient_scope, leg_specific in legs:
+                        leaf = _external_effect_leaf(
+                            match=match,
+                            effect_kind=effect_kind,
+                            sentence=evidence,
+                            clause=clause,
+                            group_id=group_id,
+                            current=current,
+                            recipient_label=label,
+                            sign=sign,
+                            recipient_scope=recipient_scope,
+                            use_clause_scope=not leg_specific,
+                        )
+                        if leaf is not None:
+                            output[f"external_effect_{len(output) + 1}"] = leaf
+                        if len(output) >= _MAX_EXTERNAL_EFFECT_FACTS:
+                            return output
+    return output
+
+
 def _text_metric(label: str) -> str | None:
     normalized = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
     for metric, labels in _TEXT_LABELS:
@@ -1016,6 +1656,22 @@ def _text_currency_scale(
         scale, scale_label = 0.001, "k"
     return currency, scale, scale_label
 
+def _unavailable_report_text_with_external(
+    text: str, base_meta: dict[str, Any], reason: str
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
+    external = _extract_external_effect_facts(text, {}, ())
+    base_meta.update(
+        {
+            "status": "success" if external else "unavailable",
+            "reason": reason,
+            "deterministic_metric_count": len(external),
+            "extracted_fact_count": len(external),
+            "fact_count": len(external),
+            "external_effect_fact_count": len(external),
+        }
+    )
+    return external, {}, base_meta
+
 
 def extract_report_text_facts(
     extracted_text: str | bytes,
@@ -1043,8 +1699,9 @@ def extract_report_text_facts(
         "statement_anchor_count": len(anchor_indexes),
     }
     if not anchor_indexes:
-        base_meta["reason"] = "missing_financial_statement_anchor"
-        return {}, {}, base_meta
+        return _unavailable_report_text_with_external(
+            text, base_meta, "missing_financial_statement_anchor"
+        )
     year_counts: Counter[str] = Counter()
     for index in anchor_indexes:
         for line in lines[index : min(len(lines), index + 10)]:
@@ -1062,8 +1719,9 @@ def extract_report_text_facts(
             else _iso(str(report_period or ""))
         )
         if report_date is None:
-            base_meta["reason"] = "missing_current_prior_periods"
-            return {}, {}, base_meta
+            return _unavailable_report_text_with_external(
+                text, base_meta, "missing_current_prior_periods"
+            )
         periods = [str(report_date.year), str(report_date.year - 1)]
         period_source = "document_report_date"
     # Two adjacent period columns are required unless OCR damaged the header and
@@ -1074,8 +1732,9 @@ def extract_report_text_facts(
         for line in lines[anchor : min(len(lines), anchor + 10)]
     )
     if not header_ok and period_source == "statement_header":
-        base_meta["reason"] = "missing_aligned_period_columns"
-        return {}, {}, base_meta
+        return _unavailable_report_text_with_external(
+            text, base_meta, "missing_aligned_period_columns"
+        )
     candidates: dict[str, list[dict[str, Any]]] = {}
     for index, original in enumerate(lines):
         plain = re.sub(r"<[^>]+>", " ", original)
@@ -1143,6 +1802,7 @@ def extract_report_text_facts(
         values = list(pair)
         if metric in {
             "capex",
+            "lease_inclusive_investment",
             "inventory",
             "cash",
             "total_debt",
@@ -1178,16 +1838,21 @@ def extract_report_text_facts(
         else:
             continue
         for period, value in zip(periods[:2], values, strict=False):
-            candidates.setdefault(metric, []).append(
-                {
-                    "value": value,
-                    "unit": unit,
-                    "period": period,
-                    "evidence": original,
-                    "source": "report_text",
-                    "concept": f"text:{matched_label}",
-                }
+            candidate = {
+                "value": value,
+                "unit": unit,
+                "period": period,
+                "evidence": original,
+                "source": "report_text",
+                "concept": f"text:{matched_label}",
+            }
+            scope = (
+                "consolidated"
+                if re.match(r"^\s*consolidated\b", lines[nearest_anchor], re.I)
+                else "other"
             )
+            _tag_relationship_metric(metric, candidate, scope=scope)
+            candidates.setdefault(metric, []).append(candidate)
     current: dict[str, dict[str, Any]] = {}
     prior: dict[str, dict[str, Any]] = {}
     for metric, values in candidates.items():
@@ -1228,13 +1893,22 @@ def extract_report_text_facts(
         if prior_value:
             prior[metric] = prior_value[0]
     _derive_report_metrics(current, prior, "report_text")
+    external_effects = _extract_external_effect_facts(text, current, periods[:2])
+    current.update(external_effects)
     count = len(current)
     base_meta.update(
         {
             "status": "success" if count else "unavailable",
             "deterministic_metric_count": count,
-            "extracted_fact_count": sum(len(values) for values in candidates.values()),
-            "fact_count": sum(len(values) for values in candidates.values()),
+            "extracted_fact_count": (
+                sum(len(values) for values in candidates.values())
+                + len(external_effects)
+            ),
+            "fact_count": (
+                sum(len(values) for values in candidates.values())
+                + len(external_effects)
+            ),
+            "external_effect_fact_count": len(external_effects),
             "periods": periods[:2],
             "period_source": period_source,
         }
@@ -1248,6 +1922,40 @@ def extract_report_text_facts(
     return current, prior, base_meta
 
 
+def _merge_external_text_facts(
+    current: dict[str, dict[str, Any]],
+    metadata: dict[str, Any],
+    extracted_text: Any,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    if not isinstance(extracted_text, (str, bytes)) or not extracted_text:
+        return current, metadata
+    text = (
+        extracted_text.decode("utf-8", "replace")
+        if isinstance(extracted_text, bytes)
+        else extracted_text
+    )
+    periods = metadata.get("periods")
+    external = _extract_external_effect_facts(
+        text,
+        current,
+        periods if isinstance(periods, (list, tuple)) else (),
+    )
+    if not external:
+        return current, metadata
+    current.update(external)
+    metadata = dict(metadata)
+    metadata.update(
+        {
+            "deterministic_metric_count": len(current),
+            "extracted_fact_count": int(metadata.get("extracted_fact_count") or 0)
+            + len(external),
+            "fact_count": int(metadata.get("fact_count") or 0) + len(external),
+            "external_effect_fact_count": len(external),
+        }
+    )
+    return current, metadata
+
+
 def extract_document_facts(
     document: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
@@ -1257,12 +1965,18 @@ def extract_document_facts(
         raw_bytes = bytes(raw)
         current, prior, metadata = extract_ixbrl_facts(raw_bytes)
         if metadata.get("status") == "success":
+            current, metadata = _merge_external_text_facts(
+                current, metadata, document.get("extracted_text")
+            )
             return current, prior, metadata
         if not document.get("extracted_text") and raw_bytes:
             return extract_report_text_facts(raw_bytes, document.get("report_date"))
     elif isinstance(raw, str) and raw:
         current, prior, metadata = extract_ixbrl_facts(raw)
         if metadata.get("status") == "success":
+            current, metadata = _merge_external_text_facts(
+                current, metadata, document.get("extracted_text")
+            )
             return current, prior, metadata
         if not document.get("extracted_text"):
             return extract_report_text_facts(raw, document.get("report_date"))
@@ -1329,4 +2043,9 @@ def load_deterministic_facts(
                 "reason": type(exc).__name__,
             },
         )
-    return extract_sec_facts(document, payload)
+    current, prior, metadata = extract_sec_facts(document, payload)
+    if metadata.get("status") == "success":
+        current, metadata = _merge_external_text_facts(
+            current, metadata, document.get("extracted_text")
+        )
+    return current, prior, metadata

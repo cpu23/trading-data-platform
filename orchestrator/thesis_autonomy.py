@@ -67,6 +67,7 @@ from sqlalchemy import text
 
 from analysis_jobs import enqueue_job
 from budgets import BudgetContext
+from contracts.db_results import result_first, result_rows
 from contracts.runtime_config import ThesisAutonomyConfig
 from db import get_session
 from llm_client import LLMStage
@@ -200,19 +201,6 @@ _FALSIFICATION_STATUS_BY_STATE = {
 }
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except AttributeError:
-        return [dict(row._mapping) for row in result]
-
-
-def _first(result: Any) -> dict[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    return dict(row) if row is not None else None
 
 
 def _bounded(value: Any, default: int, maximum: int) -> int:
@@ -1171,31 +1159,27 @@ def enqueue_thesis_autonomy_job(
 
 def _ensure_system_theme(session: Any) -> tuple[str, bool]:
     """Find or create the single durable system theme concurrency-safely."""
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_themes
-                   (name, definition, horizon, macro_drivers, key_indicators,
-                    status, origin)
-                   VALUES (:name, :definition, 'multi_year',
-                           ARRAY[]::TEXT[], ARRAY[]::TEXT[], 'active', 'discovered')
-                   ON CONFLICT (name) DO NOTHING
-                   RETURNING id"""
-            ),
-            {
-                "name": SYSTEM_THEME_NAME,
-                "definition": SYSTEM_THEME_DEFINITION,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_themes
+               (name, definition, horizon, macro_drivers, key_indicators,
+                status, origin)
+               VALUES (:name, :definition, 'multi_year',
+                       ARRAY[]::TEXT[], ARRAY[]::TEXT[], 'active', 'discovered')
+               ON CONFLICT (name) DO NOTHING
+               RETURNING id"""
+        ),
+        {
+            "name": SYSTEM_THEME_NAME,
+            "definition": SYSTEM_THEME_DEFINITION,
+        },
+    ))
     if row is not None:
         return str(row["id"]), True
-    existing = _first(
-        session.execute(
-            text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
-            {"name": SYSTEM_THEME_NAME},
-        )
-    )
+    existing = result_first(session.execute(
+        text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
+        {"name": SYSTEM_THEME_NAME},
+    ))
     if existing is None:
         raise RuntimeError("system theme creation did not return an identity")
     return str(existing["id"]), False
@@ -1557,28 +1541,26 @@ def _persist_candidate_risks(
             ),
             {"lock_key": f"risk_identity:{thesis_id}:{risk}"},
         )
-        row = _first(
-            session.execute(
-                text(
-                    """INSERT INTO investment_risks
-                       (thesis_id, description, kind, severity)
-                       SELECT CAST(:thesis_id AS UUID), :description,
-                              :kind, :severity
-                       WHERE NOT EXISTS (
-                           SELECT 1 FROM investment_risks
-                           WHERE thesis_id = CAST(:thesis_id AS UUID)
-                             AND description = :description
-                       )
-                       RETURNING id"""
-                ),
-                {
-                    "thesis_id": thesis_id,
-                    "description": risk,
-                    "kind": _CANDIDATE_RISK_KIND,
-                    "severity": _CANDIDATE_RISK_SEVERITY,
-                },
-            )
-        )
+        row = result_first(session.execute(
+            text(
+                """INSERT INTO investment_risks
+                   (thesis_id, description, kind, severity)
+                   SELECT CAST(:thesis_id AS UUID), :description,
+                          :kind, :severity
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM investment_risks
+                       WHERE thesis_id = CAST(:thesis_id AS UUID)
+                         AND description = :description
+                   )
+                   RETURNING id"""
+            ),
+            {
+                "thesis_id": thesis_id,
+                "description": risk,
+                "kind": _CANDIDATE_RISK_KIND,
+                "severity": _CANDIDATE_RISK_SEVERITY,
+            },
+        ))
         if row is not None:
             persisted += 1
     return persisted
@@ -1721,37 +1703,35 @@ def _backfill_missing_market_identities(
     citation identities participate — uncited or ambiguous records never
     supply company/symbol.
     """
-    rows = _rows(
-        session.execute(
-            text(
-                """/* autonomy_identity_backfill */
-                   SELECT t.id, t.claim, t.company, t.symbol,
-                          e.evidence_type, e.evidence_id
-                   FROM (
-                       SELECT id, claim, company, symbol, created_at
-                       FROM investment_theses
-                       WHERE origin = 'fusion'
-                         AND (
-                             NULLIF(BTRIM(company), '') IS NULL
-                             OR NULLIF(BTRIM(symbol), '') IS NULL
-                         )
-                         AND (:reference IS NULL OR created_at <= :reference)
-                         AND (:reference IS NULL OR updated_at <= :reference)
-                         AND (:reference IS NULL
-                              OR fusion_reference_at IS NULL
-                              OR fusion_reference_at <= :reference)
-                       ORDER BY created_at, id
-                       LIMIT :limit
-                   ) t
-                   LEFT JOIN investment_thesis_evidence e ON e.thesis_id = t.id
-                   ORDER BY t.created_at, t.id, e.evidence_id"""
-            ),
-            {
-                "reference": reference,
-                "limit": max(1, min(int(limit), 500)),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """/* autonomy_identity_backfill */
+               SELECT t.id, t.claim, t.company, t.symbol,
+                      e.evidence_type, e.evidence_id
+               FROM (
+                   SELECT id, claim, company, symbol, created_at
+                   FROM investment_theses
+                   WHERE origin = 'fusion'
+                     AND (
+                         NULLIF(BTRIM(company), '') IS NULL
+                         OR NULLIF(BTRIM(symbol), '') IS NULL
+                     )
+                     AND (:reference IS NULL OR created_at <= :reference)
+                     AND (:reference IS NULL OR updated_at <= :reference)
+                     AND (:reference IS NULL
+                          OR fusion_reference_at IS NULL
+                          OR fusion_reference_at <= :reference)
+                   ORDER BY created_at, id
+                   LIMIT :limit
+               ) t
+               LEFT JOIN investment_thesis_evidence e ON e.thesis_id = t.id
+               ORDER BY t.created_at, t.id, e.evidence_id"""
+        ),
+        {
+            "reference": reference,
+            "limit": max(1, min(int(limit), 500)),
+        },
+    ))
     pending: dict[str, dict[str, Any]] = {}
     missing_refs: list[str] = []
     missing_seen: set[str] = set()
@@ -1862,16 +1842,14 @@ def _ensure_candidate_catalyst(
     # so this serializes on the same lock a concurrent candidate cycle
     # holds while promoting the thesis.  Legacy theses without a key have
     # no merge identity to contend on and skip the lock.
-    thesis = _first(
-        session.execute(
-            text(
-                """/* catalyst_identity_guard */
-                   SELECT canonical_key FROM investment_theses
-                   WHERE id = CAST(:thesis_id AS UUID)"""
-            ),
-            {"thesis_id": thesis_id},
-        )
-    )
+    thesis = result_first(session.execute(
+        text(
+            """/* catalyst_identity_guard */
+               SELECT canonical_key FROM investment_theses
+               WHERE id = CAST(:thesis_id AS UUID)"""
+        ),
+        {"thesis_id": thesis_id},
+    ))
     if thesis is not None and thesis.get("canonical_key"):
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -1888,22 +1866,20 @@ def _ensure_candidate_catalyst(
         ),
         {"lock_key": f"catalyst_identity:{thesis_id}:{catalyst}"},
     )
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_catalysts
-                   (thesis_id, description, expected_at, state)
-                   SELECT CAST(:thesis_id AS UUID), :description, NULL, 'pending'
-                   WHERE NOT EXISTS (
-                       SELECT 1 FROM investment_catalysts
-                       WHERE thesis_id = CAST(:thesis_id AS UUID)
-                         AND description = :description
-                   )
-                   RETURNING id"""
-            ),
-            {"thesis_id": thesis_id, "description": catalyst},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_catalysts
+               (thesis_id, description, expected_at, state)
+               SELECT CAST(:thesis_id AS UUID), :description, NULL, 'pending'
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM investment_catalysts
+                   WHERE thesis_id = CAST(:thesis_id AS UUID)
+                     AND description = :description
+               )
+               RETURNING id"""
+        ),
+        {"thesis_id": thesis_id, "description": catalyst},
+    ))
     return row is not None
 
 
@@ -1927,32 +1903,30 @@ def _backfill_generated_catalysts(
     current-cycle inputs (their persisted rows postdate the cycle
     reference).
     """
-    rows = _rows(
-        session.execute(
-            text(
-                """/* autonomy_catalyst_backfill */
-                   SELECT t.id, t.catalyst_summary
-                   FROM investment_theses t
-                   WHERE t.origin = 'fusion'
-                     AND NULLIF(BTRIM(t.catalyst_summary), '') IS NOT NULL
-                     AND t.created_at <= :reference
-                     AND t.updated_at <= :reference
-                     AND (t.fusion_reference_at IS NULL
-                          OR t.fusion_reference_at <= :reference)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM investment_catalysts c
-                         WHERE c.thesis_id = t.id
-                           AND c.description = t.catalyst_summary
-                     )
-                   ORDER BY t.created_at, t.id
-                   LIMIT :limit"""
-            ),
-            {
-                "reference": reference,
-                "limit": max(1, min(int(limit), 500)),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """/* autonomy_catalyst_backfill */
+               SELECT t.id, t.catalyst_summary
+               FROM investment_theses t
+               WHERE t.origin = 'fusion'
+                 AND NULLIF(BTRIM(t.catalyst_summary), '') IS NOT NULL
+                 AND t.created_at <= :reference
+                 AND t.updated_at <= :reference
+                 AND (t.fusion_reference_at IS NULL
+                      OR t.fusion_reference_at <= :reference)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM investment_catalysts c
+                     WHERE c.thesis_id = t.id
+                       AND c.description = t.catalyst_summary
+                 )
+               ORDER BY t.created_at, t.id
+               LIMIT :limit"""
+        ),
+        {
+            "reference": reference,
+            "limit": max(1, min(int(limit), 500)),
+        },
+    ))
     inserted: list[tuple[str, str]] = []
     for row in rows:
         thesis_id = str(row["id"])
@@ -1983,28 +1957,26 @@ def _close_at_or_before(
         return None
     available = available_at if available_at is not None else as_of
     earliest = as_of - timedelta(days=max(1, min(int(max_age_days), 31)))
-    row = _first(
-        session.execute(
-            text(
-                """SELECT close FROM market_data
-                   WHERE symbol = :symbol
-                     AND timestamp <= :as_of
-                     AND timestamp >= :earliest
-                     AND COALESCE(updated_at, created_at) <= :available_at
-                     AND close IS NOT NULL
-                   ORDER BY timestamp DESC,
-                            CASE WHEN timeframe = 'PRICE' THEN 0 ELSE 1 END,
-                            timeframe ASC, source ASC
-                   LIMIT 1"""
-            ),
-            {
-                "symbol": symbol[:20],
-                "as_of": as_of,
-                "earliest": earliest,
-                "available_at": available,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """SELECT close FROM market_data
+               WHERE symbol = :symbol
+                 AND timestamp <= :as_of
+                 AND timestamp >= :earliest
+                 AND COALESCE(updated_at, created_at) <= :available_at
+                 AND close IS NOT NULL
+               ORDER BY timestamp DESC,
+                        CASE WHEN timeframe = 'PRICE' THEN 0 ELSE 1 END,
+                        timeframe ASC, source ASC
+               LIMIT 1"""
+        ),
+        {
+            "symbol": symbol[:20],
+            "as_of": as_of,
+            "earliest": earliest,
+            "available_at": available,
+        },
+    ))
     if row is None:
         return None
     try:
@@ -2022,17 +1994,15 @@ def _scenario_forecast_present(session: Any, scenario_id: str) -> bool:
     by migration 053; the index stays the concurrency-safe backstop while
     this check keeps ordinary reruns from raising.
     """
-    row = _first(
-        session.execute(
-            text(
-                """SELECT 1 AS present FROM investment_thesis_forecasts
-                   WHERE scenario_id = CAST(:scenario_id AS UUID)
-                     AND superseded_at IS NULL
-                   LIMIT 1"""
-            ),
-            {"scenario_id": scenario_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """SELECT 1 AS present FROM investment_thesis_forecasts
+               WHERE scenario_id = CAST(:scenario_id AS UUID)
+                 AND superseded_at IS NULL
+               LIMIT 1"""
+        ),
+        {"scenario_id": scenario_id},
+    ))
     return row is not None
 
 
@@ -2160,46 +2130,44 @@ def _backfill_missing_forecasts(
     cutoff, first-frozen uniqueness, target-boundary semantics, and
     price-only ownership are unchanged.
     """
-    rows = _rows(
-        session.execute(
-            text(
-                """/* autonomy_forecast_backfill */
-                   SELECT t.id AS thesis_id, t.symbol, t.direction, t.horizon,
-                          t.input_fingerprint, s.id AS scenario_id,
-                          s.name, s.expected_return
-                   FROM investment_theses t
-                   JOIN investment_thesis_scenarios s ON s.thesis_id = t.id
-                   WHERE t.origin = 'fusion'
-                     AND t.status IN ('active', 'candidate')
-                     AND NULLIF(BTRIM(t.symbol), '') IS NOT NULL
-                     AND t.created_at <= :reference
-                     AND t.updated_at <= :reference
-                     AND (t.fusion_reference_at IS NULL
-                          OR t.fusion_reference_at <= :reference)
-                     AND s.created_at <= :reference
-                     AND (s.superseded_at IS NULL
-                          OR s.superseded_at > :reference)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM investment_thesis_forecasts f
-                         WHERE f.scenario_id = s.id
-                           AND f.superseded_at IS NULL
-                     )
-                     AND NOT EXISTS (
-                         SELECT 1 FROM investment_thesis_forecasts f
-                         WHERE f.scenario_id = s.id
-                           AND f.as_of <= :reference
-                           AND (f.superseded_at IS NULL
-                                OR f.superseded_at > :reference)
-                     )
-                   ORDER BY t.updated_at, t.id, s.name
-                   LIMIT :limit"""
-            ),
-            {
-                "reference": reference,
-                "limit": max(1, min(int(limit), _MAX_FORECAST_BACKFILL)),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """/* autonomy_forecast_backfill */
+               SELECT t.id AS thesis_id, t.symbol, t.direction, t.horizon,
+                      t.input_fingerprint, s.id AS scenario_id,
+                      s.name, s.expected_return
+               FROM investment_theses t
+               JOIN investment_thesis_scenarios s ON s.thesis_id = t.id
+               WHERE t.origin = 'fusion'
+                 AND t.status IN ('active', 'candidate')
+                 AND NULLIF(BTRIM(t.symbol), '') IS NOT NULL
+                 AND t.created_at <= :reference
+                 AND t.updated_at <= :reference
+                 AND (t.fusion_reference_at IS NULL
+                      OR t.fusion_reference_at <= :reference)
+                 AND s.created_at <= :reference
+                 AND (s.superseded_at IS NULL
+                      OR s.superseded_at > :reference)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM investment_thesis_forecasts f
+                     WHERE f.scenario_id = s.id
+                       AND f.superseded_at IS NULL
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM investment_thesis_forecasts f
+                     WHERE f.scenario_id = s.id
+                       AND f.as_of <= :reference
+                       AND (f.superseded_at IS NULL
+                            OR f.superseded_at > :reference)
+                 )
+               ORDER BY t.updated_at, t.id, s.name
+               LIMIT :limit"""
+        ),
+        {
+            "reference": reference,
+            "limit": max(1, min(int(limit), _MAX_FORECAST_BACKFILL)),
+        },
+    ))
     pending: dict[str, dict[str, Any]] = {}
     for row in rows:
         thesis_id = str(row["thesis_id"])
@@ -2265,34 +2233,32 @@ def _resolve_matured_forecasts(
     reference).  Forecasts created, frozen, or superseded after the
     reference never enter a historical replay.
     """
-    rows = _rows(
-        session.execute(
-            text(
-                """/* autonomy_forecast_resolution */
-                   SELECT f.id, f.thesis_id, f.direction, f.target_value,
-                          f.target_date, t.symbol
-                   FROM investment_thesis_forecasts f
-                   JOIN investment_theses t ON t.id = f.thesis_id
-                   WHERE (f.superseded_at IS NULL OR f.superseded_at > :reference)
-                     AND f.as_of <= :reference
-                     AND f.created_at <= :reference
-                     AND f.forecast_type = 'price'
-                     AND f.target_date IS NOT NULL
-                     AND f.target_date < :as_of_date
-                     AND NOT EXISTS (
-                         SELECT 1 FROM investment_forecast_outcomes o
-                         WHERE o.forecast_id = f.id
-                     )
-                   ORDER BY f.target_date, f.id
-                   LIMIT :limit"""
-            ),
-            {
-                "reference": reference,
-                "as_of_date": reference.date(),
-                "limit": max(1, min(limit, _MAX_OUTCOME_RESOLUTION)),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """/* autonomy_forecast_resolution */
+               SELECT f.id, f.thesis_id, f.direction, f.target_value,
+                      f.target_date, t.symbol
+               FROM investment_thesis_forecasts f
+               JOIN investment_theses t ON t.id = f.thesis_id
+               WHERE (f.superseded_at IS NULL OR f.superseded_at > :reference)
+                 AND f.as_of <= :reference
+                 AND f.created_at <= :reference
+                 AND f.forecast_type = 'price'
+                 AND f.target_date IS NOT NULL
+                 AND f.target_date < :as_of_date
+                 AND NOT EXISTS (
+                     SELECT 1 FROM investment_forecast_outcomes o
+                     WHERE o.forecast_id = f.id
+                 )
+               ORDER BY f.target_date, f.id
+               LIMIT :limit"""
+        ),
+        {
+            "reference": reference,
+            "as_of_date": reference.date(),
+            "limit": max(1, min(limit, _MAX_OUTCOME_RESOLUTION)),
+        },
+    ))
     counts = {"hit": 0, "miss": 0, "inconclusive": 0, "open": 0}
     grace = timedelta(days=_FORECAST_GRACE_DAYS)
     for row in rows:
@@ -2358,33 +2324,31 @@ def _existing_fusion_mechanism(
     fallback: str | None,
 ) -> str | None:
     """Reuse the best live exposure identity instead of creating paraphrases."""
-    row = _first(
-        session.execute(
-            text(
-                """SELECT mechanism
-                   FROM investment_theses
-                   WHERE origin = 'fusion'
-                     AND status IN ('candidate', 'active', 'paused')
-                     AND direction = :direction
-                     AND LOWER(BTRIM(COALESCE(horizon, ''))) = :horizon
-                     AND (
-                         (:symbol IS NOT NULL AND UPPER(BTRIM(symbol)) = :symbol)
-                         OR
-                         (:symbol IS NULL AND :company IS NOT NULL
-                          AND LOWER(BTRIM(company)) = :company)
-                     )
-                   ORDER BY opportunity_score DESC NULLS LAST,
-                            last_evaluated_at DESC NULLS LAST, id
-                   LIMIT 1"""
-            ),
-            {
-                "company": str(company).strip().casefold() if company else None,
-                "symbol": _canonical_market_symbol(symbol),
-                "direction": str(direction).strip().casefold(),
-                "horizon": _normalized(horizon),
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """SELECT mechanism
+               FROM investment_theses
+               WHERE origin = 'fusion'
+                 AND status IN ('candidate', 'active', 'paused')
+                 AND direction = :direction
+                 AND LOWER(BTRIM(COALESCE(horizon, ''))) = :horizon
+                 AND (
+                     (:symbol IS NOT NULL AND UPPER(BTRIM(symbol)) = :symbol)
+                     OR
+                     (:symbol IS NULL AND :company IS NOT NULL
+                      AND LOWER(BTRIM(company)) = :company)
+                 )
+               ORDER BY opportunity_score DESC NULLS LAST,
+                        last_evaluated_at DESC NULLS LAST, id
+               LIMIT 1"""
+        ),
+        {
+            "company": str(company).strip().casefold() if company else None,
+            "symbol": _canonical_market_symbol(symbol),
+            "direction": str(direction).strip().casefold(),
+            "horizon": _normalized(horizon),
+        },
+    ))
     return row.get("mechanism") if row is not None else fallback
 
 
@@ -2549,15 +2513,13 @@ def _persist_falsification(
         status="in_progress",
         started_at=reference,
     )
-    current = _first(
-        session.execute(
-            text(
-                "SELECT status FROM investment_thesis_falsification_runs "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": run_id},
-        )
-    )
+    current = result_first(session.execute(
+        text(
+            "SELECT status FROM investment_thesis_falsification_runs "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": run_id},
+    ))
     if current is None or str(current.get("status")) not in ("pending", "in_progress"):
         return run_id, False
     status = _FALSIFICATION_STATUS_BY_STATE.get(decision.state, "inconclusive")
@@ -2653,16 +2615,14 @@ def _link_watch_positions(session: Any, thesis_id: str, symbol: Any) -> int:
     normalized = _normalized(symbol)
     if not normalized:
         return 0
-    row = _first(
-        session.execute(
-            text(
-                """SELECT id FROM portfolio_holdings
-                   WHERE LOWER(TRIM(symbol)) = :symbol
-                   LIMIT 1"""
-            ),
-            {"symbol": normalized},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """SELECT id FROM portfolio_holdings
+               WHERE LOWER(TRIM(symbol)) = :symbol
+               LIMIT 1"""
+        ),
+        {"symbol": normalized},
+    ))
     if row is None:
         return 0
     position_id = str(row["id"])
@@ -2764,54 +2724,52 @@ def _second_pass_candidates(
     """
     if int(limit) <= 0:
         return []
-    rows = _rows(
-        session.execute(
-            text(
-                """SELECT t.id, t.claim, t.direction, t.status,
-                          t.invalidation_conditions, t.opportunity_score,
-                          t.last_evaluated_at, t.updated_at,
-                          t.fusion_reference_at,
-                          (EXISTS (SELECT 1 FROM position_thesis_links l
-                                   WHERE l.thesis_id = t.id
-                                     AND l.created_at <= :reference
-                                     AND (l.removed_at IS NULL
-                                          OR l.removed_at > :reference)))
-                              AS has_link,
-                          (EXISTS (SELECT 1 FROM investment_thesis_event_matches m
-                                   JOIN investment_thesis_event_playbooks p
-                                        ON p.id = m.playbook_id
-                                   WHERE p.thesis_id = t.id
-                                     AND m.match_kind = 'context'
-                                     AND m.observed_at >= :context_since
-                                     AND m.observed_at <= :reference
-                                     AND m.created_at <= :reference
-                                     AND p.created_at <= :reference
-                                     AND (p.superseded_at IS NULL
-                                          OR p.superseded_at > :reference)))
-                              AS has_context
-                   FROM investment_theses t
-                   WHERE t.status IN ('active', 'candidate')
-                     AND t.created_at <= :reference
-                     AND t.updated_at <= :reference
-                     AND (t.last_evaluated_at IS NULL
-                          OR t.last_evaluated_at <= :reference)
-                     AND (t.fusion_reference_at IS NULL
-                          OR t.fusion_reference_at <= :reference)
-                   ORDER BY
-                       has_link DESC,
-                       has_context DESC,
-                       t.opportunity_score DESC NULLS LAST,
-                       t.last_evaluated_at DESC NULLS LAST,
-                       t.id
-                   LIMIT :limit"""
-            ),
-            {
-                "limit": max(1, int(limit) * 2),
-                "reference": reference,
-                "context_since": context_since,
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """SELECT t.id, t.claim, t.direction, t.status,
+                      t.invalidation_conditions, t.opportunity_score,
+                      t.last_evaluated_at, t.updated_at,
+                      t.fusion_reference_at,
+                      (EXISTS (SELECT 1 FROM position_thesis_links l
+                               WHERE l.thesis_id = t.id
+                                 AND l.created_at <= :reference
+                                 AND (l.removed_at IS NULL
+                                      OR l.removed_at > :reference)))
+                          AS has_link,
+                      (EXISTS (SELECT 1 FROM investment_thesis_event_matches m
+                               JOIN investment_thesis_event_playbooks p
+                                    ON p.id = m.playbook_id
+                               WHERE p.thesis_id = t.id
+                                 AND m.match_kind = 'context'
+                                 AND m.observed_at >= :context_since
+                                 AND m.observed_at <= :reference
+                                 AND m.created_at <= :reference
+                                 AND p.created_at <= :reference
+                                 AND (p.superseded_at IS NULL
+                                      OR p.superseded_at > :reference)))
+                          AS has_context
+               FROM investment_theses t
+               WHERE t.status IN ('active', 'candidate')
+                 AND t.created_at <= :reference
+                 AND t.updated_at <= :reference
+                 AND (t.last_evaluated_at IS NULL
+                      OR t.last_evaluated_at <= :reference)
+                 AND (t.fusion_reference_at IS NULL
+                      OR t.fusion_reference_at <= :reference)
+               ORDER BY
+                   has_link DESC,
+                   has_context DESC,
+                   t.opportunity_score DESC NULLS LAST,
+                   t.last_evaluated_at DESC NULLS LAST,
+                   t.id
+               LIMIT :limit"""
+        ),
+        {
+            "limit": max(1, int(limit) * 2),
+            "reference": reference,
+            "context_since": context_since,
+        },
+    ))
     excluded = {str(value) for value in excluded_ids}
     selected: list[dict[str, Any]] = []
     for row in rows:
@@ -2839,22 +2797,20 @@ def _count_unversioned_second_pass_candidates(
     conservative exclusion observable in cycle diagnostics as one
     bounded scalar (never row content).
     """
-    row = _first(
-        session.execute(
-            text(
-                """SELECT COUNT(*) AS count
-                   FROM investment_theses
-                   WHERE status IN ('active', 'candidate')
-                     AND (created_at IS NULL
-                          OR updated_at IS NULL
-                          OR created_at > :reference
-                          OR updated_at > :reference
-                          OR last_evaluated_at > :reference
-                          OR fusion_reference_at > :reference)"""
-            ),
-            {"reference": reference},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """SELECT COUNT(*) AS count
+               FROM investment_theses
+               WHERE status IN ('active', 'candidate')
+                 AND (created_at IS NULL
+                      OR updated_at IS NULL
+                      OR created_at > :reference
+                      OR updated_at > :reference
+                      OR last_evaluated_at > :reference
+                      OR fusion_reference_at > :reference)"""
+        ),
+        {"reference": reference},
+    ))
     return int((row or {}).get("count") or 0)
 
 
@@ -2876,24 +2832,22 @@ def _load_second_pass_snapshot(
     never challenge against future state.
     """
     thesis_id = str(row["id"])
-    scenario_rows = _rows(
-        session.execute(
-            text(
-                """SELECT name, probability, expected_return
-                   FROM investment_thesis_scenarios
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND created_at <= :reference
-                     AND (superseded_at IS NULL OR superseded_at > :reference)
-                   ORDER BY is_base_case DESC, created_at, name
-                   LIMIT :limit"""
-            ),
-            {
-                "id": thesis_id,
-                "limit": _MAX_SECOND_PASS_SCENARIOS,
-                "reference": reference,
-            },
-        )
-    )
+    scenario_rows = result_rows(session.execute(
+        text(
+            """SELECT name, probability, expected_return
+               FROM investment_thesis_scenarios
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND created_at <= :reference
+                 AND (superseded_at IS NULL OR superseded_at > :reference)
+               ORDER BY is_base_case DESC, created_at, name
+               LIMIT :limit"""
+        ),
+        {
+            "id": thesis_id,
+            "limit": _MAX_SECOND_PASS_SCENARIOS,
+            "reference": reference,
+        },
+    ))
     scenarios = tuple(
         Scenario.create(
             label=scenario.get("name") or "scenario",
@@ -2902,30 +2856,28 @@ def _load_second_pass_snapshot(
         )
         for scenario in scenario_rows
     )
-    evidence_rows = _rows(
-        session.execute(
-            text(
-                """SELECT evidence_type, evidence_id, relationship, source_family,
-                          origin_key, independence_key, evidence_fingerprint,
-                          source_timestamp, available_at, quality_score,
-                          entailment_score, freshness_score, effective_weight,
-                          excerpt, created_at
-                   FROM investment_thesis_evidence
-                   WHERE thesis_id = CAST(:id AS UUID)
-                     AND created_at <= :reference
-                     AND COALESCE(source_timestamp, created_at) <= :reference
-                     AND COALESCE(available_at, source_timestamp, created_at)
-                         <= :reference
-                   ORDER BY created_at, evidence_type, evidence_id
-                   LIMIT :limit"""
-            ),
-            {
-                "id": thesis_id,
-                "limit": _MAX_SECOND_PASS_EVIDENCE,
-                "reference": reference,
-            },
-        )
-    )
+    evidence_rows = result_rows(session.execute(
+        text(
+            """SELECT evidence_type, evidence_id, relationship, source_family,
+                      origin_key, independence_key, evidence_fingerprint,
+                      source_timestamp, available_at, quality_score,
+                      entailment_score, freshness_score, effective_weight,
+                      excerpt, created_at
+               FROM investment_thesis_evidence
+               WHERE thesis_id = CAST(:id AS UUID)
+                 AND created_at <= :reference
+                 AND COALESCE(source_timestamp, created_at) <= :reference
+                 AND COALESCE(available_at, source_timestamp, created_at)
+                     <= :reference
+               ORDER BY created_at, evidence_type, evidence_id
+               LIMIT :limit"""
+        ),
+        {
+            "id": thesis_id,
+            "limit": _MAX_SECOND_PASS_EVIDENCE,
+            "reference": reference,
+        },
+    ))
     attached_signals = tuple(_signal_from_row(evidence) for evidence in evidence_rows)
     conditions: list[ThesisCondition] = []
     raw_conditions = row.get("invalidation_conditions")

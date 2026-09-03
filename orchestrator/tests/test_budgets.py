@@ -16,10 +16,14 @@ from budgets import (
     BudgetPermit,
     BudgetUnavailable,
     ManualBudgetAuthorization,
-    budget_status,
     get_today_spend,
     mint_trusted_manual_authorization,
     trusted_manual_budget_context,
+)
+from contracts.budgets import (
+    budget_status,
+    coerce_finite_number,
+    get_budget_config,
     utc_day_bounds,
 )
 from llm_client import LLMStage, call_llm
@@ -88,6 +92,26 @@ class BudgetPolicyTests(unittest.TestCase):
             with self.subTest(cap=cap):
                 with self.assertRaises(ValueError):
                     budget_status(0, cap, 80)
+    def test_get_budget_config_supports_nested_and_flat(self):
+        self.assertEqual(
+            get_budget_config({"budgets": {"daily_llm_usd": 3.5, "warn_at_pct": 70}}),
+            (3.5, 70.0),
+        )
+        self.assertEqual(
+            get_budget_config({"daily_llm_usd": 1.5, "warn_at_pct": 95}),
+            (1.5, 95.0),
+        )
+        self.assertEqual(get_budget_config({}), (2.0, 80.0))
+        self.assertEqual(get_budget_config(None), (2.0, 80.0))
+        with self.assertRaises(ValueError):
+            get_budget_config({"budgets": "not-an-object"})
+
+    def test_coerce_finite_number_rejects_non_finite_and_non_numeric(self):
+        self.assertEqual(coerce_finite_number(5, "field"), 5.0)
+        self.assertEqual(coerce_finite_number(0.123, "field"), 0.123)
+        for bad in (None, True, False, "123", "bad", math.nan, math.inf, -math.inf):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                coerce_finite_number(bad, "field")
 
 
 class LLMEnforcementTests(unittest.TestCase):

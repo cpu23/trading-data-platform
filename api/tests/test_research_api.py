@@ -578,7 +578,7 @@ class ThesisDeskRunRouteTests(unittest.TestCase):
             }
         )
         with (
-            patch("routes.json.research._enforce_api_budget") as budget,
+            patch("routes.json.research._enforce_research_budget") as budget,
             patch("routes.json.research._research_orchestrator_post", upstream),
         ):
             response = client.post(
@@ -595,7 +595,7 @@ class ThesisDeskRunRouteTests(unittest.TestCase):
     def test_desk_run_rejects_unknown_fields_before_proxy(self):
         upstream = AsyncMock()
         with (
-            patch("routes.json.research._enforce_api_budget"),
+            patch("routes.json.research._enforce_research_budget"),
             patch("routes.json.research._research_orchestrator_post", upstream),
         ):
             for body in (

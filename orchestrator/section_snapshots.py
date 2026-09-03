@@ -15,6 +15,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
+
 try:
     from .events.canonicalize import canonical_json, content_hash
     from .ui_events import append_ui_invalidation
@@ -49,50 +51,6 @@ def _dialect_name(session: Any) -> str | None:
     return str(name).lower() if name else None
 
 
-def _mapping(row: Any) -> Mapping[str, Any] | None:
-    if row is None:
-        return None
-    if isinstance(row, Mapping):
-        return row
-    mapped = getattr(row, "_mapping", None)
-    if isinstance(mapped, Mapping):
-        return mapped
-    try:
-        return dict(row)
-    except (TypeError, ValueError):
-        return None
-
-
-def _first(result: Any) -> Any:
-    mappings = getattr(result, "mappings", None)
-    if callable(mappings):
-        mapped_result = mappings()
-        first = getattr(mapped_result, "first", None)
-        if callable(first):
-            return first()
-    first = getattr(result, "first", None)
-    if callable(first):
-        return first()
-    fetchone = getattr(result, "fetchone", None)
-    if callable(fetchone):
-        return fetchone()
-    return None
-
-
-def _all(result: Any) -> list[Any]:
-    mappings = getattr(result, "mappings", None)
-    if callable(mappings):
-        mapped_result = mappings()
-        all_rows = getattr(mapped_result, "all", None)
-        if callable(all_rows):
-            return list(all_rows())
-    all_rows = getattr(result, "all", None)
-    if callable(all_rows):
-        return list(all_rows())
-    fetchall = getattr(result, "fetchall", None)
-    if callable(fetchall):
-        return list(fetchall())
-    return []
 
 
 def _execute(
@@ -177,7 +135,7 @@ def _current_row(
            ORDER BY version DESC LIMIT 1""",
         {"section_key": section_key, "scope_key": scope_key},
     )
-    return _mapping(_first(result))
+    return result_first(result)
 
 
 def _result(
@@ -251,15 +209,13 @@ def publish_section_snapshot(
     _validate(validator, normalised_payload)
 
     version_mapping = (
-        _mapping(
-            _first(
-                _execute(
-                    session,
-                    """SELECT COALESCE(MAX(version), 0) AS max_version
-                   FROM section_snapshots
-                   WHERE section_key = :section_key AND scope_key = :scope_key""",
-                    {"section_key": section_key, "scope_key": scope_key},
-                )
+        result_first(
+            _execute(
+                session,
+                """SELECT COALESCE(MAX(version), 0) AS max_version
+               FROM section_snapshots
+               WHERE section_key = :section_key AND scope_key = :scope_key""",
+                {"section_key": section_key, "scope_key": scope_key},
             )
         )
         or {}
@@ -289,7 +245,7 @@ def publish_section_snapshot(
         if _dialect_name(session) in (None, "postgresql", "postgres")
         else ":render_context"
     )
-    row = _first(
+    row = result_first(
         _execute(
             session,
             f"""INSERT INTO section_snapshots
@@ -317,7 +273,7 @@ def publish_section_snapshot(
             },
         )
     )
-    inserted = _mapping(row)
+    inserted = row
     if inserted is None:
         inserted = {
             "id": None,
@@ -377,7 +333,7 @@ def list_snapshot_history(
             ORDER BY version DESC LIMIT :limit""",
         params,
     )
-    return [row for raw in _all(result) if (row := _mapping(raw)) is not None]
+    return result_rows(result)
 
 
 def reconcile_snapshots(
@@ -407,7 +363,7 @@ def reconcile_snapshots(
             ORDER BY section_key, scope_key, version DESC LIMIT :limit""",
         params,
     )
-    rows = [row for raw in _all(result) if (row := _mapping(raw)) is not None]
+    rows = result_rows(result)
     repaired = 0
     skipped = 0
     published: dict[tuple[str, str], Mapping[str, Any]] = {}

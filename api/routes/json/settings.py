@@ -13,9 +13,9 @@ from auth import setup_complete
 from config import (
     config_status,
     load_config,
-    orchestrator_url,
     reload_config,
 )
+from orchestrator_client import orchestrator_post
 from setup_state import (
     commit_setup,
     merge_profile,
@@ -381,31 +381,15 @@ def test_openrouter(body: dict):
 @router.post("/settings/test-model")
 async def test_model(request: Request, body: dict | None = Body(default=None)):
     """Preflight the active (or requested) model slug without paid inference."""
-    from routes.json.triggers import _internal_basic_auth
-
     requested = None
     if isinstance(body, dict) and isinstance(body.get("model"), str):
         requested = body.get("model").strip() or None
-    try:
-        auth = _internal_basic_auth()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503, detail="Internal authentication unavailable"
-        ) from exc
     payload = {"model": requested} if requested else {}
-    base_url = orchestrator_url()
-    client = getattr(request.app.state, "orchestrator_client", None)
-    if client is None:
-        raise HTTPException(status_code=503, detail="Orchestrator client unavailable")
-    try:
-        response = await client.post(
-            f"{base_url}/model/preflight", json=payload, auth=auth
-        )
-    except httpx.TransportError:
-        raise HTTPException(503, "Orchestrator unavailable") from None
-    except (AttributeError, TypeError):
-        # Never re-send a POST on a fallback client: fail closed instead.
-        raise HTTPException(503, "Orchestrator client unavailable") from None
+    response = await orchestrator_post(
+        request,
+        "/model/preflight",
+        json=payload,
+    )
     if response.status_code != 200:
         raise HTTPException(502, "Model preflight could not be completed")
     result = response.json()

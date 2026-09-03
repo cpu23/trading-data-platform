@@ -125,17 +125,15 @@ class InvestmentApiTests(unittest.TestCase):
             "documents": [],
             "analyses": [],
         }
-        self.upstream.request.return_value = self.response(200, payload)
+        self.upstream.get.return_value = self.response(200, payload)
 
         result = self.client.get("/api/investment/dashboard", headers=self.headers)
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["model"], "google/gemini-3.5-flash-lite")
         self.assertEqual(result.json()["regions"], payload["regions"])
-        args = self.upstream.request.await_args.args
-        self.assertEqual(
-            args[:2], ("GET", "http://orchestrator:8000/investment/dashboard")
-        )
+        args = self.upstream.get.await_args.args
+        self.assertEqual(args[0], "http://orchestrator:8000/investment/dashboard")
 
     def test_raw_document_upload_forwards_metadata_and_bytes(self):
         document_id = "11111111-1111-1111-1111-111111111111"
@@ -163,7 +161,7 @@ class InvestmentApiTests(unittest.TestCase):
                 "/investment/documents",
             )
 
-        self.upstream.request = AsyncMock(side_effect=consume_and_respond)
+        self.upstream.post = AsyncMock(side_effect=consume_and_respond)
         result = self.client.post(
             "/api/investment/documents",
             params=params,
@@ -172,7 +170,7 @@ class InvestmentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status_code, 201)
-        kwargs = self.upstream.request.await_args.kwargs
+        kwargs = self.upstream.post.await_args.kwargs
         self.assertEqual(forwarded, [body])
         self.assertEqual(kwargs["params"]["company"], "Memory Co")
         self.assertEqual(kwargs["headers"]["Content-Type"], "text/plain")
@@ -195,7 +193,7 @@ class InvestmentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status_code, 413)
-        self.upstream.request.assert_not_awaited()
+        self.upstream.post.assert_not_awaited()
 
     def test_oversized_chunked_upload_rejected_and_spool_cleaned(self):
         import asyncio
@@ -245,7 +243,7 @@ class InvestmentApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 413)
         self.assertEqual(len(created), 1)
         self.assertFalse(os.path.exists(created[0]))
-        self.upstream.request.assert_not_awaited()
+        self.upstream.post.assert_not_awaited()
 
     def test_upload_spool_is_cleaned_up_after_forward(self):
         import tempfile as _tempfile
@@ -266,7 +264,7 @@ class InvestmentApiTests(unittest.TestCase):
             created.append(handle.name)
             return handle
 
-        self.upstream.request = AsyncMock(
+        self.upstream.post = AsyncMock(
             return_value=self.response(
                 201,
                 {"document_id": document_id, "status": "ingested"},
@@ -311,7 +309,7 @@ class InvestmentApiTests(unittest.TestCase):
             self.app.state.orchestrator_client = saved
 
         self.assertEqual(result.status_code, 503)
-        self.upstream.request.assert_not_awaited()
+        self.upstream.post.assert_not_awaited()
 
     def test_analyze_validates_uuid_before_forwarding(self):
         result = self.client.post(
@@ -320,12 +318,12 @@ class InvestmentApiTests(unittest.TestCase):
             headers={**self.headers, "Content-Type": "application/json"},
         )
         self.assertEqual(result.status_code, 422)
-        self.upstream.request.assert_not_awaited()
+        self.upstream.post.assert_not_awaited()
 
     def test_analysis_forwards_market_inputs_and_returns_published_result(self):
         document_id = "11111111-1111-1111-1111-111111111111"
         analysis_id = "22222222-2222-2222-2222-222222222222"
-        self.upstream.request.return_value = self.response(
+        self.upstream.post.return_value = self.response(
             200,
             {
                 "analysis_id": analysis_id,
@@ -344,7 +342,7 @@ class InvestmentApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["state"]["stage"], "accelerating")
         self.assertEqual(
-            self.upstream.request.await_args.kwargs["json"]["market_inputs"][
+            self.upstream.post.await_args.kwargs["json"]["market_inputs"][
                 "discount_rate"
             ],
             10,
@@ -371,6 +369,107 @@ class InvestmentApiTests(unittest.TestCase):
             response.text,
         )
         self.assertNotIn("model figures are overlaid", response.text)
+
+    def test_v7_epistemic_narrative_renderers_use_only_current_contract_keys(self):
+        response = self.client.get("/investment", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        page = response.text
+
+        model_narrative_block = page.split(
+            "// --- Model narrative (LLM) ---", 1
+        )[1].split("// --- Risks & watch items", 1)[0]
+        catalyst_renderer = page.split(
+            "function addCatalystsSection", 1
+        )[1].split("function addMaterialitySection", 1)[0]
+        materiality_renderer = page.split(
+            "function addMaterialitySection", 1
+        )[1].split("function addRelationshipReconciliations", 1)[0]
+        relationship_renderer = page.split(
+            "function addRelationshipReconciliations", 1
+        )[1].split("function addSignalsSection", 1)[0]
+        risk_renderer = page.split(
+            "function addRisksSection", 1
+        )[1].split("function addQualitySection", 1)[0]
+
+        for token in (
+            "a.counter_thesis",
+            "inv-counter-thesis",
+            "addCatalystsSection(narGroup, a.catalysts)",
+            "addMaterialitySection(narGroup, a.materiality_assessment)",
+            "addRelationshipReconciliations(narGroup, a.relationship_reconciliations)",
+            "update.counter_thesis",
+            "addMaterialitySection(item, update.materiality_assessment)",
+            "addRelationshipReconciliations(item, update.relationship_reconciliations)",
+            "addCatalystsSection(item, update.catalysts)",
+            "addRisksSection(item, update.risks)",
+        ):
+            self.assertIn(token, model_narrative_block)
+
+        for token in (
+            "c.trigger",
+            "c.expected_outcome",
+            "c.epistemic_state",
+            "c.uncertainty",
+            "c.horizon",
+            "c.evidence",
+        ):
+            self.assertIn(token, catalyst_renderer)
+
+        for topic in (
+            "forward_guidance",
+            "reported_variance_driver",
+            "margin_economics",
+            "capital_commitment_duration",
+        ):
+            self.assertIn(topic, materiality_renderer)
+        for token in (
+            "item.status",
+            "not_disclosed",
+            "addressed",
+            "item.observation",
+            "item.implication",
+            "item.evidence",
+            "Materiality assessment",
+        ):
+            self.assertIn(token, materiality_renderer)
+
+        for token in (
+            "relationship.relationship_id",
+            "relationship.status",
+            "relationship.observation",
+            "relationship.interpretation",
+            "relationship.uncertainty",
+            "relationship.fact_paths",
+            "relationship.summary_synthesis",
+            "relationship.thesis_synthesis",
+            "relationship.summary_fact_paths",
+            "Material relationships",
+            "Required facts: ",
+            "Summary facts: ",
+            "Summary: ",
+            "Thesis: ",
+        ):
+            self.assertIn(token, relationship_renderer)
+
+        for token in (
+            "r.sourced_observation",
+            "r.inference",
+            "r.epistemic_state",
+            "r.uncertainty",
+            "r.likelihood",
+            "r.impact",
+            "r.mitigation",
+            "r.evidence",
+            "severityOrdinal",
+        ):
+            self.assertIn(token, risk_renderer)
+
+        for renderer, legacy_tokens in (
+            (catalyst_renderer, ("c.catalyst", "c.description", "c.timeframe")),
+            (risk_renderer, ("r.risk", "r.description", "r.probability", "r.timeframe")),
+        ):
+            for token in legacy_tokens:
+                self.assertNotIn(token, renderer)
 
     def test_region_strip_distinguishes_analysis_from_configuration(self):
         response = self.client.get("/investment", headers=self.headers)

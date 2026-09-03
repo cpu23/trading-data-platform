@@ -11,6 +11,13 @@ from uuid import UUID
 ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
+from contracts.runtime_config import (  # noqa: E402
+    AppConfig,
+    DatabaseConfig,
+    LlmConfig,
+    ResearchIntelligenceConfig,
+    ResearchLimitsConfig,
+)
 from research_intelligence.adversarial import validate_adversarial_output  # noqa: E402
 from research_intelligence.claims import validate_claim_output  # noqa: E402
 from research_intelligence.config import ResearchSettings  # noqa: E402
@@ -108,7 +115,9 @@ def settings(**overrides):
         },
     }
     values.update(overrides)
-    return ResearchSettings.from_config({"research_intelligence": values})
+    return ResearchSettings.from_config(
+        ResearchIntelligenceConfig.model_validate(values)
+    )
 
 
 def evidence_from_fixture(raw):
@@ -1853,10 +1862,20 @@ class ModelRunnerAndConfigTests(unittest.TestCase):
         research = {
             "enabled": True,
             "model_budget_usd_per_run": 0.25,
-            "stages": {"pattern_discovery": True},
+            "stages": {"pattern_discovery": {"enabled": True}},
         }
         research.update(overrides)
-        return {"research_intelligence": research}
+        return AppConfig(
+            database=DatabaseConfig(
+                host="localhost",
+                port=5432,
+                name="test",
+                user="research_runner_ci",
+                password="s9V!q2K#x7Lm4P@t",
+            ),
+            llm=LlmConfig(api_key="rI8nW3qY5vT2mK7pL9sF4dH6"),
+            research_intelligence=ResearchIntelligenceConfig.model_validate(research),
+        )
 
     def test_model_stage_repairs_once_records_both_attempts_and_then_obeys_budget(self):
         responses = [
@@ -1974,36 +1993,35 @@ class ModelRunnerAndConfigTests(unittest.TestCase):
 
     def test_configuration_rejects_unsafe_graph_lifecycle_and_reasoning_values(self):
         with self.assertRaisesRegex(ValueError, "graph.depth"):
-            ResearchSettings.from_config(
-                self._runner_config(graph={"depth": 4, "hard_depth": 3})
+            ResearchIntelligenceConfig.model_validate(
+                {"graph": {"depth": 4, "hard_depth": 3}}
             )
         with self.assertRaisesRegex(ValueError, "archive_days"):
-            ResearchSettings.from_config(
-                self._runner_config(
-                    lifecycle_thresholds={"weakening_days": 40, "archive_days": 20}
-                )
+            ResearchIntelligenceConfig.model_validate(
+                {"lifecycle_thresholds": {"weakening_days": 40, "archive_days": 20}}
             )
         with self.assertRaisesRegex(ValueError, "reasoning_effort"):
-            ResearchSettings.from_config(
-                self._runner_config(reasoning_effort={"pattern_discovery": "unbounded"})
+            ResearchIntelligenceConfig.model_validate(
+                {"reasoning_effort": {"pattern_discovery": "unbounded"}}
             )
 
     def test_configuration_bounds_macro_packet_and_driver_cardinality(self):
-        parsed = ResearchSettings.from_config(
-            self._runner_config(
-                limits={
-                    "maximum_candidate_evidence": 120,
-                    "maximum_macro_evidence": 32,
-                    "maximum_market_drivers": 6,
-                }
-            )
+        config = self._runner_config(
+            limits={
+                "maximum_candidate_evidence": 120,
+                "maximum_macro_evidence": 32,
+                "maximum_market_drivers": 6,
+            }
         )
+        parsed = ResearchSettings.from_config(config.research_intelligence)
 
         self.assertEqual(parsed.maximum_macro_evidence, 32)
         self.assertEqual(parsed.maximum_market_drivers, 6)
 
     def test_expansive_stages_use_bounded_v2_contracts(self):
-        parsed = ResearchSettings.from_config(self._runner_config())
+        parsed = ResearchSettings.from_config(
+            self._runner_config().research_intelligence
+        )
 
         self.assertEqual(
             STAGE_VERSIONS["claim_extraction"], "research_claim_extraction_v2"
@@ -2154,14 +2172,22 @@ class ScenarioEndToEndTests(unittest.TestCase):
 
 
 class DeployedResearchEntryPointTests(unittest.TestCase):
-    CONFIG = {
-        "research_intelligence": {
-            "enabled": True,
-            "macro_drivers_enabled": True,
-            "claim_extraction_enabled": False,
-            "limits": {"maximum_candidate_evidence": 17},
-        }
-    }
+    CONFIG = AppConfig(
+        database=DatabaseConfig(
+            host="localhost",
+            port=5432,
+            name="test",
+            user="research_runner_ci",
+            password="s9V!q2K#x7Lm4P@t",
+        ),
+        llm=LlmConfig(api_key="rI8nW3qY5vT2mK7pL9sF4dH6"),
+        research_intelligence=ResearchIntelligenceConfig(
+            enabled=True,
+            macro_drivers_enabled=True,
+            claim_extraction_enabled=False,
+            limits=ResearchLimitsConfig(maximum_candidate_evidence=17),
+        ),
+    )
 
     def test_empty_normalized_window_returns_bounded_states_without_model_work(self):
         collection = EvidenceCollection(items=(), failures={})

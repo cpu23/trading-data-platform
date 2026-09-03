@@ -5,10 +5,15 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from config import load_config
+import config as app_config
 from db import query_many, query_one
 from routes.json.settings import timezone_context
+from serializers import isoformat
 from staleness import get_staleness_config, is_stale
+
+
+def load_config():
+    return app_config.load_config()
 
 router = APIRouter()
 
@@ -46,7 +51,7 @@ def _serialize_release_card(row: dict) -> dict:
     ):
         value = card.get(key)
         if isinstance(value, datetime):
-            card[key] = value.isoformat()
+            card[key] = isoformat(value)
     timestamp = (
         row.get("released_at") or row.get("observed_at") or row.get("created_at")
     )
@@ -116,8 +121,8 @@ def get_calendar_events(
         event = dict(row)
         scheduled = event.get("scheduled_at")
         if isinstance(scheduled, datetime):
-            event["scheduled_at"] = scheduled.isoformat()
-            event["display_time"] = scheduled.astimezone(display_zone).isoformat()
+            event["scheduled_at"] = isoformat(scheduled)
+            event["display_time"] = isoformat(scheduled.astimezone(display_zone))
         else:
             event["scheduled_at"] = str(scheduled)
             event["display_time"] = event["scheduled_at"]
@@ -191,9 +196,7 @@ def _serialize_event(
         "event_name": row["event_name"],
         "country": row["country"],
         "currency": currency,
-        "scheduled_at": scheduled_at.isoformat()
-        if hasattr(scheduled_at, "isoformat")
-        else str(scheduled_at),
+        "scheduled_at": isoformat(scheduled_at),
         "day_key": display_dt.date().isoformat(),
         "day_label_short": display_dt.strftime("%a"),
         "london_time": london_dt.strftime("%H:%M"),
@@ -307,9 +310,7 @@ def get_events_recent(days: int = Query(default=7, ge=1, le=90)):
                 "event_id": row["event_id"],
                 "event_name": row["event_name"],
                 "country": row["country"],
-                "scheduled_at": scheduled_at.isoformat()
-                if hasattr(scheduled_at, "isoformat")
-                else str(scheduled_at),
+                "scheduled_at": isoformat(scheduled_at),
                 "impact_level": row.get("impact_level"),
                 "consensus": row.get("consensus"),
                 "previous": row.get("previous"),

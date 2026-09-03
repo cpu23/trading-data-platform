@@ -7,7 +7,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
@@ -152,6 +152,28 @@ def canonical_fingerprint(value: Any) -> str:
         _json_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def clean_payload(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: clean_payload(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, datetime):
+        normalized = value if value.tzinfo else value.replace(tzinfo=UTC)
+        return normalized.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, Mapping):
+        return {str(key): clean_payload(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [clean_payload(item) for item in value]
+    return value
+
+
+def parse_json_payload(content: Any) -> Any:
+    if not isinstance(content, str):
+        raise ValueError("model content must be JSON text")
+    value = content.strip()
+    if value.startswith("```"):
+        value = value.split("\n", 1)[1].rsplit("```", 1)[0]
+    return json.loads(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -814,7 +836,9 @@ __all__ = [
     "VALUE_CAPTURE_DIMENSIONS",
     "ValueCaptureDraft",
     "canonical_fingerprint",
+    "clean_payload",
     "evidence_catalog",
+    "parse_json_payload",
     "reject_embedded_evidence_references",
     "validate_evidence_references",
 ]

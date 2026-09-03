@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 
+from contracts.db_results import result_rows
 from research_intelligence.context import ResearchContext
 from research_intelligence.contracts import (
     EvidenceType,
@@ -41,20 +42,10 @@ class EvidenceCollection:
     failures: Mapping[str, str]
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except (AttributeError, TypeError):
-        try:
-            return [dict(row._mapping) for row in result]
-        except (AttributeError, TypeError):
-            return []
-
-
 def _execute(
     session: Any, statement: str, params: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    return _rows(session.execute(text(statement), dict(params)))
+    return result_rows(session.execute(text(statement), dict(params)))
 
 
 def _recovery_savepoint(session: Any):
@@ -1099,7 +1090,11 @@ class InvestmentObservationAdapter:
             title = (
                 row.get("company") or row.get("industry") or "Investment observation"
             )
-            excerpt = narrative.get("summary") or narrative.get("thesis")
+            excerpt = (
+                narrative.get("summary")
+                or narrative.get("thesis")
+                or narrative.get("counter_thesis")
+            )
             evidence.append(
                 NormalizedEvidence.create(
                     evidence_type=EvidenceType.INVESTMENT_OBSERVATION,
@@ -1245,6 +1240,7 @@ class InvestmentAnalysisAdapter:
                 "diluted_eps",
                 "shares_outstanding",
                 "net_debt",
+                "gross_margin",
             ):
                 metric = _mapping(metrics.get(name))
                 value = _finite(metric.get("value"))
@@ -1266,14 +1262,18 @@ class InvestmentAnalysisAdapter:
                 parsed = _finite(value)
                 if parsed is not None:
                     compact_facts.append(f"{label}={_fmt_number(parsed)}")
-            summary = str(
-                analysis.get("summary") or analysis.get("thesis") or ""
-            ).strip()
+            summary = str(analysis.get("summary") or "").strip()
+            thesis = str(analysis.get("thesis") or "").strip()
+            counter_thesis = str(analysis.get("counter_thesis") or "").strip()
             excerpt = "Deterministic filing data: " + (
                 "; ".join(compact_facts) if compact_facts else "unavailable"
             )
             if summary:
-                excerpt += " | Filing analysis: " + summary
+                excerpt += " | Filing observation: " + summary
+            if thesis:
+                excerpt += " | Filing interpretation: " + thesis
+            if counter_thesis:
+                excerpt += " | Filing counter-thesis: " + counter_thesis
             observed = _timestamp(row.get("updated_at") or row.get("created_at"), since)
             evidence.append(
                 NormalizedEvidence.create(
@@ -1302,6 +1302,19 @@ class InvestmentAnalysisAdapter:
                         "qualitative": _mapping(facts.get("qualitative")),
                         "valuation": valuation,
                         "state": analysis.get("state"),
+                        "counter_thesis": analysis.get("counter_thesis"),
+                        "materiality_assessment": _mapping(
+                            analysis.get("materiality_assessment")
+                        ),
+                        "relationship_facts": analysis.get("relationship_facts"),
+                        "material_relationships": analysis.get(
+                            "material_relationships"
+                        ),
+                        "relationship_reconciliations": analysis.get(
+                            "relationship_reconciliations"
+                        ),
+                        "catalysts": _list(analysis.get("catalysts")),
+                        "risks": _list(analysis.get("risks")),
                     },
                     provenance={
                         "adapter": self.name,
@@ -2643,7 +2656,11 @@ def _recover_investment_observations(
                     or row.get("industry")
                     or "Investment observation"
                 ),
-                bounded_excerpt=(narrative.get("summary") or narrative.get("thesis")),
+                bounded_excerpt=(
+                    narrative.get("summary")
+                    or narrative.get("thesis")
+                    or narrative.get("counter_thesis")
+                ),
                 entities=_entities(
                     _entity("company", row.get("company")),
                     _entity("symbol", row.get("symbol")),
@@ -2711,7 +2728,16 @@ def _recover_investment_analyses(
                 available_at=row.get("updated_at") or row.get("created_at"),
                 availability_basis="analysis_completed_at",
                 title=title,
-                bounded_excerpt=(analysis.get("summary") or analysis.get("thesis")),
+                bounded_excerpt=" | ".join(
+                    part
+                    for part in (
+                        str(analysis.get("summary") or "").strip(),
+                        str(analysis.get("thesis") or "").strip(),
+                        str(analysis.get("counter_thesis") or "").strip(),
+                    )
+                    if part
+                )
+                or None,
                 source_reference=row.get("source_url"),
                 entities=_entities(
                     _entity("company", row.get("company")),
@@ -2726,6 +2752,17 @@ def _recover_investment_analyses(
                     "metrics": _mapping(facts.get("metrics")),
                     "qualitative": _mapping(facts.get("qualitative")),
                     "state": analysis.get("state"),
+                    "counter_thesis": analysis.get("counter_thesis"),
+                    "materiality_assessment": _mapping(
+                        analysis.get("materiality_assessment")
+                    ),
+                    "relationship_facts": analysis.get("relationship_facts"),
+                    "material_relationships": analysis.get("material_relationships"),
+                    "relationship_reconciliations": analysis.get(
+                        "relationship_reconciliations"
+                    ),
+                    "catalysts": _list(analysis.get("catalysts")),
+                    "risks": _list(analysis.get("risks")),
                 },
                 provenance={
                     "adapter": InvestmentAnalysisAdapter.name,

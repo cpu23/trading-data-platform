@@ -11,12 +11,17 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from budgets import BudgetContext
+from contracts.runtime_config import AppConfig
 from llm_client import LLMStage, resolve_model
 from processors.base import load_prompt_template
 from research_intelligence.adversarial import RESEARCH_DATA_TYPES
 from research_intelligence.claims import MAX_SOURCE_CLAIMS_PER_BATCH
 from research_intelligence.config import ResearchSettings
-from research_intelligence.contracts import ModelProvenance, canonical_fingerprint
+from research_intelligence.contracts import (
+    ModelProvenance,
+    canonical_fingerprint,
+    parse_json_payload,
+)
 from research_intelligence.relationships import ENTITY_TYPES, RELATIONSHIPS
 
 T = TypeVar("T")
@@ -32,7 +37,9 @@ STAGE_VERSIONS = {
 }
 
 
-def _object(properties: Mapping[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+def _object(
+    properties: Mapping[str, Any], required: list[str] | None = None
+) -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -158,7 +165,14 @@ PATTERN_SCHEMA = {
             },
             "horizon": {
                 "type": "string",
-                "enum": ["intraday", "days", "weeks", "months", "multi_year", "unknown"],
+                "enum": [
+                    "intraday",
+                    "days",
+                    "weeks",
+                    "months",
+                    "multi_year",
+                    "unknown",
+                ],
             },
             "what_changed": _NULLABLE_STRING,
             "supporting_evidence_ids": _array(_STRING, 8),
@@ -220,12 +234,15 @@ VALUE_CAPTURE_SCHEMA = {
                         "dimensions": _object(
                             {
                                 name: _nullable(
-                                    "string", enum=["low", "moderate", "high", "unknown"]
+                                    "string",
+                                    enum=["low", "moderate", "high", "unknown"],
                                 )
                                 for name in _VALUE_DIMENSIONS
                             }
                         ),
-                        "rationale": _object({name: _STRING for name in _VALUE_DIMENSIONS}),
+                        "rationale": _object(
+                            {name: _STRING for name in _VALUE_DIMENSIONS}
+                        ),
                         "evidence_ids": _array(_STRING, 4),
                         "unknowns": _array(_STRING, 5),
                     }
@@ -289,10 +306,20 @@ ADVERSARIAL_SCHEMA = {
                                 "unknown",
                             ],
                         },
-                        "priority": {"type": "string", "enum": ["low", "moderate", "high"]},
+                        "priority": {
+                            "type": "string",
+                            "enum": ["low", "moderate", "high"],
+                        },
                         "candidate_source_class": {
                             "type": "string",
-                            "enum": ["official", "industry", "company", "market", "academic", "other"],
+                            "enum": [
+                                "official",
+                                "industry",
+                                "company",
+                                "market",
+                                "academic",
+                                "other",
+                            ],
                         },
                     }
                 ),
@@ -424,15 +451,6 @@ class ModelStageResult:
     duration_ms: int
 
 
-def _parse(content: Any) -> Any:
-    if not isinstance(content, str):
-        raise ValueError("model content must be JSON text")
-    value = content.strip()
-    if value.startswith("```"):
-        value = value.split("\n", 1)[1].rsplit("```", 1)[0]
-    return json.loads(value)
-
-
 def _uuid_or_none(value: str | None) -> str | None:
     if value is None:
         return None
@@ -447,7 +465,7 @@ class ResearchModelRunner:
 
     def __init__(
         self,
-        config: dict[str, Any],
+        config: AppConfig,
         *,
         correlation_id: str | None,
         session: Any,
@@ -455,16 +473,20 @@ class ResearchModelRunner:
         execution_metadata: Mapping[str, Any] | None = None,
     ):
         self.config = config
-        self.settings = ResearchSettings.from_config(config)
+        self.settings = ResearchSettings.from_config(config.research_intelligence)
         self.correlation_id = correlation_id
         self.session = session
         self.budget_context = budget_context or BudgetContext()
         self.cost_usd = 0.0
         self.execution_metadata = dict(execution_metadata or {})
 
-    def _render_prompt(self, stage: str, input_payload: Any) -> tuple[str, dict[str, str]]:
+    def _render_prompt(
+        self, stage: str, input_payload: Any
+    ) -> tuple[str, dict[str, str]]:
         template, identity = load_prompt_template(self.settings.prompt_templates[stage])
-        payload = json.dumps(input_payload, sort_keys=True, ensure_ascii=False, default=str)
+        payload = json.dumps(
+            input_payload, sort_keys=True, ensure_ascii=False, default=str
+        )
         prompt = template.replace("{{input_json}}", payload).replace(
             "{{relationship_vocabulary}}", json.dumps(RELATIONSHIPS)
         )
@@ -574,7 +596,10 @@ class ResearchModelRunner:
             raise ValueError("unknown research model stage")
         if not self.settings.stage_enabled.get(stage, False):
             raise ResearchModelValidationError(f"research stage disabled: {stage}")
-        if self.settings.model_budget_usd_per_run <= 0 or self.cost_usd >= self.settings.model_budget_usd_per_run:
+        if (
+            self.settings.model_budget_usd_per_run <= 0
+            or self.cost_usd >= self.settings.model_budget_usd_per_run
+        ):
             raise ResearchRunBudgetExceeded("research run model budget exhausted")
         prompt, prompt_identity = self._render_prompt(stage, input_payload)
         fingerprint = input_fingerprint or canonical_fingerprint(
@@ -600,9 +625,7 @@ class ResearchModelRunner:
         current_prompt = prompt
         for attempt_number in (1, 2):
             if self.cost_usd >= self.settings.model_budget_usd_per_run:
-                raise ResearchRunBudgetExceeded(
-                    "research run model budget exhausted"
-                )
+                raise ResearchRunBudgetExceeded("research run model budget exhausted")
             try:
                 result = stage_runner.call(current_prompt)
             except Exception as exc:
@@ -636,11 +659,9 @@ class ResearchModelRunner:
                     prompt_identity=prompt_identity,
                     input_fingerprint=fingerprint,
                 )
-                raise ResearchRunBudgetExceeded(
-                    "research run model budget exhausted"
-                )
+                raise ResearchRunBudgetExceeded("research run model budget exhausted")
             try:
-                parsed = _parse(result.get("content"))
+                parsed = parse_json_payload(result.get("content"))
                 validated_value = validator(parsed)
             except Exception as exc:
                 self._record_attempt(
@@ -669,7 +690,9 @@ class ResearchModelRunner:
             )
             break
         if validated_attempt_id is None:
-            raise ResearchModelValidationError(f"{STAGE_VERSIONS[stage]} did not validate")
+            raise ResearchModelValidationError(
+                f"{STAGE_VERSIONS[stage]} did not validate"
+            )
         total_cost = sum(float(result.get("cost_usd") or 0) for result in attempts)
         # Actual attempt cost is charged immediately, including invalid attempts.
         final = attempts[-1]
@@ -688,8 +711,12 @@ class ResearchModelRunner:
                 },
             ),
             cost_usd=total_cost,
-            tokens_input=sum(int(result.get("tokens_input") or 0) for result in attempts),
-            tokens_output=sum(int(result.get("tokens_output") or 0) for result in attempts),
+            tokens_input=sum(
+                int(result.get("tokens_input") or 0) for result in attempts
+            ),
+            tokens_output=sum(
+                int(result.get("tokens_output") or 0) for result in attempts
+            ),
             duration_ms=sum(int(result.get("duration_ms") or 0) for result in attempts),
         )
 

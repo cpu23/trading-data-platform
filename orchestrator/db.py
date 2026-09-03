@@ -183,7 +183,6 @@ def query_latest(
 
     sql = f"SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT :limit"
     params["limit"] = limit
-
     with get_session(config) as session:
         result = session.execute(text(sql), params)
         rows = [dict(row._mapping) for row in result]

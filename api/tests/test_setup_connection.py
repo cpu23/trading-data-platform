@@ -14,7 +14,7 @@ os.environ["DEPLOYMENT_MODE"] = "test"
 os.environ["DASHBOARD_USER"] = "test"
 os.environ["DASHBOARD_PASSWORD"] = "test"
 
-from outbound import PublicOnlyTransport  # noqa: E402
+from contracts.outbound_transport import PublicOnlyHTTPTransport  # noqa: E402
 from routes.json import setup  # noqa: E402
 from routes.json.setup import TestConnectionRequest  # noqa: E402
 
@@ -233,20 +233,13 @@ class SetupConnectionSecurityTests(unittest.TestCase):
 
 
 class PublicOnlyTransportTests(unittest.TestCase):
-    def test_shared_implementation_with_orchestrator(self):
-        """The API module is a pure alias: both processes exercise the single
-        contracts transport, never a duplicated copy."""
-        from contracts.outbound_transport import PublicOnlyHTTPTransport
-
-        self.assertIs(PublicOnlyTransport, PublicOnlyHTTPTransport)
-        self.assertEqual(PublicOnlyTransport.__module__, "contracts.outbound_transport")
     def test_transport_pins_validated_address_and_preserves_host_and_sni(self):
         response = httpx.Response(
             200,
             content=b"ok",
             request=httpx.Request("GET", "https://93.184.216.34/doc"),
         )
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         request = httpx.Request("GET", "https://public.example.test/doc?q=1")
         with (
             patch("socket.getaddrinfo", side_effect=_public_answer),
@@ -273,7 +266,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
         """Each hop of a relative redirect chain re-resolves the ORIGINAL
         hostname, keeps Host/SNI, and never leaves the pinned IP as the
         response origin."""
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         first = httpx.Response(
             302,
             headers={"location": "/next"},
@@ -313,7 +306,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
             content=b"ok",
             request=httpx.Request("POST", "https://93.184.216.34/doc"),
         )
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         request = httpx.Request(
             "POST", "https://public.example.test/doc", content=b"bounded-payload"
         )
@@ -330,12 +323,12 @@ class PublicOnlyTransportTests(unittest.TestCase):
         self.assertEqual(rewritten.read(), b"bounded-payload")
 
     def test_transport_rejects_plain_http_origin(self):
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         with self.assertRaises(ValueError):
             transport.handle_request(httpx.Request("GET", "http://example.test/doc"))
 
     def test_transport_rejects_private_resolution_at_send_time(self):
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         request = httpx.Request("GET", "https://127.0.0.1/steal")
         with patch(
             "socket.getaddrinfo",
@@ -347,7 +340,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
                 transport.handle_request(request)
 
     def test_transport_fails_closed_on_mixed_answers_at_send_time(self):
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         request = httpx.Request("GET", "https://rebind.example.test/doc")
         with patch(
             "socket.getaddrinfo",
@@ -362,7 +355,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
     def test_distinct_origins_never_share_child_transport(self):
         """Two hosts resolving to the same CDN IP must never share a pooled
         TLS connection: each original origin gets its own child transport."""
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         response = httpx.Response(
             200,
             content=b"ok",
@@ -405,7 +398,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
             content=b"ok",
             request=httpx.Request("GET", "https://[2606:4700::1]/doc"),
         )
-        transport = PublicOnlyTransport()
+        transport = PublicOnlyHTTPTransport()
         request = httpx.Request("GET", "https://v6.example.test/doc")
         with (
             patch(

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Request
 import config as app_config
 from db import query_many
 from routes.json.briefing import get_briefing_latest
+from routes.json.events import COUNTRY_TO_CURRENCY
 from routes.views.asset_rules import ASSET_EVENT_RULES
 from routes.views.dashboard_strip import (
     as_datetime,
@@ -41,14 +42,6 @@ DIRECTION_THRESHOLD_PCT = 0.05
 
 CATALYST_DAYS = 7
 CATALYST_LIMIT = 6
-COUNTRY_TO_CURRENCY = {
-    "US": "USD",
-    "EU": "EUR",
-    "GB": "GBP",
-    "JP": "JPY",
-    "AU": "AUD",
-    "CN": "CNY",
-}
 
 _LATEST_MACRO_SQL = """
     SELECT DISTINCT ON (series_id) series_id, value, observed_at

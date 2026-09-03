@@ -26,12 +26,11 @@ from sqlalchemy import text
 
 from analysis_jobs import (
     _canonical_payload,
-    _first,
-    _rows,
     _supports_skip_locked,
     _utcnow,
-    sanitize_error,
 )
+from contracts.db_results import result_first, result_rows
+from errors import sanitize_error
 from run_lifecycle import DEFAULT_HEARTBEAT_TIMEOUT, RunAcceptanceConflict
 
 ACTIVE_STATES = ("queued", "leased", "running", "failed_retryable")
@@ -131,7 +130,7 @@ def _identity_select(
     guards active states, so an explicit retry or the next schedule window
     must be able to enqueue a fresh job after a terminal outcome.
     """
-    return _first(
+    return result_first(
         session.execute(
             text(
                 f"SELECT {_FIELDS} FROM operation_jobs "
@@ -195,7 +194,7 @@ def enqueue_operation(
         "max_attempts": max(1, int(max_attempts)),
         "not_before": not_before or _utcnow(),
     }
-    row = _first(
+    row = result_first(
         session.execute(
             text(
                 "INSERT INTO operation_jobs (id, run_kind, requested_component, "
@@ -277,7 +276,7 @@ def _replay_acceptance(
     """
     if idempotency_key is None:
         return None
-    row = _first(
+    row = result_first(
         session.execute(
             text(
                 "SELECT correlation_id, accepted_at FROM cycle_runs "
@@ -288,7 +287,7 @@ def _replay_acceptance(
     )
     if row is None:
         return None
-    job = _first(
+    job = result_first(
         session.execute(
             text(
                 f"SELECT {_FIELDS} FROM operation_jobs "
@@ -401,7 +400,7 @@ def accept_and_enqueue_operation(
             # (override adoption, same-correlation replay, or genuine
             # conflict); otherwise it is an idempotency-key conflict (replay
             # or key-reuse conflict).
-            existing = _first(
+            existing = result_first(
                 session.execute(
                     text(
                         "SELECT status, triggered_by, idempotency_key FROM cycle_runs "
@@ -539,7 +538,7 @@ def claim_operation_jobs(
             params[key] = str(value)
         where += " AND run_kind IN (" + ", ".join(names) + ")"
     lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
-    rows = _rows(
+    rows = result_rows(
         session.execute(
             text(
                 f"SELECT id, correlation_id FROM operation_jobs WHERE {where} "
@@ -569,7 +568,7 @@ def claim_operation_jobs(
                 "stale_cutoff": now - DEFAULT_HEARTBEAT_TIMEOUT,
             },
         )
-        updated = _first(
+        updated = result_first(
             session.execute(
                 text(
                     "UPDATE operation_jobs SET state = 'leased', "
@@ -669,7 +668,7 @@ def retry_operation_job(
     claim it immediately after ``not_before`` without waiting for any stale
     timeout.  Only a job the caller still owns is touched.
     """
-    updated = _first(
+    updated = result_first(
         session.execute(
             text(
                 "UPDATE operation_jobs SET state = 'failed_retryable', "
@@ -755,7 +754,7 @@ def reconcile_operation_jobs(session: Any, limit: int = 100) -> int:
     reason = "lease expired without completion"
     params: dict[str, Any] = {"now": now, "limit": max(1, int(limit))}
     lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
-    candidates = _rows(
+    candidates = result_rows(
         session.execute(
             text(
                 "SELECT id, correlation_id, attempt_count, max_attempts "
@@ -772,7 +771,7 @@ def reconcile_operation_jobs(session: Any, limit: int = 100) -> int:
         attempt_count = int(candidate["attempt_count"] or 0)
         max_attempts = int(candidate["max_attempts"] or 1)
         if attempt_count >= max_attempts:
-            updated = _first(
+            updated = result_first(
                 session.execute(
                     text(
                         "UPDATE operation_jobs SET state = 'failed_terminal', "
@@ -805,7 +804,7 @@ def reconcile_operation_jobs(session: Any, limit: int = 100) -> int:
                 )
                 repaired += 1
         else:
-            updated = _first(
+            updated = result_first(
                 session.execute(
                     text(
                         "UPDATE operation_jobs SET state = 'failed_retryable', "

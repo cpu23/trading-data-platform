@@ -15,6 +15,8 @@ from uuid import UUID
 from sqlalchemy import text
 
 from config_loader import load_config
+from contracts.db_results import result_rows
+from events.canonicalize import canonical_json_value
 
 _MAX_ROWS = 200
 _SOURCE_COLUMNS = (
@@ -76,33 +78,11 @@ def _timestamp(value: Any) -> datetime | None:
     return None
 
 
-def _json_value(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _raw_rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        result = result.mappings()
-    except AttributeError:
-        pass
-    rows = []
-    for row in result:
-        mapping = getattr(row, "_mapping", row)
-        rows.append(dict(mapping))
-    return rows
-
 
 def _serialise_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {str(key): _json_value(value) for key, value in row.items()} for row in rows
+        {str(key): canonical_json_value(value) for key, value in row.items()}
+        for row in rows
     ]
 
 
@@ -132,7 +112,7 @@ def _source_health_rows(
         ),
         {"limit": limit},
     )
-    raw_rows = _raw_rows(result)
+    raw_rows = result_rows(result)
     freshness = max(
         (_timestamp(row.get("updated_at")) for row in raw_rows),
         key=lambda value: value or datetime.min.replace(tzinfo=UTC),
@@ -198,7 +178,7 @@ def _watchlist_rows(
         ),
         {"symbols": symbols, "limit": limit},
     )
-    raw_rows = _raw_rows(result)
+    raw_rows = result_rows(result)
     freshness = max(
         (_timestamp(row.get("timestamp")) for row in raw_rows),
         key=lambda value: value or datetime.min.replace(tzinfo=UTC),
@@ -264,7 +244,7 @@ def _public_release_cards(session: Any) -> tuple[list[dict[str, Any]], datetime 
     rows = list_macro_release_cards(session, limit=limit, current_only=True)
     cards = [
         {
-            key: _json_value(row.get(key))
+            key: canonical_json_value(row.get(key))
             for key in _PUBLIC_RELEASE_COLUMNS
             if key in row
         }
@@ -316,7 +296,7 @@ def update_macro_release_reactions(session: Any, job: Any) -> Any:
     rows = list_event_reactions(session, event_id, limit=limit)
     public_windows = [
         {
-            key: _json_value(row.get(key))
+            key: canonical_json_value(row.get(key))
             for key in (
                 "instrument_symbol",
                 "timeframe",
@@ -389,7 +369,7 @@ def _public_story_clusters(
     cluster_ids = [row.get("id") for row in rows if row.get("id") is not None]
     confirmations: dict[str, list[dict[str, Any]]] = {}
     if cluster_ids:
-        confirmation_rows = _raw_rows(
+        confirmation_rows = result_rows(
             session.execute(
                 text(
                     """SELECT cluster_id, market_symbol, observed_at,
@@ -405,7 +385,7 @@ def _public_story_clusters(
         for row in confirmation_rows:
             confirmations.setdefault(str(row.get("cluster_id")), []).append(
                 {
-                    key: _json_value(row.get(key))
+                    key: canonical_json_value(row.get(key))
                     for key in (
                         "market_symbol",
                         "observed_at",
@@ -420,7 +400,7 @@ def _public_story_clusters(
     clusters = [
         {
             **{
-                key: _json_value(row.get(key))
+                key: canonical_json_value(row.get(key))
                 for key in _PUBLIC_STORY_COLUMNS
                 if key in row
             },
@@ -540,7 +520,7 @@ def run_research_discovery_job(session: Any, job: Any) -> dict[str, Any]:
     """Run hot-market drivers and bounded dynamic case discovery durably."""
     from research_intelligence.service import run_discovery, run_macro_transmission
 
-    config = dict(_config())
+    config = load_config()
     payload = _mapping(_job_value(job, "payload", {}))
     correlation_id = str(_job_value(job, "correlation_id", "") or "") or None
     force = bool(payload.get("force", False))
@@ -597,7 +577,7 @@ def run_research_case_update_job(session: Any, job: Any) -> dict[str, Any]:
         raise ValueError("research case update requires a case id")
     result = run_case_update(
         session,
-        dict(_config()),
+        load_config(),
         case_id,
         correlation_id=str(_job_value(job, "correlation_id", "") or "") or None,
         force=bool(payload.get("force", False)),

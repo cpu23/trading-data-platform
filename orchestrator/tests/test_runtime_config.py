@@ -27,8 +27,20 @@ from config_loader import (  # noqa: E402
     restart_required,
     restart_sensitive_changes,
 )
-from contracts.runtime_config import ConfigStore, committed_config_paths  # noqa: E402
+from contracts.runtime_config import (  # noqa: E402
+    DEFAULT_LIFECYCLE_THRESHOLDS,
+    DEFAULT_MARKETS,
+    DEFAULT_PROMPT_TEMPLATES,
+    DEFAULT_REGIONS,
+    DEFAULT_STAGE_MAX_TOKENS,
+    DEFAULT_STAGE_NAMES,
+    ConfigStore,
+    ResearchIntelligenceConfig,
+    ResearchStageConfig,
+    committed_config_paths,
+)
 from data_quality import evaluate_quality, required_quality_checks  # noqa: E402
+from research_intelligence.config import ResearchSettings  # noqa: E402
 
 
 def _write_config(path: Path, extra: str = "") -> None:
@@ -1212,6 +1224,75 @@ class LiveAndReadyEndpointTests(unittest.TestCase):
         response = self.client.get("/ready")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["status"], "unready")
+
+
+class ResearchIntelligenceConfigTests(unittest.TestCase):
+    def test_defaults_preserve_effective_research_settings(self):
+        config = ResearchIntelligenceConfig()
+        settings = ResearchSettings.from_config(config)
+
+        self.assertEqual(config.schedule, "15 8 * * 1-5")
+        self.assertEqual(tuple(config.hot_market_universe), DEFAULT_MARKETS)
+        self.assertEqual(tuple(config.region_universe), DEFAULT_REGIONS)
+        self.assertEqual(
+            config.lifecycle_thresholds.model_dump(),
+            DEFAULT_LIFECYCLE_THRESHOLDS,
+        )
+        self.assertEqual(tuple(settings.stage_enabled), DEFAULT_STAGE_NAMES)
+        self.assertEqual(dict(settings.prompt_templates), DEFAULT_PROMPT_TEMPLATES)
+        self.assertEqual(
+            dict(settings.stage_max_output_tokens),
+            DEFAULT_STAGE_MAX_TOKENS,
+        )
+        self.assertEqual(settings.maximum_candidate_evidence, 240)
+        self.assertEqual(settings.model_budget_usd_per_run, 0.75)
+
+    def test_typed_settings_conversion_preserves_custom_policy(self):
+        config = ResearchIntelligenceConfig(
+            limits={
+                "maximum_candidate_evidence": 120,
+                "maximum_macro_evidence": 32,
+                "maximum_market_drivers": 6,
+            },
+            reasoning_effort={"pattern_discovery": "high"},
+            stages={
+                "pattern_discovery": ResearchStageConfig(
+                    prompt_template="prompts/custom.txt",
+                    max_output_tokens=2048,
+                )
+            },
+        )
+
+        settings = ResearchSettings.from_config(config)
+
+        self.assertEqual(settings.maximum_candidate_evidence, 120)
+        self.assertEqual(settings.maximum_macro_evidence, 32)
+        self.assertEqual(settings.maximum_market_drivers, 6)
+        self.assertEqual(settings.reasoning_effort["pattern_discovery"], "high")
+        self.assertEqual(
+            settings.prompt_templates["pattern_discovery"],
+            "prompts/custom.txt",
+        )
+        self.assertEqual(settings.stage_max_output_tokens["pattern_discovery"], 2048)
+
+    def test_settings_require_validated_contract(self):
+        with self.assertRaises(TypeError):
+            ResearchSettings.from_config({"enabled": True})  # type: ignore[arg-type]
+
+    def test_canonical_contract_rejects_unsafe_policy(self):
+        invalid_values = (
+            {"schedule": "not-a-cron"},
+            {"graph": {"depth": 5, "hard_depth": 4}},
+            {"limits": {"maximum_candidate_evidence": 5}},
+            {"lifecycle_thresholds": {"weakening_days": 50, "archive_days": 30}},
+            {"stages": {"claim_extraction": {"max_output_tokens": 5000}}},
+            {"model_overrides": {"unknown_stage": "model"}},
+            {"reasoning_effort": {"pattern_discovery": "extreme"}},
+        )
+
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ResearchIntelligenceConfig.model_validate(value)
 
 
 if __name__ == "__main__":

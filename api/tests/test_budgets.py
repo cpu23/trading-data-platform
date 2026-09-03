@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from budgets import budget_status, get_budget_status, get_today_spend
+from budgets import budget_status, get_budget_config, get_budget_status, get_today_spend
+from contracts.budgets import coerce_finite_number
 
 
 class ApiBudgetTests(unittest.TestCase):
@@ -96,6 +97,25 @@ class ApiBudgetTests(unittest.TestCase):
                 self.assertFalse(status["available"])
                 self.assertFalse(status["unlimited"])
                 self.assertEqual(status["status"], "invalid_config")
+    def test_get_budget_config_extracts_nested_and_flat(self):
+        self.assertEqual(
+            get_budget_config({"budgets": {"daily_llm_usd": 5.0, "warn_at_pct": 75}}),
+            (5.0, 75.0),
+        )
+        self.assertEqual(
+            get_budget_config({"daily_llm_usd": 4.0, "warn_at_pct": 90}),
+            (4.0, 90.0),
+        )
+        self.assertEqual(get_budget_config({}), (2.0, 80.0))
+        with self.assertRaises(ValueError):
+            get_budget_config({"budgets": "not-an-object"})
+
+    def test_coerce_finite_number_rejections(self):
+        self.assertEqual(coerce_finite_number(10, "test"), 10.0)
+        self.assertEqual(coerce_finite_number(2.5, "test"), 2.5)
+        for invalid in (None, True, False, "123", "bad", math.nan, math.inf, -math.inf):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                coerce_finite_number(invalid, "test")
 
 
 if __name__ == "__main__":

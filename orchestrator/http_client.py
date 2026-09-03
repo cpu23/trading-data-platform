@@ -291,9 +291,15 @@ def _stream_bounded_response(
     follow_redirects = bool(kwargs.pop("follow_redirects", False))
     max_redirects = int(kwargs.pop("max_redirects", MAX_REDIRECT_HOPS))
     history: list[httpx.Response] = []
-    method = str(kwargs.get("method", "GET")).upper()
+    method = str(kwargs.pop("method", "GET")).upper()
+    url = kwargs.pop("url")
     for _hop in range(max_redirects + 1):
-        with client.stream(follow_redirects=False, **kwargs) as response:
+        with client.stream(
+            method,
+            url,
+            follow_redirects=False,
+            **kwargs,
+        ) as response:
             declared = response.headers.get("content-length")
             if declared is not None:
                 try:
@@ -339,19 +345,18 @@ def _stream_bounded_response(
             _strip_credentials_for_hop(kwargs)
         history.append(hop)
         next_method = _redirect_method(method, hop.status_code)
-        kwargs["url"] = target
-        kwargs["method"] = next_method
         if next_method != method:
             kwargs.pop("json", None)
         # Redirect targets already carry their own query string; never
         # re-apply the original request params.
         kwargs.pop("params", None)
+        url = target
         method = next_method
     raise httpx.TooManyRedirects(
         f"exceeded {max_redirects} redirect hops",
         request=httpx.Request(
             method,
-            str(kwargs.get("url", "")),
+            str(url),
             headers=kwargs.get("headers"),
         ),
     )

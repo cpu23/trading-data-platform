@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 
 from analysis_jobs import enqueue_job
+from contracts.runtime_config import AppConfig
 from db import get_session
 from orchestrator import accept_run, finalize_run_safely, start_run
 from research_intelligence.config import ResearchSettings
@@ -27,7 +28,7 @@ def _case_id(value: str | None) -> str | None:
 
 
 def enqueue_research_job(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     job_type: str,
     case_id: str | None = None,
@@ -38,7 +39,7 @@ def enqueue_research_job(
     """Accept a durable run and enqueue one bounded research job."""
     if job_type not in _JOB_TYPES:
         raise ValueError("unsupported research job type")
-    settings = ResearchSettings.from_config(config)
+    settings = ResearchSettings.from_config(config.research_intelligence)
     if not settings.enabled:
         raise ValueError("research intelligence is disabled")
     parsed_case = _case_id(case_id)
@@ -145,7 +146,7 @@ def enqueue_research_job(
         raise
 
 
-def retry_research_job(config: dict[str, Any], job_id: str) -> dict[str, Any]:
+def retry_research_job(config: AppConfig, job_id: str) -> dict[str, Any]:
     try:
         parsed_job = str(UUID(str(job_id)))
     except (TypeError, ValueError, AttributeError):
@@ -166,9 +167,7 @@ def retry_research_job(config: dict[str, Any], job_id: str) -> dict[str, Any]:
             raise ValueError("research job not found")
         if job.get("state") == "failed_retryable":
             session.execute(
-                text(
-                    "UPDATE analysis_jobs SET not_before = NOW() WHERE id = :job_id"
-                ),
+                text("UPDATE analysis_jobs SET not_before = NOW() WHERE id = :job_id"),
                 {"job_id": parsed_job},
             )
             return {

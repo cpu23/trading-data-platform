@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, fields, is_dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 
 from budgets import BudgetContext
+from contracts.db_results import result_first, result_rows
+from contracts.runtime_config import DEFAULT_STAGE_NAMES, AppConfig
 from research_intelligence.adversarial import validate_adversarial_output
 from research_intelligence.benchmarks import BenchmarkEpisode
 from research_intelligence.claims import (
@@ -19,12 +21,13 @@ from research_intelligence.claims import (
     claim_evidence,
     validate_claim_output,
 )
-from research_intelligence.config import DEFAULT_STAGE_NAMES, ResearchSettings
+from research_intelligence.config import ResearchSettings
 from research_intelligence.context import ReplayLeakageError, ResearchContext
 from research_intelligence.contracts import (
     CausalEdgeDraft,
     NormalizedEvidence,
     canonical_fingerprint,
+    clean_payload,
 )
 from research_intelligence.deliverable import validate_deliverable_output
 from research_intelligence.discovery import (
@@ -40,9 +43,7 @@ from research_intelligence.relationships import causal_edge_fingerprint
 from research_intelligence.service import run_model_stage
 from research_intelligence.value_capture import validate_value_capture_output
 
-StageExecutor = Callable[
-    [str, Any, Callable[[Any], Any], str], ModelStageResult
-]
+StageExecutor = Callable[[str, Any, Callable[[Any], Any], str], ModelStageResult]
 
 _REPLAY_STAGES = (
     "claim_extraction",
@@ -52,19 +53,6 @@ _REPLAY_STAGES = (
     "adversarial",
     "deliverable",
 )
-
-
-def _clean(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: _clean(getattr(value, item.name)) for item in fields(value)}
-    if isinstance(value, datetime):
-        parsed = value if value.tzinfo else value.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, Mapping):
-        return {str(key): _clean(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_clean(item) for item in value]
-    return value
 
 
 def _edge_fingerprints(edges: Sequence[CausalEdgeDraft]) -> tuple[str, ...]:
@@ -115,14 +103,13 @@ def _hypothesis_requests(edges: Sequence[CausalEdgeDraft]) -> list[dict[str, Any
         )
     return requests
 
+
 def _deterministic_settings(settings: ResearchSettings) -> dict[str, Any]:
     return {
         "rolling_window_days": settings.rolling_window_days,
         "maximum_candidate_evidence": settings.maximum_candidate_evidence,
         "maximum_cases_per_run": settings.maximum_cases_per_run,
-        "maximum_claim_documents_per_run": (
-            settings.maximum_claim_documents_per_run
-        ),
+        "maximum_claim_documents_per_run": (settings.maximum_claim_documents_per_run),
         "evidence_per_candidate": settings.evidence_per_candidate,
         "minimum_evidence_count": settings.minimum_evidence_count,
         "minimum_source_diversity": settings.minimum_source_diversity,
@@ -137,14 +124,18 @@ def _deterministic_settings(settings: ResearchSettings) -> dict[str, Any]:
 
 
 def config_with_replay_overrides(
-    config: Mapping[str, Any],
+    config: AppConfig | Mapping[str, Any],
     *,
     model_overrides: Mapping[str, str] | None = None,
     prompt_overrides: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
+) -> AppConfig:
     """Apply bounded experiment overrides without mutating operator configuration."""
-    output = deepcopy(dict(config))
-    root = output.setdefault("research_intelligence", {})
+    raw = (
+        config.model_dump(mode="json")
+        if isinstance(config, AppConfig)
+        else deepcopy(dict(config))
+    )
+    root = raw.setdefault("research_intelligence", {})
     if not isinstance(root, dict):
         raise ValueError("research_intelligence configuration must be an object")
     known = set(DEFAULT_STAGE_NAMES)
@@ -163,7 +154,7 @@ def config_with_replay_overrides(
         if not isinstance(stage_config, dict):
             raise ValueError("research stage configuration must be an object")
         stage_config["prompt_template"] = str(prompt).strip()
-    return output
+    return AppConfig.model_validate(raw)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,24 +265,18 @@ def execute_replay_research(
             }
         )
         return result
+
     eligible_claim_sources = tuple(
         item
         for item in visible
-        if item.evidence_type in CLAIM_ELIGIBLE_EVIDENCE_TYPES
-        and item.bounded_excerpt
+        if item.evidence_type in CLAIM_ELIGIBLE_EVIDENCE_TYPES and item.bounded_excerpt
     )[: settings.maximum_claim_documents_per_run]
     if settings.claim_extraction_enabled and eligible_claim_sources:
         try:
             claim_result = run_stage(
                 "claim_extraction",
-                {
-                    "evidence": [
-                        item.to_dict() for item in eligible_claim_sources
-                    ]
-                },
-                lambda output: validate_claim_output(
-                    output, eligible_claim_sources
-                ),
+                {"evidence": [item.to_dict() for item in eligible_claim_sources]},
+                lambda output: validate_claim_output(output, eligible_claim_sources),
             )
             derived_claims = claim_evidence(
                 claim_result.value or (), claim_result.provenance
@@ -324,7 +309,9 @@ def execute_replay_research(
             pattern_result = run_stage(
                 "pattern_discovery",
                 pattern_payload,
-                lambda output, selected=group: validate_pattern_output(output, selected),
+                lambda output, selected=group: validate_pattern_output(
+                    output, selected
+                ),
             )
         except Exception as exc:
             errors.append(
@@ -344,7 +331,7 @@ def execute_replay_research(
             continue
         case_context = {
             "case_id": f"replay:{assessment.semantic_fingerprint}",
-            "case": _clean(assessment),
+            "case": clean_payload(assessment),
             "replay": context.to_prompt_metadata(),
             "evidence": [item.to_dict() for item in group.evidence],
         }
@@ -361,7 +348,9 @@ def execute_replay_research(
             causal_result = run_stage(
                 "causal_chain",
                 causal_payload,
-                lambda output, selected=group, seed=assessment.entities: validate_causal_output(
+                lambda output,
+                selected=group,
+                seed=assessment.entities: validate_causal_output(
                     output, selected.evidence, settings, seed_entities=seed
                 ),
             )
@@ -376,16 +365,16 @@ def execute_replay_research(
                 }
             )
         edge_fingerprints = _edge_fingerprints(edges)
-        allowed_nodes = {
-            (edge.from_type, edge.from_key) for edge in edges
-        } | {(edge.to_type, edge.to_key) for edge in edges}
+        allowed_nodes = {(edge.from_type, edge.from_key) for edge in edges} | {
+            (edge.to_type, edge.to_key) for edge in edges
+        }
         value_assessments: tuple[Any, ...] = ()
         value_result: ModelStageResult | None = None
         if edges:
             try:
                 value_payload = {
                     **case_context,
-                    "causal_edges": _clean(edges),
+                    "causal_edges": clean_payload(edges),
                 }
 
                 def validate_values(
@@ -400,10 +389,14 @@ def execute_replay_research(
                         and (item.node_type, item.node_key) not in graph_nodes
                         for item in values
                     ):
-                        raise ValueError("value capture references a node outside the graph")
+                        raise ValueError(
+                            "value capture references a node outside the graph"
+                        )
                     return values
 
-                value_result = run_stage("value_capture", value_payload, validate_values)
+                value_result = run_stage(
+                    "value_capture", value_payload, validate_values
+                )
                 value_assessments = value_result.value or ()
             except Exception as exc:
                 errors.append(
@@ -419,9 +412,9 @@ def execute_replay_research(
         try:
             adversarial_payload = {
                 **case_context,
-                "causal_edges": _clean(edges),
+                "causal_edges": clean_payload(edges),
                 "edge_fingerprints": edge_fingerprints,
-                "value_capture": _clean(value_assessments),
+                "value_capture": clean_payload(value_assessments),
                 "existing_data_requests": [],
             }
             adversarial_result = run_stage(
@@ -452,10 +445,10 @@ def execute_replay_research(
         try:
             deliverable_payload = {
                 **case_context,
-                "causal_edges": _clean(edges),
+                "causal_edges": clean_payload(edges),
                 "edge_fingerprints": edge_fingerprints,
-                "value_capture": _clean(value_assessments),
-                "counterevidence": _clean(adversarial),
+                "value_capture": clean_payload(value_assessments),
+                "counterevidence": clean_payload(adversarial),
             }
             assessment_nodes = tuple(
                 (item.node_type, item.node_key) for item in value_assessments
@@ -519,7 +512,7 @@ def execute_replay_research(
         if adversarial is not None:
             requests.extend(
                 {
-                    **_clean(item),
+                    **clean_payload(item),
                     "status": "unresolved",
                     "causal_edge_fingerprint": adversarial.weakest_edge_fingerprint,
                     "support_criteria": [],
@@ -531,21 +524,25 @@ def execute_replay_research(
         payload = {
             "replay": context.to_prompt_metadata(),
             "blocking_key": group.blocking_key,
-            "case": _clean(assessment),
+            "case": clean_payload(assessment),
             "evidence": [item.to_dict() for item in group.evidence],
-            "causal_edges": _clean(edges),
-            "value_capture": _clean(value_assessments),
-            "adversarial": _clean(adversarial),
-            "deliverable": _clean(deliverable),
+            "causal_edges": clean_payload(edges),
+            "value_capture": clean_payload(value_assessments),
+            "adversarial": clean_payload(adversarial),
+            "deliverable": clean_payload(deliverable),
             "data_requests": requests,
             "model_provenance": {
-                "pattern_discovery": _clean(pattern_result.provenance),
-                "causal_chain": _clean(causal_result.provenance) if causal_result else None,
-                "value_capture": _clean(value_result.provenance) if value_result else None,
-                "adversarial": _clean(adversarial_result.provenance)
+                "pattern_discovery": clean_payload(pattern_result.provenance),
+                "causal_chain": clean_payload(causal_result.provenance)
+                if causal_result
+                else None,
+                "value_capture": clean_payload(value_result.provenance)
+                if value_result
+                else None,
+                "adversarial": clean_payload(adversarial_result.provenance)
                 if adversarial_result
                 else None,
-                "deliverable": _clean(deliverable_result.provenance)
+                "deliverable": clean_payload(deliverable_result.provenance)
                 if deliverable_result
                 else None,
             },
@@ -614,26 +611,6 @@ def execute_replay_research(
     )
 
 
-def _first_mapping(result: Any) -> dict[str, Any] | None:
-    try:
-        row = result.mappings().first()
-        return dict(row) if row is not None else None
-    except (AttributeError, TypeError):
-        row = result.first()
-        return dict(row._mapping) if row is not None else None
-
-
-
-
-def _result_rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except (AttributeError, TypeError):
-        try:
-            return [dict(row._mapping) for row in result.all()]
-        except (AttributeError, TypeError):
-            return []
-
 
 def _load_prior_benchmark_cases(
     session: Any,
@@ -686,9 +663,10 @@ def _load_prior_benchmark_cases(
     )
     return {
         str(row["semantic_fingerprint"]): row
-        for row in _result_rows(result)
+        for row in result_rows(result)
         if row.get("semantic_fingerprint")
     }
+
 
 def begin_replay_run(
     session: Any,
@@ -705,7 +683,7 @@ def begin_replay_run(
     comparison_group: str | None = None,
     correlation_id: str | None = None,
 ) -> str:
-    row = _first_mapping(
+    row = result_first(
         session.execute(
             text(
                 """
@@ -796,7 +774,7 @@ def persist_replay_execution(
             {
                 **asdict(case),
                 "replay_run_id": replay_run_id,
-                "payload": json.dumps(_clean(case.payload), sort_keys=True),
+                "payload": json.dumps(clean_payload(case.payload), sort_keys=True),
             },
         )
         event_types = ["candidate_generated"]
@@ -887,7 +865,7 @@ def persist_replay_execution(
 
 def run_benchmark_replay_date(
     session: Any,
-    config: dict[str, Any],
+    config: AppConfig | Mapping[str, Any],
     episode: BenchmarkEpisode,
     replay_as_of: datetime,
     *,
@@ -911,7 +889,7 @@ def run_benchmark_replay_date(
     )
     visible = episode.evidence_as_of(context)
     context.assert_no_leakage()
-    settings = ResearchSettings.from_config(effective_config)
+    settings = ResearchSettings.from_config(effective_config.research_intelligence)
     temporary_runner = ResearchModelRunner(
         effective_config,
         correlation_id=correlation_id,
@@ -919,8 +897,7 @@ def run_benchmark_replay_date(
         budget_context=budget_context,
     )
     stage_identities = {
-        stage: temporary_runner.cache_identity(stage)
-        for stage in _REPLAY_STAGES
+        stage: temporary_runner.cache_identity(stage) for stage in _REPLAY_STAGES
     }
     variant_fingerprint = canonical_fingerprint(stage_identities)
     deterministic_input = context.deterministic_fingerprint(
@@ -990,9 +967,7 @@ def run_benchmark_replay_date(
         )
 
         timeline = benchmark_lifecycle_timeline(session, run_id)
-        scorecard = build_benchmark_scorecard(
-            execution, episode, timeline=timeline
-        )
+        scorecard = build_benchmark_scorecard(execution, episode, timeline=timeline)
         persist_benchmark_scorecard(session, run_id, scorecard)
     except ReplayLeakageError:
         session.execute(
@@ -1022,9 +997,8 @@ def run_benchmark_replay_date(
 
 def run_database_replay(
     session: Any,
-    config: dict[str, Any],
+    config: AppConfig | Mapping[str, Any],
     replay_as_of: datetime,
-    *,
     model_overrides: Mapping[str, str] | None = None,
     prompt_overrides: Mapping[str, str] | None = None,
     comparison_group: str | None = None,
@@ -1038,7 +1012,7 @@ def run_database_replay(
         model_overrides=model_overrides,
         prompt_overrides=prompt_overrides,
     )
-    settings = ResearchSettings.from_config(effective_config)
+    settings = ResearchSettings.from_config(effective_config.research_intelligence)
     context = ResearchContext.replay(
         replay_as_of,
         correlation_id=correlation_id,
@@ -1063,8 +1037,7 @@ def run_database_replay(
         budget_context=budget_context,
     )
     stage_identities = {
-        stage: temporary_runner.cache_identity(stage)
-        for stage in _REPLAY_STAGES
+        stage: temporary_runner.cache_identity(stage) for stage in _REPLAY_STAGES
     }
     variant_fingerprint = canonical_fingerprint(stage_identities)
     execution_fingerprint = canonical_fingerprint(

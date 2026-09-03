@@ -10,61 +10,31 @@ a paid call as allowed when the worker would deny it.
 """
 
 import json
-import math
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from fastapi import HTTPException, Request
 from sqlalchemy import text
 
 from config import load_config
+from contracts.budgets import (
+    BUDGET_OVERRIDE_TTL_SECONDS,
+    budget_status,
+    utc_day_bounds,
+)
+from contracts.budgets import (
+    get_budget_config as _contract_get_budget_config,
+)
 from db import get_session, query_one
 from logging_config import get_logger
 
 logger = get_logger("budgets")
-DEFAULT_DAILY_LLM_USD = 2.0
-DEFAULT_WARN_AT_PCT = 80
-BUDGET_OVERRIDE_TTL_SECONDS = 600
-
-
-def _finite_number(value, name: str) -> float:
-    if value is None or isinstance(value, (bool, str)):
-        raise ValueError(f"{name} must be a finite number")
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite number") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite number")
-    return number
-
-
-def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
-    current = now or datetime.now(UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    current = current.astimezone(UTC)
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, start + timedelta(days=1)
 
 
 def get_budget_config(config: dict | None = None) -> tuple[float, float]:
     if config is None:
         config = load_config()
-    configured = config.get("budgets", {})
-    cap = _finite_number(
-        configured.get("daily_llm_usd", DEFAULT_DAILY_LLM_USD),
-        "budgets.daily_llm_usd",
-    )
-    # Negative and zero caps are both fail-closed; zero is a valid policy that
-    # intentionally denies every paid call.
-    if cap < 0:
-        raise ValueError("budgets.daily_llm_usd must be non-negative")
-    warn_at = _finite_number(
-        configured.get("warn_at_pct", DEFAULT_WARN_AT_PCT), "budgets.warn_at_pct"
-    )
-    if not 0 <= warn_at <= 100:
-        raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    return cap, warn_at
-
+    return _contract_get_budget_config(config)
 
 def get_today_spend(
     config: dict | None = None, *, now: datetime | None = None
@@ -84,45 +54,6 @@ def get_today_spend(
         return 0.0, 0
     return float(row.get("total_cost") or 0), int(row.get("total_tokens") or 0)
 
-
-def budget_status(
-    today_cost: float, cap, warn_at_pct: float = DEFAULT_WARN_AT_PCT
-) -> dict:
-    daily_cap = _finite_number(cap, "budgets.daily_llm_usd")
-    cost = _finite_number(today_cost, "today_cost")
-    warn_at = _finite_number(warn_at_pct, "budgets.warn_at_pct")
-    if not 0 <= warn_at <= 100:
-        raise ValueError("budgets.warn_at_pct must be between 0 and 100")
-    if daily_cap < 0:
-        raise ValueError("budgets.daily_llm_usd must be non-negative")
-    # A zero cap denies all paid calls (fail closed); no unlimited mode.
-    if daily_cap == 0:
-        return {
-            "budget_cap_usd": daily_cap,
-            "unlimited": False,
-            "warn_at_pct": warn_at,
-            "usage_pct": 0.0,
-            "warning": False,
-            "exceeded": True,
-            "hard_limit_reached": True,
-            "paid_calls_allowed": False,
-            "remaining_usd": 0.0,
-        }
-    usage_pct = round((cost / daily_cap) * 100, 2)
-    exceeded = cost >= daily_cap
-    warning = not exceeded and usage_pct >= warn_at
-    remaining_usd = round(max(daily_cap - cost, 0.0), 6)
-    return {
-        "budget_cap_usd": daily_cap,
-        "unlimited": False,
-        "warn_at_pct": warn_at,
-        "usage_pct": usage_pct,
-        "warning": warning,
-        "exceeded": exceeded,
-        "hard_limit_reached": exceeded,
-        "paid_calls_allowed": not exceeded,
-        "remaining_usd": remaining_usd,
-    }
 
 
 def _unavailable(status: str, cap=None, warn_at=None) -> dict:
@@ -318,3 +249,85 @@ def mark_override_dispatch_failed(
                 "error": error,
             },
         )
+
+
+def extract_manual_override(
+    body: Any, request: Request | None = None
+) -> dict[str, str] | None:
+    """Extract and validate manual budget override from a request body."""
+    if hasattr(body, "model_dump"):
+        body = body.model_dump()
+    if not isinstance(body, dict) or "budget_override" not in body:
+        return None
+    if not isinstance(body["budget_override"], bool):
+        raise HTTPException(
+            status_code=422, detail="budget_override must be a boolean"
+        )
+    if body["budget_override"] is not True:
+        return None
+
+    reason = body.get("override_reason")
+    if not isinstance(reason, str):
+        raise HTTPException(
+            status_code=422, detail="override_reason must be a string"
+        )
+    reason = reason.strip()
+    if not 1 <= len(reason) <= 500:
+        raise HTTPException(
+            status_code=422,
+            detail="override_reason must be between 1 and 500 characters",
+        )
+
+    client_host = (
+        request.client.host
+        if request and getattr(request, "client", None)
+        else "unknown"
+    )
+    return {
+        "reason": reason,
+        "requested_by": f"authenticated_api_user@{client_host}",
+    }
+
+
+def enforce_api_budget(
+    budget: dict[str, Any] | None,
+    override: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Enforce a resolved daily LLM budget before dispatching paid workloads.
+
+    Fails closed on missing or unavailable budget status (HTTP 503) unless an
+    explicit manual override is present. Fails closed with HTTP 429 when budget
+    is exhausted unless overridden.
+    """
+    if not isinstance(budget, dict) or budget.get("available") is not True:
+        if override is None:
+            logger.warning(
+                "paid_trigger_budget_unavailable",
+                status=budget.get("status") if isinstance(budget, dict) else None,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Daily LLM budget status unavailable",
+            )
+        return budget or {}
+    if not budget.get("paid_calls_allowed", False) and override is None:
+        logger.warning(
+            "paid_trigger_budget_denied",
+            today_cost_usd=budget.get("today_cost_usd"),
+            budget_cap_usd=budget.get("budget_cap_usd"),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Daily LLM budget reached",
+                "budget": budget,
+                "override": {
+                    "supported": True,
+                    "body_fields": {
+                        "budget_override": True,
+                        "override_reason": "required, non-empty string",
+                    },
+                },
+            },
+        )
+    return budget

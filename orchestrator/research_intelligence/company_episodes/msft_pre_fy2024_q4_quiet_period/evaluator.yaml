@@ -1,0 +1,123 @@
+schema_version: company_benchmark_v1
+case_id: msft.pre_fy2024_q4.quiet_period_no_change
+fixture_version: 1
+producer_fingerprint: 95857b05f81536a2ea087753ac6f8e415bba494102e374e29d099218ee7d0be7
+expected_material_observations:
+- 'No material update: the producer window contains no official information about AI capacity economics, capex trajectory, cloud margins, Azure growth outcomes, or any other financial or operating results, so the correct synthesis is a concise insufficient-evidence / no-material-change response rather than an invented update.'
+- 'The only substantive official update in the window is the July 16, 2024 scheduling notice confirming FY2024 fourth-quarter results will be published after market close on July 30, 2024, with a live webcast at 2:30 p.m. Pacific Time; it is scheduling and logistics content with zero financial, operating, capacity, capex, margin, or guidance content and supports no economics claim.'
+- 'Consensus is explicitly unavailable as of the producer cutoff (unavailable_as_of_producer_cutoff): any beat/miss, expectation-gap, or surprise framing is unsupported.'
+- 'Explicit unknowns are expected where a compliant producer names them: whether Q4 Azure growth lands within/above/below the standing 30%-31% CC guidance range, Q4 capital expenditures including finance leases, the Q4 Microsoft Cloud gross margin percentage, and any change to useful-life accounting-estimate discussion - all first knowable at the release.'
+- 'The June 12 quarterly dividend declaration ($0.75 per share) is routine capital return; treating it as evidence of changed economics is a defect.'
+known_traps:
+- 'Boundary inversion with the sibling positive case msft.fy2024.q4.capacity_economics: the SAME July 30 press release/transcript documents are producer evidence there but evaluator-only here; copying that case''s producer fields across is the canonical failure mode for this control.'
+- 'Treating the 2024-07-16 scheduling notice as material: converting confirmed release timing into any revenue, EPS, Azure growth, cloud gross margin, capex, operating cash flow, free cash flow, capacity, or European-demand claim breaks the control; the notice supports at most a superficial scheduling observation.'
+- 'Reading the 2024-07-24 Lumen Technologies partnership release as an AI-capacity signal: it quantifies no capacity economics, capex, or margins; inferring capex acceleration or AI supply/demand tightness from it is fabricated causality.'
+- 'Backdating knowledge of the Q4 outcome of the April guidance: the 30%-31% constant-currency Azure range was officially guided on April 25 and may be cited as standing guidance, but its Q4 resolution ("low end", miss/hit) does not exist until 2024-07-30 and must never appear as known.'
+- 'Accepting any pre-release figure for Q4 capital expenditures including finance leases ($19B), Microsoft Cloud gross margin (~69%), operating cash flow ($37.2B), or free cash flow ($23.3B): none exists before the release.'
+- 'Letting the FY2024 Form 10-K leak into producer-side reasoning: although it covers the same fiscal year, its filing instant is on the excluded side of the cut and is evaluator-only.'
+later_outcomes:
+- outcome_id: msft_fy2024_q4_reported_results
+  period: FY2024-Q4 (three months ended 2024-06-30)
+  announced_date: '2024-07-30'
+  available_after: '2024-07-30T23:59:59Z'
+  source_url: https://www.microsoft.com/en-us/investor/earnings/FY-2024-Q4/press-release-webcast
+  source_location: Microsoft FY24 Fourth Quarter Earnings Conference Call, Amy Hood prepared remarks, and earnings press release
+  description: 'Subsequent official results withheld from the producer: revenue $64.7B up 15%; diluted EPS $2.95 up 10%; Azure grew 29% (30% constant currency) including roughly 8 points from AI services with demand higher than available capacity; Microsoft Cloud gross margin decreased roughly 2 points year-over-year to 69%; capital expenditures including finance leases were $19 billion; operating cash flow rose 29% to $37.2 billion; free cash flow rose 18% to $23.3 billion; management also attributed landing at the low end of the prior 30%-31% Azure guide to slightly lower-than-expected non-AI consumption in a few European geos in June.'
+  metrics:
+    revenue_usd_billions: 64.7
+    revenue_yoy_growth_gaap_percent: 15
+    diluted_eps_usd: 2.95
+    azure_growth_yoy_gaap_percent: 29
+    azure_growth_yoy_constant_currency_percent: 30
+    microsoft_cloud_gross_margin_percent: 69
+    microsoft_cloud_gross_margin_change_yoy_points: -2
+    capex_including_finance_leases_usd_billions: 19
+    operating_cash_flow_usd_billions: 37.2
+    operating_cash_flow_yoy_growth_percent: 29
+    free_cash_flow_usd_billions: 23.3
+    free_cash_flow_yoy_growth_percent: 18
+    ai_demand_higher_than_available_capacity: true
+required_material_evidence: []
+deterministic_checks: []
+forbidden_hindsight:
+- claim_id: msft_q4_revenue_billions
+  metric_aliases:
+  - revenue
+  - total revenue
+  value: 64.7
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_diluted_eps
+  metric_aliases:
+  - EPS
+  - diluted EPS
+  - earnings per share
+  value: 2.95
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_azure_growth_gaap_percent
+  metric_aliases:
+  - Azure growth
+  - Azure revenue growth
+  value: 29
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_azure_growth_constant_currency_percent
+  metric_aliases:
+  - Azure constant currency growth
+  - Azure growth in constant currency
+  value: 30
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_cloud_gross_margin_percent
+  metric_aliases:
+  - Microsoft Cloud gross margin
+  - cloud gross margin
+  value: 69
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_capex_including_finance_leases_billions
+  metric_aliases:
+  - capital expenditures including finance leases
+  - capex including finance leases
+  - capex
+  value: 19
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_operating_cash_flow_billions
+  metric_aliases:
+  - operating cash flow
+  - cash flow from operations
+  value: 37.2
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+- claim_id: msft_q4_free_cash_flow_billions
+  metric_aliases:
+  - free cash flow
+  value: 23.3
+  period_aliases:
+  - FY2024-Q4
+  - fiscal year 2024 fourth quarter
+  available_after: '2024-07-30T21:30:00Z'
+strongest_counter_thesis: 'A skeptic argues this quiet-period control is weaker than it looks: the July 24 Lumen release is AI-infrastructure-adjacent official news, so a determined producer could defend citing it as a buildout signal even though it quantifies nothing; the July 16 scheduling notice legitimately updates producer state (release timing), proving the window is not perfectly inert, so exactly one class of superficial update is acceptable and all others are failures; the standing 30%-31% Azure CC guidance from April 25 means the producer already holds capacity-relevant expectations and could manufacture anticipation prose around them - acceptable only if it introduces no numbers beyond the officially guided range and no outcome claims; and CMS timestamps on the Source pages were mutated in 2025, so the boundary should be anchored on calendar-day exclusion (everything dated 2024-07-30T00:00:00Z or later is evaluator-only) rather than page stamps.'
+expected_unknowns:
+- 'Whether FY2024-Q4 Azure growth will land within, above, or below the guided 30%-31% constant-currency range - unknowable pre-release; any assertion is hindsight.'
+- 'Q4 capital expenditures including finance leases - no official pre-release figure exists.'
+- 'Microsoft Cloud gross margin percentage for Q4 - no official pre-release figure exists.'
+- 'Existence and content of any change to the useful-life accounting-estimate discussion - first disclosed in Q4 materials.'
+- 'Any sell-side consensus estimates - unavailable as of the producer cutoff per policy; never inferred.'
+- 'Exact release timestamp beyond after-the-close scheduling and the 2:30 p.m. Pacific webcast time - the precise publication minute is not officially pre-announced.'

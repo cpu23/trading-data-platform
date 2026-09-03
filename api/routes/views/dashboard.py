@@ -206,9 +206,6 @@ def _data_status(health: dict | None) -> dict:
     }
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
 
 router = APIRouter()
 
@@ -265,7 +262,7 @@ async def dashboard(request: Request):
         "briefing": briefing,
         "briefing_sections": _briefing_sections(briefing),
         "briefing_delta": briefing_delta,
-        "live_updates_enabled": _live_updates_enabled(config),
+        "live_updates_enabled": app_config.live_updates_enabled(config),
         **tz_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -301,7 +298,7 @@ def partial_news(request: Request):
         {
             "request": request,
             "stories": stories,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
@@ -397,7 +394,7 @@ def partial_cards(request: Request):
             "request": request,
             "briefing": briefing,
             "price_map": price_map,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 

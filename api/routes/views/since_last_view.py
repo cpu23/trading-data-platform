@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+from config import live_updates_enabled, load_config
 from db import query_many
 
 router = APIRouter()
@@ -24,10 +24,6 @@ _SUMMARY_LIMIT = 20
 
 
 _MAX_AGE = timedelta(days=7)
-
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
 
 
 def _parse_iso(value):
@@ -257,7 +253,7 @@ def partial_since_last_view(request: Request):
         {
             "request": request,
             "since_last_view": summary,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 

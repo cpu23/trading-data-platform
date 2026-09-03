@@ -1,0 +1,55 @@
+schema_version: company_benchmark_v1
+case_id: msft.pre_fy2024_q4.quiet_period_no_change
+fixture_version: 1
+as_of: '2024-07-29T23:59:59Z'
+document:
+  company: Microsoft Corporation
+  symbol: MSFT
+  document_type: quiet_period_pre_release_official_record
+  region: US
+  industry: Software, Cloud & Communications
+  report_date: null
+  available_at: '2024-07-16T07:00:00+00:00'
+  title: Microsoft pre-FY2024-Q4 quiet period - official record between FY24 Q3 results (2024-04-25) and the FY24 Q4 release (scheduled 2024-07-30)
+  publisher: Microsoft Source official newsroom and Microsoft Investor Relations
+  source_url: https://www.microsoft.com/en-us/investor
+excerpt: "REDMOND, Wash. — July 16, 2024 — Microsoft Corp. will publish fiscal year 2024 \
+  fourth-quarter financial results after the close of the market on Tuesday, July 30, 2024, \
+  on the Microsoft Investor Relations website at https://www.microsoft.com/en-us/Investor/. \
+  A live webcast of the earnings conference call will be made available at 2:30 p.m. Pacific \
+  Time."
+deterministic_current: {}
+deterministic_prior: {}
+market_inputs:
+  consensus_estimates:
+    status: unavailable_as_of_producer_cutoff
+    note: No sell-side consensus estimates are embedded in this control case. Consensus data is not obtainable from an official Microsoft Investor Relations or SEC primary source as of the producer cutoff, so no analyst estimates are asserted anywhere in this case. Expected grading therefore cannot use surprise or expectation-gap dimensions.
+    consensus_availability_checked_at: '2024-07-29T23:59:59Z'
+prior_facts: {}
+previous_state: null
+prior_count: 0
+news_items:
+- title: Microsoft earnings press release available on Investor Relations website
+  publisher: Microsoft Source
+  url: https://news.microsoft.com/source/2024/04/25/microsoft-earnings-press-release-available-on-investor-relations-website-22/
+  available_at: '2024-04-25T07:00:00+00:00'
+  published_at: '2024-04-25T07:00:00+00:00'
+  summary: Official availability notice for FY2024 third-quarter results; routine logistics confirming the 2:30 p.m. Pacific conference call webcast. Last quarterly results cycle before the control window closes; no forward-looking financial content.
+  materiality: nonmaterial_routine_availability_notice
+- title: Microsoft announces quarterly dividend
+  publisher: Microsoft Source
+  url: https://news.microsoft.com/source/2024/06/12/microsoft-announces-quarterly-dividend-23/
+  available_at: '2024-06-12T07:00:00+00:00'
+  published_at: '2024-06-12T07:00:00+00:00'
+  summary: Board declared a quarterly dividend of $0.75 per share payable September 12, 2024. Routine capital return; no capacity, capex, margin, Azure, or guidance content.
+  materiality: superficial_nonmaterial_official_update_candidate
+- title: Microsoft announces quarterly earnings release date
+  publisher: Microsoft Source
+  url: https://news.microsoft.com/source/2024/07/16/microsoft-announces-quarterly-earnings-release-date-60/
+  available_at: '2024-07-16T07:00:00+00:00'
+  published_at: '2024-07-16T07:00:00+00:00'
+  source_location: body paragraph 1; corroborated by page og:description and nlweb-schema articleBody
+  summary: Announces that fiscal year 2024 fourth-quarter financial results will be published after the close of the market on Tuesday, July 30, 2024, on the Microsoft Investor Relations website, with a live earnings-call webcast at 2:30 p.m. Pacific Time. Scheduling and logistics only; zero financial, operating, capacity, capex, margin, or guidance content.
+  materiality: superficial_nonmaterial_official_update_single_permitted_update
+extraction:
+  report_text_source: stored_document

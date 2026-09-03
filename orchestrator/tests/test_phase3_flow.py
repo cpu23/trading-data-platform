@@ -566,10 +566,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
                 "research_control_plane.repository.upsert_question",
                 return_value={"id": "question"},
             ),
-            patch(
-                "research_control_plane.notifications."
-                "publish_control_plane_invalidations"
-            ),
+            patch("ui_events.append_ui_invalidations"),
         ):
             results = [initial_handler(session, item) for item in events]
 
@@ -618,7 +615,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         }
 
     def _session(self, *, symbol="ACME", company=None):
-        from test_thesis_autonomy import (
+        from thesis_autonomy_support import (
             EXISTING_ID,
             MemorySession,
         )
@@ -635,7 +632,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         return session, playbook
 
     def test_context_match_recorded_once_per_event(self):
-        from test_thesis_autonomy import EXISTING_ID
+        from thesis_autonomy_support import EXISTING_ID
 
         from events.routing import _match_due_playbooks
 
@@ -663,7 +660,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_no_due_playbooks_record_nothing(self):
-        from test_thesis_autonomy import MemorySession
+        from thesis_autonomy_support import MemorySession
 
         from events.routing import _match_due_playbooks
 
@@ -682,7 +679,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_initial_handler_records_ledger_before_early_return(self):
-        from test_thesis_autonomy import EXISTING_ID
+        from thesis_autonomy_support import EXISTING_ID
 
         from events.routing import initial_handler
 

@@ -138,7 +138,7 @@ PROHIBITED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"\bposition\s+sizing\b|\bsize\s+(?:the|a|your)\s+position\b|"
             r"\bportfolio\s+allocation\b|"
-            r"\b(?:increase|decrease|reduce|add|raise|lower)\s+"
+            r"\b(?:increase|decrease|reduce|add|raise|lower|size)\s+"
             r"(?:your\s+|portfolio\s+)?exposure\b|"
             r"\b(?:overweight|underweight)\s+(?:the\s+)?"
             r"(?:asset|market|instrument|currency|index|metal|equities|stocks|bonds)\b|"

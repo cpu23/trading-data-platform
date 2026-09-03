@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from http_client import get_shared_client
+from http_client import get_shared_client, make_request
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
 from sources.news_result import NewsCollectionResult, NewsPublication
@@ -64,23 +63,6 @@ def _normalise_tweet(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read_bounded_kobeissi(response) -> bytes:
-    """Read a Kobeissi response with byte and wall-deadline caps."""
-    started = time.monotonic()
-    chunks = []
-    total = 0
-    for chunk in response.iter_bytes():
-        if time.monotonic() - started >= KOBEISSI_DEADLINE_SECONDS:
-            raise ValueError("Kobeissi fetch exceeded the total deadline")
-        total += len(chunk)
-        if total > MAX_KOBEISSI_BYTES:
-            raise ValueError(
-                f"Kobeissi response exceeds {MAX_KOBEISSI_BYTES // 1_000_000} MB"
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 def _fetch_bytes(
     url: str, *, headers: dict | None = None, timeout: float = 30.0
 ) -> bytes:
@@ -92,20 +74,23 @@ def _fetch_bytes(
     closed), and body size and total fetch time are bounded. Tests inject
     fake fetchers here to exercise normalisation.
     """
-    client = get_shared_client()
-    with client.stream(
+    resp = make_request(
         "GET",
         url,
         headers=headers,
-        follow_redirects=False,
         timeout=timeout,
-    ) as resp:
-        if resp.status_code in {301, 302, 303, 307, 308}:
-            raise ValueError(
-                f"Kobeissi upstream redirected (HTTP {resp.status_code}); redirects are rejected"
-            )
-        resp.raise_for_status()
-        return _read_bounded_kobeissi(resp)
+        max_retries=1,
+        follow_redirects=False,
+        client=get_shared_client(),
+        deadline_seconds=KOBEISSI_DEADLINE_SECONDS,
+        max_response_bytes=MAX_KOBEISSI_BYTES,
+    )
+    if resp.is_redirect or resp.status_code in {301, 302, 303, 307, 308}:
+        raise ValueError(
+            f"Kobeissi upstream redirected (HTTP {resp.status_code}); redirects are rejected"
+        )
+    resp.raise_for_status()
+    return resp.content
 
 
 def run_kobeissi(config: dict, count: int = 20) -> NewsCollectionResult:

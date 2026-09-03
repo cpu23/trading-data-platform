@@ -1,0 +1,112 @@
+schema_version: company_benchmark_v1
+case_id: msft.fy2024.q4.capacity_economics
+fixture_version: 2
+producer_fingerprint: 15cf7aec03c99bdb6af6645778f787cc97dfd3b571e108677e68854e98df7c77
+expected_material_observations:
+- 'Growth-quality divergence: revenue grew 15% to $64.7B while net income and diluted EPS grew only 10% ($22.0B, $2.95); Activision''s net impact (roughly +3 points to revenue growth, a 2-point drag on operating income growth, and -$0.06 to EPS) is one contributor running in parallel with that divergence, not its sole cause, and the remaining drivers of revenue growing faster than earnings are not quantified on the call.'
+- 'Capacity-limited AI demand: Azure grew 29% (30% constant currency) including 8 points from AI services where demand remained higher than available capacity, so reported Azure growth understates latent demand.'
+- 'Cloud margin versus operating leverage nuance: reported Microsoft Cloud gross margin fell roughly 2 points year-over-year to 69%, but excluding the useful-life accounting-estimate effect it declined only slightly, on Azure mix shift partly offset by Azure improvement despite AI scaling; the Q1 FY25 guide of roughly 70% is down year-over-year due to AI infrastructure scaling, while company operating margins held at 43%, relatively unchanged.'
+- 'Capex and cash-flow divergence (three distinct bases): Q4 capital expenditures including finance leases were $19B in the quarter alone, cash paid for PP&E was $13.9B, and free cash flow was $23.3B (up 18%) while operating cash flow rose 29% to $37.2B; Inference: the deliberate build-ahead raises the stakes on AI monetization timing without implying deteriorating current cash generation, and FY25 annual capex is guided above FY24''s annual level.'
+- 'Monetization uncertainty: roughly half of cloud and AI spend is long-lived land, builds, and leases supporting monetization over 15 years and beyond, and servers are hydrated only on demand signals, so the timing and slope of returns on the step-up in capex are not established.'
+- 'Activision distortion: acquisition net impact inflates More Personal Computing revenue growth by 12 points and Gaming/Xbox content growth by 48/58 points, and adds 9 points to company opex growth, obscuring organic trends.'
+- 'Guidance, catalysts, and invalidation: Q1 FY25 TOTAL Azure revenue growth guided to 28-29% constant currency (deceleration from Q4''s 30% CC), with Q4 consumption trends continuing through H1 as a separate driver; FY25 ANNUAL capex expected above FY24''s annual total with operating margins down only about 1 point; H2 acceleration hinges on added AI capacity, so growth below the guide or capacity delays would invalidate the thesis.'
+- 'European non-AI softness: slightly lower-than-expected non-AI consumption in a few European geos in June explains landing at the low end of the prior 30-31% Azure guide and is assumed to persist through H1.'
+- 'Management''s demand-led capex mechanism: capital deployment starts from customer demand signals; long-lived land and shells are built ahead while GPU/CPU kits are bought against observed demand, giving management a throttle if signals weaken.'
+deterministic_checks: []
+strongest_counter_thesis: 'The bear reading is that Microsoft is spending today''s margins for capacity whose monetization is promised but unproven: Azure already decelerated at the low end of its guide (30% CC vs 30-31%), Q1 is guided lower still at 28-29% CC on total Azure revenue growth, and management concedes AI demand exceeds capacity it cannot yet build fast enough, so near-term growth is supply-capped even though the reported ~2-point cloud gross margin decline to 69% is partly a useful-life accounting-estimate comparison rather than pure AI scaling, and the Q1 ~70% cloud-margin guide still sits below prior year on AI infrastructure costs. FY25 operating margins are guided down about 1 point while ANNUAL capex is guided above FY24''s (the $19B was Q4 alone, one quarter of a larger fiscal-year total). Roughly half the spend lands in 15-plus-year assets whose returns depend on AI demand persisting, while June''s softer non-AI consumption in a few European geos hints the non-AI base is merely steady; strip Activision''s optical boosts and core growth quality looks thinner than headlines. If AI demand wavers or capacity arrives into weaker demand, free cash flow growth stalls before returns prove out. Counterweight: management explicitly throttles server purchases to demand signals, capping downside.'
+expected_unknowns:
+- 'Sell-side consensus estimates: unavailable from official primary sources as of the producer cutoff, so expectation gaps cannot be computed from this case.'
+- 'Copilot for Microsoft 365 revenue and unit economics: seat-count and repeat-purchase anecdotes are disclosed, but no Copilot revenue, pricing realization, or profitability figures are quantified.'
+- 'Exact timing and shape of AI capacity catch-up: only directional markers exist (constraints through H1, H2 acceleration expected as capital investments add capacity), with no dated capacity-addition schedule or realized-return timeline.'
+- Magnitude and persistence of European non-AI softness beyond the assumption that current trends continue through H1.
+known_traps:
+- 'Attributing the full reported Q4 Microsoft Cloud gross margin decline to AI infrastructure scaling: the reported ~2-point decline to 69% includes the prior-year change in accounting estimate for useful lives; excluding that effect the decline was slight, driven by mix shift to Azure partially offset by Azure improvement even with AI scaling. It is the Q1 FY25 roughly 70% cloud gross margin guide that is down year-over-year due to scaling AI infrastructure.'
+- 'Misreading the Q1 FY2025 28%-to-29% constant-currency guide as an Azure consumption forecast: it guides total Azure and other cloud services revenue growth; continued Q4 consumption trends through H1 (capacity-capped AI demand plus June-like non-AI trends) is a separate stated driver.'
+- 'Benchmarking the FY25 capex-above-FY24 guidance against $19 billion: $19 billion is Q4 FY24 capital expenditures including finance leases, not the FY24 annual total; the guidance compares fiscal-year totals.'
+- 'Comparing Azure growth or guidance across different reporting bases: guide realization may be scored only when the guide and reported result use the same official metric definition and same-basis comparator; otherwise it must be left unscored.'
+later_outcomes:
+- outcome_id: msft_fy2025_q1_reported_results
+  period: FY2025-Q1 (three months ended 2024-09-30)
+  announced_date: '2024-10-30'
+  available_after: '2024-10-30T23:59:59Z'
+  source_url: https://www.microsoft.com/en-us/Investor/events/FY-2025/earnings-fy-2025-q1
+  source_location: Microsoft FY25 First Quarter Earnings Conference Call, Amy Hood prepared remarks
+  description: 'Subsequent official results: Azure and other cloud services revenue grew 33% (34% in constant currency) including roughly 12 points from AI services with demand continuing to exceed available capacity; Microsoft Cloud gross margin percentage decreased 2 points year-over-year to 71%; capital expenditures including finance leases were $20 billion and cash paid for PP&E was $14.9 billion.'
+  metric_basis: 'FY2025 Azure and other cloud services revenue growth is measured under the expanded FY2025 metric definition (cloud and AI consumption-based services plus GitHub cloud services, Nuance Healthcare cloud services, virtual desktop offerings, and other cloud services), with Microsoft recasting the prior-period comparators on that same basis.'
+  basis_warning: 'The 28%-to-29% constant-currency Q1 FY25 Azure guide in this case was issued under the old FY2024 basis and must never be scored directly against FY2025-basis results; use Microsoft''s official recast FY2024-Q4 comparator of 34% GAAP / 35% constant currency or leave guide realization unscored.'
+  metrics:
+    azure_growth_yoy_gaap_percent: 33
+    azure_growth_yoy_constant_currency_percent: 34
+    azure_growth_from_ai_services_points_approx: 12
+    ai_demand_higher_than_available_capacity: true
+    microsoft_cloud_gross_margin_percent: 71
+    microsoft_cloud_gross_margin_change_yoy_points: -2
+    capex_including_finance_leases_usd_billions: 20
+    cash_paid_for_ppne_usd_billions: 14.9
+    azure_metric_basis: expanded_FY2025_azure_and_other_cloud_services
+    recast_fy2024_q4_azure_growth_yoy_gaap_percent: 34
+    recast_fy2024_q4_azure_growth_yoy_constant_currency_percent: 35
+required_material_evidence:
+- Azure growth included 8 points from AI services where demand remained higher than our available capacity.
+- Microsoft Cloud gross margin percentage decreased roughly 2 points year-over-year to 69%
+- Activision contributed a net impact of approximately 3 points to revenue growth, was a 2 point drag on operating income growth, and had a negative 6 cent impact to earnings per share.
+- Capital expenditures including finance leases were $19 billion
+- Cash flow from operations was $37.2 billion, up 29%
+- Free cash flow was $23.3 billion
+- In Azure, we expect Q1 revenue growth to be 28% to 29% in constant currency.
+- we will scale our infrastructure investments with FY25 capital expenditures expected to be higher than FY24
+- the distinguishing between being at the higher end or at the lower end really was some softness we saw in a few European geos on non-AI consumption
+- Microsoft Cloud gross margin percentage should be roughly 70%
+- existing AI capacity constraints
+- roughly half is for infrastructure needs where we continue to build and lease datacenters that will support monetization over the next 15 years and beyond
+forbidden_hindsight:
+- claim_id: msft_fy2025_q1_azure_revenue_growth
+  metric_aliases:
+    - Azure growth
+    - Azure revenue growth
+  value: 33
+  period_aliases:
+    - Q1 FY2025
+    - next quarter
+  available_after: '2024-10-30T23:59:59Z'
+- claim_id: msft_fy2025_q1_azure_growth_constant_currency
+  metric_aliases:
+    - constant currency
+    - in constant currency
+    - Azure and other cloud services constant currency growth
+  value: 34
+  period_aliases:
+    - Q1 FY2025
+    - next quarter
+    - September quarter
+  available_after: '2024-10-30T23:59:59Z'
+- claim_id: msft_fy2025_q1_azure_growth_from_ai_services_points
+  metric_aliases:
+    - Azure growth from AI services
+    - points from AI services
+    - AI services contribution
+    - Azure AI services contribution
+  value: 12
+  period_aliases:
+    - Q1 FY2025
+    - next quarter
+    - September quarter
+  available_after: '2024-10-30T23:59:59Z'
+- claim_id: msft_fy2025_q1_cloud_gross_margin
+  metric_aliases:
+    - Microsoft Cloud gross margin
+    - cloud gross margin
+  value: 71
+  period_aliases:
+    - Q1 FY2025
+    - next quarter
+  available_after: '2024-10-30T23:59:59Z'
+- claim_id: msft_fy2025_q1_capex_including_finance_leases
+  metric_aliases:
+    - capital expenditures including finance leases
+    - capex
+  value: 20
+  period_aliases:
+    - Q1 FY2025
+    - next quarter
+  available_after: '2024-10-30T23:59:59Z'

@@ -535,7 +535,7 @@ def test_connection(body: TestConnectionRequest, request: Request):
         resolve_redirect_url,
         validate_public_url,
     )
-    from outbound import PublicOnlyTransport
+    from contracts.outbound_transport import PublicOnlyHTTPTransport
 
     # The runtime LLM client posts to the fixed canonical OpenRouter origin
     # only; the test validates exactly that origin (no custom/base_url input
@@ -572,7 +572,7 @@ def test_connection(body: TestConnectionRequest, request: Request):
     origin = parse_origin(base_url)
     try:
         with httpx.Client(
-            transport=PublicOnlyTransport(), timeout=10, follow_redirects=False
+            transport=PublicOnlyHTTPTransport(), timeout=10, follow_redirects=False
         ) as client:
             current_url = f"{base_url}/models"
             response = client.get(

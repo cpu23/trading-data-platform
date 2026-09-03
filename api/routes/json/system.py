@@ -20,6 +20,7 @@ from contracts import (
 )
 from db import query_many, query_one
 from logging_config import get_logger
+from serializers import isoformat
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
@@ -102,13 +103,6 @@ def _normalized_lines(raw: str) -> int:
         raise HTTPException(status_code=422, detail="lines must be at least 1")
     return min(value, 1000)
 
-
-def _fmt(value):
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
 
 
 def _public_failure(error: object, *, status: object, kind: str) -> str | None:
@@ -379,7 +373,7 @@ async def get_system_health(request: Request):
             {
                 "name": source_id,
                 "kind": "collector",
-                "last_run_at": _fmt(row["started_at"]),
+                "last_run_at": isoformat(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
                 "next_due_at": schedule_map.get(source_id),
                 "stale": stale,
@@ -418,7 +412,7 @@ async def get_system_health(request: Request):
             {
                 "name": processor_id,
                 "kind": "processor",
-                "last_run_at": _fmt(row["started_at"]),
+                "last_run_at": isoformat(row["started_at"]),
                 "last_status": row.get("status", "unknown"),
                 "next_due_at": schedule_map.get(processor_id),
                 "stale": stale,
@@ -603,8 +597,8 @@ def get_system_logs(
             else None,
             "log_type": row["log_type"],
             "component": row["component"],
-            "started_at": _fmt(row.get("started_at")),
-            "completed_at": _fmt(row.get("completed_at")),
+            "started_at": isoformat(row.get("started_at")),
+            "completed_at": isoformat(row.get("completed_at")),
             "status": row["status"],
             "duration_ms": row.get("duration_ms"),
             "error_message": _public_failure(
@@ -655,8 +649,8 @@ def get_bounded_logs(lines: str = Query(default="200")):
             ),
             "component": row.get("component"),
             "log_type": row.get("log_type"),
-            "started_at": _fmt(row.get("started_at")),
-            "completed_at": _fmt(row.get("completed_at")),
+            "started_at": isoformat(row.get("started_at")),
+            "completed_at": isoformat(row.get("completed_at")),
             "status": row.get("status"),
             "duration_ms": row.get("duration_ms"),
             "error_message": _public_failure(
@@ -686,8 +680,8 @@ def _run_payload(row: dict) -> dict:
         "run_kind": row.get("run_kind", "cycle"),
         "requested_component": row.get("requested_component"),
         "triggered_by": row.get("triggered_by"),
-        "started_at": _fmt(row.get("started_at")),
-        "completed_at": _fmt(row.get("completed_at")),
+        "started_at": isoformat(row.get("started_at")),
+        "completed_at": isoformat(row.get("completed_at")),
         "error_message": _public_failure(
             row.get("error_message"),
             status=row.get("result_status") or row.get("status"),
@@ -747,8 +741,8 @@ def get_system_run(correlation_id: UUID):
             **stage,
             "log_id": str(stage["log_id"]),
             "correlation_id": str(stage["correlation_id"]),
-            "started_at": _fmt(stage.get("started_at")),
-            "completed_at": _fmt(stage.get("completed_at")),
+            "started_at": isoformat(stage.get("started_at")),
+            "completed_at": isoformat(stage.get("completed_at")),
             "cost_usd": float(stage["cost_usd"])
             if stage.get("cost_usd") is not None
             else None,
@@ -778,8 +772,8 @@ def get_cycle_status(correlation_id: UUID = Query(...)):
         "lifecycle_status": row["status"],
         "result_status": row.get("result_status"),
         "correlation_id": str(correlation_id),
-        "started_at": _fmt(row.get("started_at")),
-        "completed_at": _fmt(row.get("completed_at")),
+        "started_at": isoformat(row.get("started_at")),
+        "completed_at": isoformat(row.get("completed_at")),
         "error_message": _public_failure(
             row.get("error_message"),
             status=row.get("result_status") or row.get("status"),
@@ -804,7 +798,7 @@ def _snapshot_payload(row: dict | None) -> dict | None:
         "created_at",
         "published_at",
     ):
-        payload[key] = _fmt(payload.get(key))
+        payload[key] = isoformat(payload.get(key))
     return payload
 
 
@@ -872,5 +866,5 @@ def get_analysis_jobs_status():
     return {
         "counts": counts,
         "active": sum(counts.get(state, 0) for state in active_states),
-        "oldest_pending_at": _fmt(oldest_pending_at),
+        "oldest_pending_at": isoformat(oldest_pending_at),
     }

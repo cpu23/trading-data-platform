@@ -1,4 +1,3 @@
-import os
 import uuid
 from datetime import UTC, datetime
 
@@ -6,11 +5,12 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from budgets import (
+    enforce_api_budget,
+    extract_manual_override,
     get_budget_status,
     mark_override_dispatch_failed,
     register_manual_override,
 )
-from config import orchestrator_url
 from contracts import RunAcceptanceRequest, RunAcceptedResponse
 from contracts.runtime_config import (
     KNOWN_COLLECTORS,
@@ -18,6 +18,7 @@ from contracts.runtime_config import (
     KNOWN_PROCESSORS,
 )
 from logging_config import get_logger
+from orchestrator_client import orchestrator_post
 
 router = APIRouter()
 logger = get_logger("api.triggers")
@@ -28,13 +29,6 @@ _VALID_COLLECTORS = KNOWN_COLLECTORS
 _VALID_PROCESSORS = KNOWN_PROCESSORS
 _VALID_NEWS_SOURCES = KNOWN_NEWS_SOURCES
 
-
-def _internal_basic_auth() -> httpx.BasicAuth:
-    username = os.environ.get("DASHBOARD_USER", "")
-    password = os.environ.get("DASHBOARD_PASSWORD", "")
-    if not username or not password:
-        raise RuntimeError("internal credentials unavailable")
-    return httpx.BasicAuth(username, password)
 
 
 def _orchestrator_job_payload(
@@ -78,93 +72,7 @@ def _definitively_rejected_status(status_code: int) -> bool:
     return status_code in _DEFINITIVE_REJECTION_STATUSES
 
 
-def _manual_override(
-    body: dict | RunAcceptanceRequest | None, request: Request
-) -> dict | None:
-    if hasattr(body, "model_dump"):
-        body = body.model_dump()
-    if not isinstance(body, dict) or "budget_override" not in body:
-        return None
-    if not isinstance(body["budget_override"], bool):
-        raise HTTPException(
-            status_code=422, detail="budget_override must be a boolean"
-        )
-    if body["budget_override"] is not True:
-        return None
 
-    reason = body.get("override_reason")
-    if not isinstance(reason, str):
-        raise HTTPException(
-            status_code=422, detail="override_reason must be a string"
-        )
-    reason = reason.strip()
-    if not 1 <= len(reason) <= 500:
-        raise HTTPException(
-            status_code=422,
-            detail="override_reason must be between 1 and 500 characters",
-        )
-
-    client_host = request.client.host if request.client else "unknown"
-    return {
-        "reason": reason,
-        "requested_by": f"authenticated_api_user@{client_host}",
-    }
-
-
-def _enforce_api_budget(override: dict | None) -> dict:
-    budget = get_budget_status()
-    # Fail closed: a missing, malformed, or unavailable budget status never
-    # defaults to "allowed". Only an explicit manual override may proceed when
-    # the budget cannot be determined (the orchestrator honors it at claim).
-    if not isinstance(budget, dict) or budget.get("available") is not True:
-        if override is None:
-            logger.warning(
-                "paid_trigger_budget_unavailable",
-                status=budget.get("status") if isinstance(budget, dict) else None,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="Daily LLM budget status unavailable",
-            )
-        return budget
-    if not budget.get("paid_calls_allowed", False) and override is None:
-        logger.warning(
-            "paid_trigger_budget_denied",
-            today_cost_usd=budget.get("today_cost_usd"),
-            budget_cap_usd=budget.get("budget_cap_usd"),
-        )
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "message": "Daily LLM budget reached",
-                "budget": budget,
-                "override": {
-                    "supported": True,
-                    "body_fields": {
-                        "budget_override": True,
-                        "override_reason": "required, non-empty string",
-                    },
-                },
-            },
-        )
-    return budget
-
-
-async def _post_to_orchestrator(request: Request, url: str, **kwargs) -> httpx.Response:
-    """Send through the shared app client; capability is checked before send.
-
-    A POST is sent at most once: if the shared client is missing or unusable
-    the call fails closed with 503 instead of re-sending on a fallback client.
-    """
-    client = getattr(request.app.state, "orchestrator_client", None)
-    if client is None:
-        logger.error("orchestrator_client_unavailable", action="orchestrator_post")
-        raise HTTPException(status_code=503, detail="Orchestrator client unavailable")
-    try:
-        return await client.post(url, **kwargs)
-    except (AttributeError, TypeError):
-        logger.error("orchestrator_client_unusable", action="orchestrator_post")
-        raise HTTPException(status_code=503, detail="Orchestrator client unavailable")
 
 
 @router.post(
@@ -177,18 +85,12 @@ async def trigger_collect(source_id: str, request: Request):
     correlation_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
 
-    try:
-        response = await _post_to_orchestrator(
-            request,
-            f"{orchestrator_url()}/run_collector/{source_id}",
-            json={"correlation_id": correlation_id},
-            timeout=10.0,
-            auth=_internal_basic_auth(),
-        )
-    except httpx.TransportError as exc:
-        logger.error("orchestrator_connect_failed", error=str(exc))
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable")
-
+    response = await orchestrator_post(
+        request,
+        f"/run_collector/{source_id}",
+        json={"correlation_id": correlation_id},
+        timeout=10.0,
+    )
     if response.status_code != 202:
         logger.error("orchestrator_unexpected_response", status=response.status_code)
         raise HTTPException(
@@ -215,8 +117,8 @@ async def trigger_process(
 
     correlation_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
-    override_request = _manual_override(body, request)
-    budget = _enforce_api_budget(override_request)
+    override_request = extract_manual_override(body, request)
+    budget = enforce_api_budget(get_budget_status(), override_request)
     override = None
 
     if override_request:
@@ -228,12 +130,12 @@ async def trigger_process(
         )
 
     try:
-        response = await _post_to_orchestrator(
+        response = await orchestrator_post(
             request,
-            f"{orchestrator_url()}/run_processor/{processor_id}",
+            f"/run_processor/{processor_id}",
             json={"correlation_id": correlation_id},
             timeout=10.0,
-            auth=_internal_basic_auth(),
+            raise_for_transport=False,
         )
     except httpx.TransportError as exc:
         if override and _definitively_unspent_error(exc):
@@ -280,18 +182,12 @@ async def trigger_news(source_id: str, request: Request):
 
     correlation_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
-    try:
-        response = await _post_to_orchestrator(
-            request,
-            f"{orchestrator_url()}/run_news/{source_id}",
-            json={"correlation_id": correlation_id},
-            timeout=10.0,
-            auth=_internal_basic_auth(),
-        )
-    except httpx.TransportError as exc:
-        logger.error("orchestrator_connect_failed", error=type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
-
+    response = await orchestrator_post(
+        request,
+        f"/run_news/{source_id}",
+        json={"correlation_id": correlation_id},
+        timeout=10.0,
+    )
     if response.status_code in {409, 503}:
         try:
             detail = response.json().get("detail", "News request rejected")
@@ -338,7 +234,7 @@ async def trigger_cycle(
             detail="force_full requires explicit budget_confirmed=true",
         )
 
-    override_request = _manual_override(request_body, request)
+    override_request = extract_manual_override(request_body, request)
     budget = get_budget_status()
     override = None
 
@@ -351,23 +247,16 @@ async def trigger_cycle(
         )
 
     try:
-        auth = _internal_basic_auth()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503, detail="Internal authentication unavailable"
-        ) from exc
-
-    try:
-        response = await _post_to_orchestrator(
+        response = await orchestrator_post(
             request,
-            f"{orchestrator_url()}/run_cycle",
+            "/run_cycle",
             json={
                 "correlation_id": correlation_id,
                 "mode": mode,
                 "budget_confirmed": budget_confirmed,
             },
             timeout=10.0,
-            auth=auth,
+            raise_for_transport=False,
         )
     except httpx.TransportError as exc:
         if override and _definitively_unspent_error(exc):

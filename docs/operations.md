@@ -384,10 +384,10 @@ The application does not silently delete historical logs. Retention and rotation
 
 ```bash
 python3 -m compileall -q -x '/\.venv/' api orchestrator scripts
-cd api && uv run python -m unittest discover -s tests
-cd ../orchestrator && uv run python -m unittest discover -s tests
+cd api && uv run python ../scripts/run_bounded_tests.py discover -s tests
+cd ../orchestrator && uv run python ../scripts/run_bounded_tests.py discover -s tests
 cd ..
-api/.venv/bin/python -m unittest discover -s tests
+api/.venv/bin/python scripts/run_bounded_tests.py discover -s tests
 orchestrator/.venv/bin/ruff check api orchestrator scripts tests
 (cd api && uv run --with pip-audit==2.9.0 pip-audit --local --progress-spinner off)
 (cd orchestrator && uv run --with pip-audit==2.9.0 pip-audit --local --progress-spinner off)
@@ -397,6 +397,11 @@ docker compose -f docker-compose.demo.yml config --quiet
 scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 ```
+
+`scripts/run_bounded_tests.py` caps each test process and its children at 4 GiB
+of virtual address space on POSIX hosts. Override the ceiling with a positive
+byte count in `TEST_MEMORY_LIMIT_BYTES`; invalid or unenforceable limits fail
+closed rather than running an accidentally unbounded suite.
 
 For a warm read-path check that avoids external or paid calls:
 

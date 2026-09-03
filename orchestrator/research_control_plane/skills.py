@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
 from thesis_autonomy import (
     _close_at_or_before,
     _load_second_pass_snapshot,
@@ -98,22 +99,6 @@ class SkillResult:
         }
 
 
-def _first(result: Any) -> Mapping[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    if row is None:
-        return None
-    return row if isinstance(row, Mapping) else row._mapping
-
-
-def _rows(result: Any) -> list[Mapping[str, Any]]:
-    try:
-        return list(result.mappings().all())
-    except AttributeError:
-        values = result.fetchall()
-        return [row if isinstance(row, Mapping) else row._mapping for row in values]
 
 
 def _as_utc(value: Any) -> datetime:
@@ -191,48 +176,44 @@ def ensure_skill_versions(session: Any) -> tuple[uuid.UUID, ...]:
             "model_policy": canonical_json(spec["model_policy"]),
             "content_fingerprint": fingerprint,
         }
-        row = _first(
-            session.execute(
+        row = result_first(session.execute(
+            text(
+                """
+                INSERT INTO research_skill_versions (
+                    skill_key, version, supported_question_types,
+                    input_schema, output_schema, allowed_tools,
+                    allowed_source_families, point_in_time_requirements,
+                    model_allowed, model_policy, maximum_cost_usd,
+                    maximum_runtime_seconds, maximum_attempts, validators,
+                    promotion_status, content_fingerprint, promoted_at
+                ) VALUES (
+                    :skill_key, :version, :supported_question_types,
+                    CAST(:input_schema AS JSONB), CAST(:output_schema AS JSONB),
+                    :allowed_tools, :allowed_source_families,
+                    CAST(:point_in_time_requirements AS JSONB),
+                    :model_allowed, CAST(:model_policy AS JSONB),
+                    :maximum_cost_usd, :maximum_runtime_seconds,
+                    :maximum_attempts, :validators, :promotion_status,
+                    :content_fingerprint,
+                    CASE WHEN :promotion_status = 'draft' THEN NULL ELSE NOW() END
+                )
+                ON CONFLICT (skill_key, version) DO NOTHING
+                RETURNING id, content_fingerprint
+                """
+            ),
+            params,
+        ))
+        if row is None:
+            row = result_first(session.execute(
                 text(
                     """
-                    INSERT INTO research_skill_versions (
-                        skill_key, version, supported_question_types,
-                        input_schema, output_schema, allowed_tools,
-                        allowed_source_families, point_in_time_requirements,
-                        model_allowed, model_policy, maximum_cost_usd,
-                        maximum_runtime_seconds, maximum_attempts, validators,
-                        promotion_status, content_fingerprint, promoted_at
-                    ) VALUES (
-                        :skill_key, :version, :supported_question_types,
-                        CAST(:input_schema AS JSONB), CAST(:output_schema AS JSONB),
-                        :allowed_tools, :allowed_source_families,
-                        CAST(:point_in_time_requirements AS JSONB),
-                        :model_allowed, CAST(:model_policy AS JSONB),
-                        :maximum_cost_usd, :maximum_runtime_seconds,
-                        :maximum_attempts, :validators, :promotion_status,
-                        :content_fingerprint,
-                        CASE WHEN :promotion_status = 'draft' THEN NULL ELSE NOW() END
-                    )
-                    ON CONFLICT (skill_key, version) DO NOTHING
-                    RETURNING id, content_fingerprint
+                    SELECT id, content_fingerprint
+                    FROM research_skill_versions
+                    WHERE skill_key = :skill_key AND version = :version
                     """
                 ),
-                params,
-            )
-        )
-        if row is None:
-            row = _first(
-                session.execute(
-                    text(
-                        """
-                        SELECT id, content_fingerprint
-                        FROM research_skill_versions
-                        WHERE skill_key = :skill_key AND version = :version
-                        """
-                    ),
-                    {"skill_key": spec["skill_key"], "version": spec["version"]},
-                )
-            )
+                {"skill_key": spec["skill_key"], "version": spec["version"]},
+            ))
         if row is None or row["content_fingerprint"] != fingerprint:
             raise ValueError(
                 f"immutable skill version drift: {spec['skill_key']} v{spec['version']}"
@@ -289,12 +270,10 @@ def _target_context(session: Any, item: SkillInput) -> Mapping[str, Any]:
             "direction": None,
         }
     return (
-        _first(
-            session.execute(
-                text(query),
-                {"ref": item.target_ref, "cutoff": item.accepted_cutoff},
-            )
-        )
+        result_first(session.execute(
+            text(query),
+            {"ref": item.target_ref, "cutoff": item.accepted_cutoff},
+        ))
         or {}
     )
 
@@ -387,36 +366,34 @@ def _assess_materiality(
 
 def _filing_guidance_delta(session: Any, item: SkillInput) -> SkillResult:
     target = _target_context(session, item)
-    rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT d.document_id, d.content_sha256, d.company, d.symbol,
-                       d.report_date, fd.category, fd.change_kind,
-                       fd.excerpt, fd.previous_excerpt, fd.metrics
-                FROM investment_filing_deltas fd
-                JOIN investment_documents d ON d.document_id = fd.document_id
-                WHERE fd.created_at <= :cutoff
-                  AND d.created_at <= :cutoff
-                  AND (d.report_date IS NULL OR d.report_date <= :cutoff_date)
-                  AND fd.category IN ('guidance', 'margins_cashflow', 'management_language')
-                  AND (
-                      (:symbol IS NOT NULL AND UPPER(d.symbol) = UPPER(:symbol))
-                      OR (:company IS NOT NULL AND LOWER(d.company) = LOWER(:company))
-                  )
-                ORDER BY d.report_date DESC NULLS LAST, fd.created_at DESC,
-                         fd.category, fd.id
-                LIMIT 20
-                """
-            ),
-            {
-                "cutoff": item.accepted_cutoff,
-                "cutoff_date": item.accepted_cutoff.date(),
-                "symbol": target.get("symbol"),
-                "company": target.get("company"),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """
+            SELECT d.document_id, d.content_sha256, d.company, d.symbol,
+                   d.report_date, fd.category, fd.change_kind,
+                   fd.excerpt, fd.previous_excerpt, fd.metrics
+            FROM investment_filing_deltas fd
+            JOIN investment_documents d ON d.document_id = fd.document_id
+            WHERE fd.created_at <= :cutoff
+              AND d.created_at <= :cutoff
+              AND (d.report_date IS NULL OR d.report_date <= :cutoff_date)
+              AND fd.category IN ('guidance', 'margins_cashflow', 'management_language')
+              AND (
+                  (:symbol IS NOT NULL AND UPPER(d.symbol) = UPPER(:symbol))
+                  OR (:company IS NOT NULL AND LOWER(d.company) = LOWER(:company))
+              )
+            ORDER BY d.report_date DESC NULLS LAST, fd.created_at DESC,
+                     fd.category, fd.id
+            LIMIT 20
+            """
+        ),
+        {
+            "cutoff": item.accepted_cutoff,
+            "cutoff_date": item.accepted_cutoff.date(),
+            "symbol": target.get("symbol"),
+            "company": target.get("company"),
+        },
+    ))
     if not rows:
         return _noop(
             "no_cutoff_safe_filing_delta",
@@ -463,61 +440,57 @@ def _filing_guidance_delta(session: Any, item: SkillInput) -> SkillResult:
 
 def _filing_peer_readthrough(session: Any, item: SkillInput) -> SkillResult:
     target = _target_context(session, item)
-    industry = _first(
-        session.execute(
-            text(
-                """
-                SELECT industry FROM investment_documents
-                WHERE created_at <= :cutoff
-                  AND (report_date IS NULL OR report_date <= :cutoff_date)
-                  AND ((:symbol IS NOT NULL AND UPPER(symbol) = UPPER(:symbol))
-                       OR (:company IS NOT NULL AND LOWER(company) = LOWER(:company)))
-                ORDER BY report_date DESC NULLS LAST, created_at DESC
-                LIMIT 1
-                """
-            ),
-            {
-                "cutoff": item.accepted_cutoff,
-                "cutoff_date": item.accepted_cutoff.date(),
-                "symbol": target.get("symbol"),
-                "company": target.get("company"),
-            },
-        )
-    )
+    industry = result_first(session.execute(
+        text(
+            """
+            SELECT industry FROM investment_documents
+            WHERE created_at <= :cutoff
+              AND (report_date IS NULL OR report_date <= :cutoff_date)
+              AND ((:symbol IS NOT NULL AND UPPER(symbol) = UPPER(:symbol))
+                   OR (:company IS NOT NULL AND LOWER(company) = LOWER(:company)))
+            ORDER BY report_date DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        ),
+        {
+            "cutoff": item.accepted_cutoff,
+            "cutoff_date": item.accepted_cutoff.date(),
+            "symbol": target.get("symbol"),
+            "company": target.get("company"),
+        },
+    ))
     if not industry:
         return _noop(
             "target_industry_unknown",
             "No cutoff-safe target industry was available for peer selection.",
         )
-    rows = _rows(
-        session.execute(
-            text(
-                """
-                SELECT d.content_sha256, d.company, d.symbol, d.report_date,
-                       fd.category, fd.change_kind, fd.excerpt
-                FROM investment_documents d
-                JOIN investment_filing_deltas fd ON fd.document_id = d.document_id
-                WHERE d.industry = :industry
-                  AND d.created_at <= :cutoff AND fd.created_at <= :cutoff
-                  AND (d.report_date IS NULL OR d.report_date <= :cutoff_date)
-                  AND fd.change_kind IN ('new', 'changed', 'removed')
-                  AND NOT (
-                      (:symbol IS NOT NULL AND UPPER(d.symbol) = UPPER(:symbol))
-                      OR (:company IS NOT NULL AND LOWER(d.company) = LOWER(:company))
-                  )
-                ORDER BY d.report_date DESC NULLS LAST, d.company, fd.category
-                LIMIT 20
-                """
-            ),
-            {
-                "industry": industry["industry"],
-                "cutoff": item.accepted_cutoff,
-                "cutoff_date": item.accepted_cutoff.date(),
-                "symbol": target.get("symbol"),
-                "company": target.get("company"),
-            },
-        )
-    )
+    rows = result_rows(session.execute(
+        text(
+            """
+            SELECT d.content_sha256, d.company, d.symbol, d.report_date,
+                   fd.category, fd.change_kind, fd.excerpt
+            FROM investment_documents d
+            JOIN investment_filing_deltas fd ON fd.document_id = d.document_id
+            WHERE d.industry = :industry
+              AND d.created_at <= :cutoff AND fd.created_at <= :cutoff
+              AND (d.report_date IS NULL OR d.report_date <= :cutoff_date)
+              AND fd.change_kind IN ('new', 'changed', 'removed')
+              AND NOT (
+                  (:symbol IS NOT NULL AND UPPER(d.symbol) = UPPER(:symbol))
+                  OR (:company IS NOT NULL AND LOWER(d.company) = LOWER(:company))
+              )
+            ORDER BY d.report_date DESC NULLS LAST, d.company, fd.category
+            LIMIT 20
+            """
+        ),
+        {
+            "industry": industry["industry"],
+            "cutoff": item.accepted_cutoff,
+            "cutoff_date": item.accepted_cutoff.date(),
+            "symbol": target.get("symbol"),
+            "company": target.get("company"),
+        },
+    ))
     if not rows:
         return _noop(
             "no_peer_filing_delta",
@@ -550,72 +523,66 @@ def _filing_peer_readthrough(session: Any, item: SkillInput) -> SkillResult:
 def _positioning_divergence(session: Any, item: SkillInput) -> SkillResult:
     target = _target_context(session, item)
     symbol = _bounded(target.get("symbol") or item.target_ref, 32).upper()
-    options = _rows(
-        session.execute(
-            text(
-                """
-                SELECT source, symbol, captured_at, feature_version, analytics
-                FROM option_snapshot_features
-                WHERE symbol = :symbol
-                  AND available_at <= :cutoff AND created_at <= :cutoff
-                ORDER BY captured_at DESC, source
-                LIMIT 2
-                """
-            ),
-            {"symbol": symbol, "cutoff": item.accepted_cutoff},
-        )
-    )
-    positioning = _rows(
-        session.execute(
-            text(
-                """
-                SELECT source, market_id, report_date, category, long_positions,
-                       short_positions, net_position, open_interest,
-                       net_pct_open_interest
-                FROM positioning_reports
-                WHERE market_id = :symbol
-                  AND source IN ('cftc', 'finra_short_volume')
-                  AND report_date <= :cutoff_date
-                  AND acquired_at <= :cutoff
-                  AND created_at <= :cutoff
-                ORDER BY report_date DESC, source, category
-                LIMIT 10
-                """
-            ),
-            {
-                "symbol": symbol,
-                "cutoff": item.accepted_cutoff,
-                "cutoff_date": item.accepted_cutoff.date(),
-            },
-        )
-    )
-    prices = _rows(
-        session.execute(
-            text(
-                """
-                (SELECT 'current' AS period, source, timestamp, close
-                 FROM market_data
-                 WHERE symbol = :symbol
-                   AND timeframe IN ('1d', 'daily', 'day')
-                   AND timestamp <= :cutoff AND created_at <= :cutoff
-                   AND close IS NOT NULL
-                 ORDER BY timestamp DESC
-                 LIMIT 1)
-                UNION ALL
-                (SELECT 'prior' AS period, source, timestamp, close
-                 FROM market_data
-                 WHERE symbol = :symbol
-                   AND timeframe IN ('1d', 'daily', 'day')
-                   AND timestamp <= :cutoff - INTERVAL '20 days'
-                   AND created_at <= :cutoff
-                   AND close IS NOT NULL
-                 ORDER BY timestamp DESC
-                 LIMIT 1)
-                """
-            ),
-            {"symbol": symbol, "cutoff": item.accepted_cutoff},
-        )
-    )
+    options = result_rows(session.execute(
+        text(
+            """
+            SELECT source, symbol, captured_at, feature_version, analytics
+            FROM option_snapshot_features
+            WHERE symbol = :symbol
+              AND available_at <= :cutoff AND created_at <= :cutoff
+            ORDER BY captured_at DESC, source
+            LIMIT 2
+            """
+        ),
+        {"symbol": symbol, "cutoff": item.accepted_cutoff},
+    ))
+    positioning = result_rows(session.execute(
+        text(
+            """
+            SELECT source, market_id, report_date, category, long_positions,
+                   short_positions, net_position, open_interest,
+                   net_pct_open_interest
+            FROM positioning_reports
+            WHERE market_id = :symbol
+              AND source IN ('cftc', 'finra_short_volume')
+              AND report_date <= :cutoff_date
+              AND acquired_at <= :cutoff
+              AND created_at <= :cutoff
+            ORDER BY report_date DESC, source, category
+            LIMIT 10
+            """
+        ),
+        {
+            "symbol": symbol,
+            "cutoff": item.accepted_cutoff,
+            "cutoff_date": item.accepted_cutoff.date(),
+        },
+    ))
+    prices = result_rows(session.execute(
+        text(
+            """
+            (SELECT 'current' AS period, source, timestamp, close
+             FROM market_data
+             WHERE symbol = :symbol
+               AND timeframe IN ('1d', 'daily', 'day')
+               AND timestamp <= :cutoff AND created_at <= :cutoff
+               AND close IS NOT NULL
+             ORDER BY timestamp DESC
+             LIMIT 1)
+            UNION ALL
+            (SELECT 'prior' AS period, source, timestamp, close
+             FROM market_data
+             WHERE symbol = :symbol
+               AND timeframe IN ('1d', 'daily', 'day')
+               AND timestamp <= :cutoff - INTERVAL '20 days'
+               AND created_at <= :cutoff
+               AND close IS NOT NULL
+             ORDER BY timestamp DESC
+             LIMIT 1)
+            """
+        ),
+        {"symbol": symbol, "cutoff": item.accepted_cutoff},
+    ))
     if not options and not positioning and not prices:
         return _noop(
             "no_cutoff_safe_positioning_data",
@@ -747,24 +714,22 @@ def _targeted_challenge(session: Any, item: SkillInput) -> SkillResult:
             "challenge_target_not_thesis",
             "The targeted challenge requires a thesis target.",
         )
-    row = _first(
-        session.execute(
-            text(
-                """
-                SELECT id, claim, direction, status, invalidation_conditions,
-                       opportunity_score, last_evaluated_at, updated_at,
-                       fusion_reference_at
-                FROM investment_theses
-                WHERE id = CAST(:id AS UUID)
-                  AND created_at <= :reference
-                  AND updated_at <= :reference
-                  AND (last_evaluated_at IS NULL OR last_evaluated_at <= :reference)
-                  AND (fusion_reference_at IS NULL OR fusion_reference_at <= :reference)
-                """
-            ),
-            {"id": item.target_ref, "reference": item.accepted_cutoff},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """
+            SELECT id, claim, direction, status, invalidation_conditions,
+                   opportunity_score, last_evaluated_at, updated_at,
+                   fusion_reference_at
+            FROM investment_theses
+            WHERE id = CAST(:id AS UUID)
+              AND created_at <= :reference
+              AND updated_at <= :reference
+              AND (last_evaluated_at IS NULL OR last_evaluated_at <= :reference)
+              AND (fusion_reference_at IS NULL OR fusion_reference_at <= :reference)
+            """
+        ),
+        {"id": item.target_ref, "reference": item.accepted_cutoff},
+    ))
     if row is None:
         return _noop(
             "thesis_not_visible_at_cutoff",
@@ -839,31 +804,29 @@ def _forecast_resolve(session: Any, item: SkillInput) -> SkillResult:
             "resolution_target_not_forecast",
             "Forecast resolution requires a forecast target.",
         )
-    row = _first(
-        session.execute(
-            text(
-                """
-                SELECT f.id, f.thesis_id, f.direction, f.target_value,
-                       f.target_date, f.forecast_type, f.created_at, f.as_of,
-                       t.symbol, o.status AS outcome_status,
-                       o.actual_value AS outcome_actual_value,
-                       o.measured_at AS outcome_measured_at
-                FROM investment_thesis_forecasts f
-                JOIN investment_theses t ON t.id = f.thesis_id
-                LEFT JOIN investment_forecast_outcomes o
-                  ON o.forecast_id = f.id
-                 AND o.created_at <= :reference
-                 AND o.measured_at <= :reference
-                WHERE f.id = CAST(:id AS UUID)
-                  AND f.created_at <= :reference AND f.as_of <= :reference
-                  AND (f.superseded_at IS NULL OR f.superseded_at > :reference)
-                  AND t.created_at <= :reference
-                  AND t.updated_at <= :reference
-                """
-            ),
-            {"id": item.target_ref, "reference": item.accepted_cutoff},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """
+            SELECT f.id, f.thesis_id, f.direction, f.target_value,
+                   f.target_date, f.forecast_type, f.created_at, f.as_of,
+                   t.symbol, o.status AS outcome_status,
+                   o.actual_value AS outcome_actual_value,
+                   o.measured_at AS outcome_measured_at
+            FROM investment_thesis_forecasts f
+            JOIN investment_theses t ON t.id = f.thesis_id
+            LEFT JOIN investment_forecast_outcomes o
+              ON o.forecast_id = f.id
+             AND o.created_at <= :reference
+             AND o.measured_at <= :reference
+            WHERE f.id = CAST(:id AS UUID)
+              AND f.created_at <= :reference AND f.as_of <= :reference
+              AND (f.superseded_at IS NULL OR f.superseded_at > :reference)
+              AND t.created_at <= :reference
+              AND t.updated_at <= :reference
+            """
+        ),
+        {"id": item.target_ref, "reference": item.accepted_cutoff},
+    ))
     if row is None:
         return _noop(
             "forecast_not_visible_at_cutoff",
@@ -971,29 +934,27 @@ _EXECUTORS: dict[tuple[str, int], Callable[[Any, SkillInput], SkillResult]] = {
 def _load_work_order(
     session: Any, work_order_id: uuid.UUID
 ) -> Mapping[str, Any] | None:
-    return _first(
-        session.execute(
-            text(
-                """
-                SELECT w.id AS work_order_id, w.question_id, w.accepted_cutoff,
-                       w.skill_version_id, w.attempt_count,
-                       q.question_type, q.atomic_question,
-                       q.target_kind, q.target_ref, q.status AS question_status,
-                       q.expires_at AS question_expires_at,
-                       s.skill_key, s.version, s.content_fingerprint,
-                       s.supported_question_types, s.allowed_tools,
-                       s.allowed_source_families, s.model_allowed,
-                       s.maximum_cost_usd, s.maximum_runtime_seconds,
-                       s.maximum_attempts
-                FROM research_work_orders w
-                JOIN research_questions q ON q.id = w.question_id
-                JOIN research_skill_versions s ON s.id = w.skill_version_id
-                WHERE w.id = :work_order_id
-                """
-            ),
-            {"work_order_id": work_order_id},
-        )
-    )
+    return result_first(session.execute(
+        text(
+            """
+            SELECT w.id AS work_order_id, w.question_id, w.accepted_cutoff,
+                   w.skill_version_id, w.attempt_count,
+                   q.question_type, q.atomic_question,
+                   q.target_kind, q.target_ref, q.status AS question_status,
+                   q.expires_at AS question_expires_at,
+                   s.skill_key, s.version, s.content_fingerprint,
+                   s.supported_question_types, s.allowed_tools,
+                   s.allowed_source_families, s.model_allowed,
+                   s.maximum_cost_usd, s.maximum_runtime_seconds,
+                   s.maximum_attempts
+            FROM research_work_orders w
+            JOIN research_questions q ON q.id = w.question_id
+            JOIN research_skill_versions s ON s.id = w.skill_version_id
+            WHERE w.id = :work_order_id
+            """
+        ),
+        {"work_order_id": work_order_id},
+    ))
 
 
 def _record_effect(
@@ -1108,9 +1069,9 @@ def _record_effect(
                 "forecast_id": item.target_ref,
             },
         )
-    from .notifications import publish_control_plane_invalidations
+    from ui_events import append_ui_invalidations
 
-    publish_control_plane_invalidations(
+    append_ui_invalidations(
         session,
         {
             "research_questions",
@@ -1259,12 +1220,10 @@ def execute_work_order(
     if not mark_work_order_running(
         session, work_order_id=work_order_id, worker_id=worker_id
     ):
-        completed = _first(
-            session.execute(
-                text("SELECT status, result FROM research_work_orders WHERE id = :id"),
-                {"id": work_order_id},
-            )
-        )
+        completed = result_first(session.execute(
+            text("SELECT status, result FROM research_work_orders WHERE id = :id"),
+            {"id": work_order_id},
+        ))
         if completed and completed.get("status") == "completed":
             existing = completed.get("result")
             return (

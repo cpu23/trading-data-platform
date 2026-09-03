@@ -14,6 +14,7 @@ keys cannot linger or fall back to stale process-environment values.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any, TypeAlias, cast
 
 import yaml
@@ -192,12 +193,27 @@ def orchestrator_url() -> str:
     return candidate
 
 
+def live_updates_enabled(config: Mapping[str, Any] | None = None) -> bool:
+    """True when SSE live updates are enabled in configuration."""
+    cfg = load_config() if config is None else config
+    if not isinstance(cfg, Mapping):
+        return False
+    event_pipeline = cfg.get("event_pipeline")
+    if not isinstance(event_pipeline, Mapping):
+        return False
+    sse = event_pipeline.get("sse")
+    if not isinstance(sse, Mapping):
+        return False
+    return sse.get("enabled") is True
+
+
 __all__ = [
     "AppConfig",
     "ConfigError",
     "ConfigSnapshot",
     "config_snapshot",
     "config_version",
+    "live_updates_enabled",
     "load_config",
     "orchestrator_url",
     "reload_config",

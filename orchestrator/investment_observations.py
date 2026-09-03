@@ -176,10 +176,17 @@ def upsert_report_observation(
                 {
                     "summary": analysis.get("summary"),
                     "thesis": analysis.get("thesis"),
+                    "counter_thesis": analysis.get("counter_thesis"),
+                    "materiality_assessment": analysis.get("materiality_assessment") or facts.get("materiality_assessment") or {},
                     "qualitative": facts.get("qualitative", {}),
                     "drivers": analysis.get("drivers", []),
                     "catalysts": analysis.get("catalysts", []),
                     "risks": analysis.get("risks", []),
+                    "relationship_facts": analysis.get("relationship_facts"),
+                    "material_relationships": analysis.get("material_relationships"),
+                    "relationship_reconciliations": analysis.get(
+                        "relationship_reconciliations"
+                    ),
                     "watch_items": analysis.get("watch_items", []),
                     "news_context": analysis.get("news_context", []),
                 }

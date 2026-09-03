@@ -17,6 +17,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from contracts.db_results import result_first, result_rows
+
 THEME_STATUSES = ("active", "paused", "retired")
 THESIS_STATUSES = ("candidate", "active", "paused", "closed")
 ENTITY_TYPES = ("industry", "company", "symbol", "macro_series")
@@ -81,19 +83,6 @@ def _bounded(value: Any, default: int, maximum: int) -> int:
         return default
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    try:
-        return [dict(row) for row in result.mappings().all()]
-    except AttributeError:
-        return [dict(row) for row in result]
-
-
-def _first(result: Any) -> dict[str, Any] | None:
-    try:
-        row = result.mappings().first()
-    except AttributeError:
-        row = result.first()
-    return dict(row) if row is not None else None
 
 
 def _uuid(value: Any, field: str) -> str:
@@ -181,28 +170,24 @@ def _timestamp(value: Any, field: str) -> datetime | None:
 
 
 def _theme_exists(session: Any, theme_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_themes "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": theme_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_themes "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": theme_id},
+    ))
     return row is not None
 
 
 def _thesis_exists(session: Any, thesis_id: str) -> bool:
-    row = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_theses "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_theses "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": thesis_id},
+    ))
     return row is not None
 
 
@@ -231,38 +216,34 @@ def create_theme(
     indicators = _string_list(key_indicators, "key_indicators", 50, 200)
     conditions = _json_list(invalidation_conditions, "invalidation_conditions", 200)
     theme_confidence = _confidence(confidence)
-    existing = _first(
-        session.execute(
-            text(
-                "SELECT 1 AS present FROM investment_themes WHERE name = :name LIMIT 1"
-            ),
-            {"name": theme_name},
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            "SELECT 1 AS present FROM investment_themes WHERE name = :name LIMIT 1"
+        ),
+        {"name": theme_name},
+    ))
     if existing is not None:
         raise ValueError("duplicate theme name")
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_themes
-                   (name, definition, horizon, macro_drivers, key_indicators,
-                    invalidation_conditions, confidence)
-                   VALUES (:name, :definition, :horizon, :macro_drivers,
-                           :key_indicators, CAST(:invalidation_conditions AS JSONB),
-                           :confidence)
-                   RETURNING id"""
-            ),
-            {
-                "name": theme_name,
-                "definition": theme_definition,
-                "horizon": theme_horizon,
-                "macro_drivers": drivers,
-                "key_indicators": indicators,
-                "invalidation_conditions": json.dumps(conditions),
-                "confidence": theme_confidence,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_themes
+               (name, definition, horizon, macro_drivers, key_indicators,
+                invalidation_conditions, confidence)
+               VALUES (:name, :definition, :horizon, :macro_drivers,
+                       :key_indicators, CAST(:invalidation_conditions AS JSONB),
+                       :confidence)
+               RETURNING id"""
+        ),
+        {
+            "name": theme_name,
+            "definition": theme_definition,
+            "horizon": theme_horizon,
+            "macro_drivers": drivers,
+            "key_indicators": indicators,
+            "invalidation_conditions": json.dumps(conditions),
+            "confidence": theme_confidence,
+        },
+    ))
     return str(row["id"])
 
 
@@ -328,29 +309,27 @@ def create_thesis(
         raise ValueError("unknown theme")
     claim_text = _text_required(claim, 5000, "claim")
     conditions = _json_list(invalidation_conditions, "invalidation_conditions", 200)
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_theses
-                   (theme_id, company, symbol, claim, variant_perception, horizon,
-                    confidence, invalidation_conditions)
-                   VALUES (:theme_id, :company, :symbol, :claim,
-                           :variant_perception, :horizon, :confidence,
-                           CAST(:invalidation_conditions AS JSONB))
-                   RETURNING id"""
-            ),
-            {
-                "theme_id": theme_id,
-                "company": _text(company, 200),
-                "symbol": _text(symbol, 20),
-                "claim": claim_text,
-                "variant_perception": _text(variant_perception, 2000),
-                "horizon": _text(horizon, 50),
-                "confidence": _confidence(confidence),
-                "invalidation_conditions": json.dumps(conditions),
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_theses
+               (theme_id, company, symbol, claim, variant_perception, horizon,
+                confidence, invalidation_conditions)
+               VALUES (:theme_id, :company, :symbol, :claim,
+                       :variant_perception, :horizon, :confidence,
+                       CAST(:invalidation_conditions AS JSONB))
+               RETURNING id"""
+        ),
+        {
+            "theme_id": theme_id,
+            "company": _text(company, 200),
+            "symbol": _text(symbol, 20),
+            "claim": claim_text,
+            "variant_perception": _text(variant_perception, 2000),
+            "horizon": _text(horizon, 50),
+            "confidence": _confidence(confidence),
+            "invalidation_conditions": json.dumps(conditions),
+        },
+    ))
     thesis_id = str(row["id"])
     session.execute(
         text(
@@ -382,15 +361,13 @@ def revise_thesis(
 ) -> int:
     """Bump the version counter and update the thesis row (status preserved)."""
     thesis_id = _uuid(thesis_id, "thesis_id")
-    existing = _first(
-        session.execute(
-            text(
-                "SELECT status FROM investment_theses "
-                "WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    existing = result_first(session.execute(
+        text(
+            "SELECT status FROM investment_theses "
+            "WHERE id = CAST(:id AS UUID) LIMIT 1"
+        ),
+        {"id": thesis_id},
+    ))
     if existing is None:
         raise ValueError("unknown thesis")
     claim_text = _text_required(claim, 5000, "claim")
@@ -398,16 +375,14 @@ def revise_thesis(
     thesis_confidence = _confidence(confidence)
     rationale_text = _text_required(rationale, 5000, "rationale")
     changed_by_text = _text(changed_by, 200) or "operator"
-    version_row = _first(
-        session.execute(
-            text(
-                "SELECT COALESCE(MAX(version), 0) AS max_version "
-                "FROM investment_thesis_versions "
-                "WHERE thesis_id = CAST(:id AS UUID)"
-            ),
-            {"id": thesis_id},
-        )
-    )
+    version_row = result_first(session.execute(
+        text(
+            "SELECT COALESCE(MAX(version), 0) AS max_version "
+            "FROM investment_thesis_versions "
+            "WHERE thesis_id = CAST(:id AS UUID)"
+        ),
+        {"id": thesis_id},
+    ))
     next_version = int(version_row["max_version"]) + 1
     session.execute(
         text(
@@ -528,23 +503,21 @@ def add_catalyst(
     expected = _timestamp(expected_at, "expected_at")
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_catalysts
-                   (thesis_id, description, expected_at, state)
-                   VALUES (CAST(:thesis_id AS UUID), :description, :expected_at,
-                           :state)
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "description": description_text,
-                "expected_at": expected,
-                "state": state,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_catalysts
+               (thesis_id, description, expected_at, state)
+               VALUES (CAST(:thesis_id AS UUID), :description, :expected_at,
+                       :state)
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "description": description_text,
+            "expected_at": expected,
+            "state": state,
+        },
+    ))
     return str(row["id"])
 
 
@@ -565,22 +538,20 @@ def add_risk(
     description_text = _text_required(description, 2000, "description")
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_risks
-                   (thesis_id, description, kind, severity)
-                   VALUES (CAST(:thesis_id AS UUID), :description, :kind, :severity)
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "description": description_text,
-                "kind": kind,
-                "severity": severity,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_risks
+               (thesis_id, description, kind, severity)
+               VALUES (CAST(:thesis_id AS UUID), :description, :kind, :severity)
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "description": description_text,
+            "kind": kind,
+            "severity": severity,
+        },
+    ))
     return str(row["id"])
 
 
@@ -599,23 +570,21 @@ def add_watch_item(
     source_id_text = _text(source_id, 200)
     if not _thesis_exists(session, thesis_id):
         raise ValueError("unknown thesis")
-    row = _first(
-        session.execute(
-            text(
-                """INSERT INTO investment_watch_items
-                   (thesis_id, label, source_kind, source_id)
-                   VALUES (CAST(:thesis_id AS UUID), :label, :source_kind,
-                           :source_id)
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "label": label_text,
-                "source_kind": source_kind_text,
-                "source_id": source_id_text,
-            },
-        )
-    )
+    row = result_first(session.execute(
+        text(
+            """INSERT INTO investment_watch_items
+               (thesis_id, label, source_kind, source_id)
+               VALUES (CAST(:thesis_id AS UUID), :label, :source_kind,
+                       :source_id)
+               RETURNING id"""
+        ),
+        {
+            "thesis_id": thesis_id,
+            "label": label_text,
+            "source_kind": source_kind_text,
+            "source_id": source_id_text,
+        },
+    ))
     return str(row["id"])
 
 
@@ -709,73 +678,63 @@ def portfolio_context(session: Any) -> dict[str, Any]:
     """Bounded portfolio aggregation: exposures, catalysts, review schedule."""
 
     def _exposure(column: str) -> list[dict[str, Any]]:
-        return _rows(
-            session.execute(
-                text(
-                    f"SELECT {column} AS bucket, SUM(weight) AS exposure, "
-                    "COUNT(*) AS holdings FROM portfolio_holdings "
-                    "WHERE weight > 0 GROUP BY bucket "
-                    "ORDER BY exposure DESC, bucket LIMIT :limit"
-                ),
-                {"limit": _MAX_EXPOSURES},
-            )
-        )
-
-    total = _first(
-        session.execute(
+        return result_rows(session.execute(
             text(
-                "SELECT COALESCE(SUM(weight), 0) AS total FROM portfolio_holdings "
-                "LIMIT 1"
-            ),
-            {},
-        )
-    )
-    themes = _rows(
-        session.execute(
-            text(
-                """SELECT t.name AS theme, SUM(h.weight) AS exposure,
-                          COUNT(*) AS holdings
-                   FROM portfolio_holdings h
-                   JOIN LATERAL unnest(h.theme_tags) AS tags(tag) ON TRUE
-                   JOIN investment_themes t ON t.name = tags.tag
-                   WHERE h.weight > 0
-                   GROUP BY t.name
-                   ORDER BY exposure DESC, t.name
-                   LIMIT :limit"""
+                f"SELECT {column} AS bucket, SUM(weight) AS exposure, "
+                "COUNT(*) AS holdings FROM portfolio_holdings "
+                "WHERE weight > 0 GROUP BY bucket "
+                "ORDER BY exposure DESC, bucket LIMIT :limit"
             ),
             {"limit": _MAX_EXPOSURES},
-        )
-    )
-    catalysts = _rows(
-        session.execute(
-            text(
-                """SELECT c.id, c.description, c.expected_at, c.state,
-                          th.theme_id, th.company, th.symbol
-                   FROM investment_catalysts c
-                   JOIN investment_theses th ON th.id = c.thesis_id
-                   WHERE c.state = 'pending'
-                   ORDER BY c.expected_at NULLS LAST, c.created_at DESC, c.id
-                   LIMIT :limit"""
-            ),
-            {"limit": _MAX_REVIEW},
-        )
-    )
-    review_schedule = _rows(
-        session.execute(
-            text(
-                """SELECT 'thesis' AS kind, id, claim AS title, review_at, status,
-                          created_at
-                   FROM investment_theses WHERE review_at IS NOT NULL
-                   UNION ALL
-                   SELECT 'theme' AS kind, id, name AS title, review_at, status,
-                          created_at
-                   FROM investment_themes WHERE review_at IS NOT NULL
-                   ORDER BY review_at NULLS LAST, created_at DESC, kind, id
-                   LIMIT :limit"""
-            ),
-            {"limit": _MAX_REVIEW},
-        )
-    )
+        ))
+
+    total = result_first(session.execute(
+        text(
+            "SELECT COALESCE(SUM(weight), 0) AS total FROM portfolio_holdings "
+            "LIMIT 1"
+        ),
+        {},
+    ))
+    themes = result_rows(session.execute(
+        text(
+            """SELECT t.name AS theme, SUM(h.weight) AS exposure,
+                      COUNT(*) AS holdings
+               FROM portfolio_holdings h
+               JOIN LATERAL unnest(h.theme_tags) AS tags(tag) ON TRUE
+               JOIN investment_themes t ON t.name = tags.tag
+               WHERE h.weight > 0
+               GROUP BY t.name
+               ORDER BY exposure DESC, t.name
+               LIMIT :limit"""
+        ),
+        {"limit": _MAX_EXPOSURES},
+    ))
+    catalysts = result_rows(session.execute(
+        text(
+            """SELECT c.id, c.description, c.expected_at, c.state,
+                      th.theme_id, th.company, th.symbol
+               FROM investment_catalysts c
+               JOIN investment_theses th ON th.id = c.thesis_id
+               WHERE c.state = 'pending'
+               ORDER BY c.expected_at NULLS LAST, c.created_at DESC, c.id
+               LIMIT :limit"""
+        ),
+        {"limit": _MAX_REVIEW},
+    ))
+    review_schedule = result_rows(session.execute(
+        text(
+            """SELECT 'thesis' AS kind, id, claim AS title, review_at, status,
+                      created_at
+               FROM investment_theses WHERE review_at IS NOT NULL
+               UNION ALL
+               SELECT 'theme' AS kind, id, name AS title, review_at, status,
+                      created_at
+               FROM investment_themes WHERE review_at IS NOT NULL
+               ORDER BY review_at NULLS LAST, created_at DESC, kind, id
+               LIMIT :limit"""
+        ),
+        {"limit": _MAX_REVIEW},
+    ))
     return {
         "total_weight": total["total"] if total else 0.0,
         "sectors": _exposure("sector"),
@@ -790,23 +749,21 @@ def portfolio_context(session: Any) -> dict[str, Any]:
 def list_themes(session: Any, limit: int = 50) -> list[dict[str, Any]]:
     """Bounded theme list with entity and active-thesis counts."""
     bounded = _bounded(limit, 50, _MAX_LIST_THEMES)
-    return _rows(
-        session.execute(
-            text(
-                """SELECT t.id, t.name, t.definition, t.horizon, t.status,
-                          t.review_at, t.confidence, t.created_at, t.updated_at,
-                          (SELECT COUNT(*) FROM investment_theme_entities e
-                           WHERE e.theme_id = t.id) AS entity_count,
-                          (SELECT COUNT(*) FROM investment_theses th
-                           WHERE th.theme_id = t.id AND th.status = 'active')
-                              AS active_thesis_count
-                   FROM investment_themes t
-                   ORDER BY t.created_at DESC, t.name
-                   LIMIT :limit"""
-            ),
-            {"limit": bounded},
-        )
-    )
+    return result_rows(session.execute(
+        text(
+            """SELECT t.id, t.name, t.definition, t.horizon, t.status,
+                      t.review_at, t.confidence, t.created_at, t.updated_at,
+                      (SELECT COUNT(*) FROM investment_theme_entities e
+                       WHERE e.theme_id = t.id) AS entity_count,
+                      (SELECT COUNT(*) FROM investment_theses th
+                       WHERE th.theme_id = t.id AND th.status = 'active')
+                          AS active_thesis_count
+               FROM investment_themes t
+               ORDER BY t.created_at DESC, t.name
+               LIMIT :limit"""
+        ),
+        {"limit": bounded},
+    ))
 
 
 def _entity_event_filters(
@@ -830,133 +787,115 @@ def _entity_event_filters(
 def get_theme(session: Any, theme_id: str) -> dict[str, Any] | None:
     """Theme detail: entities, theses, atoms, indicators, and upcoming events."""
     theme_id = _uuid(theme_id, "theme_id")
-    theme = _first(
-        session.execute(
-            text(
-                """SELECT id, name, definition, horizon, macro_drivers,
-                          key_indicators, status, review_at,
-                          invalidation_conditions, confidence,
-                          confidence_components, created_at, updated_at
-                   FROM investment_themes
-                   WHERE id = CAST(:id AS UUID) LIMIT 1"""
-            ),
-            {"id": theme_id},
-        )
-    )
+    theme = result_first(session.execute(
+        text(
+            """SELECT id, name, definition, horizon, macro_drivers,
+                      key_indicators, status, review_at,
+                      invalidation_conditions, confidence,
+                      confidence_components, created_at, updated_at
+               FROM investment_themes
+               WHERE id = CAST(:id AS UUID) LIMIT 1"""
+        ),
+        {"id": theme_id},
+    ))
     if theme is None:
         return None
-    entities = _rows(
-        session.execute(
+    entities = result_rows(session.execute(
+        text(
+            """SELECT entity_type, entity_id, display_name, created_at
+               FROM investment_theme_entities
+               WHERE theme_id = CAST(:id AS UUID)
+               ORDER BY entity_type, entity_id
+               LIMIT :limit"""
+        ),
+        {"id": theme_id, "limit": _MAX_THEME_ENTITIES},
+    ))
+    theses = result_rows(session.execute(
+        text(
+            """SELECT id, theme_id, company, symbol, claim, variant_perception,
+                      status, horizon, review_at, confidence, created_at,
+                      updated_at
+               FROM investment_theses
+               WHERE theme_id = CAST(:id AS UUID)
+               ORDER BY created_at DESC, id
+               LIMIT :limit"""
+        ),
+        {"id": theme_id, "limit": _MAX_THEME_THESES},
+    ))
+    for thesis in theses:
+        thesis_id = str(thesis["id"])
+        thesis["latest_version"] = result_first(session.execute(
             text(
-                """SELECT entity_type, entity_id, display_name, created_at
-                   FROM investment_theme_entities
-                   WHERE theme_id = CAST(:id AS UUID)
-                   ORDER BY entity_type, entity_id
+                """SELECT version, claim, variant_perception, confidence,
+                          rationale, changed_by, created_at
+                   FROM investment_thesis_versions
+                   WHERE thesis_id = CAST(:id AS UUID)
+                   ORDER BY version DESC LIMIT 1"""
+            ),
+            {"id": thesis_id},
+        ))
+        thesis["evidence_counts"] = result_rows(session.execute(
+            text(
+                """SELECT relationship, COUNT(*) AS count
+                   FROM investment_thesis_evidence
+                   WHERE thesis_id = CAST(:id AS UUID)
+                   GROUP BY relationship ORDER BY relationship LIMIT 10"""
+            ),
+            {"id": thesis_id},
+        ))
+        thesis["catalysts"] = result_rows(session.execute(
+            text(
+                """SELECT id, description, expected_at, state, created_at
+                   FROM investment_catalysts
+                   WHERE thesis_id = CAST(:id AS UUID)
+                   ORDER BY expected_at NULLS LAST, created_at DESC, id
                    LIMIT :limit"""
             ),
-            {"id": theme_id, "limit": _MAX_THEME_ENTITIES},
-        )
-    )
-    theses = _rows(
-        session.execute(
+            {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
+        ))
+        thesis["risks"] = result_rows(session.execute(
             text(
-                """SELECT id, theme_id, company, symbol, claim, variant_perception,
-                          status, horizon, review_at, confidence, created_at,
-                          updated_at
-                   FROM investment_theses
-                   WHERE theme_id = CAST(:id AS UUID)
+                """SELECT id, description, kind, severity, created_at
+                   FROM investment_risks
+                   WHERE thesis_id = CAST(:id AS UUID)
                    ORDER BY created_at DESC, id
                    LIMIT :limit"""
             ),
-            {"id": theme_id, "limit": _MAX_THEME_THESES},
-        )
-    )
-    for thesis in theses:
-        thesis_id = str(thesis["id"])
-        thesis["latest_version"] = _first(
-            session.execute(
-                text(
-                    """SELECT version, claim, variant_perception, confidence,
-                              rationale, changed_by, created_at
-                       FROM investment_thesis_versions
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       ORDER BY version DESC LIMIT 1"""
-                ),
-                {"id": thesis_id},
-            )
-        )
-        thesis["evidence_counts"] = _rows(
-            session.execute(
-                text(
-                    """SELECT relationship, COUNT(*) AS count
-                       FROM investment_thesis_evidence
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       GROUP BY relationship ORDER BY relationship LIMIT 10"""
-                ),
-                {"id": thesis_id},
-            )
-        )
-        thesis["catalysts"] = _rows(
-            session.execute(
-                text(
-                    """SELECT id, description, expected_at, state, created_at
-                       FROM investment_catalysts
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       ORDER BY expected_at NULLS LAST, created_at DESC, id
-                       LIMIT :limit"""
-                ),
-                {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
-            )
-        )
-        thesis["risks"] = _rows(
-            session.execute(
-                text(
-                    """SELECT id, description, kind, severity, created_at
-                       FROM investment_risks
-                       WHERE thesis_id = CAST(:id AS UUID)
-                       ORDER BY created_at DESC, id
-                       LIMIT :limit"""
-                ),
-                {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
-            )
-        )
+            {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
+        ))
     theme["entities"] = entities
     theme["theses"] = theses
-    theme["atoms"] = _rows(
-        session.execute(
-            text(
-                """SELECT DISTINCT a.id, a.claim, a.confidence, a.status,
-                          a.valid_from, v.thesis_id, v.relationship
-                   FROM investment_thesis_evidence v
-                   JOIN investment_theses th ON th.id = v.thesis_id
-                   JOIN analysis_atoms a ON a.id::text = v.evidence_id
-                   WHERE th.theme_id = CAST(:id AS UUID)
-                     AND v.evidence_type = 'atom'
-                     AND v.relationship IN ('supports', 'contradicts')
-                   ORDER BY a.valid_from DESC, a.id
-                   LIMIT :limit"""
-            ),
-            {"id": theme_id, "limit": _MAX_ATOMS},
-        )
-    )
+    theme["atoms"] = result_rows(session.execute(
+        text(
+            """SELECT DISTINCT a.id, a.claim, a.confidence, a.status,
+                      a.valid_from, v.thesis_id, v.relationship
+               FROM investment_thesis_evidence v
+               JOIN investment_theses th ON th.id = v.thesis_id
+               JOIN analysis_atoms a ON a.id::text = v.evidence_id
+               WHERE th.theme_id = CAST(:id AS UUID)
+                 AND v.evidence_type = 'atom'
+                 AND v.relationship IN ('supports', 'contradicts')
+               ORDER BY a.valid_from DESC, a.id
+               LIMIT :limit"""
+        ),
+        {"id": theme_id, "limit": _MAX_ATOMS},
+    ))
     indicator_ids = [str(value)[:64] for value in (theme.get("key_indicators") or [])][
         :_MAX_INDICATORS
     ]
     theme["key_indicator_values"] = []
     if indicator_ids:
-        theme["key_indicator_values"] = _rows(
-            session.execute(
-                text(
-                    """SELECT DISTINCT ON (series_id) series_id, observed_at,
-                              value, released_at
-                       FROM macro_series
-                       WHERE series_id = ANY(:series_ids)
-                       ORDER BY series_id, observed_at DESC
-                       LIMIT :limit"""
-                ),
-                {"series_ids": indicator_ids, "limit": _MAX_INDICATORS},
-            )
-        )
+        theme["key_indicator_values"] = result_rows(session.execute(
+            text(
+                """SELECT DISTINCT ON (series_id) series_id, observed_at,
+                          value, released_at
+                   FROM macro_series
+                   WHERE series_id = ANY(:series_ids)
+                   ORDER BY series_id, observed_at DESC
+                   LIMIT :limit"""
+            ),
+            {"series_ids": indicator_ids, "limit": _MAX_INDICATORS},
+        ))
     countries, keywords = _entity_event_filters(entities)
     conditions = ["scheduled_at >= :now"]
     params: dict[str, Any] = {"now": datetime.now(UTC), "limit": _MAX_EVENTS}
@@ -966,110 +905,96 @@ def get_theme(session: Any, theme_id: str) -> dict[str, Any] | None:
     if keywords:
         conditions.append("event_name ILIKE ANY(:keywords)")
         params["keywords"] = keywords
-    theme["upcoming_events"] = _rows(
-        session.execute(
-            text(
-                "SELECT event_id, event_name, country, scheduled_at, impact_level, "
-                "consensus, previous, actual FROM econ_events WHERE "
-                + " AND ".join(conditions)
-                + " ORDER BY scheduled_at, event_id LIMIT :limit"
-            ),
-            params,
-        )
-    )
+    theme["upcoming_events"] = result_rows(session.execute(
+        text(
+            "SELECT event_id, event_name, country, scheduled_at, impact_level, "
+            "consensus, previous, actual FROM econ_events WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY scheduled_at, event_id LIMIT :limit"
+        ),
+        params,
+    ))
     return theme
 
 
 def get_dossier(session: Any, company: str) -> dict[str, Any] | None:
     """Company dossier; returns None when no profile or document exists."""
     company_name = _text_required(company, 200, "company")
-    profile = _first(
-        session.execute(
-            text(
-                """SELECT company, symbol, business_overview, segments,
-                          key_operating_drivers, capital_allocation,
-                          valuation_assumptions, guidance, updated_at
-                   FROM company_research_profiles
-                   WHERE company = :company LIMIT 1"""
-            ),
-            {"company": company_name},
-        )
-    )
-    document = _first(
-        session.execute(
-            text(
-                "SELECT document_id FROM investment_documents "
-                "WHERE company = :company ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"company": company_name},
-        )
-    )
+    profile = result_first(session.execute(
+        text(
+            """SELECT company, symbol, business_overview, segments,
+                      key_operating_drivers, capital_allocation,
+                      valuation_assumptions, guidance, updated_at
+               FROM company_research_profiles
+               WHERE company = :company LIMIT 1"""
+        ),
+        {"company": company_name},
+    ))
+    document = result_first(session.execute(
+        text(
+            "SELECT document_id FROM investment_documents "
+            "WHERE company = :company ORDER BY created_at DESC LIMIT 1"
+        ),
+        {"company": company_name},
+    ))
     if profile is None and document is None:
         return None
-    theses = _rows(
-        session.execute(
-            text(
-                """SELECT id, theme_id, company, symbol, claim, variant_perception,
-                          status, horizon, review_at, confidence, created_at,
-                          updated_at
-                   FROM investment_theses
-                   WHERE company = :company
-                   ORDER BY created_at DESC, id
-                   LIMIT :limit"""
-            ),
-            {"company": company_name, "limit": _MAX_THEME_THESES},
-        )
-    )
-    deltas = _rows(
-        session.execute(
-            text(
-                """SELECT fd.id, fd.document_id, fd.category, fd.change_kind,
-                          fd.section_hash, fd.previous_section_hash, fd.excerpt,
-                          fd.previous_excerpt, fd.metrics, fd.created_at,
-                          d.report_date, d.document_type
-                   FROM investment_filing_deltas fd
-                   JOIN investment_documents d ON d.document_id = fd.document_id
-                   WHERE d.company = :company
-                   ORDER BY fd.created_at DESC, fd.id
-                   LIMIT :limit"""
-            ),
-            {"company": company_name, "limit": _MAX_DELTAS},
-        )
-    )
+    theses = result_rows(session.execute(
+        text(
+            """SELECT id, theme_id, company, symbol, claim, variant_perception,
+                      status, horizon, review_at, confidence, created_at,
+                      updated_at
+               FROM investment_theses
+               WHERE company = :company
+               ORDER BY created_at DESC, id
+               LIMIT :limit"""
+        ),
+        {"company": company_name, "limit": _MAX_THEME_THESES},
+    ))
+    deltas = result_rows(session.execute(
+        text(
+            """SELECT fd.id, fd.document_id, fd.category, fd.change_kind,
+                      fd.section_hash, fd.previous_section_hash, fd.excerpt,
+                      fd.previous_excerpt, fd.metrics, fd.created_at,
+                      d.report_date, d.document_type
+               FROM investment_filing_deltas fd
+               JOIN investment_documents d ON d.document_id = fd.document_id
+               WHERE d.company = :company
+               ORDER BY fd.created_at DESC, fd.id
+               LIMIT :limit"""
+        ),
+        {"company": company_name, "limit": _MAX_DELTAS},
+    ))
     for row in deltas:
         row["excerpt"] = _excerpt(row.get("excerpt"))
         row["previous_excerpt"] = _excerpt(row.get("previous_excerpt"))
-    timeline = _rows(
-        session.execute(
-            text(
-                """SELECT d.document_id, d.company, d.symbol, d.document_type,
-                          d.report_date, d.created_at, d.status,
-                          a.analysis_id, a.model, a.created_at AS analyzed_at
-                   FROM investment_documents d
-                   LEFT JOIN investment_analyses a ON a.document_id = d.document_id
-                   WHERE d.company = :company
-                   ORDER BY d.created_at DESC, d.document_id
-                   LIMIT :limit"""
-            ),
-            {"company": company_name, "limit": _MAX_TIMELINE},
-        )
-    )
-    changes = _rows(
-        session.execute(
-            text(
-                """SELECT fd.id, fd.document_id, fd.category, fd.change_kind,
-                          fd.excerpt, fd.previous_excerpt, fd.metrics,
-                          fd.created_at
-                   FROM investment_filing_deltas fd
-                   JOIN investment_documents d ON d.document_id = fd.document_id
-                   WHERE d.company = :company
-                     AND fd.change_kind IN ('new', 'changed', 'removed')
-                   ORDER BY fd.created_at DESC, fd.id
-                   LIMIT :limit"""
-            ),
-            {"company": company_name, "limit": _MAX_DELTAS},
-        )
-    )
+    timeline = result_rows(session.execute(
+        text(
+            """SELECT d.document_id, d.company, d.symbol, d.document_type,
+                      d.report_date, d.created_at, d.status,
+                      a.analysis_id, a.model, a.created_at AS analyzed_at
+               FROM investment_documents d
+               LEFT JOIN investment_analyses a ON a.document_id = d.document_id
+               WHERE d.company = :company
+               ORDER BY d.created_at DESC, d.document_id
+               LIMIT :limit"""
+        ),
+        {"company": company_name, "limit": _MAX_TIMELINE},
+    ))
+    changes = result_rows(session.execute(
+        text(
+            """SELECT fd.id, fd.document_id, fd.category, fd.change_kind,
+                      fd.excerpt, fd.previous_excerpt, fd.metrics,
+                      fd.created_at
+               FROM investment_filing_deltas fd
+               JOIN investment_documents d ON d.document_id = fd.document_id
+               WHERE d.company = :company
+                 AND fd.change_kind IN ('new', 'changed', 'removed')
+               ORDER BY fd.created_at DESC, fd.id
+               LIMIT :limit"""
+        ),
+        {"company": company_name, "limit": _MAX_DELTAS},
+    ))
     for row in changes:
         row["excerpt"] = _excerpt(row.get("excerpt"))
         row["previous_excerpt"] = _excerpt(row.get("previous_excerpt"))

@@ -948,10 +948,6 @@ def _bare_request() -> StarletteRequest:
 # --------------------------------------------------------------------------
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
-
 def _templates(request: Request):
     return request.app.state.templates
 
@@ -978,7 +974,7 @@ def partial_watchlist_grid(
         {
             "request": request,
             "grid": data,
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 

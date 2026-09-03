@@ -1,4 +1,3 @@
-import copy
 import json
 import sys
 import unittest
@@ -10,6 +9,15 @@ from unittest.mock import MagicMock
 ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
+from contracts.runtime_config import (  # noqa: E402
+    AppConfig,
+    DatabaseConfig,
+    LlmConfig,
+    ResearchDiscoveryConfig,
+    ResearchIntelligenceConfig,
+    ResearchLimitsConfig,
+    ResearchStageConfig,
+)
 from research_intelligence.benchmarks import (  # noqa: E402
     list_benchmarks,
 )
@@ -280,7 +288,9 @@ class ControlledStageExecutor:
             "entities": entities,
             "industries": list(payload.get("industries", [])),
             "macro_drivers": ["Changing demand and constrained capacity"],
-            "missing_information": ["Persistence and realized pricing power remain unknown"],
+            "missing_information": [
+                "Persistence and realized pricing power remain unknown"
+            ],
             "importance": {key: "moderate" for key in IMPORTANCE_KEYS},
             "importance_rationale": {
                 key: "Independent supplied evidence supports this bounded assessment."
@@ -288,7 +298,6 @@ class ControlledStageExecutor:
             },
             "aliases": [],
         }
-
 
     def raw_output(self, stage, payload):
         if stage == "claim_extraction":
@@ -421,7 +430,9 @@ class ControlledStageExecutor:
                 ],
                 "evidence_against": [],
                 "weak_links_unknowns": ["Persistence and pricing power remain unknown"],
-                "what_to_watch": ["Capacity, realized pricing, and substitution evidence"],
+                "what_to_watch": [
+                    "Capacity, realized pricing, and substitution evidence"
+                ],
             }
         raise AssertionError(f"unexpected stage: {stage}")
 
@@ -442,24 +453,21 @@ class ControlledStageExecutor:
         )
 
 
-
 class ControlledBenchmarkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.settings = ResearchSettings.from_config(
-            {
-                "research_intelligence": {
-                    "enabled": True,
-                    "limits": {
-                        "maximum_cases_per_run": 3,
-                        "maximum_candidate_evidence": 200,
-                    },
-                    "candidate": {
-                        "minimum_evidence_count": 2,
-                        "minimum_source_diversity": 2,
-                    },
-                }
-            }
+            ResearchIntelligenceConfig(
+                enabled=True,
+                limits=ResearchLimitsConfig(
+                    maximum_cases_per_run=3,
+                    maximum_candidate_evidence=200,
+                ),
+                discovery=ResearchDiscoveryConfig(
+                    minimum_evidence_count=2,
+                    minimum_source_diversity=2,
+                ),
+            )
         )
 
     def test_all_four_versioned_benchmarks_are_point_in_time_safe(self):
@@ -550,7 +558,9 @@ class ControlledBenchmarkTests(unittest.TestCase):
             self.assertIsNotNone(case.payload["deliverable"])
             self.assertTrue(case.payload["data_requests"])
             self.assertEqual(scorecard["dimensions"]["specificity"]["status"], "pass")
-            self.assertEqual(scorecard["dimensions"]["causal_quality"]["status"], "pass")
+            self.assertEqual(
+                scorecard["dimensions"]["causal_quality"]["status"], "pass"
+            )
             self.assertIn(
                 scorecard["dimensions"]["discovery"]["status"],
                 {"pass", "partial"},
@@ -577,9 +587,7 @@ class ControlledBenchmarkTests(unittest.TestCase):
         self.assertEqual(factor["measures"]["data_request_count"], 1)
         self.assertTrue(factor["measures"]["expected_unknowns_matched"])
         self.assertEqual(
-            scorecard["run_metrics"]["quality"]["graph"][
-                "testable_hypothesis_rate"
-            ],
+            scorecard["run_metrics"]["quality"]["graph"]["testable_hypothesis_rate"],
             1.0,
         )
 
@@ -589,56 +597,91 @@ class ControlledBenchmarkTests(unittest.TestCase):
             execution,
             cases=(replace(case, payload=payload_without_request),),
         )
-        untestable_factor = build_benchmark_scorecard(
-            untestable, episode
-        )["dimensions"]["hypothesis_discovery"]
+        untestable_factor = build_benchmark_scorecard(untestable, episode)[
+            "dimensions"
+        ]["hypothesis_discovery"]
         self.assertEqual(untestable_factor["status"], "partial")
 
     def test_configuration_overrides_are_bounded_and_do_not_mutate_base(self):
-        base = {
-            "research_intelligence": {
-                "model_overrides": {"pattern_discovery": "model/a"},
-                "stages": {"pattern_discovery": {"enabled": True}},
-            }
-        }
-        original = copy.deepcopy(base)
+        base = AppConfig(
+            database=DatabaseConfig(
+                host="localhost",
+                port=5432,
+                name="test",
+                user="research_runner_ci",
+                password="s9V!q2K#x7Lm4P@t",
+            ),
+            llm=LlmConfig(api_key="rI8nW3qY5vT2mK7pL9sF4dH6"),
+            research_intelligence=ResearchIntelligenceConfig(
+                model_overrides={"pattern_discovery": "model/a"},
+                stages={"pattern_discovery": ResearchStageConfig(enabled=True)},
+            ),
+        )
         changed = config_with_replay_overrides(
             base,
             model_overrides={"pattern_discovery": "model/b"},
             prompt_overrides={"pattern_discovery": "prompts/alternative.txt"},
         )
-        self.assertEqual(base, original)
         self.assertEqual(
-            changed["research_intelligence"]["model_overrides"]["pattern_discovery"],
+            base.research_intelligence.model_overrides["pattern_discovery"], "model/a"
+        )
+        self.assertEqual(
+            changed.research_intelligence.model_overrides["pattern_discovery"],
             "model/b",
         )
         self.assertEqual(
-            changed["research_intelligence"]["stages"]["pattern_discovery"][
-                "prompt_template"
-            ],
+            changed.research_intelligence.stages["pattern_discovery"].prompt_template,
             "prompts/alternative.txt",
         )
         with self.assertRaisesRegex(ValueError, "invalid research model override"):
             config_with_replay_overrides(base, model_overrides={"unknown": "model"})
 
     def test_variant_identity_uses_resolved_default_model(self):
-        base = {
-            "llm": {"models": {"default": "provider/model-a"}},
-            "research_intelligence": {
-                "enabled": True,
-                "stages": {
-                    "pattern_discovery": {
-                        "prompt_template": str(
-                            ORCH_ROOT.parent
-                            / "prompts"
-                            / "research_pattern_discovery_v2.txt"
-                        )
-                    }
+        prompt_path = str(
+            ORCH_ROOT.parent / "prompts" / "research_pattern_discovery_v2.txt"
+        )
+        base = AppConfig(
+            database=DatabaseConfig(
+                host="localhost",
+                port=5432,
+                name="test",
+                user="research_runner_ci",
+                password="s9V!q2K#x7Lm4P@t",
+            ),
+            llm=LlmConfig(
+                api_key="rI8nW3qY5vT2mK7pL9sF4dH6",
+                models={"default": "provider/model-a"},
+            ),
+            research_intelligence=ResearchIntelligenceConfig(
+                enabled=True,
+                stages={
+                    "pattern_discovery": ResearchStageConfig(
+                        prompt_template=prompt_path
+                    )
                 },
-            },
-        }
-        changed = copy.deepcopy(base)
-        changed["llm"]["models"]["default"] = "provider/model-b"
+            ),
+        )
+        changed = AppConfig(
+            database=DatabaseConfig(
+                host="localhost",
+                port=5432,
+                name="test",
+                user="research_runner_ci",
+                password="s9V!q2K#x7Lm4P@t",
+            ),
+            llm=LlmConfig(
+                api_key="rI8nW3qY5vT2mK7pL9sF4dH6",
+                models={"default": "provider/model-b"},
+            ),
+            research_intelligence=ResearchIntelligenceConfig(
+                enabled=True,
+                stages={
+                    "pattern_discovery": ResearchStageConfig(
+                        prompt_template=prompt_path
+                    )
+                },
+            ),
+        )
         left = ResearchModelRunner(
             base, correlation_id=None, session=None
         ).cache_identity("pattern_discovery")
@@ -762,7 +805,6 @@ class ControlledBenchmarkTests(unittest.TestCase):
                 expected_version=1,
             )
         self.assertEqual(session.execute.call_count, 1)
-
 
 
 if __name__ == "__main__":

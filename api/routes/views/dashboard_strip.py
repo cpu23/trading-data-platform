@@ -28,10 +28,6 @@ router = APIRouter()
 logger = get_logger("dashboard.strip")
 
 
-def _live_updates_enabled(config: dict) -> bool:
-    return config.get("event_pipeline", {}).get("sse", {}).get("enabled") is True
-
-
 _NEXT_CATALYST_SQL = """
     SELECT event_id, event_name, country, scheduled_at, source, metadata
     FROM econ_events
@@ -189,6 +185,6 @@ def partial_top_strip(request: Request):
         {
             "request": request,
             "strip": load_compact_strip(config),
-            "live_updates_enabled": _live_updates_enabled(config),
+            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )

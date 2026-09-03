@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,7 +20,7 @@ from .contracts import EntityRef, Horizon, MarketEvent, MarketEventType, MarketR
 _DATETIME_ADAPTER = TypeAdapter(datetime)
 
 
-def _json_value(value: Any, *, path: str = "value") -> Any:
+def canonical_json_value(value: Any, *, path: str = "value") -> Any:
     """Convert supported values to JSON primitives without lossy coercion."""
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -27,6 +29,10 @@ def _json_value(value: Any, *, path: str = "value") -> Any:
             raise TypeError(f"{path} contains a non-finite float")
         # JSON has one representation for zero; normalize signed zero as well.
         return 0.0 if value == 0 else value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise TypeError(f"{path} contains non-finite Decimal")
+        return format(value, "f")
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
@@ -36,30 +42,40 @@ def _json_value(value: Any, *, path: str = "value") -> Any:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Enum):
-        return _json_value(value.value, path=path)
+        return canonical_json_value(value.value, path=path)
     if isinstance(value, BaseModel):
-        return _json_value(value.model_dump(mode="python"), path=path)
+        return canonical_json_value(value.model_dump(mode="python"), path=path)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: canonical_json_value(
+                getattr(value, field.name), path=f"{path}.{field.name}"
+            )
+            for field in dataclasses.fields(value)
+        }
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{path} has a non-string key")
-            result[key] = _json_value(item, path=f"{path}.{key}")
+            result[key] = canonical_json_value(item, path=f"{path}.{key}")
         return result
     if isinstance(value, Sequence) and not isinstance(
         value, (bytes, bytearray, memoryview)
     ):
         return [
-            _json_value(item, path=f"{path}[{index}]")
+            canonical_json_value(item, path=f"{path}[{index}]")
             for index, item in enumerate(value)
         ]
     raise TypeError(f"{path} contains non-JSON-compatible value {type(value).__name__}")
 
 
+_json_value = canonical_json_value
+
+
 def canonical_json(value: Any) -> str:
     """Return compact, sorted-key JSON with stable UUID and UTC datetime values."""
     return json.dumps(
-        _json_value(value),
+        canonical_json_value(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -71,6 +87,8 @@ def content_hash(value: Any) -> str:
     """Return the SHA-256 digest of a canonical JSON representation."""
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
+
+canonical_fingerprint = content_hash
 
 def dedupe_key(
     source: str,
@@ -196,4 +214,11 @@ def build_market_event(
     )
 
 
-__all__ = ["build_market_event", "canonical_json", "content_hash", "dedupe_key"]
+__all__ = [
+    "build_market_event",
+    "canonical_fingerprint",
+    "canonical_json",
+    "canonical_json_value",
+    "content_hash",
+    "dedupe_key",
+]

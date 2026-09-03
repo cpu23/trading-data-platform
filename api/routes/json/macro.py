@@ -4,17 +4,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 import config as app_config
 from db import query_many
+from serializers import isoformat
 from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
-
-
-def _fmt(value):
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
 
 
 @router.get("/macro/dashboard")
@@ -173,7 +166,7 @@ def get_macro_dashboard():
     last_collector_run = rows[0].get("last_collector_run") if rows else None
     return {
         "indicators": indicators,
-        "last_collector_run": _fmt(last_collector_run),
+        "last_collector_run": isoformat(last_collector_run),
     }
 
 
@@ -222,7 +215,7 @@ def get_macro_series(
         "series_id": series_id,
         "observations": [
             {
-                "observed_at": _fmt(row["observed_at"]),
+                "observed_at": isoformat(row["observed_at"]),
                 "value": row["value"],
             }
             for row in rows

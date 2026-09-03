@@ -151,7 +151,6 @@ def _bounded_decimal(
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return number
 
-
 def _canonical(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, bool)):
         return value

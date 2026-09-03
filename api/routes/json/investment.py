@@ -7,63 +7,15 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from config import orchestrator_url
 from contracts import InvestmentUrlIngestRequest
 from logging_config import get_logger
-from routes.json.triggers import _internal_basic_auth
+from orchestrator_client import orchestrator_request
 
 router = APIRouter(prefix="/investment", tags=["investment"])
 logger = get_logger("api.investment")
 MAX_DOCUMENT_BYTES = 20_000_000
 _UPLOAD_CHUNK_BYTES = 65_536
 
-
-async def _orchestrator_request(
-    request: Request, method: str, path: str, **kwargs
-) -> httpx.Response:
-    """Forward through the shared app client; capability is checked before send.
-
-    There is deliberately no client fallback: a POST that reaches this
-    function is sent exactly once, so a missing or unusable client fails
-    closed (503) instead of re-sending the request on a second client.
-    """
-    try:
-        auth = _internal_basic_auth()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503, detail="Internal authentication unavailable"
-        ) from exc
-    client = getattr(request.app.state, "orchestrator_client", None)
-    if client is None:
-        raise HTTPException(
-            status_code=503, detail="Orchestrator client unavailable"
-        )
-    try:
-        return await client.request(
-            method,
-            f"{orchestrator_url()}{path}",
-            auth=auth,
-            **kwargs,
-        )
-    except httpx.TransportError as exc:
-        logger.error(
-            "investment_orchestrator_unavailable",
-            method=method,
-            path=path,
-            error_type=type(exc).__name__,
-        )
-        raise HTTPException(status_code=503, detail="Orchestrator unavailable") from exc
-    except (AttributeError, TypeError) as exc:
-        # An unusable client must never trigger a second send of the request.
-        logger.error(
-            "investment_orchestrator_client_unusable",
-            method=method,
-            path=path,
-            error_type=type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=503, detail="Orchestrator client unavailable"
-        ) from exc
 
 
 def _payload_or_error(response: httpx.Response):
@@ -86,7 +38,7 @@ def _payload_or_error(response: httpx.Response):
 
 @router.get("/dashboard")
 async def investment_dashboard(request: Request):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "GET",
         "/investment/dashboard",
@@ -97,7 +49,7 @@ async def investment_dashboard(request: Request):
 
 @router.get("/analyses/{analysis_id}")
 async def investment_analysis(analysis_id: UUID, request: Request):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "GET",
         f"/investment/analyses/{analysis_id}",
@@ -152,7 +104,7 @@ async def ingest_investment_document(request: Request):
         finally:
             spool.close()
         with open(spool_path, "rb") as handle:
-            response = await _orchestrator_request(
+            response = await orchestrator_request(
                 request,
                 "POST",
                 "/investment/documents",
@@ -183,7 +135,7 @@ async def ingest_investment_document(request: Request):
 async def ingest_investment_url(
     request: Request, body: InvestmentUrlIngestRequest = Body(...)
 ):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "POST",
         "/investment/urls",
@@ -199,7 +151,7 @@ async def run_investment_analysis(
     request: Request,
     body: dict | None = Body(default=None),
 ):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "POST",
         f"/investment/documents/{document_id}/analyze",
@@ -211,7 +163,7 @@ async def run_investment_analysis(
 
 @router.get("/filings/status")
 async def investment_filings_status(request: Request):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "GET",
         "/investment/filings/status",
@@ -224,7 +176,7 @@ async def investment_filings_status(request: Request):
 async def trigger_filing_collection(
     request: Request, body: dict | None = Body(default=None)
 ):
-    response = await _orchestrator_request(
+    response = await orchestrator_request(
         request,
         "POST",
         "/investment/filings/collect",

@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from db import upsert_records_in_session
+from errors import sanitize_error
 
 from .canonicalize import canonical_json
 from .contracts import MarketEvent
@@ -300,15 +301,6 @@ def terminal_fail_outbox(
     return bool(result.rowcount)
 
 
-def sanitize_error(error: str | Exception | None) -> str | None:
-    if error is None:
-        return None
-    if isinstance(error, BaseException):
-        return type(error).__name__[:200]
-    text_value = " ".join(str(error).split())
-    return text_value[:500] or "error"
-
-
 def operations_summary(
     session: Any,
     *,
@@ -382,6 +374,5 @@ __all__ = [
     "retry_outbox_row",
     "terminal_fail_outbox",
     "terminal_fail_outbox_row",
-    "sanitize_error",
     "upsert_raw",
 ]
