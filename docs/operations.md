@@ -464,17 +464,10 @@ cache use, duplicate/materiality avoidance, and budget suppression. A
 `suppressed_budget` job is not a collector failure; deterministic collection
 continues.
 
-Before changing the default, run `benchmark-models` against all committed
-suites, complete the generated `blind-review.html`, and run `benchmark-score`
-with its downloaded review JSON. A recommendation is invalid while
-`blind_review_complete` is false. Never weaken a schema, enable provider
-fallback, or use a per-processor override to make a candidate pass. Follow ADR
-0011 and retain the artifact with actual cost, latency, identity key, scores,
-and rationale.
-
-If any candidate rejects sampling controls, pass `--omit-temperature`. The
-flag removes `temperature` from every candidate request in that benchmark; it
-does not create a model-specific request profile.
+Changing `llm.models.default` is a manual operator decision: review the
+candidate slug's spend, schema-repair, and budget metrics in `/operations`,
+and record the change against ADR 0011. Never weaken a schema or enable
+provider fallback to make a candidate pass.
 
 ## Stale-data troubleshooting
 

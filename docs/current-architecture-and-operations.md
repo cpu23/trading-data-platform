@@ -160,9 +160,6 @@ Contracts enforced in code include:
 - sparse assets become neutral, low confidence, and explicitly unavailable
 - advisory and technical-analysis language fails policy validation
 
-The currently selected production profile is documented in
-`docs/intelligence_model_benchmark.md`.
-
 ## Research Intelligence
 
 The research-intelligence subsystem is separate from the four-role daily market
@@ -332,23 +329,10 @@ snapshot visible with stale/failure metadata.
 ## Model Evaluation and Promotion
 
 All production processors inherit one exact slug from `llm.models.default`.
-The offline `benchmark-models` command compares the two pinned candidate slugs
-against versioned core, adversarial, long-context, and regression fixtures.
-Artifacts include exact request bodies, raw responses, deterministic metrics,
-actual usage, a randomized `blind-review.html`, a separate identity key,
-weighted scores, and hard disqualifiers. The initial decision has no
-recommendation. A reviewer scores all eight criteria and supplies rationale for
-every candidate/case, downloads `blind-review-scores.json`, then finalizes it:
-
-```bash
-python cli.py benchmark-score \
-  --artifact ../artifacts/model-benchmarks/<run> \
-  --review /path/to/blind-review-scores.json
-```
-
-Only complete, validated blind review unlocks a recommendation. ADR 0011 still
-requires operator approval of that artifact before `llm.models.default`
-changes.
+Changing the default is a manual operator decision gated by ADR 0011: review
+the candidate slug's spend, schema-repair, and budget metrics in
+`/operations` before switching, and never weaken a schema or enable provider
+fallback to make a candidate pass.
 
 ## Operator Checks
 
