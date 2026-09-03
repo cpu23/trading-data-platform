@@ -20,6 +20,7 @@ from company_benchmark_support import (  # noqa: E402
 )
 
 import investment_service as service  # noqa: E402
+from investment_schemas import _normalize_grounding_text  # noqa: E402
 from research_intelligence import company_benchmarks as cb  # noqa: E402
 from research_intelligence import company_judging as judging  # noqa: E402
 from research_intelligence import company_quality as cq  # noqa: E402
@@ -175,7 +176,7 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
             for name in service.QUALITATIVE_NAMES
         }
         base_payload = narrative_payload(
-            summary="",
+            summary="Baseline summary for Microsoft earnings transcript analysis.",
             thesis=(
                 "Holds while Azure growth stays within the guided range; "
                 "below-guide growth or delayed capacity additions invalidate it."
@@ -806,7 +807,7 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
     # -- scheduling trap present, Q4 results absent ---------------------------
 
     def test_producer_packet_holds_scheduling_trap_without_q4_results(self):
-        normalized_excerpt = service._normalize_grounding_text(self.producer.excerpt)
+        normalized_excerpt = _normalize_grounding_text(self.producer.excerpt)
         self.assertIn(
             "will publish fiscal year 2024 fourth-quarter financial results "
             "after the close of the market",
@@ -834,7 +835,7 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
         self.assertEqual(self.producer.prior_count, 0)
         self.assertIsNone(self.producer.previous_state)
         # No realized Q4 value or outcome remark anywhere in the producer half.
-        blob = service._normalize_grounding_text(" ".join(self._producer_strings()))
+        blob = _normalize_grounding_text(" ".join(self._producer_strings()))
         for phrase in _QUIET_PRODUCER_LEAK_PHRASES:
             with self.subTest(phrase=phrase):
                 self.assertNotIn(phrase, blob)
@@ -1097,7 +1098,8 @@ class MicrosoftFinalizedMetricsRegressionTests(unittest.TestCase):
         self.assertNotEqual(cash_capex, lease_capex)
 
     def test_reported_free_cash_flow_is_authoritative_and_segment_scopes_hold(self):
-        metrics = self._finalize().analysis["metrics"]
+        finalized = self._finalize()
+        metrics = finalized.analysis["metrics"]
         # Reported $23.3B FCF (OCF $37.2B minus CASH PP&E $13.9B); the
         # finance-lease-inclusive figure must never enter this arithmetic.
         self.assertAlmostEqual(float(metrics["fcf"]["value"]), 23.3, places=6)
@@ -1106,4 +1108,5 @@ class MicrosoftFinalizedMetricsRegressionTests(unittest.TestCase):
         self.assertEqual(cloud_gm["unit"], "percent")
         ai_points = metrics["azure_growth_from_ai_services_points"]
         self.assertAlmostEqual(float(ai_points["value"]), 8.0, places=6)
-        self.assertTrue(str(ai_points.get("source_location", "")).startswith("transcript"))
+        fact_ai = finalized.facts["metrics"].get("azure_growth_from_ai_services_points", {})
+        self.assertTrue(str(fact_ai.get("source_location", "")).startswith("transcript"))

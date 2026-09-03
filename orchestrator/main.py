@@ -26,7 +26,6 @@ from contracts import (
 )
 from db import check_connection
 from db import get_session as get_session
-from errors import sanitize_error
 
 try:
     from data_quality import (
@@ -630,9 +629,10 @@ def health():
             else None,
             "records_fetched": run.get("records_fetched"),
             "records_written": run.get("records_written"),
-            # Persisted error text may embed secrets; expose only a bounded
-            # error class (exception type or generic "Error").
-            "error_message": sanitize_error(run.get("error_message")),
+            # Persisted error text may embed secrets; the health surface
+            # exposes only a bounded label, never the message text
+            # (details remain in collection_log and the logs).
+            "error_message": "Error" if run.get("error_message") else None,
         }
 
     role_components, roles_ready = _role_readiness(config)

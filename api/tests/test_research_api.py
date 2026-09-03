@@ -16,10 +16,21 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-os.environ["DASHBOARD_USER"] = "test"
-os.environ["DASHBOARD_PASSWORD"] = "test"
-os.environ["DEPLOYMENT_MODE"] = "test"
-
+os.environ.update(
+    {
+        "DB_USER": "test",
+        "DB_PASSWORD": "test",
+        "FRED_API_KEY": "test",
+        "OPENROUTER_API_KEY": "test",
+        "OPENROUTER_MODEL": "test/model",
+        "OANDA_API_KEY": "test",
+        "DASHBOARD_USER": "test",
+        "DASHBOARD_PASSWORD": "test",
+        "DEPLOYMENT_MODE": "test",
+        "SECRETS_FILE": "/nonexistent/test-secrets.env",
+        "CONFIG_DIR": str(Path(__file__).resolve().parents[2] / "config"),
+    }
+)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth import mint_csrf_token  # noqa: E402
@@ -102,7 +113,6 @@ class ThesisDeskReadRoutesTests(unittest.TestCase):
         for path in (
             "/api/research/theses/opportunities",
             "/api/research/theses/groups",
-            f"/api/research/theses/groups/{GROUP_ID}",
             f"/api/research/theses/{THESIS_ID}",
             "/api/research/theses/status",
         ):
@@ -314,23 +324,6 @@ class ThesisDeskReadRoutesTests(unittest.TestCase):
                     )
                     self.assertEqual(response.status_code, 422)
         helpers.list_thesis_groups.assert_not_called()
-
-    def test_group_detail_missing_is_404_and_invalid_uuid_422(self):
-        helpers = MagicMock()
-        helpers.load_group_tournament.return_value = None
-        with (
-            patch("routes.json.research._thesis_fusion", helpers),
-            patch("routes.json.research.get_session"),
-        ):
-            missing = client.get(
-                f"/api/research/theses/groups/{GROUP_ID}", headers=AUTH
-            )
-        self.assertEqual(missing.status_code, 404)
-        helpers.load_group_tournament.assert_called_once()
-        with patch("routes.json.research._thesis_fusion", helpers):
-            invalid = client.get("/api/research/theses/groups/not-a-uuid", headers=AUTH)
-        self.assertEqual(invalid.status_code, 422)
-        self.assertEqual(helpers.load_group_tournament.call_count, 1)
 
     def test_thesis_detail_serializes_full_desk_state(self):
         helpers = MagicMock()
@@ -544,7 +537,6 @@ class ThesisDeskReadRoutesTests(unittest.TestCase):
             for path in (
                 "/api/research/theses/opportunities",
                 "/api/research/theses/groups",
-                f"/api/research/theses/groups/{GROUP_ID}",
                 f"/api/research/theses/{THESIS_ID}",
                 "/api/research/theses/status",
             ):

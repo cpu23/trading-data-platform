@@ -43,15 +43,15 @@ from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from research_intelligence.contracts import canonical_fingerprint
 from research_intelligence.company_quality import _required_producer_fingerprint
+from research_intelligence.contracts import canonical_fingerprint
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps heavy imports out
+    from investment_service import InvestmentFinalizedAnalysis
     from research_intelligence.company_benchmarks import (
         EvaluatorCase,
         ProducerCase,
     )
-    from investment_service import InvestmentFinalizedAnalysis
 
 
 SCHEMA_VERSION = "company_blind_judge_v4"
@@ -349,7 +349,7 @@ def _role_token(salt: bytes, producer_fingerprint: str, role: str) -> str:
     """Opaque per-(run, role) token; reveals nothing but uniqueness."""
     digest = hmac.new(
         salt,
-        f"{SCHEMA_VERSION}\x00{producer_fingerprint}\x00{role}".encode("utf-8"),
+        f"{SCHEMA_VERSION}\x00{producer_fingerprint}\x00{role}".encode(),
         hashlib.sha256,
     ).hexdigest()
     return digest[:_TOKEN_LENGTH]
@@ -359,13 +359,13 @@ def _shuffled_roles(salt: bytes) -> tuple[str, ...]:
         sorted(
             JUDGE_ROLES,
             key=lambda role: hmac.digest(
-                salt, f"order\x00{role}".encode("utf-8"), hashlib.sha256
+                salt, f"order\x00{role}".encode(), hashlib.sha256
             ),
         )
     )
 
 
-def _evaluation_rubric(evaluator: "EvaluatorCase") -> dict[str, Any]:
+def _evaluation_rubric(evaluator: EvaluatorCase) -> dict[str, Any]:
     """Static grading anchors only; future-knowledge fields stay hidden.
 
     ``forbidden_hindsight`` (structured company claims) and ``later_outcomes``
@@ -388,7 +388,7 @@ def _evaluation_rubric(evaluator: "EvaluatorCase") -> dict[str, Any]:
 
 
 def _case_material(
-    producer: "ProducerCase", finalized: "InvestmentFinalizedAnalysis"
+    producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> dict[str, Any]:
     """Sanitized producer-side material shared identically by every judge."""
     # Pipeline provenance is never judged material.
@@ -645,7 +645,7 @@ class BlindJudgeRequest:
         fingerprint: str,
         response_binding: str,
         producer_fingerprint: str,
-    ) -> "BlindJudgeRequest":
+    ) -> BlindJudgeRequest:
         """Construct with the schema recursively frozen at the boundary."""
         return cls(
             role=role,
@@ -697,9 +697,9 @@ class JudgeResult:
 
 
 def build_blind_judge_requests(
-    producer: "ProducerCase",
-    evaluator: "EvaluatorCase",
-    finalized: "InvestmentFinalizedAnalysis",
+    producer: ProducerCase,
+    evaluator: EvaluatorCase,
+    finalized: InvestmentFinalizedAnalysis,
     blind_salt: str | bytes,
 ) -> tuple[BlindJudgeRequest, ...]:
     """Build exactly three blind judge requests in salt-shuffled order.

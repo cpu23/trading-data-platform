@@ -1066,28 +1066,6 @@ class IssuerTranscriptConfig(FrozenModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
-class TranscriptionSettingsConfig(FrozenModel):
-    """Local faster-whisper transcription settings for issuer_transcripts.
-
-    Bounds mirror ``transcription.normalize_transcription_config`` so
-    out-of-range values are rejected here instead of silently clamped at
-    runtime.
-    """
-
-    model: NonBlankText = "small.en"
-    device: NonBlankText = "cpu"
-    compute_type: NonBlankText = "int8"
-    beam_size: int = Field(default=5, ge=1, le=10)
-    language: str | None = "en"
-    max_audio_seconds: int = Field(default=7_200, ge=1, le=86_400)
-    timeout_seconds: int = Field(default=3_600, ge=1, le=86_400)
-    max_audio_bytes: int = Field(default=250_000_000, ge=1, le=2_147_483_648)
-    model_dir: str | None = "/var/lib/trading-data/news/models/whisper"
-    local_files_only: bool = False
-    cpu_threads: int = Field(default=0, ge=0, le=1024)
-    vad_filter: bool = True
-    condition_on_previous_text: bool = False
-
 
 class CollectorConfig(FrozenModel):
     """Union schema covering every configured collector source.
@@ -1166,12 +1144,9 @@ class CollectorConfig(FrozenModel):
     timeout_seconds: float = Field(default=30.0, ge=5.0, le=60.0)
     max_issuers: int = Field(default=20, ge=1, le=200)
     max_page_bytes: int = Field(default=2_000_000, ge=65_536, le=52_428_800)
-    max_audio_bytes: int = Field(default=250_000_000, ge=1_048_576, le=2_147_483_648)
     max_links_per_page: int = Field(default=50, ge=1, le=500)
     max_records_per_issuer: int = Field(default=25, ge=1, le=500)
     max_redirects: int = Field(default=5, ge=0, le=10)
-    audio_timeout_seconds: float = Field(default=300.0, ge=10.0, le=3600.0)
-    transcription: TranscriptionSettingsConfig | None = None
     request_interval_seconds: float = Field(default=0.1, ge=0.0, le=60.0)
     max_filings_per_issuer: int = Field(default=100, ge=1, le=500)
     max_document_bytes: int = Field(default=25_000_000, ge=10_000, le=50_000_000)
@@ -1586,16 +1561,13 @@ _COLLECTOR_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
             "issuers",
             "max_issuers",
             "timeout_seconds",
-            "audio_timeout_seconds",
             "max_page_bytes",
             "max_document_bytes",
-            "max_audio_bytes",
             "max_redirects",
             "max_links_per_page",
             "max_records_per_issuer",
             "user_agent",
             "headers",
-            "transcription",
         }
     ),
     "public_equities": frozenset(

@@ -221,7 +221,7 @@ class InvestmentIntakeTests(unittest.TestCase):
         with self.assertRaises(OutboundSecurityError):
             service.resolve_redirect_url("https://public.example.test/doc", "   ")
 
-    @patch("investment_service.httpx.Client")
+    @patch("investment_ingest.httpx.Client")
     def test_slow_drip_response_aborts_at_total_deadline(self, client_class):
         """A server that drips one small chunk per read-timeout window must
         still be cut off at the total fetch deadline, not stream forever."""
@@ -243,7 +243,7 @@ class InvestmentIntakeTests(unittest.TestCase):
                 ],
             ),
             patch(
-                "investment_service.time.monotonic",
+                "investment_ingest.time.monotonic",
                 side_effect=lambda: next(ticks),
             ),
         ):
@@ -306,7 +306,7 @@ class InvestmentIntakeTests(unittest.TestCase):
                 archive, max_entries=service.MAX_ARCHIVE_ENTRIES
             )
 
-    @patch("investment_service.httpx.Client")
+    @patch("investment_ingest.httpx.Client")
     def test_chunked_oversize_response_is_rejected(self, client_class):
         fake_response = MagicMock()
         fake_response.status_code = 200
@@ -329,7 +329,7 @@ class InvestmentIntakeTests(unittest.TestCase):
                     "https://public.example.test/report.pdf"
                 )
 
-    @patch("investment_service.httpx.Client")
+    @patch("investment_ingest.httpx.Client")
     def test_fetch_streams_directly_to_temp_file(self, client_class):
         """A remote document is streamed to a temp path, never buffered as a
         full byte blob (the function returns a PATH, not bytes)."""
@@ -361,7 +361,7 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertEqual(mime_type, "application/pdf")
         self.assertEqual(final_url, "https://public.example.test/report.pdf")
 
-    @patch("investment_service.httpx.Client")
+    @patch("investment_ingest.httpx.Client")
     def test_declared_oversize_rejected_before_body_is_read(self, client_class):
         fake_response = MagicMock()
         fake_response.status_code = 200
@@ -384,9 +384,9 @@ class InvestmentIntakeTests(unittest.TestCase):
 
     def test_ocr_page_budget_bounds_total_pages(self):
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._ocr_pdf_page",
+                "investment_ingest._ocr_pdf_page",
                 return_value="page text " * 40,
             ) as ocr_page,
         ):
@@ -397,9 +397,9 @@ class InvestmentIntakeTests(unittest.TestCase):
 
     def test_ocr_focused_pass_respects_shared_page_budget(self):
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._ocr_pdf_page",
+                "investment_ingest._ocr_pdf_page",
                 return_value="CONSOLIDATED INCOME STATEMENT " * 20,
             ) as ocr_page,
         ):
@@ -410,9 +410,9 @@ class InvestmentIntakeTests(unittest.TestCase):
     def test_ocr_durable_budget_allows_larger_sample(self):
         """The durable worker may use the full page budget."""
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._ocr_pdf_page",
+                "investment_ingest._ocr_pdf_page",
                 return_value="CONSOLIDATED INCOME STATEMENT " * 20,
             ) as ocr_page,
         ):
@@ -428,20 +428,20 @@ class InvestmentIntakeTests(unittest.TestCase):
 
     def test_ocr_wall_deadline_prevents_subprocess_launch(self):
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._ocr_pdf_page",
+                "investment_ingest._ocr_pdf_page",
                 return_value="text " * 40,
             ) as ocr_page,
             patch(
-                "investment_service.time.monotonic",
+                "investment_ingest.time.monotonic",
                 side_effect=[100.0, 1000.0],
             ),
         ):
             service._ocr_pdf(b"%PDF-scan", page_count=50)
         ocr_page.assert_not_called()
 
-    @patch("investment_service.httpx.Client")
+    @patch("investment_ingest.httpx.Client")
     def test_redirect_chain_revalidates_each_hop(self, client_class):
         """Every redirect hop resolves and validates through the pinned
         transport, and the final URL is what gets stored."""
@@ -487,8 +487,8 @@ class InvestmentIntakeTests(unittest.TestCase):
             pid=1234,
         )
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/prlimit"),
-            patch("investment_service.subprocess.Popen", return_value=fake) as popen,
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/prlimit"),
+            patch("investment_ingest.subprocess.Popen", return_value=fake) as popen,
         ):
             stdout = service._run_ocr_subprocess(
                 ["tesseract", "img"], capture=True, timeout=5
@@ -514,8 +514,8 @@ class InvestmentIntakeTests(unittest.TestCase):
             pid=1234,
         )
         with (
-            patch("investment_service.shutil.which", return_value=None),
-            patch("investment_service.subprocess.Popen", return_value=fake) as popen,
+            patch("investment_ingest.shutil.which", return_value=None),
+            patch("investment_ingest.subprocess.Popen", return_value=fake) as popen,
         ):
             stdout = service._run_ocr_subprocess(
                 ["tesseract", "img"], capture=True, timeout=5
@@ -549,7 +549,7 @@ class InvestmentIntakeTests(unittest.TestCase):
             ),
             # start_new_session makes the child the group leader, so the
             # timeout path must killpg(pid, SIGKILL) and then reap via wait.
-            patch("investment_service.os.killpg") as killpg,
+            patch("investment_ingest.os.killpg") as killpg,
         ):
             with self.assertRaises(subprocess.TimeoutExpired):
                 service._run_ocr_subprocess(
@@ -560,8 +560,8 @@ class InvestmentIntakeTests(unittest.TestCase):
 
     def test_ocr_page_task_skips_when_deadline_expired(self):
         with (
-            patch("investment_service.time.monotonic", return_value=500.0),
-            patch("investment_service._run_ocr_subprocess") as run,
+            patch("investment_ingest.time.monotonic", return_value=500.0),
+            patch("investment_ingest._run_ocr_subprocess") as run,
         ):
             result = service._ocr_pdf_page(
                 Path("/tmp/x.pdf"), Path("/tmp"), 3, 140, deadline=400.0
@@ -572,10 +572,10 @@ class InvestmentIntakeTests(unittest.TestCase):
     def test_ocr_page_task_clamps_subprocess_timeout_to_remaining(self):
         with (
             patch(
-                "investment_service.time.monotonic",
+                "investment_ingest.time.monotonic",
                 side_effect=[410.0, 415.0, 419.0],
             ),
-            patch("investment_service._run_ocr_subprocess") as run,
+            patch("investment_ingest._run_ocr_subprocess") as run,
         ):
             service._ocr_pdf_page(
                 Path("/tmp/x.pdf"), Path("/tmp"), 3, 140, deadline=420.0
@@ -590,10 +590,10 @@ class InvestmentIntakeTests(unittest.TestCase):
         launch with a stale oversized timeout."""
         with (
             patch(
-                "investment_service.time.monotonic",
+                "investment_ingest.time.monotonic",
                 side_effect=[410.0, 419.9, 419.95],
             ),
-            patch("investment_service._run_ocr_subprocess") as run,
+            patch("investment_ingest._run_ocr_subprocess") as run,
         ):
             service._ocr_pdf_page(
                 Path("/tmp/x.pdf"), Path("/tmp"), 3, 140, deadline=420.0
@@ -606,9 +606,9 @@ class InvestmentIntakeTests(unittest.TestCase):
         """Direct text extraction runs pdfinfo + pdftotext -l <page_budget>
         through the bounded subprocess runner (no in-process parsing)."""
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._run_ocr_subprocess",
+                "investment_ingest._run_ocr_subprocess",
                 side_effect=[
                     b"Pages: 200\n",
                     b"financial statement text " * 30,
@@ -630,15 +630,15 @@ class InvestmentIntakeTests(unittest.TestCase):
         caller: the bounded runner kills the process group and the function
         falls back to OCR with the remaining budget."""
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._run_ocr_subprocess",
+                "investment_ingest._run_ocr_subprocess",
                 side_effect=[
                     b"Pages: 5\n",
                     subprocess.TimeoutExpired("pdftotext", 30),
                 ],
             ),
-            patch("investment_service._ocr_pdf", return_value="") as ocr,
+            patch("investment_ingest._ocr_pdf", return_value="") as ocr,
         ):
             result = service._extract_pdf("x.pdf", page_budget=10, wall_seconds=60)
         self.assertEqual(result, "")
@@ -650,17 +650,17 @@ class InvestmentIntakeTests(unittest.TestCase):
         together stay within the configured wall cap."""
         captured = {}
         with (
-            patch("investment_service.shutil.which", return_value="/usr/bin/tool"),
+            patch("investment_ingest.shutil.which", return_value="/usr/bin/tool"),
             patch(
-                "investment_service._run_ocr_subprocess",
+                "investment_ingest._run_ocr_subprocess",
                 side_effect=[b"Pages: 3\n", b"short text"],
             ),
             patch(
-                "investment_service._ocr_pdf",
+                "investment_ingest._ocr_pdf",
                 side_effect=lambda *args, **kwargs: captured.update(kwargs) or "",
             ) as ocr,
             patch(
-                "investment_service.time.monotonic",
+                "investment_ingest.time.monotonic",
                 side_effect=[100.0, 190.0, 190.0, 190.0],
             ),
         ):
@@ -670,8 +670,8 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertAlmostEqual(captured["wall_seconds"], 30.0, places=6)
         self.assertEqual(captured["page_budget"], 10)
 
-    @patch("investment_service.store_document_path")
-    @patch("investment_service.fetch_document_url_to_path")
+    @patch("investment_ingest.store_document_path")
+    @patch("investment_ingest.fetch_document_url_to_path")
     def test_remote_url_ingest_defers_extraction_to_worker(self, fetch, store):
         fd, path = tempfile.mkstemp(prefix="investment-url-", suffix=".pdf")
         os.close(fd)
@@ -695,7 +695,7 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertFalse(store.call_args.kwargs["extract"])
 
-    @patch("investment_service.get_session")
+    @patch("investment_ingest.get_session")
     def test_deferred_extraction_persists_durable_file_not_bytea(self, get_session):
         """extract=False must never bind BYTEA or read the upload wholesale:
         the file lands on durable content-addressed storage, survives the
@@ -725,10 +725,10 @@ class InvestmentIntakeTests(unittest.TestCase):
             with os.fdopen(fd, "wb") as handle:
                 handle.write(b"%PDF-test-content")
             with (
-                patch("investment_service.extract_document_text_path") as extract,
+                patch("investment_ingest.extract_document_text_path") as extract,
                 tempfile.TemporaryDirectory() as root,
                 patch(
-                    "investment_service._file_root",
+                    "investment_ingest._file_root",
                     return_value=Path(root),
                 ),
             ):
@@ -781,7 +781,7 @@ class InvestmentIntakeTests(unittest.TestCase):
             source_path = Path(root) / "source.txt"
             source_path.write_text("Annual report financial evidence. " * 20)
             digest = service._sha256_file(source_path)
-            with patch("investment_service._file_root", return_value=Path(root)):
+            with patch("investment_ingest._file_root", return_value=Path(root)):
                 document["content_path"] = service._persist_document_file(
                     source_path, {}, digest
                 )
@@ -808,10 +808,10 @@ class InvestmentIntakeTests(unittest.TestCase):
             }
             with (
                 patch(
-                    "investment_service._file_root",
+                    "investment_ingest._file_root",
                     return_value=Path(root) / "documents",
                 ),
-                patch("investment_service.extract_document_text_path") as extract,
+                patch("investment_ingest.extract_document_text_path") as extract,
             ):
                 self.assertEqual(
                     service._ensure_extracted_text({}, document),
@@ -1433,8 +1433,8 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertEqual(source, "stored_document")
         self.assertEqual(excerpt, service.build_analysis_excerpt(stored))
 
-    @patch("investment_service.extract_document_text_path")
-    @patch("investment_service.get_session")
+    @patch("investment_ingest.extract_document_text_path")
+    @patch("investment_ingest.get_session")
     def test_preserves_unextractable_regulatory_content(
         self,
         get_session,

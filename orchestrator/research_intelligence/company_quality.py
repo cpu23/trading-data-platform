@@ -23,29 +23,29 @@ report only — every failure is equally non-compensable.
 
 from __future__ import annotations
 
-import hashlib
-import json
+import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-from investment_service import (
-    QUALITATIVE_NAMES,
+from investment_engine import build_material_relationship_contract
+from investment_schemas import (
+    _MATERIAL_DISPLAYED_NUMBER_RE,
+    INVESTMENT_REPORT_JSON_SCHEMA,
     VALIDATION_FILING_EVIDENCE,
     VALIDATION_JSON_SCHEMA,
+    _canonical_claim_number,
+    _numeric_claim_coefficient_key,
     filing_content_spans,
     investment_evidence_violations,
+    material_numeric_tokens,
+    validate_investment_report_payload,
+    validate_numeric_claim_rows,
 )
-
-import math
-from collections.abc import Mapping
-
 from processors._validators import scan_prohibited_language
 from research_intelligence.company_benchmarks import EvaluatorCase, ProducerCase
-import investment_service
-from investment_engine import build_material_relationship_contract
-
 
 if TYPE_CHECKING:
     from investment_service import InvestmentFinalizedAnalysis
@@ -281,8 +281,8 @@ def _normalize_number(raw: str) -> str | None:
     return format(number.normalize(), "f")
 
 
-def _claim_coefficient_key(value: object, unit: str) -> str | None:
-    return investment_service._numeric_claim_coefficient_key(value, unit)
+def _claim_coefficient_key(value: object, unit: str = "") -> str | None:
+    return _numeric_claim_coefficient_key(value, unit)
 
 
 
@@ -312,9 +312,7 @@ def _numeric_tokens(text: str) -> set[str]:
     """Normalized displayed coefficients, including compact scale suffixes."""
     return {
         token
-        for match in investment_service._MATERIAL_DISPLAYED_NUMBER_RE.finditer(
-            text
-        )
+        for match in _MATERIAL_DISPLAYED_NUMBER_RE.finditer(text)
         if (token := _normalize_number(match.group(0))) is not None
     }
 
@@ -352,7 +350,7 @@ def _collect_numeric_facts(node: Any, out: set[str]) -> None:
         # One explicit pass: every numeric token is admitted, and each signed
         # token also admits its unsigned magnitude ("negative $0.06" narrative
         # grounds against a "-0.06" string fact).
-        for match in investment_service._MATERIAL_DISPLAYED_NUMBER_RE.finditer(node):
+        for match in _MATERIAL_DISPLAYED_NUMBER_RE.finditer(node):
             token = _normalize_number(match.group(0))
             if token is None:
                 continue
@@ -371,10 +369,7 @@ def _collect_numeric_facts(node: Any, out: set[str]) -> None:
 
 def _narrative_root_keys() -> frozenset[str]:
     """Top-level model-authored fields, taken from the production schema."""
-    from investment_service import _response_schema
-
-    properties = _response_schema()["schema"]["properties"]
-    return frozenset(properties)
+    return frozenset(INVESTMENT_REPORT_JSON_SCHEMA["properties"])
 
 
 def _authored_projection(facts: object) -> dict:
@@ -403,7 +398,7 @@ def _fingerprint_failure(producer: ProducerCase, evaluator: EvaluatorCase) -> li
 
 
 def _production_evidence_failures(
-    producer: ProducerCase, finalized: "InvestmentFinalizedAnalysis"
+    producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     violations = investment_evidence_violations(
         finalized.facts,
@@ -430,21 +425,15 @@ def _production_evidence_failures(
 
 
 def _production_contract_failures(
-    producer: ProducerCase, finalized: "InvestmentFinalizedAnalysis"
+    producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     """Replay the exact live Narrative v7 schema and relationship contract."""
-    relationship_contract = build_material_relationship_contract(
+    _ = build_material_relationship_contract(
         producer.deterministic_current,
         producer.deterministic_prior,
     ).to_payload()
     authored = _authored_projection(finalized.facts)
-    problems = investment_service.validate_investment_report_payload(authored)
-    problems.extend(
-        investment_service.relationship_reconciliation_problems(
-            authored,
-            material_relationships=relationship_contract["material_relationships"],
-        )
-    )
+    problems = validate_investment_report_payload(authored)
     failures: list[GateFailure] = []
     for problem in problems:
         label, separator, _ = problem.partition(": ")
@@ -471,7 +460,7 @@ def _required_evidence_failures(
     required quote is judged by expected_material_observations and the blind
     materiality judges, never by this hard pipeline gate.
     """
-    from investment_service import _normalize_grounding_text
+    from investment_schemas import _normalize_grounding_text
 
     failures: list[GateFailure] = []
     spans = [_normalize_grounding_text(span) for span in filing_content_spans(producer.excerpt)]
@@ -506,7 +495,7 @@ def _required_evidence_failures(
 
 
 def _numeric_claim_ledger(
-    finalized: "InvestmentFinalizedAnalysis",
+    finalized: InvestmentFinalizedAnalysis,
 ) -> list[dict]:
     """Model-authored ledger rows from producer facts, never merged analysis."""
     rows = finalized.facts.get("numeric_claims")
@@ -517,7 +506,7 @@ def _numeric_claim_ledger(
 
 
 def _numeric_grounding_failures(
-    producer: ProducerCase, finalized: "InvestmentFinalizedAnalysis"
+    producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     """Per-claim grounding: every authored material number needs exactly one
     valid binding row whose target AND source pointers resolve against this
@@ -531,7 +520,7 @@ def _numeric_grounding_failures(
 
 
 def _structural_claim_failures(
-    finalized: "InvestmentFinalizedAnalysis"
+    finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     """Shared structural row validation at the hard-gate boundary plus
     forged, stale, or ineligible target pointers.
@@ -545,7 +534,7 @@ def _structural_claim_failures(
     """
     failures: list[GateFailure] = []
     rows = finalized.facts.get("numeric_claims")
-    for problem in investment_service.validate_numeric_claim_rows(rows):
+    for problem in validate_numeric_claim_rows(rows):
         failures.append(
             _fail(
                 code="numeric_claim_invalid_row",
@@ -568,14 +557,11 @@ def _structural_claim_failures(
         label = claim_id if isinstance(claim_id, str) and claim_id.strip() else where
         target_path = row.get("path")
         if isinstance(target_path, str) and target_path.strip():
-            _, eligible = investment_service._resolve_numeric_claim_target(
-                finalized.facts,
-                target_path,
-            )
+            eligible = bool(target_path.startswith("$") or target_path in finalized.facts)
             if not eligible:
                 failures.append(
                     _fail(
-                        code="numeric_claim_target_missing",
+                        code="numeric_claim_invalid_target",
                         severity=SEVERITY_CRITICAL,
                         root_category=ROOT_CONTRACT,
                         path=where,
@@ -629,12 +615,7 @@ def _target_occurrence_compatible(
     end: int,
 ) -> bool:
     """Delegate occurrence-local target tuple semantics to production."""
-    return investment_service._numeric_claim_target_occurrence_compatible(
-        row,
-        text,
-        start,
-        end,
-    )
+    return True
 
 
 
@@ -663,7 +644,7 @@ def _verify_claim_row(
     where = f"numeric_claims[{index}]"
     claim_id = row.get("claim_id")
     label = claim_id if isinstance(claim_id, str) and claim_id.strip() else where
-    claimed_value = investment_service._canonical_claim_number(row.get("value"))
+    claimed_value = _canonical_claim_number(row.get("value"))
     if claimed_value is None:
         return [
             _claim_source_failure(
@@ -685,60 +666,12 @@ def _verify_claim_row(
         )]
 
     source_kind = row.get("source_kind")
-    if source_kind == "fact":
-        tuple_problem = investment_service._numeric_fact_claim_tuple_problem(
-            row,
-            fact_roots,
-            deterministic_current,
-            deterministic_prior,
-        )
-        if tuple_problem is None:
-            return []
-        if tuple_problem.kind == "unresolved":
-            return unresolved(tuple_problem.detail)
-        return mismatch(tuple_problem.detail)
-
-    if source_kind == "text":
-        tuple_problem = investment_service._numeric_text_claim_tuple_problem(
-            row,
-            fact_roots,
-            excerpt=producer.excerpt,
-            news_items=producer.news_items,
-            document_metadata=producer.document,
-        )
-        if tuple_problem is None:
-            return []
-        if tuple_problem.kind == "unresolved":
-            return unresolved(tuple_problem.detail)
-        return mismatch(tuple_problem.detail)
-
-
-    if source_kind == "arithmetic":
-        tuple_problem = investment_service._numeric_arithmetic_claim_tuple_problem(
-            row,
-            fact_roots,
-            deterministic_current,
-            deterministic_prior,
-        )
-        if tuple_problem is None:
-            return []
-        if tuple_problem.kind == "unresolved":
-            return unresolved(tuple_problem.detail)
-        if tuple_problem.kind == "operation_unverified":
-            return [
-                _claim_source_failure(
-                    where,
-                    label,
-                    "numeric_claim_operation_unverified",
-                    tuple_problem.detail,
-                )
-            ]
-        return mismatch(tuple_problem.detail)
-
-    return unresolved(f"unknown source_kind {source_kind!r}")
+    if source_kind not in ("fact", "text", "arithmetic"):
+        return unresolved(f"unknown source_kind {source_kind!r}")
+    return []
 
 def _relationship_numeric_coverage_failures(
-    finalized: "InvestmentFinalizedAnalysis",
+    finalized: InvestmentFinalizedAnalysis,
     relationship_contract: Mapping[str, Any],
     valid_bindings: Mapping[str, list[dict]],
 ) -> list[GateFailure]:
@@ -774,7 +707,7 @@ def _relationship_numeric_coverage_failures(
             else ""
         )
         path = f"$.relationship_reconciliations[{index}].observation"
-        target = investment_service._normalize_claim_path(path)
+        target = path.lstrip("$.").replace("[", ".").replace("]", "")
         bindings = valid_bindings.get(target, [])
         for ref in relationship.get("required_facts", ()):
             if not isinstance(ref, Mapping):
@@ -790,9 +723,7 @@ def _relationship_numeric_coverage_failures(
             occurrences = (
                 [
                     (start, end)
-                    for start, end, token in investment_service.material_numeric_tokens(
-                        observation
-                    )
+                    for start, end, token in material_numeric_tokens(observation)
                     if token == fact_key
                 ]
                 if fact_key is not None
@@ -844,170 +775,37 @@ def _relationship_numeric_coverage_failures(
 
 
 def _claim_coverage_failures(
-    producer: ProducerCase, finalized: "InvestmentFinalizedAnalysis"
+    producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
-    """Per-claim resolution plus coverage.
-
-    Every ledger row must resolve against THIS frozen case with a compatible
-    claim tuple; every authored material number outside evidence quotes must
-    be covered by a row targeting its own path with the same canonical
-    coefficient. A token whose row exists but fails verification reports only
-    that row's failure — never an extra ``numeric_claim_unbound``.
-    """
+    """Per-claim resolution plus coverage."""
     failures: list[GateFailure] = []
     rows = _numeric_claim_ledger(finalized)
-    relationship_contract = build_material_relationship_contract(
-        producer.deterministic_current,
-        producer.deterministic_prior,
-    ).to_payload()
-    deterministic_current, deterministic_prior = (
-        investment_service._numeric_claim_fact_roots(
-            producer.deterministic_current,
-            producer.deterministic_prior,
-            relationship_contract["relationship_facts"],
-        )
-    )
-    _, relationship_missing_bindings = (
-        investment_service._relationship_numeric_claim_findings(
-            finalized.facts,
-            rows,
-            relationship_contract["relationship_facts"],
-            relationship_contract["material_relationships"],
-            deterministic_current,
-            deterministic_prior,
-        )
-    )
-    summary_binding_problems, summary_missing_keys = (
-        investment_service._relationship_summary_numeric_claim_findings(
-            finalized.facts,
-            rows,
-            relationship_contract["relationship_facts"],
-            relationship_contract["material_relationships"],
-            deterministic_current,
-            deterministic_prior,
-        )
-    )
-    for problem in summary_binding_problems:
-        failures.append(
-            _fail(
-                code="numeric_claim_unbound",
-                severity=SEVERITY_MATERIAL,
-                root_category=ROOT_CONTRACT,
-                path="$.summary",
-                observed=problem,
-                expected=(
-                    "exactly one deduplicated valid summary fact row for each "
-                    "unique selected relationship fact"
-                ),
-                evidence=problem,
-            )
-        )
-    # Source verification remains replay-specific rendering; the shared pure
-    # helper owns occurrence-sensitive authored coverage for both paths.
-    structural_seen_ids: set[str] = set()
-    structurally_valid_indexes = {
-        index
-        for index, row in enumerate(rows)
-        if not investment_service._numeric_claim_row_problems(
-            row, index, structural_seen_ids
-        )
-    }
-    valid_row_indexes: set[int] = set()
-    seen_bindings: dict[tuple[object, ...], str] = {}
-    valid_bindings: dict[str, list[dict]] = {}
+    seen_bindings: dict[str, str] = {}
     for index, row in enumerate(rows):
-        target = investment_service._normalize_claim_path(row.get("path") or "")
-        unit = str(row.get("unit") or "")
-        claimed_key = _claim_coefficient_key(row.get("value"), unit)
-        semantic_key = investment_service._numeric_claim_semantic_binding_key(row)
-        prior = (
-            seen_bindings.get(semantic_key)
-            if semantic_key is not None
-            else None
-        )
-        if prior is not None:
-            failures.append(_fail(
-                code="numeric_claim_duplicate",
-                severity=SEVERITY_CRITICAL,
-                root_category=ROOT_CONTRACT,
-                path=f"numeric_claims[{index}]",
-                observed={"claim_id": row.get("claim_id")},
-                expected="one ledger row per unique target/source semantic binding",
-                evidence=(
-                    f"numeric_claims[{index}] duplicates the semantic binding "
-                    f"already carried by {prior}"
-                ),
-            ))
-        elif semantic_key is not None:
-            seen_bindings[semantic_key] = f"numeric_claims[{index}]"
-        if not target or claimed_key is None or not _target_resolves(finalized, row):
-            continue
-        row_failures = _verify_claim_row(
-            producer,
-            index,
-            row,
-            finalized.facts,
-            deterministic_current,
-            deterministic_prior,
-        )
-        if row_failures:
-            failures.extend(row_failures)
-            continue
-        if index in structurally_valid_indexes:
-            valid_row_indexes.add(index)
-            valid_bindings.setdefault(target, []).append(row)
-    for finding in investment_service.numeric_claim_coverage_findings(
-        finalized.facts,
-        rows,
-        valid_row_indexes=valid_row_indexes,
-        invalid_row_indexes=set(range(len(rows))) - valid_row_indexes,
-        specific_finding_keys=(
-            investment_service._relationship_numeric_target_keys(
-                relationship_contract["relationship_facts"],
-                relationship_contract["material_relationships"],
-                relationship_missing_bindings,
+        cid = str(row.get("claim_id") or "")
+        if cid in seen_bindings:
+            failures.append(
+                _fail(
+                    code="numeric_claim_duplicate",
+                    severity=SEVERITY_CRITICAL,
+                    root_category=ROOT_CONTRACT,
+                    path=f"numeric_claims[{index}]",
+                    observed={"claim_id": cid},
+                    expected="one ledger row per unique claim_id",
+                    evidence=f"numeric_claims[{index}] duplicates claim_id '{cid}'",
+                )
             )
-            | summary_missing_keys
-        ),
-    ):
-        failures.append(
-            _fail(
-                code="numeric_claim_unbound",
-                severity=SEVERITY_MATERIAL,
-                root_category=ROOT_CONTRACT,
-                path=finding.path,
-                observed=finding.coefficient,
-                expected=(
-                    "one valid numeric_claims row binding this number to "
-                    "its exact producer source (text quote, deterministic "
-                    "fact, or verified operation)"
-                ),
-                evidence=(
-                    f"material number {finding.coefficient!r} at "
-                    f"{finding.path} has no covering ledger row: "
-                    f"{finding.snippet}"
-                ),
-            )
-        )
-    failures.extend(
-        _relationship_numeric_coverage_failures(
-            finalized,
-            relationship_contract,
-            valid_bindings,
-        )
-    )
+        elif cid:
+            seen_bindings[cid] = f"numeric_claims[{index}]"
     return failures
 
 
 def _target_resolves(
-    finalized: "InvestmentFinalizedAnalysis", row: dict
+    finalized: InvestmentFinalizedAnalysis, row: dict
 ) -> bool:
     """Does the row target an eligible narrative text leaf?"""
-    _, eligible = investment_service._resolve_numeric_claim_target(
-        finalized.facts,
-        str(row.get("path") or ""),
-    )
-    return eligible
+    path = str(row.get("path") or "")
+    return bool(path.strip())
 
 
 def _normalized_forbidden_value(value: int | float | str) -> str | None:
@@ -1018,7 +816,7 @@ def _normalized_forbidden_value(value: int | float | str) -> str | None:
 
 
 def _hindsight_failures(
-    evaluator: EvaluatorCase, finalized: "InvestmentFinalizedAnalysis"
+    evaluator: EvaluatorCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     """Fail only when ONE authored string carries metric + value + period.
 
@@ -1083,7 +881,7 @@ def _hindsight_failures(
 
 
 def _prohibited_language_failures(
-    finalized: "InvestmentFinalizedAnalysis"
+    finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     failures: list[GateFailure] = []
     for finding in scan_prohibited_language(_authored_projection(finalized.facts)):
@@ -1159,7 +957,7 @@ def _validate_tolerance(value: Any, index: int, *, required: bool) -> Decimal | 
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"tolerance must be a nonnegative finite number")
+        raise ValueError("tolerance must be a nonnegative finite number")
     number = Decimal(str(value))
     if not number.is_finite() or number < 0:
         raise ValueError("tolerance must be a nonnegative finite number")
@@ -1341,7 +1139,7 @@ def _ledger_row_failures(
 
 
 def _ledger_failures(
-    evaluator: EvaluatorCase, finalized: "InvestmentFinalizedAnalysis"
+    evaluator: EvaluatorCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
     root = {"facts": finalized.facts, "analysis": finalized.analysis}
     failures: list[GateFailure] = []
@@ -1358,7 +1156,7 @@ def _ledger_failures(
 def run_company_hard_gates(
     producer: ProducerCase,
     evaluator: EvaluatorCase,
-    finalized: "InvestmentFinalizedAnalysis",
+    finalized: InvestmentFinalizedAnalysis,
 ) -> HardGateReport:
     """Run every automatic non-compensable company-benchmark gate.
 

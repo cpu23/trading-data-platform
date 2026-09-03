@@ -22,7 +22,9 @@ from research_control_plane.repository import (
 )
 from research_control_plane.skills import ensure_skill_versions, execute_work_order
 
-NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
+# DB lifecycle triggers compare expires_at against the server clock, so the
+# test reference time must track the wall clock, not a fixed date.
+NOW = datetime.now(UTC).replace(microsecond=0)
 
 
 class ResearchControlPlanePostgresTests(unittest.TestCase):

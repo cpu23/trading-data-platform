@@ -349,121 +349,6 @@ def theme_context():
     }
 
 
-def dossier_context():
-    return {
-        "status": "published",
-        "dossier": {
-            "company": "Example Corp",
-            "profile": {
-                "company": "Example Corp",
-                "symbol": "EXC",
-                "business_overview": "Utility holding company.",
-                "segments": ["Regulated distribution", "Renewables"],
-                "key_operating_drivers": ["Load growth", "Rate cases"],
-                "capital_allocation": "Dividend growth and grid capex.",
-                "valuation_assumptions": {"wacc": "7.5%", "growth": "4%"},
-                "guidance": {"revenue": "$12B"},
-                "updated_at": NOW.isoformat(),
-            },
-            "latest_document": {
-                "document_id": str(DOCUMENT_ID),
-                "company": "Example Corp",
-                "symbol": "EXC",
-                "region": "US",
-                "industry": "Utilities",
-                "document_type": "annual_report",
-                "report_date": "2025-12-31",
-                "filename": "exc-10k.pdf",
-                "status": "analyzed",
-                "created_at": NOW.isoformat(),
-            },
-            "theses": {
-                "available": True,
-                "rows": [
-                    {
-                        "id": str(THESIS_ID),
-                        "theme_id": str(THEME_ID),
-                        "theme_name": "Energy transition",
-                        "claim": "Grid capex accelerates.",
-                        "status": "active",
-                        "horizon": "multi_year",
-                        "confidence": 0.65,
-                        "updated_at": NOW.isoformat(),
-                    }
-                ],
-            },
-            "deltas": {
-                "available": True,
-                "rows": [
-                    {
-                        "category": "guidance",
-                        "change_kind": "changed",
-                        "excerpt": "Full-year revenue guidance raised to $12B.",
-                        "previous_excerpt": "Prior guidance was $11B.",
-                        "created_at": NOW.isoformat(),
-                    },
-                    {
-                        "category": "capital_allocation",
-                        "change_kind": "new",
-                        "excerpt": "New buyback authorization added.",
-                        "previous_excerpt": None,
-                        "created_at": NOW.isoformat(),
-                    },
-                ],
-            },
-            "changes_since_previous": [
-                {
-                    "category": "guidance",
-                    "change_kind": "changed",
-                    "excerpt": "Full-year revenue guidance raised to $12B.",
-                    "previous_excerpt": "Prior guidance was $11B.",
-                    "created_at": NOW.isoformat(),
-                },
-                {
-                    "category": "capital_allocation",
-                    "change_kind": "new",
-                    "excerpt": "New buyback authorization added.",
-                    "previous_excerpt": None,
-                    "created_at": NOW.isoformat(),
-                },
-            ],
-            "financial_trends": {
-                "available": True,
-                "rows": [
-                    {
-                        "analysis_id": str(DOCUMENT_ID),
-                        "document_type": "annual_report",
-                        "report_date": "2025-12-31",
-                        "created_at": NOW.isoformat(),
-                        "model": "deepseek/test",
-                        "metrics": [
-                            {
-                                "name": "revenue",
-                                "value": 12000.0,
-                                "unit": "USD M",
-                                "period": "FY2025",
-                                "change_pct": 8.5,
-                            }
-                        ],
-                    }
-                ],
-            },
-            "sources": {
-                "available": True,
-                "rows": [
-                    {
-                        "document_id": str(DOCUMENT_ID),
-                        "document_type": "annual_report",
-                        "report_date": "2025-12-31",
-                        "status": "analyzed",
-                        "created_at": NOW.isoformat(),
-                        "evidence_count": 3,
-                    }
-                ],
-            },
-        },
-    }
-
 
 class ResearchLoaderTests(unittest.TestCase):
     def test_load_research_index_fail_soft_on_database_error(self):
@@ -566,124 +451,6 @@ class ResearchLoaderTests(unittest.TestCase):
         self.assertEqual(theme["events"]["available"], False)
         self.assertNotIn("secret sql", str(payload))
 
-    def test_load_dossier_returns_none_for_unknown_company(self):
-        from routes.views.research import load_dossier
-
-        with patch("routes.views.research.query_one", return_value=None) as query:
-            payload = load_dossier({}, "NoSuchCompany")
-        self.assertIsNone(payload)
-        self.assertEqual(query.call_count, 2)
-
-    def test_load_dossier_assembles_sections_and_filters_changes(self):
-        from routes.views.research import load_dossier
-
-        profile = {
-            "company": "Example Corp",
-            "symbol": "EXC",
-            "business_overview": "Utility holding company.",
-            "segments": ["Regulated distribution", "Renewables"],
-            "key_operating_drivers": ["Load growth"],
-            "capital_allocation": "Dividend growth and grid capex.",
-            "valuation_assumptions": {"wacc": "7.5%"},
-            "guidance": {"revenue": "$12B"},
-            "updated_at": NOW,
-        }
-        latest = {
-            "document_id": DOCUMENT_ID,
-            "company": "Example Corp",
-            "symbol": "EXC",
-            "region": "US",
-            "industry": "Utilities",
-            "document_type": "annual_report",
-            "report_date": "2025-12-31",
-            "filename": "exc-10k.pdf",
-            "status": "analyzed",
-            "created_at": NOW,
-        }
-        theses = [
-            {
-                "id": THESIS_ID,
-                "theme_id": THEME_ID,
-                "theme_name": "Energy transition",
-                "claim": "Grid capex accelerates.",
-                "status": "active",
-                "horizon": "multi_year",
-                "confidence": 0.65,
-                "updated_at": NOW,
-            }
-        ]
-        deltas = [
-            {
-                "category": "guidance",
-                "change_kind": "changed",
-                "excerpt": "Full-year revenue guidance raised to $12B.",
-                "previous_excerpt": None,
-                "created_at": NOW,
-            },
-            {
-                "category": "segments",
-                "change_kind": "unchanged",
-                "excerpt": "Same segments as before.",
-                "previous_excerpt": None,
-                "created_at": NOW,
-            },
-        ]
-        financial = [
-            {
-                "analysis_id": DOCUMENT_ID,
-                "facts": {
-                    "metrics": {
-                        "revenue": {
-                            "value": 12000.0,
-                            "unit": "USD M",
-                            "period": "FY2025",
-                            "change_pct": 8.5,
-                        }
-                    }
-                },
-                "model": "deepseek/test",
-                "created_at": NOW,
-                "document_type": "annual_report",
-                "report_date": "2025-12-31",
-            }
-        ]
-        sources = [
-            {
-                "document_id": DOCUMENT_ID,
-                "document_type": "annual_report",
-                "report_date": "2025-12-31",
-                "status": "analyzed",
-                "created_at": NOW,
-                "evidence_count": 3,
-            }
-        ]
-        with (
-            patch(
-                "routes.views.research.query_one",
-                side_effect=[profile, latest],
-            ),
-            patch(
-                "routes.views.research.query_many",
-                side_effect=[deltas, theses, financial, sources],
-            ),
-        ):
-            payload = load_dossier({}, "Example Corp")
-        self.assertEqual(payload["status"], "published")
-        self.assertEqual(payload["profile"]["symbol"], "EXC")
-        self.assertEqual(payload["latest_document"]["document_type"], "annual_report")
-        self.assertEqual(
-            [t["theme_name"] for t in payload["theses"]["rows"]], ["Energy transition"]
-        )
-        self.assertEqual(
-            [d["change_kind"] for d in payload["changes_since_previous"]], ["changed"]
-        )
-        self.assertEqual(len(payload["deltas"]["rows"]), 2)
-        self.assertEqual(
-            payload["financial_trends"]["rows"][0]["metrics"][0]["name"], "revenue"
-        )
-        self.assertEqual(payload["sources"]["rows"][0]["evidence_count"], 3)
-        self.assertNotIn("secret sql", str(payload))
-
 
 class ResearchRouteTests(unittest.TestCase):
     def _app(self):
@@ -704,22 +471,11 @@ class ResearchRouteTests(unittest.TestCase):
 
     def test_research_evaluation_helpers_survive_api_budget_import(self):
         import budgets  # noqa: F401
-        from routes.json import research as json_research
         from routes.views import research as view_research
 
-        self.assertIsNotNone(json_research._research_queries)
-        self.assertIsNotNone(json_research._list_benchmarks)
-        self.assertIsNotNone(json_research._live_case_cohorts)
         self.assertIsNotNone(view_research._research_queries)
         self.assertIsNotNone(view_research._list_benchmarks)
         self.assertIsNotNone(view_research._live_case_cohorts)
-        previous = json_research._annotate_benchmark_scorecard
-        try:
-            json_research._annotate_benchmark_scorecard = None
-            self.assertTrue(callable(json_research._annotation_helper()))
-        finally:
-            json_research._annotate_benchmark_scorecard = previous
-
     def test_pages_require_auth(self):
         from fastapi.testclient import TestClient
 
@@ -1052,54 +808,6 @@ class ResearchRouteTests(unittest.TestCase):
             ),
         ):
             response = client.get(f"/research/themes/{THEME_ID}")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("Unavailable", response.text)
-        self.assertNotIn("secret sql", response.text)
-
-    def test_dossier_shows_delta_categories_and_changes_section(self):
-        client = self._client()
-        with (
-            patch("routes.views.research.load_config", return_value={}),
-            patch("routes.views.research.load_dossier", return_value=dossier_context()),
-        ):
-            response = client.get("/research/companies/Example%20Corp")
-        self.assertEqual(response.status_code, 200)
-        text = response.text
-        self.assertIn("Changes since previous analysis", text)
-        self.assertIn("guidance", text)
-        self.assertIn("capital_allocation", text)
-        self.assertIn("changed", text)
-        self.assertIn("new", text)
-        self.assertIn("Full-year revenue guidance raised to $12B.", text)
-        self.assertIn("Utility holding company.", text)
-        self.assertNotIn("data-live-section", text)
-
-    def test_dossier_404_for_unknown_and_422_for_invalid_company(self):
-        client = self._client()
-        with (
-            patch("routes.views.research.load_config", return_value={}),
-            patch("routes.views.research.load_dossier", return_value=None),
-        ):
-            missing = client.get("/research/companies/NoSuchCompany")
-        self.assertEqual(missing.status_code, 404)
-        with (
-            patch("routes.views.research.load_config", return_value={}),
-            patch("routes.views.research.load_dossier") as loader,
-        ):
-            invalid = client.get("/research/companies/" + "X" * 65)
-        self.assertEqual(invalid.status_code, 422)
-        loader.assert_not_called()
-
-    def test_dossier_database_failure_is_fail_soft(self):
-        client = self._client()
-        with (
-            patch("routes.views.research.load_config", return_value={}),
-            patch(
-                "routes.views.research.query_one",
-                side_effect=RuntimeError("secret sql"),
-            ),
-        ):
-            response = client.get("/research/companies/Example%20Corp")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Unavailable", response.text)
         self.assertNotIn("secret sql", response.text)

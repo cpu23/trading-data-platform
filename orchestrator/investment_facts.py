@@ -6,8 +6,8 @@ chooses, changes, or normalizes these values.
 
 from __future__ import annotations
 
-import html
 import hashlib
+import html
 import io
 import math
 import re

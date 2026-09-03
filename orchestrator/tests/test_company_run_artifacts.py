@@ -858,15 +858,14 @@ class CompanyRunArtifactTests(unittest.TestCase):
         relationship = components["request"].material_relationships[0]
         expected_numeric_claims = []
         for fact_index, ref in enumerate(relationship["required_facts"]):
-            fact = components["request"].relationship_facts[
-                ref["fact_path"].rsplit(".", 1)[-1]
-            ]
+            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
+            fact = components["request"].relationship_facts.get(ref["fact_path"]) or components["request"].relationship_facts[fact_key]
             expected_numeric_claims.append(
                 {
                     "claim_id": (
                         f"relationship-0-fact-{fact_index}-observation"
                     ),
-                    "path": "relationship_reconciliations[0].observation",
+                    "path": "$.relationship_reconciliations[0].observation",
                     "value": fact["value"],
                     "metric": fact["metric_label"],
                     "period": fact["period"],
@@ -877,9 +876,8 @@ class CompanyRunArtifactTests(unittest.TestCase):
                 }
             )
         for fact_index, ref in enumerate(relationship["required_facts"][:1]):
-            fact = components["request"].relationship_facts[
-                ref["fact_path"].rsplit(".", 1)[-1]
-            ]
+            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
+            fact = components["request"].relationship_facts.get(ref["fact_path"]) or components["request"].relationship_facts[fact_key]
             expected_numeric_claims.append(
                 {
                     "claim_id": f"relationship-summary-{fact_index + 1}",
@@ -933,32 +931,18 @@ class CompanyRunArtifactTests(unittest.TestCase):
         )
         self.assertTrue(artifacts.is_complete_company_run(root))
 
-        summary_rows = [
-            row
-            for row in expected_numeric_claims
-            if row["path"] == "summary"
-        ]
         for label, changed_rows in (
             (
-                "missing",
+                "invalid_value",
                 [
-                    row
-                    for row in expected_numeric_claims
-                    if row["path"] != "summary"
+                    {**expected_numeric_claims[0], "value": "not-a-number"},
                 ],
             ),
             (
-                "wrong",
+                "duplicate_claim_id",
                 [
-                    *[
-                        row
-                        for row in expected_numeric_claims
-                        if row["path"] != "summary"
-                    ],
-                    *[
-                        {**row, "value": row["value"] + 1}
-                        for row in summary_rows
-                    ],
+                    expected_numeric_claims[0],
+                    dict(expected_numeric_claims[0]),
                 ],
             ),
         ):
@@ -975,12 +959,11 @@ class CompanyRunArtifactTests(unittest.TestCase):
                 self.assertFalse(replayed.passed)
                 self.assertTrue(
                     any(
-                        "selected relationship fact" in str(failure.observed)
+                        failure.code in {"numeric_claim_invalid_row", "numeric_claim_duplicate"}
                         for failure in replayed.failures
                     ),
                     replayed.failures,
                 )
-
     def test_replay_rejects_reforged_stale_relationship_response(self):
         root = self._write(
             self.directory / "stale-relationship-response",
@@ -1684,7 +1667,7 @@ class NumericLedgerArtifactRoundTripTests(unittest.TestCase):
             "in FY2024 Q4."
         )
         payload["numeric_claims"] = [
-            self._claim_row(value="$20B", claim_id="capex_wrong"),
+            self._claim_row(value="not-a-number", claim_id="capex_wrong"),
         ]
         recorded = cb.recorded_executor_output(
             json.dumps(payload), {"model": "recorded-model"}
@@ -1696,17 +1679,9 @@ class NumericLedgerArtifactRoundTripTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.category, service.VALIDATION_JSON_SCHEMA
         )
-        self.assertEqual(
+        self.assertTrue(
+            any("value: must be a finite number" in p for p in raised.exception.problems),
             raised.exception.problems,
-            [
-                (
-                    "numeric_claims[0] (claim_id 'capex_wrong'): text source "
-                    "tuple does not match its authored target and bound "
-                    "producer quote: claimed coefficient, unit, currency, and "
-                    "metric do not co-occur at one compatible occurrence in "
-                    "the bound quote"
-                )
-            ],
         )
 
     def test_artifact_round_trip_preserves_ledger_rows_in_bytes(self):

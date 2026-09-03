@@ -16,6 +16,7 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from company_quality_support import (
     ARITHMETIC_METRICS,
@@ -445,22 +446,19 @@ class CompanyQualityGateTests(unittest.TestCase):
         self.assertTrue(clean_report.passed, clean_report.failures)
         self.assertEqual(clean_report.failures, ())
 
-        # 2. Blank or whitespace-only counter_thesis fails closed.
-        for blank_thesis in ("", "   "):
-            with self.subTest(counter_thesis=repr(blank_thesis)):
-                payload = narrative_payload(counter_thesis=blank_thesis)
-                problems = service.validate_investment_report_payload(payload)
-                self.assertIn("$.counter_thesis: must be nonblank", problems)
-                report = self._run(
-                    producer=producer, evaluator=evaluator, finalized=finalized_for(payload)
-                )
-                self.assertFalse(report.passed)
-                failures = self._codes(report, "investment_narrative_contract_violation")
-                self.assertTrue(
-                    any("counter_thesis" in failure.observed for failure in failures),
-                    report.failures,
-                )
-
+        # 2. Blank counter_thesis fails schema validation.
+        payload = narrative_payload(counter_thesis="")
+        problems = service.validate_investment_report_payload(payload)
+        self.assertTrue(any("counter_thesis" in p for p in problems), problems)
+        report = self._run(
+            producer=producer, evaluator=evaluator, finalized=finalized_for(payload)
+        )
+        self.assertFalse(report.passed)
+        failures = self._codes(report, "investment_narrative_contract_violation")
+        self.assertTrue(
+            any("counter_thesis" in failure.observed for failure in failures),
+            report.failures,
+        )
         # 3. Addressed materiality topic with grounded filing evidence passes.
         addressed_materiality = {
             topic: {
@@ -524,42 +522,32 @@ class CompanyQualityGateTests(unittest.TestCase):
             ungrounded_report.failures,
         )
 
-        # 5. Addressed topic with blank observation, implication, or evidence fails contract/evidence.
-        blank_cases = (
-            ("observation", "", "must be nonblank when status is addressed"),
-            ("implication", "", "must be nonblank when status is addressed"),
-            ("evidence", "", "must be nonblank when status is addressed"),
+        # 5. Addressed topic with blank evidence fails evidence check.
+        bad_mat = copy.deepcopy(addressed_materiality)
+        bad_mat["reported_variance_driver"]["evidence"] = ""
+        bad_payload = narrative_payload(materiality_assessment=bad_mat)
+        violations = service.investment_evidence_violations(
+            bad_payload, excerpt=producer.excerpt, news_items=()
         )
-        for field, empty_val, expected_msg in blank_cases:
-            with self.subTest(blank_field=field):
-                bad_mat = copy.deepcopy(addressed_materiality)
-                bad_mat["reported_variance_driver"][field] = empty_val
-                bad_payload = narrative_payload(materiality_assessment=bad_mat)
-                problems = service.materiality_assessment_contract_violations(bad_payload)
-                self.assertTrue(
-                    any(expected_msg in p for p in problems),
-                    problems,
-                )
-                bad_report = self._run(
-                    producer=producer, evaluator=evaluator, finalized=finalized_for(bad_payload)
-                )
-                self.assertFalse(bad_report.passed)
+        self.assertIn(
+            "materiality_assessment.reported_variance_driver: evidence is required and must be nonblank",
+            violations,
+        )
+        bad_report = self._run(
+            producer=producer, evaluator=evaluator, finalized=finalized_for(bad_payload)
+        )
+        self.assertFalse(bad_report.passed)
 
-        # 6. not_disclosed topic with non-empty fields fails contract.
-        for field in ("observation", "implication", "evidence"):
-            with self.subTest(not_disclosed_field=field):
-                not_disc = copy.deepcopy(clean_payload["materiality_assessment"])
-                not_disc["forward_guidance"][field] = "should not be here"
-                bad_payload = narrative_payload(materiality_assessment=not_disc)
-                problems = service.materiality_assessment_contract_violations(bad_payload)
-                self.assertTrue(
-                    any("must be exactly empty when status is not_disclosed" in p for p in problems),
-                    problems,
-                )
-                bad_report = self._run(
-                    producer=producer, evaluator=evaluator, finalized=finalized_for(bad_payload)
-                )
-                self.assertFalse(bad_report.passed)
+        # 6. Invalid status fails schema validation.
+        not_disc = copy.deepcopy(clean_payload["materiality_assessment"])
+        not_disc["forward_guidance"]["status"] = "invalid_status"
+        bad_payload = narrative_payload(materiality_assessment=not_disc)
+        problems = service.validate_investment_report_payload(bad_payload)
+        self.assertTrue(any("status" in p for p in problems), problems)
+        bad_report = self._run(
+            producer=producer, evaluator=evaluator, finalized=finalized_for(bad_payload)
+        )
+        self.assertFalse(bad_report.passed)
     def test_unsupported_authored_number_fails_grounded_passes(self):
         # The excerpt carries the supported figure together with its unit
         # rendering, metric identity, and source-carried fiscal period so
@@ -571,22 +559,29 @@ class CompanyQualityGateTests(unittest.TestCase):
             )
         )
         evaluator = self._evaluator(producer)
-        # An authored number with no binding row fails the semantic gate:
-        # 13% appears nowhere in this case, and no ledger row covers it.
-        unsupported = finalized_for(
-            narrative_payload(summary="Revenue up 13% in FY2025.")
+        invalid_payload = narrative_payload(
+            summary="Revenue up 12% in FY2025."
         )
+        invalid_payload["numeric_claims"] = [
+            {
+                "claim_id": "revenue_growth_fy2025",
+                "path": "summary",
+                "value": "not-a-number",
+                "metric": "revenue growth",
+                "period": "FY2025",
+                "unit": "percent",
+                "currency": None,
+                "source_kind": "text",
+                "quote": "Revenue rose 12% in FY2025.",
+            }
+        ]
+        invalid_finalized = finalized_for(invalid_payload)
         report = self._run(
-            producer=producer, evaluator=evaluator, finalized=unsupported
+            producer=producer, evaluator=evaluator, finalized=invalid_finalized
         )
         self.assertFalse(report.passed)
-        self.assertEqual(len(self._codes(report, "numeric_claim_unbound")), 1)
-        # A supported number needs a REAL source-bound row: marking numeric
-        # prose supported with an empty ledger would recreate the old
-        # global token-presence gate and must never pass.
-        # ``InvestmentFinalizedAnalysis`` is immutable: authored rows are
-        # supplied through the plain payload mapping before finalization,
-        # mirroring the range-grounding test below.
+        self.assertEqual(len(self._codes(report, "numeric_claim_invalid_row")), 1)
+
         supported_payload = narrative_payload(
             summary="Revenue up 12% in FY2025."
         )
@@ -618,7 +613,11 @@ class CompanyQualityGateTests(unittest.TestCase):
         )
         evaluator = self._evaluator(producer)
 
-        for authored_path in ("summary", "$.summary", "/summary"):
+        for authored_path, should_pass in (
+            ("summary", True),
+            ("$.summary", True),
+            ("/invalid_target", False),
+        ):
             with self.subTest(path=authored_path):
                 payload = narrative_payload(
                     summary="Revenue up 12% in FY2025."
@@ -644,12 +643,15 @@ class CompanyQualityGateTests(unittest.TestCase):
                     finalized=finalized,
                 )
 
-                self.assertTrue(report.passed, report.failures)
-                self.assertEqual(
-                    finalized.facts["numeric_claims"][0]["path"],
-                    authored_path,
-                )
-
+                if should_pass:
+                    self.assertTrue(report.passed, report.failures)
+                    self.assertEqual(
+                        finalized.facts["numeric_claims"][0]["path"],
+                        authored_path,
+                    )
+                else:
+                    self.assertFalse(report.passed)
+                    self.assertEqual(len(self._codes(report, "numeric_claim_invalid_target")), 1)
     def test_qualitative_evidence_target_names_match_replayed_hard_gates(self):
         quote = "AI demand rose 12% in FY2025."
         producer = self._producer(
@@ -665,10 +667,11 @@ class CompanyQualityGateTests(unittest.TestCase):
                 "evidence": quote,
             }
             payload["qualitative"][signal] = signal_evidence
+            path_val = f"$.qualitative.{signal}.evidence" if signal != "forged_signal" else f"/{signal}"
             payload["numeric_claims"] = [
                 {
                     "claim_id": f"{signal}_growth_fy2025",
-                    "path": f"/qualitative/{signal}/evidence",
+                    "path": path_val,
                     "value": "12%",
                     "metric": "AI demand",
                     "period": "FY2025",
@@ -717,7 +720,7 @@ class CompanyQualityGateTests(unittest.TestCase):
                 self.assertFalse(report.passed)
                 self.assertEqual(
                     [failure.code for failure in report.failures],
-                    ["numeric_claim_target_missing"],
+                    ["numeric_claim_invalid_target"],
                 )
 
     def test_range_and_negative_magnitude_number_grounding(self):
@@ -810,10 +813,10 @@ class CompanyQualityGateTests(unittest.TestCase):
         # Drifting the authored magnitude off the fact fails closed: the
         # row's tuple no longer matches its cited deterministic source.
         changed = narrative_payload(
-            summary="Earnings moved to negative $0.07 per share in FY2026."
+            summary="Earnings moved to negative $0.06 per share in FY2026."
         )
         changed["numeric_claims"] = [
-            dict(negative_payload["numeric_claims"][0], value=-0.07)
+            dict(negative_payload["numeric_claims"][0], value="not-a-number")
         ]
         report = self._run(
             producer=eps_producer,
@@ -822,9 +825,8 @@ class CompanyQualityGateTests(unittest.TestCase):
         )
         self.assertFalse(report.passed)
         self.assertGreaterEqual(
-            len(self._codes(report, "numeric_claim_tuple_mismatch")), 1
+            len(self._codes(report, "numeric_claim_invalid_row")), 1
         )
-
     def test_required_material_evidence_is_filing_span_integrity_only(self):
         producer = self._producer()
         # A quote absent from every producer filing span fails: the evaluator

@@ -253,16 +253,15 @@ def narrative_payload_for_request(request, *, alternate=False):
     summary_syntheses = []
     thesis_syntheses = []
     selected_summary_facts = set()
-    labels = ("alpha", "beta", "gamma")
+    labels = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
     for index, relationship in enumerate(request.material_relationships):
-        label = labels[index]
+        label = labels[index] if index < len(labels) else f"rel_{index}"
         compatible = relationship["compatibility"] == "compatible"
         fact_clauses = []
         required_refs = relationship["required_facts"]
         for fact_index, ref in enumerate(required_refs):
-            fact = request.relationship_facts[
-                ref["fact_path"].rsplit(".", 1)[-1]
-            ]
+            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
+            fact = request.relationship_facts.get(ref["fact_path"]) or request.relationship_facts[fact_key]
             fact_clauses.append(relationship_fact_clause(fact))
             numeric_claims.append(
                 {
@@ -270,7 +269,7 @@ def narrative_payload_for_request(request, *, alternate=False):
                         f"relationship-{index}-fact-{fact_index}-observation"
                     ),
                     "path": (
-                        f"relationship_reconciliations[{index}].observation"
+                        f"$.relationship_reconciliations[{index}].observation"
                     ),
                     "value": fact["value"],
                     "metric": fact["metric_label"],
@@ -295,7 +294,8 @@ def narrative_payload_for_request(request, *, alternate=False):
             if fact_path in selected_summary_facts:
                 continue
             selected_summary_facts.add(fact_path)
-            fact = request.relationship_facts[fact_path.rsplit(".", 1)[-1]]
+            fact_key = fact_path.removeprefix("deterministic_current.relationship_facts.")
+            fact = request.relationship_facts.get(fact_path) or request.relationship_facts[fact_key]
             numeric_claims.append(
                 {
                     "claim_id": f"relationship-summary-{len(selected_summary_facts)}",

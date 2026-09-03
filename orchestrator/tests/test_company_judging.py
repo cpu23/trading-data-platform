@@ -36,7 +36,7 @@ import hashlib
 import json
 import sys
 import unittest
-from dataclasses import dataclass, FrozenInstanceError
+from dataclasses import FrozenInstanceError, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -45,10 +45,9 @@ ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
 from research_intelligence.company_benchmarks import ForbiddenCompanyClaim
-from research_intelligence.contracts import canonical_fingerprint
 from research_intelligence.company_judging import (
-    COUNTER_THESIS_STRENGTH_MEDIAN_MINIMUM,
     CORE_DIMENSION_JUDGE_FLOOR,
+    COUNTER_THESIS_STRENGTH_MEDIAN_MINIMUM,
     DIMENSION_MEDIAN_MINIMUM,
     FACTUAL_FIDELITY_MEDIAN_MINIMUM,
     JUDGE_DIMENSIONS,
@@ -62,11 +61,11 @@ from research_intelligence.company_judging import (
     SCORE_MINIMUM,
     BlindJudgeRequest,
     JudgePanelReport,
-    JudgeResult,
     aggregate_judge_panel,
     build_blind_judge_requests,
     parse_judge_result,
 )
+from research_intelligence.contracts import canonical_fingerprint
 
 AS_OF = datetime(2026, 3, 31, 12, 0, tzinfo=UTC)
 SALT_A = "run-salt-alpha"
@@ -1682,7 +1681,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
             )
             for request in self.requests
         ]
-        report = aggregate_judge_panel(self.requests, results, passing_gate())
+        aggregate_judge_panel(self.requests, results, passing_gate())
 
     def test_contradictory_gate_report_fails_closed(self):
         report = aggregate_judge_panel(

@@ -25,7 +25,8 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace as _dataclass_replace
+from dataclasses import dataclass
+from dataclasses import replace as _dataclass_replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -33,10 +34,8 @@ from typing import Any
 
 import yaml
 
-from research_intelligence.contracts import canonical_fingerprint
-
 import investment_service
-
+from research_intelligence.contracts import canonical_fingerprint
 
 SCHEMA_VERSION = "company_benchmark_v1"
 _FINGERPRINT_RE = re.compile(r"[a-f0-9]{64}")
@@ -706,7 +705,7 @@ def _evaluator_case(raw: Any, producer: ProducerCase, source_path: str) -> Evalu
     )
 
 
-def load_producer_case(path: "str | Path | Mapping[str, Any]") -> ProducerCase:
+def load_producer_case(path: str | Path | Mapping[str, Any]) -> ProducerCase:
     """Load the producer half from a fixture path or a canonical envelope mapping."""
     if isinstance(path, Mapping):
         # Envelope replay from artifact bytes: no source location involved.
@@ -730,7 +729,7 @@ def load_producer_case(path: "str | Path | Mapping[str, Any]") -> ProducerCase:
 
 
 def load_evaluator_case(
-    path: "str | Path | Mapping[str, Any]", *, producer: ProducerCase
+    path: str | Path | Mapping[str, Any], *, producer: ProducerCase
 ) -> EvaluatorCase:
     """Load the evaluator half; it pairs only with the matching producer."""
     if isinstance(path, Mapping):
@@ -743,7 +742,7 @@ def load_evaluator_case(
 
 def prepare_company_run(
     case: ProducerCase,
-) -> "investment_service.InvestmentAnalysisRequest":
+) -> investment_service.InvestmentAnalysisRequest:
     """Build the exact production dispatch request from producer fields."""
     return investment_service.build_investment_analysis_request(
         plain_copy(case.document),
@@ -781,7 +780,7 @@ def recorded_executor_output(
 
 def finalize_recorded_company_run(
     recorded: RecordedExecutorOutput, case: ProducerCase
-) -> "investment_service.InvestmentFinalizedAnalysis":
+) -> investment_service.InvestmentFinalizedAnalysis:
     """Replay validation and pure finalization for one recorded run.
 
     Calls the production parse/validation/finalization seams on the recorded

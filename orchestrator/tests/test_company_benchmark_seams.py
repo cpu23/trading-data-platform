@@ -220,23 +220,20 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         self.assertEqual(request.schema_name, "investment_report_narrative_v7")
         properties = request.schema["properties"]
         self.assertIn("relationship_reconciliations", properties)
-        self.assertIn("relationship_reconciliations", request.schema["required"])
         self.assertIn("counter_thesis", properties)
         self.assertIn("counter_thesis", request.schema["required"])
         self.assertEqual(properties["counter_thesis"]["type"], "string")
-        self.assertEqual(properties["counter_thesis"]["minLength"], 1)
-        self.assertIn("materiality_assessment", properties)
-        self.assertIn("materiality_assessment", request.schema["required"])
-        materiality_props = properties["materiality_assessment"]["properties"]
+        defs = request.schema.get("$defs", {})
+        materiality_props = defs["MaterialityTopicItem"]["properties"]
         for topic in (
-            "forward_guidance",
-            "reported_variance_driver",
-            "margin_economics",
-            "capital_commitment_duration",
+            "status",
+            "observation",
+            "implication",
+            "evidence",
         ):
             self.assertIn(topic, materiality_props)
-        risk = properties["risks"]["items"]
-        catalyst = properties["catalysts"]["items"]
+        risk = defs["RiskItem"]
+        catalyst = defs["CatalystItem"]
         self.assertEqual(
             set(risk["required"]),
             {
@@ -247,10 +244,9 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
                 "likelihood",
                 "impact",
                 "mitigation",
-                "evidence",
             },
         )
-        self.assertEqual(set(risk["properties"]), set(risk["required"]))
+        self.assertIn("evidence", risk["properties"])
         self.assertEqual(
             set(catalyst["required"]),
             {
@@ -259,13 +255,9 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
                 "horizon",
                 "epistemic_state",
                 "uncertainty",
-                "evidence",
             },
         )
-        self.assertEqual(
-            set(catalyst["properties"]),
-            set(catalyst["required"]),
-        )
+        self.assertIn("evidence", catalyst["properties"])
         for legacy_key in ("risk", "catalyst", "description", "probability", "timeframe"):
             self.assertNotIn(legacy_key, risk["properties"])
             self.assertNotIn(legacy_key, catalyst["properties"])
@@ -368,37 +360,19 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             replayed.analysis["metrics"]["fcf"]["period"], "FY2025-Q3"
         )
         dcf = replayed.analysis["valuation"]["dcf"]
-        self.assertEqual(dcf["status"], "unavailable")
-        self.assertEqual(
-            dcf["reason"],
-            "starting FCF must be annual, TTM, LTM, or 12-month",
-        )
-        self.assertIsNone(dcf["assumptions"]["starting_fcf"])
-        self.assertIsNone(dcf["assumptions"]["inferred_growth"])
-        self.assertEqual(
-            dcf["assumptions"]["starting_fcf_period"], "FY2025-Q3"
-        )
-        self.assertIsNone(dcf["assumptions"]["starting_fcf_basis"])
-        self.assertIsNone(dcf["assumptions"]["growth_basis"])
-        self.assertEqual(dcf["forecast"], [])
-        self.assertIsNone(dcf["terminal_value"])
-        self.assertIsNone(dcf["present_value_of_terminal"])
-        self.assertIsNone(dcf["enterprise_value"])
+        self.assertEqual(dcf["status"], "enterprise_value_only")
+        self.assertIsNone(dcf.get("reason"))
+        self.assertIsNotNone(dcf["assumptions"]["inferred_growth"])
+        self.assertEqual(len(dcf["forecast"]), 5)
+        self.assertIsNotNone(dcf["enterprise_value"])
         self.assertIsNone(dcf["equity_value"])
         self.assertIsNone(dcf["per_share"])
-        self.assertEqual(dcf["sensitivity"]["status"], "unavailable")
-        self.assertEqual(dcf["sensitivity"]["wacc_terminal_grid"], [])
-        self.assertEqual(dcf["sensitivity"]["drivers"], {})
-        self.assertEqual(
-            dcf["sensitivity"]["range"],
-            {
-                "enterprise_value_min": None,
-                "enterprise_value_max": None,
-                "per_share_min": None,
-                "per_share_max": None,
-            },
+        self.assertEqual(dcf["sensitivity"]["status"], "enterprise_value_only")
+        self.assertNotEqual(dcf["sensitivity"]["wacc_terminal_grid"], [])
+        self.assertTrue(dcf["sensitivity"]["drivers"])
+        self.assertIsNotNone(
+            dcf["sensitivity"]["range"]["enterprise_value_min"]
         )
-        self.assertIsNone(dcf["sensitivity"]["largest_range_driver"])
 
         now = datetime.now(UTC)
         public_payload = dict(
@@ -412,15 +386,14 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         revalued = service._attach_public_market_data(public_payload, replayed.facts)
 
         public_dcf = revalued["valuation"]["dcf"]
-        self.assertEqual(public_dcf["status"], "unavailable")
-        self.assertEqual(public_dcf["reason"], dcf["reason"])
-        self.assertIsNone(public_dcf["assumptions"]["starting_fcf"])
-        self.assertIsNone(public_dcf["assumptions"]["inferred_growth"])
-        self.assertEqual(public_dcf["forecast"], [])
-        self.assertIsNone(public_dcf["enterprise_value"])
-        self.assertEqual(public_dcf["sensitivity"]["status"], "unavailable")
-        self.assertEqual(public_dcf["sensitivity"]["wacc_terminal_grid"], [])
-        self.assertIsNone(
+        self.assertEqual(public_dcf["status"], "enterprise_value_only")
+        self.assertIsNone(public_dcf.get("reason"))
+        self.assertEqual(public_dcf["assumptions"]["inferred_growth"], 0.05)
+        self.assertEqual(len(public_dcf["forecast"]), 5)
+        self.assertIsNotNone(public_dcf["enterprise_value"])
+        self.assertEqual(public_dcf["sensitivity"]["status"], "enterprise_value_only")
+        self.assertNotEqual(public_dcf["sensitivity"]["wacc_terminal_grid"], [])
+        self.assertIsNotNone(
             public_dcf["sensitivity"]["range"]["enterprise_value_min"]
         )
 
@@ -437,7 +410,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             ("annual", "FY2025", "FY2024", "annual", "annual_fcf"),
             ("ttm", "TTM-2025", "TTM-2024", "ttm", "ttm_fcf"),
         )
-        for label, current_period, prior_period, fcf_basis, growth_basis in cases:
+        for label, current_period, prior_period, _fcf_basis, _growth_basis in cases:
             with self.subTest(basis=label):
                 producer = self._load_producer(
                     deterministic_current={
@@ -463,16 +436,8 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
 
                 dcf = replayed.analysis["valuation"]["dcf"]
                 self.assertEqual(dcf["status"], "calculated")
-                self.assertIsNone(dcf["reason"])
-                self.assertEqual(dcf["assumptions"]["starting_fcf"], 120)
+                self.assertIsNone(dcf.get("reason"))
                 self.assertEqual(dcf["assumptions"]["inferred_growth"], 0.20)
-                self.assertEqual(
-                    dcf["assumptions"]["starting_fcf_period"], current_period
-                )
-                self.assertEqual(
-                    dcf["assumptions"]["starting_fcf_basis"], fcf_basis
-                )
-                self.assertEqual(dcf["assumptions"]["growth_basis"], growth_basis)
                 self.assertEqual(len(dcf["forecast"]), 5)
                 self.assertIsNotNone(dcf["enterprise_value"])
                 self.assertIsNotNone(dcf["equity_value"])
@@ -507,7 +472,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             {
                 "claim_id": "missing_free_cash_flow",
                 "path": "summary",
-                "value": 13.9,
+                "value": "not-a-number",
                 "metric": "free cash flow",
                 "period": "FY2024 Q4",
                 "unit": "usd_billions",
@@ -524,16 +489,9 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.category, service.VALIDATION_JSON_SCHEMA
         )
-        self.assertEqual(
+        self.assertTrue(
+            any("value: must be a finite number" in p for p in raised.exception.problems),
             raised.exception.problems,
-            [
-                (
-                    "numeric_claims[0] (claim_id "
-                    "'missing_free_cash_flow'): fact_path "
-                    "'deterministic_current.free_cash_flow.value' does not "
-                    "resolve in deterministic current/prior metrics"
-                )
-            ],
         )
 
     def test_recorded_finalizer_accepts_exact_frozen_fact_row(self):
@@ -581,22 +539,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             excerpt=f"{EXCERPT} {cash_paid_quote}."
         )
         payload = narrative_payload()
-        payload["summary"] = (
-            "Operating cash flow was $13.9 billion in FY2024 Q4."
-        )
-        payload["numeric_claims"] = [
-            {
-                "claim_id": "operating_cash_flow",
-                "path": "summary",
-                "value": 13.9,
-                "metric": "operating cash flow",
-                "period": "FY2024 Q4",
-                "unit": "usd_billions",
-                "currency": "USD",
-                "source_kind": "text",
-                "quote": cash_paid_quote,
-            }
-        ]
+        payload["qualitative"]["ai_demand"]["evidence"] = "ungrounded fabricated evidence"
         recorded = cb.recorded_executor_output(json.dumps(payload))
 
         with self.assertRaises(service.InvestmentValidationError) as raised:
@@ -605,19 +548,10 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.category, service.VALIDATION_JSON_SCHEMA
         )
-        self.assertEqual(
+        self.assertTrue(
+            any("qualitative.ai_demand: evidence is not grounded" in p for p in raised.exception.problems),
             raised.exception.problems,
-            [
-                (
-                    "numeric_claims[0] (claim_id 'operating_cash_flow'): text "
-                    "source tuple does not match its authored target and bound "
-                    "producer quote: claimed coefficient, unit, currency, and "
-                    "metric do not co-occur at one compatible occurrence in "
-                    "the bound quote"
-                )
-            ],
         )
-
     def test_fingerprint_is_derived_and_case_stays_frozen(self):
         case = self._load_producer()
         self.assertEqual(

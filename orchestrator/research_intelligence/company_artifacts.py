@@ -59,26 +59,28 @@ from pathlib import Path
 from typing import Any
 
 import investment_service
-from research_intelligence.contracts import canonical_fingerprint
 from research_intelligence.company_benchmarks import (
     _EVALUATOR_ONLY_KEYS,
     EvaluatorCase,
+    ForbiddenCompanyClaim,
     ProducerCase,
     canonical_producer_fingerprint,
+    finalize_recorded_company_run,
     load_evaluator_case,
     load_producer_case,
     prepare_company_run,
     recorded_executor_output,
-    finalize_recorded_company_run,
 )
 from research_intelligence.company_judging import (
     PROMPT_VERSION,
     SCHEMA_NAME,
+    BlindJudgeRequest,
+    JudgeResult,
     aggregate_judge_panel,
     build_blind_judge_requests,
     parse_judge_result,
-    BlindJudgeRequest,
-    JudgeResult,
+)
+from research_intelligence.company_judging import (
     SCHEMA_VERSION as JUDGE_SCHEMA_VERSION,
 )
 from research_intelligence.company_quality import (
@@ -581,7 +583,7 @@ def _attempts_payload(attempts: Sequence[RecordedAttempt]) -> dict[str, Any]:
 
 
 def _finalized_payload(
-    finalized: "investment_service.InvestmentFinalizedAnalysis",
+    finalized: investment_service.InvestmentFinalizedAnalysis,
     producer: ProducerCase,
 ) -> dict[str, Any]:
     if not isinstance(finalized, investment_service.InvestmentFinalizedAnalysis):
@@ -898,9 +900,9 @@ def write_immutable_company_run(
     output_dir: str | Path,
     *,
     producer: ProducerCase,
-    request: "investment_service.InvestmentAnalysisRequest",
+    request: investment_service.InvestmentAnalysisRequest,
     attempts: Sequence[RecordedAttempt],
-    finalized: "investment_service.InvestmentFinalizedAnalysis",
+    finalized: investment_service.InvestmentFinalizedAnalysis,
     evaluator: object,
     blind_salt: str | bytes,
     judge_records: Sequence[Mapping[str, Any]],
