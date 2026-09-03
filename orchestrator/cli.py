@@ -1,6 +1,5 @@
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 import click
 from sqlalchemy import text

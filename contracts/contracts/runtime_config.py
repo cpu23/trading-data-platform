@@ -215,19 +215,8 @@ class TimezoneConfig(FrozenModel):
     secondary: TimezoneZoneConfig | None = None
 
 
-class LoggingRotateConfig(FrozenModel):
-    when: NonBlankText = "midnight"
-    interval: int = Field(default=1, ge=1, le=36500)
-    backup_count: int = Field(default=7, ge=0, le=100000)
-    encoding: str | None = None
-    utc: bool = False
-
-
 class LoggingConfig(FrozenModel):
     level: NonBlankText = "INFO"
-    format: NonBlankText = "structured_json"
-    output: list[str] = Field(default_factory=lambda: ["stdout"])
-    rotate: LoggingRotateConfig | None = None
 
     @field_validator("level")
     @classmethod
@@ -611,7 +600,6 @@ class AnalysisRoutingConfig(FrozenModel):
     reaction_window_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
     source_confidence: dict[str, float] = Field(default_factory=dict)
     debounce_seconds: int = Field(default=30, ge=0, le=3600)
-    max_debounce_seconds: int = Field(default=120, ge=0, le=3600)
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +1080,6 @@ class CollectorConfig(FrozenModel):
     currencies: list[str] = Field(default_factory=list)
     min_impact: str | None = None
     user_agent: str | None = None
-    request_delay_seconds: float = Field(default=2.0, ge=0.0, le=3600.0)
     # oanda
     stream_enabled: bool = True
     environment: str = "practice"
@@ -1101,7 +1088,6 @@ class CollectorConfig(FrozenModel):
     base_url: str | None = None
     instruments: list[InstrumentConfig] = Field(default_factory=list)
     # cftc / central_banks / official macro
-    freshness_hours: int = Field(default=192, ge=1, le=24 * 365)
     url: str | None = None
     limit: int = Field(default=5000, ge=1, le=1000000)
     lookback_days: int = Field(default=400, ge=1, le=36500)
@@ -1402,22 +1388,6 @@ class BudgetsConfig(FrozenModel):
         return value
 
 
-class InvestmentCompanyConfig(FrozenModel):
-    company: NonBlankText
-    symbol: NonBlankText
-    region: NonBlankText = "US"
-    industry: str | None = None
-    market: str | None = None
-    # Source identifiers; the one matching ``region`` must be set at runtime
-    # for the source to be discovered (validated at use time).
-    cik: str | None = None
-    sec_cik: str | None = None
-    company_number: str | None = None
-    edinet_code: str | None = None
-    edinet: str | None = None
-    dart_code: str | None = None
-    corp_code: str | None = None
-
 
 class InvestmentDocumentsConfig(FrozenModel):
     file_root: str | None = None
@@ -1431,7 +1401,6 @@ class InvestmentFilingsConfig(FrozenModel):
     run_on_startup: bool = True
     company_workers: int = Field(default=1, ge=1, le=256)
     universe: NonBlankText = "top_us_uk_eu_100"
-    companies: list[InvestmentCompanyConfig] = Field(default_factory=list)
     sec_user_agent: str = (
         "TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)"
     )
@@ -1509,7 +1478,6 @@ _COLLECTOR_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
             "currencies",
             "min_impact",
             "user_agent",
-            "request_delay_seconds",
         }
     ),
     "oanda": frozenset(
@@ -1529,20 +1497,18 @@ _COLLECTOR_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
         {
             "enabled",
             "schedule",
-            "freshness_hours",
             "lookback_days",
             "datasets",
         }
     ),
-    "central_banks": frozenset({"enabled", "schedule", "freshness_hours", "feeds"}),
-    "oecd": frozenset({"enabled", "schedule", "freshness_hours", "headers", "series"}),
-    "ecb": frozenset({"enabled", "schedule", "freshness_hours", "headers", "series"}),
-    "boe": frozenset({"enabled", "schedule", "freshness_hours", "headers", "series"}),
+    "central_banks": frozenset({"enabled", "schedule", "feeds"}),
+    "oecd": frozenset({"enabled", "schedule", "headers", "series"}),
+    "ecb": frozenset({"enabled", "schedule", "headers", "series"}),
+    "boe": frozenset({"enabled", "schedule", "headers", "series"}),
     "eia": frozenset(
         {
             "enabled",
             "schedule",
-            "freshness_hours",
             "headers",
             "requires_api_key",
             "credential_name",
@@ -2851,7 +2817,6 @@ __all__ = [
     "KNOWN_RESEARCH_STAGES",
     "InvestingWatchlistConfig",
     "InvestmentFilingsConfig",
-    "InvestmentCompanyConfig",
     "KobeissiConfig",
     "LlmConfig",
     "LlmRoleConfig",
@@ -2886,7 +2851,6 @@ __all__ = [
     "StoryConfirmationConfig",
     "TimezoneConfig",
     "TimezoneZoneConfig",
-    "TranscriptionSettingsConfig",
     "VenueCalendarConfig",
     "WatchlistConfig",
     "WatchlistInstrumentConfig",

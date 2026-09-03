@@ -86,8 +86,6 @@ class ConfigLoadingTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             default_config = _load_config(str(config_path))
         self.assertEqual(default_config["logging"]["level"], "INFO")
-        self.assertEqual(default_config["logging"]["output"], ["stdout"])
-        self.assertIsNone(default_config["logging"]["rotate"])
 
         # A distinct path bypasses the production config cache and remains
         # isolated from the module-level load_config patches in route tests.

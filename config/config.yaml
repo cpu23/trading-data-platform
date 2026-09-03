@@ -75,11 +75,6 @@ timezone:
 
 logging:
   level: ${LOG_LEVEL:-INFO}
-  format: structured_json
-  # Production logs are stdout-only. Historical logs and exposed keys require
-  # an explicit operator cleanup/rotation decision; startup never rewrites them.
-  output:
-    - stdout
 
 orchestration:
   collector_workers: 3
@@ -330,7 +325,6 @@ analysis_routing:
     reuters: 0.85
     kobeissi: 0.65
   debounce_seconds: 30
-  max_debounce_seconds: 120
 
 research_intelligence:
   enabled: true
@@ -556,7 +550,6 @@ collectors:
     currencies: ["USD", "EUR", "GBP", "JPY", "AUD", "CNY"]
     min_impact: "low"
     user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    request_delay_seconds: 2
 
   oanda:
     enabled: false
@@ -594,7 +587,6 @@ collectors:
   cftc:
     enabled: true
     schedule: "0 22 * * 5"
-    freshness_hours: 192
     lookback_days: 400
     datasets:
       - name: financial_futures
@@ -634,7 +626,6 @@ collectors:
   central_banks:
     enabled: true
     schedule: "0 */6 * * *"
-    freshness_hours: 12
     feeds:
       - institution: fed
         document_type: decision
@@ -658,7 +649,6 @@ collectors:
   oecd:
     enabled: true
     schedule: "15 6 * * *"
-    freshness_hours: 36
     headers:
       Accept: "text/csv"
     series:
@@ -746,7 +736,6 @@ collectors:
   ecb:
     enabled: true
     schedule: "25 6 * * *"
-    freshness_hours: 36
     headers:
       Accept: "text/csv"
     series:
@@ -824,7 +813,6 @@ collectors:
   boe:
     enabled: true
     schedule: "35 6 * * *"
-    freshness_hours: 36
     headers:
       Accept: "text/csv"
       User-Agent: "Mozilla/5.0 (compatible; TradingDataPlatform/1.0)"
@@ -913,7 +901,6 @@ collectors:
   eia:
     enabled: true
     schedule: "45 6 * * *"
-    freshness_hours: 36
     requires_api_key: true
     credential_name: EIA_API_KEY
     api_key: ${EIA_API_KEY:-}
