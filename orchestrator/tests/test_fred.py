@@ -683,8 +683,9 @@ class FredObservationConcurrencyTests(FredMetadataPersistenceTests):
 
 class FredOrchestratorMetricTests(unittest.TestCase):
     def test_central_db_write_duration_is_measured_and_propagated(self):
-        import orchestrator as runtime
         from collectors.base import CollectionResult
+
+        import orchestrator as runtime
         from db import WriteResult
 
         collector = MagicMock()
@@ -720,8 +721,9 @@ class FredOrchestratorMetricTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["metadata_cache_duration_ms"], 2)
 
     def test_partial_reason_and_persisted_api_calls_use_safe_exact_metrics(self):
-        import orchestrator as runtime
         from collectors.base import CollectionResult
+
+        import orchestrator as runtime
         from db import WriteResult
 
         secret = "SENTINEL-CACHE-DETAIL"
@@ -769,8 +771,9 @@ class FredOrchestratorMetricTests(unittest.TestCase):
         estimate.assert_not_called()
 
     def test_failed_db_write_still_records_duration_and_collector_api_calls(self):
-        import orchestrator as runtime
         from collectors.base import CollectionResult
+
+        import orchestrator as runtime
 
         collector = MagicMock()
         collector.collect.return_value = CollectionResult(

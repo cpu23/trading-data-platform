@@ -232,9 +232,7 @@ class OandaCollector:
 
     def _get_base_url(self, oanda_config: dict) -> str:
         if oanda_config.get("base_url"):
-            return self._validated_origin(
-                str(oanda_config["base_url"]), oanda_config
-            )
+            return self._validated_origin(str(oanda_config["base_url"]), oanda_config)
         environment = oanda_config.get("environment", "live")
         return DEFAULT_BASE_URLS.get(environment, DEFAULT_BASE_URLS["live"])
 

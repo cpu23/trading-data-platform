@@ -51,9 +51,7 @@ def scrub_url(url: str) -> str:
 
 def _scrub_text(text: str) -> str:
     text = _URL_RE.sub(lambda match: scrub_url(match.group(0)), text)
-    text = _AUTH_SCHEME_RE.sub(
-        lambda match: f"{match.group(1)} [REDACTED]", text
-    )
+    text = _AUTH_SCHEME_RE.sub(lambda match: f"{match.group(1)} [REDACTED]", text)
     text = _NAMED_SECRET_RE.sub(
         lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text
     )
@@ -84,7 +82,9 @@ def _request_url(exc: BaseException) -> str | None:
     return None if url is None else str(url)
 
 
-def _origin_path(exc: BaseException, *, provider: str | None) -> tuple[str | None, str | None]:
+def _origin_path(
+    exc: BaseException, *, provider: str | None
+) -> tuple[str | None, str | None]:
     url = _request_url(exc)
     if url is None:
         return provider, None

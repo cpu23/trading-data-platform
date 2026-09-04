@@ -2,7 +2,7 @@
   <div class="expansion-header">
     <div class="expansion-header-left">
       <span class="instrument-symbol tabular">{{ drawer.symbol }}</span>
-      <span class="expansion-price tabular" data-live-price="{{ drawer.symbol }}">{{ drawer.last_price_text or '—' }}</span>
+      <span class="expansion-price tabular">{{ drawer.last_price_text or '—' }}</span>
       {% if drawer.vol_state %}
         <span class="expansion-meta vol-state vol-{{ drawer.vol_state }}">{{ drawer.vol_state | title }} vol</span>
       {% endif %}

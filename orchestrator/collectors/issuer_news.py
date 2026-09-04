@@ -27,8 +27,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-
-from collectors.base import CollectionResult, CollectorSetupRequired, elapsed_ms
 from errors import InvalidSourceData, TransientSourceError
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
@@ -47,6 +45,8 @@ from sources.issuer_feed import (
     parse_feed_items,
 )
 from sources.news_storage import atomic_write_json, read_json
+
+from collectors.base import CollectionResult, CollectorSetupRequired, elapsed_ms
 
 logger = get_logger("collector.issuer_news")
 

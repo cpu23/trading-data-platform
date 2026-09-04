@@ -7,8 +7,9 @@ from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import db
 from collectors.base import CollectionWriteBatch
+
+import db
 
 CONFIG = {"database": {"password": "DB_PASSWORD_SENTINEL"}}
 

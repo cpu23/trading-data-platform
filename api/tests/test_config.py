@@ -29,9 +29,7 @@ class ConfigLoadingTests(unittest.TestCase):
                 config = _load_config(str(config_path))
 
         self.assertEqual(config["database"]["user"], "configured")
-        self.assertEqual(
-            config["database"]["password"], "correct-horse-battery-staple"
-        )
+        self.assertEqual(config["database"]["password"], "correct-horse-battery-staple")
         self.assertEqual(config["kobeissi"]["api_key"], "")
 
     def test_env_substitution_names_absent_required_variable(self):
@@ -60,8 +58,6 @@ class ConfigLoadingTests(unittest.TestCase):
             "OPENROUTER_MODEL": "provider/model",
             "OANDA_API_KEY": "configured-oanda",
             "TWITTERAPI_KEY": "",
-            "DASHBOARD_USER": "admin",
-            "DASHBOARD_PASSWORD": "correct-horse-battery-staple",
         }
         with patch.dict(os.environ, env, clear=True):
             config = _load_config(str(config_path))
@@ -80,8 +76,6 @@ class ConfigLoadingTests(unittest.TestCase):
             "OPENROUTER_MODEL": "provider/model",
             "OANDA_API_KEY": "configured-oanda",
             "TWITTERAPI_KEY": "",
-            "DASHBOARD_USER": "admin",
-            "DASHBOARD_PASSWORD": "correct-horse-battery-staple",
         }
         with patch.dict(os.environ, env, clear=True):
             default_config = _load_config(str(config_path))

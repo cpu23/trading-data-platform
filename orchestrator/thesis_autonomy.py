@@ -63,15 +63,9 @@ from datetime import time as dt_time
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
-
-from analysis_jobs import enqueue_job
 from budgets import BudgetContext
-from contracts.db_results import result_first, result_rows
-from contracts.runtime_config import ThesisAutonomyConfig
-from db import get_session
+from jobs import enqueue_job
 from llm_client import LLMStage
-from orchestrator import accept_run, finalize_run_safely, start_run
 from research_intelligence.context import ResearchContext
 from research_intelligence.contracts import (
     EvidenceSignal,
@@ -81,36 +75,32 @@ from research_intelligence.contracts import (
 from research_intelligence.evidence import (
     DEFAULT_ADAPTERS,
     EvidenceRegistry,
-    exact_evidence_lookup,
 )
+from sqlalchemy import text
 from thesis_challenges import (
     MAX_CITATIONS_PER_CLAIM,
     PROPOSAL_KINDS,
     ChallengeProposal,
     ChallengeRunner,
     ThesisClaim,
-    ThesisCondition,
     ThesisSnapshot,
     challenge_thesis,
 )
 from thesis_fusion import (
-    add_group_membership,
-    attach_evidence,
-    create_find_group,
-    evaluate_thesis,
-    freeze_forecast,
-    link_position,
-    merge_or_create_thesis,
-    record_falsification_run,
+    canonical_thesis_key,
+    create_thesis_proposal,
     record_forecast_outcome,
-    update_falsification_run,
-    upsert_scenario,
 )
-from thesis_playbooks import build_event_playbook, upsert_event_playbook
 from thesis_scoring import (
+    DOWNSIDE_NORMALIZER,
     CatalystSignal,
+    assess_evidence,
+    assess_opportunity,
+    calculate_neglect,
+    catalyst_readiness,
     evidence_quality_prior,
     is_auditable_evidence,
+    scenario_valuation,
 )
 from thesis_tournament import (
     CITATION_FIELDS,
@@ -118,9 +108,13 @@ from thesis_tournament import (
     ROLES,
     RoleRunner,
     resolve_candidate_entities,
-    resolve_evidence_market_identity,
     run_tournament,
 )
+
+from contracts.db_results import result_first, result_rows
+from contracts.runtime_config import ThesisAutonomyConfig
+from db import get_session
+from orchestrator import accept_run, finalize_run_safely, start_run
 
 JOB_TYPE = "thesis_autonomy_run"
 
@@ -154,24 +148,10 @@ _IDENTITY_KEYS = (
 )
 
 _MAX_ERRORS = 20
-_MAX_ATTACH_EVIDENCE = 50
-_MAX_ATTACH_CONTRADICTIONS = 50
-_MAX_SECOND_PASS_SCENARIOS = 64
-_MAX_SECOND_PASS_EVIDENCE = 256
-_MAX_CONDITIONS = 64
-_MAX_GROUP_NAME = 200
 _MAX_OUTCOME_RESOLUTION = 100
-_MAX_FORECAST_BACKFILL = 300
 MAX_AUDIT_CANDIDATES = MAX_SEMANTIC_AUDIT_BATCH
 MAX_AUDIT_CITED_REFS = 30
 MAX_UNSUPPORTED_CLAIMS = 10
-
-#: Conservative deterministic risk materialization for promoted candidate
-#: invalidators: every explicit invalidation condition is a counter-thesis
-#: risk, and severity is the neutral conservative default — never inferred
-#: from text, never understated, never inflated.
-_CANDIDATE_RISK_KIND = "counter_thesis"
-_CANDIDATE_RISK_SEVERITY = "moderate"
 
 #: Bounded horizon mapping for deterministic forecast target dates (days).
 _HORIZON_DAYS = {
@@ -188,19 +168,6 @@ _MAX_HORIZON_DAYS = 730
 #: inconclusive; before the grace it stays open.
 _FORECAST_GRACE_DAYS = 7
 _MAX_PRICE_AGE_DAYS = 7
-
-#: Recent context-match window for second-pass prioritization: theses whose
-#: playbooks matched recent market events rank ahead of generic
-#: high-opportunity candidates (linked positions still first).
-_CONTEXT_MATCH_WINDOW_DAYS = 7
-
-_FALSIFICATION_STATUS_BY_STATE = {
-    "breached": "falsified",
-    "intact": "not_falsified",
-    "threatened": "inconclusive",
-}
-
-
 
 
 def _bounded(value: Any, default: int, maximum: int) -> int:
@@ -1159,27 +1126,31 @@ def enqueue_thesis_autonomy_job(
 
 def _ensure_system_theme(session: Any) -> tuple[str, bool]:
     """Find or create the single durable system theme concurrency-safely."""
-    row = result_first(session.execute(
-        text(
-            """INSERT INTO investment_themes
+    row = result_first(
+        session.execute(
+            text(
+                """INSERT INTO investment_themes
                (name, definition, horizon, macro_drivers, key_indicators,
                 status, origin)
                VALUES (:name, :definition, 'multi_year',
                        ARRAY[]::TEXT[], ARRAY[]::TEXT[], 'active', 'discovered')
                ON CONFLICT (name) DO NOTHING
                RETURNING id"""
-        ),
-        {
-            "name": SYSTEM_THEME_NAME,
-            "definition": SYSTEM_THEME_DEFINITION,
-        },
-    ))
+            ),
+            {
+                "name": SYSTEM_THEME_NAME,
+                "definition": SYSTEM_THEME_DEFINITION,
+            },
+        )
+    )
     if row is not None:
         return str(row["id"]), True
-    existing = result_first(session.execute(
-        text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
-        {"name": SYSTEM_THEME_NAME},
-    ))
+    existing = result_first(
+        session.execute(
+            text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
+            {"name": SYSTEM_THEME_NAME},
+        )
+    )
     if existing is None:
         raise RuntimeError("system theme creation did not return an identity")
     return str(existing["id"]), False
@@ -1282,85 +1253,6 @@ def _graded_signal(
 def _signal(item: Any) -> EvidenceSignal:
     """Derive a graded desk challenge signal from collected evidence."""
     return _graded_signal(item)
-
-
-def _signal_from_row(row: Mapping[str, Any]) -> EvidenceSignal:
-    """Rebuild a desk signal from one persisted evidence row.
-
-    Mirrors ``thesis_fusion._evidence_signal_from_row``: legacy rows without
-    a fingerprint synthesize a deterministic content identity from the row
-    key so they participate in scoring without being re-fingerprinted.
-    """
-    fingerprint = row.get("evidence_fingerprint")
-    if not fingerprint:
-        fingerprint = canonical_fingerprint(
-            {
-                "legacy_evidence": (
-                    row.get("evidence_type"),
-                    row.get("evidence_id"),
-                    row.get("relationship"),
-                    row.get("source_family") or "manual",
-                )
-            }
-        )
-    family = row.get("source_family") or "manual"
-    return EvidenceSignal.create(
-        evidence_id=row.get("evidence_id"),
-        evidence_type=row.get("evidence_type") or "source_claim",
-        relationship=row.get("relationship") or "context",
-        source_name=family,
-        source_family=family,
-        origin_key=row.get("origin_key"),
-        independence_key=row.get("independence_key"),
-        evidence_fingerprint=fingerprint,
-        source_timestamp=row.get("source_timestamp") or row.get("created_at"),
-        available_at=row.get("available_at")
-        or row.get("source_timestamp")
-        or row.get("created_at"),
-        quality_score=row.get("quality_score"),
-        entailment_score=row.get("entailment_score"),
-        freshness_score=row.get("freshness_score"),
-        effective_weight=row.get("effective_weight"),
-        provenance={"excerpt": row.get("excerpt")},
-    )
-
-
-def _attach_cited_evidence(
-    session: Any,
-    thesis_id: str,
-    candidate: Any,
-    catalog: Mapping[str, Any],
-    *,
-    entailment_score: float,
-) -> dict[str, int]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for ref in candidate.evidence_refs:
-        item = catalog.get(ref)
-        if item is None or item.content_fingerprint in seen:
-            continue
-        seen.add(item.content_fingerprint)
-        signal = _graded_signal(item, entailment_score=entailment_score)
-        rows.append(
-            {
-                "evidence_type": signal.evidence_type,
-                "evidence_id": signal.evidence_id,
-                "relationship": signal.relationship,
-                "excerpt": item.bounded_excerpt,
-                "source_name": signal.source_name,
-                "source_family": signal.source_family,
-                "origin_key": signal.origin_key,
-                "independence_key": signal.independence_key,
-                "evidence_fingerprint": signal.evidence_fingerprint,
-                "source_timestamp": signal.source_timestamp,
-                "available_at": signal.available_at,
-                "quality_score": signal.quality_score,
-                "entailment_score": signal.entailment_score,
-                "freshness_score": signal.freshness_score,
-                "effective_weight": signal.effective_weight,
-            }
-        )
-    return attach_evidence(session, thesis_id, rows, limit=_MAX_ATTACH_EVIDENCE)
 
 
 def _candidate_evidence(
@@ -1477,93 +1369,16 @@ def _candidate_actionability_gate(
     return None
 
 
-def _persist_scenarios(
-    session: Any,
-    thesis_id: str,
-    candidate: Any,
-) -> tuple[dict[str, str], int]:
-    """Persist bull/base/bear legs; returns ({label: scenario_id}, changed).
-
-    Each leg's bounded path/assumptions description is persisted verbatim
-    to ``investment_thesis_scenarios.description`` alongside its
-    probability and expected return.
-    """
-    scenario_ids: dict[str, str] = {}
-    changed_count = 0
-    for leg, path in zip(candidate.scenarios, candidate.scenario_paths, strict=True):
-        result = upsert_scenario(
-            session,
-            thesis_id,
-            name=leg.label,
-            description=path,
-            probability=leg.probability,
-            expected_return=leg.expected_return,
-            is_base_case=leg.label == "base",
-        )
-        scenario_ids[leg.label] = str(result["id"])
-        if result.get("changed"):
-            changed_count += 1
-    return scenario_ids, changed_count
-
-
-def _persist_candidate_risks(
-    session: Any,
-    thesis_id: str,
-    candidate: Any,
-) -> int:
-    """Materialize each validated candidate invalidator as one risk row.
-
-    One structured ``investment_risks`` row per supplied invalidator —
-    never more, never invented from other content.  Kind and severity are
-    conservative deterministic constants: an explicit invalidation
-    condition is always a ``counter_thesis`` risk, and severity is the
-    neutral ``moderate`` default (never understated, never inferred from
-    text).
-
-    Reruns are idempotent: the absence check is closed by a
-    transaction-scoped advisory lock keyed by the exact identity
-    ``(thesis_id, normalized description)`` plus a ``NOT EXISTS`` guard,
-    so two concurrent cycles can never insert the same risk twice.  The
-    promote path already holds the thesis's fusion canonical-key lock
-    (merge is reentrant), and this identity lock is the only later lock,
-    so lock order stays single and acyclic.  Returns the number of rows
-    newly inserted.
-    """
-    persisted = 0
-    for invalidator in candidate.invalidators:
-        risk = " ".join(str(invalidator or "").split())[:2000]
-        if not risk:
-            continue
-        session.execute(
-            text(
-                "/* risk_identity_lock */ "
-                "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
-            ),
-            {"lock_key": f"risk_identity:{thesis_id}:{risk}"},
-        )
-        row = result_first(session.execute(
-            text(
-                """INSERT INTO investment_risks
-                   (thesis_id, description, kind, severity)
-                   SELECT CAST(:thesis_id AS UUID), :description,
-                          :kind, :severity
-                   WHERE NOT EXISTS (
-                       SELECT 1 FROM investment_risks
-                       WHERE thesis_id = CAST(:thesis_id AS UUID)
-                         AND description = :description
-                   )
-                   RETURNING id"""
-            ),
-            {
-                "thesis_id": thesis_id,
-                "description": risk,
-                "kind": _CANDIDATE_RISK_KIND,
-                "severity": _CANDIDATE_RISK_SEVERITY,
-            },
-        ))
-        if row is not None:
-            persisted += 1
-    return persisted
+def _derived_attention(signals: Sequence[EvidenceSignal]) -> float | None:
+    """Use bounded unique evidence density as a transparent attention proxy."""
+    unique = {
+        signal.evidence_fingerprint
+        for signal in signals
+        if signal.evidence_fingerprint is not None
+    }
+    if not unique:
+        return None
+    return min(1.0, len(unique) / 20.0)
 
 
 def _candidate_scenarios(candidate: Any) -> tuple[Scenario, ...]:
@@ -1586,8 +1401,8 @@ def _candidate_scenarios(candidate: Any) -> tuple[Scenario, ...]:
 def _catalyst_signals(*descriptions: Any) -> tuple[CatalystSignal, ...]:
     """Bounded current-cycle catalyst signals (pending, no expected date).
 
-    Mirrors what ``_ensure_candidate_catalyst`` persists so the explicit
-    scoring input and the persisted row stay identical.
+    This is the explicit current-cycle scoring input for an unreviewed
+    candidate.
     """
     signals: list[CatalystSignal] = []
     for description in descriptions:
@@ -1604,336 +1419,6 @@ def _catalyst_signals(*descriptions: Any) -> tuple[CatalystSignal, ...]:
 def _candidate_catalysts(candidate: Any) -> tuple[CatalystSignal, ...]:
     """Current-cycle catalyst signal as an explicit scoring input."""
     return _catalyst_signals(candidate.catalyst)
-
-
-def _horizon_days(horizon: Any) -> int:
-    try:
-        return max(
-            1,
-            min(
-                _MAX_HORIZON_DAYS,
-                int(
-                    _HORIZON_DAYS.get(
-                        str(horizon).strip().casefold(), _DEFAULT_HORIZON_DAYS
-                    )
-                ),
-            ),
-        )
-    except (TypeError, ValueError):
-        return _DEFAULT_HORIZON_DAYS
-
-
-def _enrich_thesis_market_identity(
-    session: Any,
-    thesis_id: str,
-    *,
-    company: str | None,
-    symbol: str | None,
-    normalize_symbol: bool = False,
-) -> bool:
-    """Fill legacy-null identity fields without overwriting curated values.
-
-    Curated non-null company/symbol values are always preserved.  When
-    ``normalize_symbol`` is set, a populated symbol is rewritten to the
-    supplied canonical form only when it is the same symbol identity
-    (identical after canonical trim/uppercase) — a genuinely different
-    symbol is never overwritten.
-    """
-    if company is None and symbol is None and not normalize_symbol:
-        return False
-    result = session.execute(
-        text(
-            """UPDATE investment_theses
-               SET company = CASE
-                       WHEN NULLIF(BTRIM(company), '') IS NULL THEN :company
-                       ELSE company
-                   END,
-                   symbol = CASE
-                       WHEN NULLIF(BTRIM(symbol), '') IS NULL THEN :symbol
-                       WHEN :normalize_symbol AND :symbol IS NOT NULL
-                            AND UPPER(BTRIM(symbol)) = UPPER(BTRIM(:symbol))
-                            THEN :symbol
-                       ELSE symbol
-                   END,
-                   updated_at = NOW()
-               WHERE id = CAST(:id AS UUID)
-                 AND (
-                     (NULLIF(BTRIM(company), '') IS NULL AND :company IS NOT NULL)
-                     OR
-                     (NULLIF(BTRIM(symbol), '') IS NULL AND :symbol IS NOT NULL)
-                     OR
-                     (:normalize_symbol AND :symbol IS NOT NULL
-                      AND UPPER(BTRIM(symbol)) = UPPER(BTRIM(:symbol)))
-                 )"""
-        ),
-        {
-            "id": thesis_id,
-            "company": company,
-            "symbol": symbol,
-            "normalize_symbol": normalize_symbol,
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def _backfill_missing_market_identities(
-    session: Any,
-    catalog: Mapping[str, Any],
-    *,
-    reference: datetime | None = None,
-    limit: int = 100,
-) -> int:
-    """Backfill bounded legacy fusion theses from their persisted citations.
-
-    A historical/delayed run never rewrites a thesis whose current state is
-    not provably visible at its accepted ``reference``: the thesis must be
-    created and last updated at/before the reference and must not carry an
-    accepted fusion reference later than it (``fusion_reference_at`` NULL
-    or <= reference), so an older or stale job cannot overwrite identity
-    state on a thesis a newer cycle already claimed or updated.  Missing
-    timestamps fail closed (a NULL ``created_at``/``updated_at`` can never
-    be proven visible at the reference); without a reference bound the
-    legacy no-cutoff behavior applies.  Citations resolve against the
-    current rolling evidence catalog first; when that yields no identity at
-    all, citations outside the catalog/lookback are recovered by exact ID
-    from persisted source records (bounded, point-in-time-checked at
-    ``reference``) and merged into a second deterministic resolution.
-    Catalog-first ordering means recovered evidence never overturns an
-    already-resolved or already-ambiguous catalog outcome.  Only exact
-    citation identities participate — uncited or ambiguous records never
-    supply company/symbol.
-    """
-    rows = result_rows(session.execute(
-        text(
-            """/* autonomy_identity_backfill */
-               SELECT t.id, t.claim, t.company, t.symbol,
-                      e.evidence_type, e.evidence_id
-               FROM (
-                   SELECT id, claim, company, symbol, created_at
-                   FROM investment_theses
-                   WHERE origin = 'fusion'
-                     AND (
-                         NULLIF(BTRIM(company), '') IS NULL
-                         OR NULLIF(BTRIM(symbol), '') IS NULL
-                     )
-                     AND (:reference IS NULL OR created_at <= :reference)
-                     AND (:reference IS NULL OR updated_at <= :reference)
-                     AND (:reference IS NULL
-                          OR fusion_reference_at IS NULL
-                          OR fusion_reference_at <= :reference)
-                   ORDER BY created_at, id
-                   LIMIT :limit
-               ) t
-               LEFT JOIN investment_thesis_evidence e ON e.thesis_id = t.id
-               ORDER BY t.created_at, t.id, e.evidence_id"""
-        ),
-        {
-            "reference": reference,
-            "limit": max(1, min(int(limit), 500)),
-        },
-    ))
-    pending: dict[str, dict[str, Any]] = {}
-    missing_refs: list[str] = []
-    missing_seen: set[str] = set()
-    for row in rows:
-        thesis_id = str(row["id"])
-        item = pending.setdefault(
-            thesis_id,
-            {
-                "claim": str(row.get("claim") or ""),
-                "company": row.get("company"),
-                "symbol": row.get("symbol"),
-                "evidence_refs": [],
-            },
-        )
-        evidence_id = str(row.get("evidence_id") or "")
-        evidence_type = str(row.get("evidence_type") or "")
-        typed_ref = (
-            f"{evidence_type}:{evidence_id}" if evidence_type and evidence_id else ""
-        )
-        if typed_ref:
-            item["evidence_refs"].append(typed_ref)
-            if typed_ref not in catalog and typed_ref not in missing_seen:
-                missing_seen.add(typed_ref)
-                missing_refs.append(typed_ref)
-        # Legacy rows may carry an untyped/bare id; only the in-memory
-        # catalog can resolve those (persistence needs the type).
-        if evidence_id:
-            item["evidence_refs"].append(evidence_id)
-
-    recovered = exact_evidence_lookup(
-        session, tuple(missing_refs), available_by=reference, limit=2000
-    )
-    merged: dict[str, Any] = {**recovered, **catalog}
-
-    changed = 0
-    for thesis_id, item in pending.items():
-        evidence_refs = tuple(dict.fromkeys(item["evidence_refs"]))
-        subject = str(item["company"] or item["claim"])
-        instrument = str(item["symbol"] or item["claim"])
-        company, symbol = resolve_evidence_market_identity(
-            subject=subject,
-            instrument=instrument,
-            evidence_refs=evidence_refs,
-            evidence=catalog,
-        )
-        if company is None and symbol is None:
-            # No identity from the rolling catalog: retry with the exact-ID
-            # recovered citations merged in (catalog entities still win on
-            # duplicate refs).
-            company, symbol = resolve_evidence_market_identity(
-                subject=subject,
-                instrument=instrument,
-                evidence_refs=evidence_refs,
-                evidence=merged,
-            )
-        if symbol is not None:
-            symbol = _canonical_market_symbol(symbol) or symbol
-        normalize_symbol = False
-        if item["symbol"] is not None and symbol is not None:
-            stored_canonical = _canonical_market_symbol(item["symbol"])
-            resolved_canonical = _canonical_market_symbol(symbol)
-            if (
-                stored_canonical is not None
-                and resolved_canonical is not None
-                and stored_canonical == resolved_canonical
-            ):
-                normalize_symbol = True
-        changed += int(
-            _enrich_thesis_market_identity(
-                session,
-                thesis_id,
-                company=company,
-                symbol=symbol,
-                normalize_symbol=normalize_symbol,
-            )
-        )
-    return changed
-
-
-def _ensure_candidate_catalyst(
-    session: Any,
-    thesis_id: str,
-    description: Any,
-) -> bool:
-    """Persist one generated pending catalyst without duplicating reruns.
-
-    The absence check is closed by a transaction-scoped advisory lock
-    keyed by the exact identity ``(thesis_id, normalized description)``:
-    two concurrent cycles can otherwise both see "no catalyst" and race
-    the same absent row through the ``NOT EXISTS`` guard, permanently
-    inserting a duplicate.  The loser waits for the winner's transaction,
-    then its guard sees the winner's row and truthfully reports a no-op.
-    Rows stay immutable and append-only (migration 054); reruns never
-    mutate or delete existing rows.
-
-    Lock order is global: the thesis's fusion canonical-key lock is
-    acquired BEFORE the catalyst identity lock.  The promote path already
-    holds the fusion lock (merge is reentrant), and the backfill path
-    takes it here, so a catalyst lock is never retained across a later
-    fusion acquisition for the same thesis — otherwise a candidate cycle
-    (fusion K then catalyst C) and a backfilling cycle (catalyst C then
-    fusion K) could deadlock each other and abort a whole cycle.
-    """
-    catalyst = " ".join(str(description or "").split())[:2000]
-    if not catalyst:
-        return False
-    # The stored canonical key is the exact identity merge_thesis locks,
-    # so this serializes on the same lock a concurrent candidate cycle
-    # holds while promoting the thesis.  Legacy theses without a key have
-    # no merge identity to contend on and skip the lock.
-    thesis = result_first(session.execute(
-        text(
-            """/* catalyst_identity_guard */
-               SELECT canonical_key FROM investment_theses
-               WHERE id = CAST(:thesis_id AS UUID)"""
-        ),
-        {"thesis_id": thesis_id},
-    ))
-    if thesis is not None and thesis.get("canonical_key"):
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": str(thesis["canonical_key"])},
-        )
-    # Serialize the absence check + insert for this exact identity across
-    # every connection.  The namespace keeps this lock disjoint from the
-    # fusion canonical-key lock and all other advisory-lock users; the
-    # per-identity key keeps distinct descriptions independent.
-    session.execute(
-        text(
-            "/* catalyst_identity_lock */ "
-            "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
-        ),
-        {"lock_key": f"catalyst_identity:{thesis_id}:{catalyst}"},
-    )
-    row = result_first(session.execute(
-        text(
-            """INSERT INTO investment_catalysts
-               (thesis_id, description, expected_at, state)
-               SELECT CAST(:thesis_id AS UUID), :description, NULL, 'pending'
-               WHERE NOT EXISTS (
-                   SELECT 1 FROM investment_catalysts
-                   WHERE thesis_id = CAST(:thesis_id AS UUID)
-                     AND description = :description
-               )
-               RETURNING id"""
-        ),
-        {"thesis_id": thesis_id, "description": catalyst},
-    ))
-    return row is not None
-
-
-def _backfill_generated_catalysts(
-    session: Any,
-    reference: datetime,
-    *,
-    limit: int = 100,
-) -> tuple[tuple[str, str], ...]:
-    """Materialize bounded legacy catalyst summaries through the live table.
-
-    A historical/delayed run never materializes a catalyst for thesis state
-    that is not provably visible at its accepted ``reference``: the thesis
-    must be created and last updated at/before the reference and must not
-    carry an accepted fusion reference later than it (``fusion_reference_at``
-    NULL or <= reference).  Missing timestamps fail closed (a NULL
-    ``created_at``/``updated_at`` can never be proven visible at the
-    reference).  Batch bounds/ordering and insert-once idempotency are
-    unchanged.  Returns ``(thesis_id, catalyst_summary)`` pairs so the cycle
-    can hand the just-derived catalysts back to scoring as explicit
-    current-cycle inputs (their persisted rows postdate the cycle
-    reference).
-    """
-    rows = result_rows(session.execute(
-        text(
-            """/* autonomy_catalyst_backfill */
-               SELECT t.id, t.catalyst_summary
-               FROM investment_theses t
-               WHERE t.origin = 'fusion'
-                 AND NULLIF(BTRIM(t.catalyst_summary), '') IS NOT NULL
-                 AND t.created_at <= :reference
-                 AND t.updated_at <= :reference
-                 AND (t.fusion_reference_at IS NULL
-                      OR t.fusion_reference_at <= :reference)
-                 AND NOT EXISTS (
-                     SELECT 1 FROM investment_catalysts c
-                     WHERE c.thesis_id = t.id
-                       AND c.description = t.catalyst_summary
-                 )
-               ORDER BY t.created_at, t.id
-               LIMIT :limit"""
-        ),
-        {
-            "reference": reference,
-            "limit": max(1, min(int(limit), 500)),
-        },
-    ))
-    inserted: list[tuple[str, str]] = []
-    for row in rows:
-        thesis_id = str(row["id"])
-        summary = " ".join(str(row.get("catalyst_summary") or "").split())[:2000]
-        if _ensure_candidate_catalyst(session, thesis_id, summary):
-            inserted.append((thesis_id, summary))
-    return tuple(inserted)
 
 
 def _close_at_or_before(
@@ -1957,9 +1442,10 @@ def _close_at_or_before(
         return None
     available = available_at if available_at is not None else as_of
     earliest = as_of - timedelta(days=max(1, min(int(max_age_days), 31)))
-    row = result_first(session.execute(
-        text(
-            """SELECT close FROM market_data
+    row = result_first(
+        session.execute(
+            text(
+                """SELECT close FROM market_data
                WHERE symbol = :symbol
                  AND timestamp <= :as_of
                  AND timestamp >= :earliest
@@ -1969,14 +1455,15 @@ def _close_at_or_before(
                         CASE WHEN timeframe = 'PRICE' THEN 0 ELSE 1 END,
                         timeframe ASC, source ASC
                LIMIT 1"""
-        ),
-        {
-            "symbol": symbol[:20],
-            "as_of": as_of,
-            "earliest": earliest,
-            "available_at": available,
-        },
-    ))
+            ),
+            {
+                "symbol": symbol[:20],
+                "as_of": as_of,
+                "earliest": earliest,
+                "available_at": available,
+            },
+        )
+    )
     if row is None:
         return None
     try:
@@ -1984,223 +1471,6 @@ def _close_at_or_before(
     except (TypeError, ValueError, OverflowError):
         return None
     return value if math.isfinite(value) else None
-
-
-def _scenario_forecast_present(session: Any, scenario_id: str) -> bool:
-    """Bounded precheck: one unsuperseded forecast already exists for the
-    scenario (LIMIT 1), so a later rerun must not freeze another one.
-
-    Mirrors the partial unique index (``scenario_id`` where active) added
-    by migration 053; the index stays the concurrency-safe backstop while
-    this check keeps ordinary reruns from raising.
-    """
-    row = result_first(session.execute(
-        text(
-            """SELECT 1 AS present FROM investment_thesis_forecasts
-               WHERE scenario_id = CAST(:scenario_id AS UUID)
-                 AND superseded_at IS NULL
-               LIMIT 1"""
-        ),
-        {"scenario_id": scenario_id},
-    ))
-    return row is not None
-
-
-def _freeze_scenario_forecasts(
-    session: Any,
-    thesis_id: str,
-    scenarios: Sequence[tuple[str, Any, str | None]],
-    *,
-    direction: Any,
-    horizon: Any,
-    input_fingerprint: Any,
-    market_symbol: Any,
-    reference: datetime,
-) -> int:
-    """Freeze deterministic price targets for supplied persisted scenarios.
-
-    At most one unsuperseded forecast per non-null scenario: scenarios that
-    already carry an active forecast are skipped, so the first frozen
-    as_of/close/target/target date wins and a rerun can never create a
-    second active forecast (or a duplicate outcome).  Scenario-less
-    forecasts stay valid and fall back to forecast_key idempotency.
-    """
-    close = _close_at_or_before(session, market_symbol, reference)
-    if close is None or close <= 0:
-        return 0
-    thesis_direction = str(direction or "").strip().casefold()
-    if thesis_direction not in ("long", "short"):
-        return 0
-    fingerprint = str(input_fingerprint or "legacy")[:16]
-    target_date = reference.date() + timedelta(days=_horizon_days(horizon))
-    frozen = 0
-    for label, raw_return, scenario_id in scenarios:
-        if scenario_id is not None and _scenario_forecast_present(session, scenario_id):
-            continue
-        try:
-            expected_return = float(raw_return) if raw_return is not None else None
-        except (TypeError, ValueError, OverflowError):
-            expected_return = None
-        if expected_return is None or not math.isfinite(expected_return):
-            continue
-        factor = (
-            1.0 + expected_return
-            if thesis_direction == "long"
-            else 1.0 - expected_return
-        )
-        target_value = round(close * factor, 12)
-        if not math.isfinite(target_value) or target_value <= 0:
-            continue
-        if target_value > close:
-            forecast_direction = "up"
-        elif target_value < close:
-            forecast_direction = "down"
-        else:
-            forecast_direction = "flat"
-        forecast_key = (
-            f"autonomy:{thesis_id}:{label}:{target_date.isoformat()}:{fingerprint}"
-        )
-        result = freeze_forecast(
-            session,
-            thesis_id,
-            forecast_key=forecast_key,
-            forecast_type="price",
-            direction=forecast_direction,
-            target_value=target_value,
-            target_date=target_date,
-            as_of=reference,
-            scenario_id=scenario_id,
-        )
-        if result.get("changed"):
-            frozen += 1
-    return frozen
-
-
-def _freeze_candidate_forecasts(
-    session: Any,
-    thesis_id: str,
-    candidate: Any,
-    scenario_ids: Mapping[str, str],
-    *,
-    market_symbol: Any,
-    reference: datetime,
-) -> int:
-    """Freeze one evidence-resolved price forecast per candidate scenario."""
-    return _freeze_scenario_forecasts(
-        session,
-        thesis_id,
-        [
-            (
-                leg.label,
-                leg.expected_return,
-                scenario_ids.get(leg.label),
-            )
-            for leg in candidate.scenarios
-        ],
-        direction=candidate.direction,
-        horizon=candidate.horizon,
-        input_fingerprint=candidate.content_fingerprint,
-        market_symbol=market_symbol,
-        reference=reference,
-    )
-
-
-def _backfill_missing_forecasts(
-    session: Any,
-    reference: datetime,
-    *,
-    limit: int = _MAX_FORECAST_BACKFILL,
-) -> int:
-    """Freeze bounded forecast targets for scenario legs visible at ``reference``.
-
-    A historical/delayed run never backdates a forecast for thesis or
-    scenario state that did not exist at its accepted reference: the thesis
-    must be created and last updated at/before the reference, must not carry
-    an accepted fusion reference later than it (``fusion_reference_at`` NULL
-    or <= reference), and each scenario must be created at/before the
-    reference and not yet superseded on/before it (``superseded_at`` NULL or
-    > reference).  A scenario is frozen only when it carries no forecast at
-    the accepted reference (no row frozen at/before it — ``as_of`` at/before
-    the reference — that is not superseded on/before it) and no
-    currently-active forecast either: a forecast that was active at the
-    reference and was later superseded or moved to another scenario never
-    makes the scenario eligible again, so a replay cannot create a forecast
-    the original run at the reference would not have made.  Batch
-    bounds/ordering, canonical market identity, the price availability
-    cutoff, first-frozen uniqueness, target-boundary semantics, and
-    price-only ownership are unchanged.
-    """
-    rows = result_rows(session.execute(
-        text(
-            """/* autonomy_forecast_backfill */
-               SELECT t.id AS thesis_id, t.symbol, t.direction, t.horizon,
-                      t.input_fingerprint, s.id AS scenario_id,
-                      s.name, s.expected_return
-               FROM investment_theses t
-               JOIN investment_thesis_scenarios s ON s.thesis_id = t.id
-               WHERE t.origin = 'fusion'
-                 AND t.status IN ('active', 'candidate')
-                 AND NULLIF(BTRIM(t.symbol), '') IS NOT NULL
-                 AND t.created_at <= :reference
-                 AND t.updated_at <= :reference
-                 AND (t.fusion_reference_at IS NULL
-                      OR t.fusion_reference_at <= :reference)
-                 AND s.created_at <= :reference
-                 AND (s.superseded_at IS NULL
-                      OR s.superseded_at > :reference)
-                 AND NOT EXISTS (
-                     SELECT 1 FROM investment_thesis_forecasts f
-                     WHERE f.scenario_id = s.id
-                       AND f.superseded_at IS NULL
-                 )
-                 AND NOT EXISTS (
-                     SELECT 1 FROM investment_thesis_forecasts f
-                     WHERE f.scenario_id = s.id
-                       AND f.as_of <= :reference
-                       AND (f.superseded_at IS NULL
-                            OR f.superseded_at > :reference)
-                 )
-               ORDER BY t.updated_at, t.id, s.name
-               LIMIT :limit"""
-        ),
-        {
-            "reference": reference,
-            "limit": max(1, min(int(limit), _MAX_FORECAST_BACKFILL)),
-        },
-    ))
-    pending: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        thesis_id = str(row["thesis_id"])
-        item = pending.setdefault(
-            thesis_id,
-            {
-                "symbol": row.get("symbol"),
-                "direction": row.get("direction"),
-                "horizon": row.get("horizon"),
-                "input_fingerprint": row.get("input_fingerprint"),
-                "scenarios": [],
-            },
-        )
-        item["scenarios"].append(
-            (
-                str(row.get("name") or "scenario"),
-                row.get("expected_return"),
-                str(row["scenario_id"]),
-            )
-        )
-    return sum(
-        _freeze_scenario_forecasts(
-            session,
-            thesis_id,
-            item["scenarios"],
-            direction=item["direction"],
-            horizon=item["horizon"],
-            input_fingerprint=item["input_fingerprint"],
-            market_symbol=item["symbol"],
-            reference=reference,
-        )
-        for thesis_id, item in pending.items()
-    )
 
 
 def _resolve_matured_forecasts(
@@ -2233,9 +1503,10 @@ def _resolve_matured_forecasts(
     reference).  Forecasts created, frozen, or superseded after the
     reference never enter a historical replay.
     """
-    rows = result_rows(session.execute(
-        text(
-            """/* autonomy_forecast_resolution */
+    rows = result_rows(
+        session.execute(
+            text(
+                """/* autonomy_forecast_resolution */
                SELECT f.id, f.thesis_id, f.direction, f.target_value,
                       f.target_date, t.symbol
                FROM investment_thesis_forecasts f
@@ -2252,13 +1523,14 @@ def _resolve_matured_forecasts(
                  )
                ORDER BY f.target_date, f.id
                LIMIT :limit"""
-        ),
-        {
-            "reference": reference,
-            "as_of_date": reference.date(),
-            "limit": max(1, min(limit, _MAX_OUTCOME_RESOLUTION)),
-        },
-    ))
+            ),
+            {
+                "reference": reference,
+                "as_of_date": reference.date(),
+                "limit": max(1, min(limit, _MAX_OUTCOME_RESOLUTION)),
+            },
+        )
+    )
     counts = {"hit": 0, "miss": 0, "inconclusive": 0, "open": 0}
     grace = timedelta(days=_FORECAST_GRACE_DAYS)
     for row in rows:
@@ -2324,9 +1596,10 @@ def _existing_fusion_mechanism(
     fallback: str | None,
 ) -> str | None:
     """Reuse the best live exposure identity instead of creating paraphrases."""
-    row = result_first(session.execute(
-        text(
-            """SELECT mechanism
+    row = result_first(
+        session.execute(
+            text(
+                """SELECT mechanism
                FROM investment_theses
                WHERE origin = 'fusion'
                  AND status IN ('candidate', 'active', 'paused')
@@ -2341,46 +1614,16 @@ def _existing_fusion_mechanism(
                ORDER BY opportunity_score DESC NULLS LAST,
                         last_evaluated_at DESC NULLS LAST, id
                LIMIT 1"""
-        ),
-        {
-            "company": str(company).strip().casefold() if company else None,
-            "symbol": _canonical_market_symbol(symbol),
-            "direction": str(direction).strip().casefold(),
-            "horizon": _normalized(horizon),
-        },
-    ))
-    return row.get("mechanism") if row is not None else fallback
-
-
-def _competitor_group_name(company: Any, symbol: Any, horizon: Any) -> str:
-    subject = symbol or company
-    name = "fusion:" + _normalized(subject)[:80] + ":" + _normalized(horizon)[:40]
-    return name[:_MAX_GROUP_NAME]
-
-
-def _group_candidate(
-    session: Any,
-    thesis_id: str,
-    candidate: Any,
-    group_ids: dict[str, str],
-    *,
-    company: str | None,
-    symbol: str | None,
-) -> str | None:
-    name = _competitor_group_name(company, symbol, candidate.horizon)
-    group_id = group_ids.get(name)
-    if group_id is None:
-        group = create_find_group(
-            session,
-            name=name,
-            description="autonomous fusion competitors for one subject and horizon",
+            ),
+            {
+                "company": str(company).strip().casefold() if company else None,
+                "symbol": _canonical_market_symbol(symbol),
+                "direction": str(direction).strip().casefold(),
+                "horizon": _normalized(horizon),
+            },
         )
-        group_id = str(group["id"])
-        group_ids[name] = group_id
-    add_group_membership(
-        session, group_id, thesis_id, note="autonomous fusion candidate"
     )
-    return group_id
+    return row.get("mechanism") if row is not None else fallback
 
 
 def _snapshot_for_candidate(
@@ -2464,228 +1707,6 @@ def _contradiction_signals(
     return tuple(picked)
 
 
-def _attach_contradictions(
-    session: Any,
-    thesis_id: str,
-    decision: Any,
-    signals: Sequence[EvidenceSignal],
-) -> int:
-    rows: list[dict[str, Any]] = []
-    for signal in _contradiction_signals(decision, signals):
-        rows.append(
-            {
-                "evidence_type": signal.evidence_type,
-                "evidence_id": signal.evidence_id,
-                "relationship": "contradicts",
-                "source_name": signal.source_name,
-                "source_family": signal.source_family or signal.source_name,
-                "origin_key": signal.origin_key,
-                "independence_key": signal.independence_key,
-                "evidence_fingerprint": signal.evidence_fingerprint,
-                "source_timestamp": signal.source_timestamp,
-                "available_at": signal.available_at,
-                "excerpt": signal.provenance.get("excerpt"),
-                "quality_score": signal.quality_score,
-                "entailment_score": signal.entailment_score,
-                "freshness_score": signal.freshness_score,
-                "effective_weight": signal.effective_weight,
-            }
-        )
-    if not rows:
-        return 0
-    result = attach_evidence(session, thesis_id, rows, limit=_MAX_ATTACH_CONTRADICTIONS)
-    return int(result.get("attached") or 0)
-
-
-def _persist_falsification(
-    session: Any,
-    thesis_id: str,
-    decision: Any,
-    *,
-    run_key: str,
-    reference: datetime,
-) -> tuple[str, bool]:
-    """Persist one falsification decision; re-runs are idempotent no-ops."""
-    run_id = record_falsification_run(
-        session,
-        thesis_id,
-        run_key=run_key,
-        status="in_progress",
-        started_at=reference,
-    )
-    current = result_first(session.execute(
-        text(
-            "SELECT status FROM investment_thesis_falsification_runs "
-            "WHERE id = CAST(:id AS UUID) LIMIT 1"
-        ),
-        {"id": run_id},
-    ))
-    if current is None or str(current.get("status")) not in ("pending", "in_progress"):
-        return run_id, False
-    status = _FALSIFICATION_STATUS_BY_STATE.get(decision.state, "inconclusive")
-    update_falsification_run(
-        session,
-        run_id,
-        status=status,
-        findings=[decision.to_dict()],
-        completed_at=reference,
-    )
-    return run_id, True
-
-
-def _pause_thesis(session: Any, thesis_id: str) -> bool:
-    """Pause a breached thesis; never close or delete it."""
-    result = session.execute(
-        text(
-            "UPDATE investment_theses SET status = 'paused' "
-            "WHERE id = CAST(:id AS UUID) AND status IN ('active', 'candidate')"
-        ),
-        {"id": thesis_id},
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def _pause_thesis_if_unchanged(
-    session: Any,
-    thesis_id: str,
-    *,
-    status: str,
-    updated_at: datetime | None,
-    last_evaluated_at: datetime | None,
-    fusion_reference_at: datetime | None,
-    reference: datetime,
-) -> bool:
-    """Pause a breached thesis only while its row still matches the tokens
-    selected at ``reference``; never unconditional after model latency.
-
-    The challenge verdict was computed against state visible at
-    ``reference``, while the pause is a current-state write.  A concurrent
-    or newer cycle may re-evaluate, re-fuse, or re-state the thesis between
-    selection and pause; pausing then would apply an older verdict to
-    newer state, so the UPDATE is conditional on the optimistic tokens:
-
-    * ``status`` and ``updated_at`` must still equal the selected values
-      exactly (any row mutation bumps ``updated_at``);
-    * ``last_evaluated_at`` must still equal the selected token or sit
-      exactly at the reference -- the same-cycle contradiction recompute
-      may set it to the reference, which remains safe, while a newer
-      cycle's evaluation postdates it;
-    * ``fusion_reference_at`` must still equal the selected token or sit
-      exactly at the reference, so a thesis claimed by a newer cycle after
-      the reference is never paused from this older verdict.
-
-    On success the row is paused and ``updated_at`` is stamped NOW()
-    (bookkeeping only; scoring inputs are untouched).  The caller detects
-    the outcome via rowcount/RETURNING and records a bounded
-    ``second_pass_stale_skipped`` diagnostic instead of pausing when a
-    concurrent change made the row stale.
-    """
-    result = session.execute(
-        text(
-            """UPDATE investment_theses
-               SET status = 'paused', updated_at = NOW()
-               WHERE id = CAST(:id AS UUID)
-                 AND status = :status
-                 AND updated_at = :updated_at
-                 AND (last_evaluated_at IS NOT DISTINCT FROM :last_evaluated_at
-                      OR last_evaluated_at = :reference)
-                 AND (fusion_reference_at IS NOT DISTINCT FROM :fusion_reference_at
-                      OR fusion_reference_at = :reference)"""
-        ),
-        {
-            "id": thesis_id,
-            "status": status,
-            "updated_at": updated_at,
-            "last_evaluated_at": last_evaluated_at,
-            "fusion_reference_at": fusion_reference_at,
-            "reference": reference,
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def _link_watch_positions(session: Any, thesis_id: str, symbol: Any) -> int:
-    """Boundedly link a candidate symbol to matching active holdings.
-
-    Exact normalized-symbol match only (whitespace-collapsed, casefolded);
-    nothing about sizing, direction, or the holding itself is ever inferred
-    or altered.  ``link_position`` with ``link_type='watch'`` is idempotent,
-    so re-running identical inputs never duplicates links.
-    """
-    normalized = _normalized(symbol)
-    if not normalized:
-        return 0
-    row = result_first(session.execute(
-        text(
-            """SELECT id FROM portfolio_holdings
-               WHERE LOWER(TRIM(symbol)) = :symbol
-               LIMIT 1"""
-        ),
-        {"symbol": normalized},
-    ))
-    if row is None:
-        return 0
-    position_id = str(row["id"])
-    return 1 if link_position(session, thesis_id, position_id, link_type="watch") else 0
-
-
-def _candidate_expected_at(
-    candidate: Any,
-    catalog: Mapping[str, Any],
-    *,
-    reference: datetime,
-) -> datetime | None:
-    """Earliest cited announced company event date, without inference."""
-    announced: list[datetime] = []
-    for ref in candidate.evidence_refs:
-        item = catalog.get(ref)
-        if item is None or not isinstance(item.provenance, Mapping):
-            continue
-        if (
-            str(item.provenance.get("source") or "").casefold()
-            != "company_expectations"
-        ):
-            continue
-        metadata = item.provenance.get("metadata")
-        event = metadata.get("next_earnings") if isinstance(metadata, Mapping) else None
-        raw_date = event.get("reportDate") if isinstance(event, Mapping) else None
-        try:
-            event_date = date.fromisoformat(str(raw_date))
-        except (TypeError, ValueError):
-            continue
-        expected = datetime.combine(event_date, dt_time.min, tzinfo=UTC)
-        if expected >= reference.replace(hour=0, minute=0, second=0, microsecond=0):
-            announced.append(expected)
-    return min(announced) if announced else None
-
-
-def _upsert_candidate_playbook(
-    session: Any,
-    candidate: Any,
-    catalog: Mapping[str, Any],
-    *,
-    thesis_id: str,
-    thesis_version: Any,
-    reference: datetime,
-) -> int:
-    """Derive and persist one deterministic event-playbook draft.
-
-    The draft is built only from the validated candidate and its cited
-    evidence; persistence is idempotent (identical content is a no-op,
-    changed content supersedes to a new immutable version).
-    """
-    draft = build_event_playbook(
-        candidate,
-        list(catalog.values()),
-        thesis_id=thesis_id,
-        thesis_version=thesis_version,
-        as_of=reference,
-        expected_at=_candidate_expected_at(candidate, catalog, reference=reference),
-    )
-    result = upsert_event_playbook(session, draft)
-    return 1 if result.get("changed") else 0
-
-
 def _evaluate_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "cost": float(settings.get("cost") or 0.0),
@@ -2694,230 +1715,6 @@ def _evaluate_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
         "liquidity": settings.get("liquidity"),
         "downside": settings.get("downside"),
     }
-
-
-def _second_pass_candidates(
-    session: Any,
-    *,
-    limit: int,
-    excluded_ids: Sequence[str],
-    reference: datetime,
-    context_since: datetime,
-) -> list[dict[str, Any]]:
-    """Select second-pass challenge candidates visible at ``reference``.
-
-    The caller must pass the authoritative replay/reference cutoff
-    explicitly: this helper consumes current thesis rows and their
-    attachments, so a historical path can never invoke it without making
-    the reference-safety decision.  Selection fails closed on unversioned
-    state — a thesis whose created/updated timestamps are missing or
-    postdate ``reference`` is excluded, as are position links created
-    after the reference (or removed by it) and context matches whose
-    match/playbook rows were not reference-visible by the cutoff.
-    Current scoring and fusion state is reference-bounded the same way:
-    a thesis whose ``last_evaluated_at`` (current score recency) or
-    ``fusion_reference_at`` (last accepted autonomous fusion reference)
-    postdates the reference is excluded, so newer opportunity scores can
-    never steer an older run's challenges.  Each selected row carries its
-    ``updated_at``, ``last_evaluated_at``, ``fusion_reference_at``, and
-    ``status`` as optimistic tokens for the conditional pause.
-    """
-    if int(limit) <= 0:
-        return []
-    rows = result_rows(session.execute(
-        text(
-            """SELECT t.id, t.claim, t.direction, t.status,
-                      t.invalidation_conditions, t.opportunity_score,
-                      t.last_evaluated_at, t.updated_at,
-                      t.fusion_reference_at,
-                      (EXISTS (SELECT 1 FROM position_thesis_links l
-                               WHERE l.thesis_id = t.id
-                                 AND l.created_at <= :reference
-                                 AND (l.removed_at IS NULL
-                                      OR l.removed_at > :reference)))
-                          AS has_link,
-                      (EXISTS (SELECT 1 FROM investment_thesis_event_matches m
-                               JOIN investment_thesis_event_playbooks p
-                                    ON p.id = m.playbook_id
-                               WHERE p.thesis_id = t.id
-                                 AND m.match_kind = 'context'
-                                 AND m.observed_at >= :context_since
-                                 AND m.observed_at <= :reference
-                                 AND m.created_at <= :reference
-                                 AND p.created_at <= :reference
-                                 AND (p.superseded_at IS NULL
-                                      OR p.superseded_at > :reference)))
-                          AS has_context
-               FROM investment_theses t
-               WHERE t.status IN ('active', 'candidate')
-                 AND t.created_at <= :reference
-                 AND t.updated_at <= :reference
-                 AND (t.last_evaluated_at IS NULL
-                      OR t.last_evaluated_at <= :reference)
-                 AND (t.fusion_reference_at IS NULL
-                      OR t.fusion_reference_at <= :reference)
-               ORDER BY
-                   has_link DESC,
-                   has_context DESC,
-                   t.opportunity_score DESC NULLS LAST,
-                   t.last_evaluated_at DESC NULLS LAST,
-                   t.id
-               LIMIT :limit"""
-        ),
-        {
-            "limit": max(1, int(limit) * 2),
-            "reference": reference,
-            "context_since": context_since,
-        },
-    ))
-    excluded = {str(value) for value in excluded_ids}
-    selected: list[dict[str, Any]] = []
-    for row in rows:
-        if str(row.get("id")) in excluded:
-            continue
-        selected.append(row)
-        if len(selected) >= int(limit):
-            break
-    return selected
-
-
-def _count_unversioned_second_pass_candidates(
-    session: Any,
-    *,
-    reference: datetime,
-) -> int:
-    """Count active/candidate theses the second pass must fail closed on.
-
-    These are theses whose persisted state cannot be proven visible at
-    ``reference``: missing or post-reference created/updated timestamps,
-    or current scoring/fusion state (``last_evaluated_at``,
-    ``fusion_reference_at``) that postdates the reference.  Their status,
-    context matches, scenarios, and attachments may reflect future
-    mutations, so the second pass excludes them.  The count keeps that
-    conservative exclusion observable in cycle diagnostics as one
-    bounded scalar (never row content).
-    """
-    row = result_first(session.execute(
-        text(
-            """SELECT COUNT(*) AS count
-               FROM investment_theses
-               WHERE status IN ('active', 'candidate')
-                 AND (created_at IS NULL
-                      OR updated_at IS NULL
-                      OR created_at > :reference
-                      OR updated_at > :reference
-                      OR last_evaluated_at > :reference
-                      OR fusion_reference_at > :reference)"""
-        ),
-        {"reference": reference},
-    ))
-    return int((row or {}).get("count") or 0)
-
-
-def _load_second_pass_snapshot(
-    session: Any,
-    row: Mapping[str, Any],
-    *,
-    reference: datetime,
-    cost: float,
-    cycle_key: str,
-) -> tuple[ThesisSnapshot, tuple[EvidenceSignal, ...]]:
-    """Rebuild a challenge snapshot from state visible at ``reference``.
-
-    The caller must pass the authoritative reference cutoff explicitly:
-    this helper consumes current scenario/evidence attachments, so a
-    historical path can never invoke it without making the reference-
-    safety decision.  Attachments whose rows (or source/availability
-    timestamps) postdate the reference are excluded, so a replay can
-    never challenge against future state.
-    """
-    thesis_id = str(row["id"])
-    scenario_rows = result_rows(session.execute(
-        text(
-            """SELECT name, probability, expected_return
-               FROM investment_thesis_scenarios
-               WHERE thesis_id = CAST(:id AS UUID)
-                 AND created_at <= :reference
-                 AND (superseded_at IS NULL OR superseded_at > :reference)
-               ORDER BY is_base_case DESC, created_at, name
-               LIMIT :limit"""
-        ),
-        {
-            "id": thesis_id,
-            "limit": _MAX_SECOND_PASS_SCENARIOS,
-            "reference": reference,
-        },
-    ))
-    scenarios = tuple(
-        Scenario.create(
-            label=scenario.get("name") or "scenario",
-            probability=scenario.get("probability"),
-            expected_return=scenario.get("expected_return") or 0.0,
-        )
-        for scenario in scenario_rows
-    )
-    evidence_rows = result_rows(session.execute(
-        text(
-            """SELECT evidence_type, evidence_id, relationship, source_family,
-                      origin_key, independence_key, evidence_fingerprint,
-                      source_timestamp, available_at, quality_score,
-                      entailment_score, freshness_score, effective_weight,
-                      excerpt, created_at
-               FROM investment_thesis_evidence
-               WHERE thesis_id = CAST(:id AS UUID)
-                 AND created_at <= :reference
-                 AND COALESCE(source_timestamp, created_at) <= :reference
-                 AND COALESCE(available_at, source_timestamp, created_at)
-                     <= :reference
-               ORDER BY created_at, evidence_type, evidence_id
-               LIMIT :limit"""
-        ),
-        {
-            "id": thesis_id,
-            "limit": _MAX_SECOND_PASS_EVIDENCE,
-            "reference": reference,
-        },
-    ))
-    attached_signals = tuple(_signal_from_row(evidence) for evidence in evidence_rows)
-    conditions: list[ThesisCondition] = []
-    raw_conditions = row.get("invalidation_conditions")
-    if isinstance(raw_conditions, list):
-        for index, item in enumerate(raw_conditions[: _MAX_CONDITIONS * 2]):
-            if not isinstance(item, Mapping):
-                continue
-            if not {"kind", "operator", "threshold"} <= set(item):
-                continue
-            try:
-                conditions.append(
-                    ThesisCondition.create(
-                        condition_id=item.get("condition_id") or f"condition-{index}",
-                        kind=item.get("kind"),
-                        operator=item.get("operator"),
-                        threshold=item.get("threshold"),
-                        observed=item.get("observed"),
-                        unit=item.get("unit"),
-                    )
-                )
-            except ValueError:
-                continue
-            if len(conditions) >= _MAX_CONDITIONS:
-                break
-    return ThesisSnapshot.create(
-        thesis_id=thesis_id,
-        statement=row.get("claim") or "unknown thesis statement",
-        direction=row.get("direction") or "neutral",
-        as_of=reference,
-        cost=cost,
-        conditions=tuple(conditions),
-        scenarios=scenarios,
-        claims=[
-            ThesisClaim.create(
-                claim_id=f"{thesis_id}:autonomy:{cycle_key}",
-                statement=row.get("claim") or "unknown thesis statement",
-                citations=[signal.evidence_id for signal in attached_signals],
-            )
-        ],
-    ), attached_signals
 
 
 def _tracked_cost(obj: Any) -> float:
@@ -2949,57 +1746,18 @@ def run_autonomous_thesis_cycle(
     challenger: ChallengeRunner | None = None,
     auditor: Any = None,
 ) -> dict[str, Any]:
-    """Run one bounded autonomous thesis-fusion cycle in the caller's transaction.
+    """Run one bounded autonomous thesis cycle in the caller's transaction.
 
-    The session is never committed or rolled back here; the caller owns the
-    transaction.  ``runner``/``challenger``/``auditor`` default to the
-    production ``LLMRoleRunner``/``LLMChallenger``/``LLMSemanticCitationAuditor``
-    adapters (all sharing one per-run model budget) and can be replaced with
-    credential-free fakes for tests.  Returns bounded counts, errors, and
-    model cost.
+    The caller owns commit and rollback. ``runner``, ``challenger``, and
+    ``auditor`` default to the production adapters, which share one bounded
+    per-run model budget, and may be replaced with credential-free test fakes.
 
-    ``as_of`` is the evidence/market availability cutoff: evidence
-    collection runs under a replay ``ResearchContext`` at the reference and
-    every scoring query in ``evaluate_thesis`` is bounded by it, so no
-    source or availability timestamp after the reference can affect
-    discovery, scoring, or liquidity.  Artifacts the current cycle derives
-    (candidate scenario legs, generated/backfilled catalysts, cited
-    evidence links, challenger contradictions) may be persisted after that
-    cutoff but only encode source inputs available by it; they enter
-    scoring as explicit current-cycle inputs.
-
-    Replay-time maintenance backfills are reference-bound the same way:
-    legacy identity recovery and generated-catalyst materialization select
-    only theses whose existence/current/fusion state is provable at the
-    reference (created/updated at/before it and ``fusion_reference_at``
-    NULL or at/before it, with missing timestamps failing closed), so a
-    historical or delayed run performs no maintenance write and supplies no
-    explicit score input for any thesis a newer cycle created, updated, or
-    claimed after the reference.
-
-    The second falsification pass is reconstructed at the same reference
-    and fails closed on unversioned state: candidate theses must have
-    created/updated timestamps at/before the cutoff, current scoring and
-    fusion state (``last_evaluated_at``, ``fusion_reference_at``) must be
-    at/before the cutoff, position links must be created by it (and not
-    removed by it), context matches and their playbooks must be
-    reference-visible, and snapshot scenarios/evidence attachments must
-    exist (with source/availability) by the cutoff.  Post-reference
-    mutations therefore can never be challenged, paused, or rewritten
-    from, and ``second_pass_unversioned_excluded`` reports how many
-    active/candidate theses the pass had to exclude for that reason (one
-    bounded scalar, never row content).
-
-    Pausing a breached second-pass thesis is an optimistic conditional
-    write: after model latency the UPDATE applies only while the row's
-    ``status``/``updated_at`` still match the tokens selected at the
-    reference and its ``last_evaluated_at``/``fusion_reference_at`` still
-    match the selected tokens or sit exactly at the reference, and stamps
-    ``updated_at = NOW()`` on success.  A thesis changed by a
-    concurrent/newer cycle is never paused from the older verdict;
-    ``second_pass_stale_skipped`` reports those skipped pauses as one
-    bounded diagnostic while the reference-bounded challenge and
-    falsification audit rows are still persisted.
+    ``as_of`` is the availability cutoff for evidence and market inputs. Two
+    independent generation roles produce competing candidates. Deterministic
+    citation, opposition, scoring, and budget gates run before surviving
+    candidates are staged as immutable ``investment_thesis_proposals``.
+    Generated output never mutates canonical thesis records; only an explicit
+    human review action may approve, reject, or request revision.
     """
     settings = _settings(config)
     if not settings["enabled"]:
@@ -3010,36 +1768,11 @@ def run_autonomous_thesis_cycle(
     error_count = 0
     errors: list[str] = []
 
-    # Resolve matured active forecasts once from point-in-time market_data
-    # (bounded; outcomes are recorded exactly once and never overwritten).
     outcome_counts = _resolve_matured_forecasts(session, reference)
-    forecast_backfills = _backfill_missing_forecasts(session, reference)
-
     evidence_items, evidence_failures = _collect_evidence(
         session, settings, reference=reference
     )
     catalog = {item.ref: item for item in evidence_items}
-    identity_backfills = _backfill_missing_market_identities(
-        session, catalog, reference=reference
-    )
-    legacy_catalyst_ids = _backfill_generated_catalysts(session, reference)
-    backfilled_catalysts = dict(legacy_catalyst_ids)
-    for thesis_id, catalyst_summary in legacy_catalyst_ids:
-        evaluate_thesis(
-            session,
-            thesis_id,
-            as_of=reference,
-            cost=evaluate_inputs["cost"],
-            attention=evaluate_inputs["attention"],
-            crowding=evaluate_inputs["crowding"],
-            liquidity=evaluate_inputs["liquidity"],
-            downside=evaluate_inputs["downside"],
-            # The backfilled catalyst row postdates the cycle reference; the
-            # summary is a current-cycle derived artifact (it encodes only
-            # thesis content that existed at the reference), so it enters
-            # scoring explicitly instead of being dropped by the cutoff.
-            current_catalysts=_catalyst_signals(catalyst_summary),
-        )
     theme_id, theme_created = _ensure_system_theme(session)
 
     # Generation/citation auditing and falsification have independent child
@@ -3119,26 +1852,14 @@ def run_autonomous_thesis_cycle(
     )
 
     promoted_ids: list[str] = []
-    thesis_count = 0
-    scenario_upserts = 0
-    risk_upserts = 0
-    forecasts_frozen = 0
-    watch_links = 0
-    playbook_upserts = 0
-    catalyst_upserts = 0
-    group_ids: dict[str, str] = {}
-    groups_used: set[str] = set()
-    opportunity_snapshots = 0
-    falsification_runs = 0
-    contradictions_attached = 0
-    paused_count = 0
+    proposals_staged = 0
+    proposals_created = 0
+    proposals_replayed = 0
     challenger_failures = 0
-    stale_candidates = 0
     promotion_gate_rejections = 0
     source_gate_rejections = 0
     actionability_gate_rejections = 0
     opposition_gate_rejections = 0
-    question_generation_failures = 0
 
     minimum_families = _bounded(
         settings.get("minimum_supporting_source_families", 1), 1, 10
@@ -3249,299 +1970,212 @@ def run_autonomous_thesis_cycle(
                 if require_opposition
                 else candidate.mechanism
             )
-            merged = merge_or_create_thesis(
-                session,
+            canonical_key = canonical_thesis_key(
                 theme_id=theme_id,
-                company=company,
-                symbol=market_symbol,
-                subject=candidate.subject,
-                claim=candidate.claim,
-                variant_perception=candidate.variant_perception,
+                subject=candidate.subject or company or market_symbol,
+                direction=candidate.direction,
                 horizon=candidate.horizon,
                 mechanism=identity_mechanism,
-                direction=candidate.direction,
-                catalyst_summary=candidate.catalyst,
-                confidence=candidate.confidence,
-                trend_context=candidate.trend_context,
-                valuation_context=candidate.valuation_context,
-                sentiment_context=candidate.sentiment_context,
-                citation_map={field: list(refs) for field, refs in candidate.citations},
-                invalidation_conditions=list(candidate.invalidators),
-                rationale="autonomous fusion tournament candidate",
-                origin="fusion",
-                input_fingerprint=canonical_fingerprint(
-                    {
-                        "candidate": candidate.content_fingerprint,
-                        "identity_mechanism": identity_mechanism,
-                    }
-                ),
-                accepted_reference=reference,
-            )
-            if merged.get("stale"):
-                # A newer accepted reference already claimed this thesis;
-                # this candidate is a complete no-op.  Skipping everything
-                # below keeps the stale cycle from overwriting or appending
-                # current child state (evidence links, catalyst, scenarios,
-                # playbook, position link, forecast, evaluation, challenge)
-                # after the newer job.
-                stale_candidates += 1
-                continue
-            thesis_id = str(merged["id"])
-            decision = replace(predecision, thesis_id=thesis_id)
-            if not merged.get("created"):
-                _enrich_thesis_market_identity(
-                    session,
-                    thesis_id,
-                    company=company,
-                    symbol=market_symbol,
-                )
-            catalyst_upserts += int(
-                _ensure_candidate_catalyst(session, thesis_id, candidate.catalyst)
-            )
-            promoted_ids.append(thesis_id)
-            thesis_count += 1
-            if candidate.missing_evidence:
-                try:
-                    from research_control_plane.repository import (
-                        questions_from_promoted_candidate,
-                        upsert_question,
-                    )
-
-                    question_payload = candidate.to_dict()
-                    question_payload["opportunity_score"] = (
-                        ranked.opportunity.opportunity
-                    )
-                    for question in questions_from_promoted_candidate(
-                        question_payload,
-                        thesis_id=thesis_id,
-                        accepted_cutoff=reference,
-                    ):
-                        upsert_question(session, question)
-                except Exception:
-                    # Research maintenance is independently recoverable from
-                    # persisted thesis state.  Its failure must not corrupt or
-                    # downgrade the accepted thesis cycle.
-                    question_generation_failures += 1
-            watch_links += _link_watch_positions(session, thesis_id, market_symbol)
-            playbook_upserts += _upsert_candidate_playbook(
-                session,
-                candidate,
-                catalog,
-                thesis_id=thesis_id,
-                thesis_version=merged.get("version"),
-                reference=reference,
             )
 
-            _attach_cited_evidence(
-                session,
-                thesis_id,
+            # Pure candidate scoring (in memory)
+            candidate_scenarios = _candidate_scenarios(candidate)
+            candidate_catalysts = _candidate_catalysts(candidate)
+            candidate_evidence = _candidate_evidence(
                 candidate,
                 catalog,
                 entailment_score=entailment_score,
             )
-            scenario_ids, scenario_changed = _persist_scenarios(
-                session, thesis_id, candidate
+
+            decision = predecision
+            contradiction_sigs = _contradiction_signals(decision, challenge_signals)
+            all_scoring_evidence = list(candidate_evidence) + list(contradiction_sigs)
+
+            evidence_assessment = assess_evidence(all_scoring_evidence)
+            val = scenario_valuation(candidate_scenarios)
+            cat = catalyst_readiness(candidate_catalysts, as_of=reference)
+            neglect = calculate_neglect(
+                attention=_derived_attention(all_scoring_evidence),
+                crowding=evaluate_inputs.get("crowding"),
             )
-            scenario_upserts += scenario_changed
-            risk_upserts += _persist_candidate_risks(session, thesis_id, candidate)
-            forecasts_frozen += _freeze_candidate_forecasts(
-                session,
-                thesis_id,
-                candidate,
-                scenario_ids,
-                market_symbol=market_symbol,
-                reference=reference,
+            downside_value = evaluate_inputs.get("downside")
+            if downside_value is None:
+                if (
+                    int(val.scenario_count) > 0
+                    and int(val.missing_probability_count) == 0
+                    and bool(val.probabilities_sum_to_one)
+                ):
+                    downside_value = min(
+                        1.0,
+                        max(0.0, float(val.expected_shortfall) / DOWNSIDE_NORMALIZER),
+                    )
+            scored_opp = assess_opportunity(
+                evidence_strength=evidence_assessment.support_mass,
+                confidence=evidence_assessment.confidence,
+                neglect=neglect.neglect,
+                catalyst_ready=cat.readiness,
+                liquidity=evaluate_inputs.get("liquidity"),
+                downside=downside_value,
             )
-            group_id = _group_candidate(
+
+            # Query matching canonical thesis (read-only)
+            matching_row = result_first(
+                session.execute(
+                    text(
+                        """SELECT id, subject, claim, variant_perception, catalyst_summary,
+                                  direction, horizon, mechanism, confidence_score,
+                                  opportunity_score, evidence_strength, contradiction_strength,
+                                  version, updated_at
+                           FROM investment_theses
+                           WHERE canonical_key = :canonical_key
+                           LIMIT 1"""
+                    ),
+                    {"canonical_key": canonical_key},
+                )
+            )
+
+            matching_thesis_id = None
+            diff_payload: dict[str, Any] = {}
+            if matching_row:
+                matching_thesis_id = str(matching_row["id"])
+                changed_fields: list[str] = []
+                diff_payload = {
+                    "matching_thesis_id": matching_thesis_id,
+                    "existing_version": matching_row.get("version"),
+                    "claim": {
+                        "old": matching_row.get("claim"),
+                        "new": candidate.claim,
+                    },
+                    "variant_perception": {
+                        "old": matching_row.get("variant_perception"),
+                        "new": candidate.variant_perception,
+                    },
+                    "catalyst_summary": {
+                        "old": matching_row.get("catalyst_summary"),
+                        "new": candidate.catalyst,
+                    },
+                    "confidence": {
+                        "old": matching_row.get("confidence_score"),
+                        "new": candidate.confidence,
+                    },
+                    "opportunity_score": {
+                        "old": matching_row.get("opportunity_score"),
+                        "new": scored_opp.opportunity,
+                    },
+                }
+                for fld in ("claim", "variant_perception", "catalyst_summary"):
+                    if diff_payload[fld]["old"] != diff_payload[fld]["new"]:
+                        changed_fields.append(fld)
+                diff_payload["changed_fields"] = changed_fields
+            else:
+                diff_payload = {
+                    "is_new": True,
+                    "matching_thesis_id": None,
+                }
+
+            staged_scenarios = [
+                {
+                    "name": leg.label,
+                    "description": path,
+                    "probability": leg.probability,
+                    "expected_return": leg.expected_return,
+                    "is_base_case": leg.label == "base",
+                }
+                for leg, path in zip(
+                    candidate.scenarios, candidate.scenario_paths, strict=True
+                )
+            ]
+            staged_evidence = []
+            for sig in all_scoring_evidence:
+                prov = (
+                    dict(sig.provenance) if isinstance(sig.provenance, Mapping) else {}
+                )
+                staged_evidence.append(
+                    {
+                        "evidence_id": sig.evidence_id,
+                        "evidence_type": sig.evidence_type,
+                        "evidence_ref": sig.ref,
+                        "relationship": sig.relationship,
+                        "source_name": sig.source_name,
+                        "source_family": sig.source_family,
+                        "origin_key": sig.origin_key,
+                        "independence_key": sig.independence_key,
+                        "evidence_fingerprint": sig.evidence_fingerprint,
+                        "source_timestamp": (
+                            sig.source_timestamp.isoformat()
+                            if hasattr(sig.source_timestamp, "isoformat")
+                            else str(sig.source_timestamp)
+                        ),
+                        "available_at": (
+                            sig.available_at.isoformat()
+                            if hasattr(sig.available_at, "isoformat")
+                            else str(sig.available_at)
+                        ),
+                        "quality_score": sig.quality_score,
+                        "entailment_score": sig.entailment_score,
+                        "freshness_score": sig.freshness_score,
+                        "effective_weight": sig.effective_weight,
+                        "excerpt": prov.get("excerpt"),
+                        "structured_fields": prov.get("structured_fields"),
+                        "provenance": prov,
+                    }
+                )
+            staged_scoring = {
+                "opportunity_score": scored_opp.opportunity,
+                "expected_value": val.expected_value,
+                "expected_shortfall": val.expected_shortfall,
+                "confidence_score": scored_opp.confidence,
+                "neglect_score": scored_opp.neglect,
+                "catalyst_score": scored_opp.catalyst_ready,
+                "evidence_strength": scored_opp.evidence_strength,
+                "contradiction_strength": evidence_assessment.contradiction_mass,
+                "opportunity_status": (
+                    "blocked" if scored_opp.blocked_by else "evaluated"
+                ),
+            }
+            staged_challenge = {
+                "state": decision.state,
+                "runner_failed": decision.runner_failed,
+                "contradiction_refs": [
+                    s.evidence_fingerprint for s in contradiction_sigs
+                ],
+                "findings": [
+                    f.to_dict() if hasattr(f, "to_dict") else f
+                    for f in getattr(decision, "runner_findings", ())
+                ],
+            }
+
+            proposal_key = f"proposal:{cycle_key}:{candidate.content_fingerprint}"
+            candidate_payload = candidate.to_dict()
+            candidate_payload["opportunity_score"] = scored_opp.opportunity
+
+            proposal_res = create_thesis_proposal(
                 session,
-                thesis_id,
-                candidate,
-                group_ids,
+                proposal_key=proposal_key,
+                canonical_key=canonical_key,
+                theme_id=theme_id,
                 company=company,
                 symbol=market_symbol,
+                subject=candidate.subject,
+                direction=candidate.direction,
+                horizon=candidate.horizon,
+                mechanism=identity_mechanism,
+                payload=candidate_payload,
+                evidence=staged_evidence,
+                scenarios=staged_scenarios,
+                scoring=staged_scoring,
+                challenge=staged_challenge,
+                diff=diff_payload,
+                matching_thesis_id=matching_thesis_id,
+                accepted_reference=reference,
             )
-            if group_id is not None:
-                groups_used.add(group_id)
+            proposals_staged += 1
+            if proposal_res.get("created"):
+                proposals_created += 1
+            else:
+                proposals_replayed += 1
+            promoted_ids.append(str(proposal_res.get("id")))
 
-            evaluated = evaluate_thesis(
-                session,
-                thesis_id,
-                as_of=reference,
-                expected_returns=None,
-                cost=evaluate_inputs["cost"],
-                attention=evaluate_inputs["attention"],
-                crowding=evaluate_inputs["crowding"],
-                liquidity=evaluate_inputs["liquidity"],
-                downside=evaluate_inputs["downside"],
-                snapshot_key=f"autonomy:{cycle_key}",
-                # The just-persisted scenario legs, catalyst, and evidence
-                # links postdate the cycle reference; they are current-cycle
-                # derived artifacts (encoding only cutoff-bounded source
-                # inputs) and enter scoring explicitly so the fresh
-                # candidate still scores its own legs, catalyst, and cited
-                # evidence.
-                current_scenarios=_candidate_scenarios(candidate),
-                current_catalysts=_candidate_catalysts(candidate),
-                current_evidence=_candidate_evidence(
-                    candidate,
-                    catalog,
-                    entailment_score=entailment_score,
-                ),
-            )
-            if evaluated.get("opportunity", {}).get("opportunity") is not None:
-                opportunity_snapshots += 1
-
-            _, changed = _persist_falsification(
-                session,
-                thesis_id,
-                decision,
-                run_key=f"autonomy:{cycle_key}",
-                reference=reference,
-            )
-            if changed:
-                falsification_runs += 1
-
-            attached = _attach_contradictions(
-                session, thesis_id, decision, challenge_signals
-            )
-            if attached:
-                contradictions_attached += attached
-                # Recompute the frozen scores with the contradiction mass;
-                # the existing snapshot row (same key) stays untouched.
-                # The cited evidence AND the contradiction links all
-                # postdate the cycle reference, so both enter scoring as
-                # explicit current-cycle signals (persisted rows win on an
-                # identical fingerprint, so duplicates collapse exactly as
-                # the persisted path would).
-                evaluate_thesis(
-                    session,
-                    thesis_id,
-                    as_of=reference,
-                    cost=evaluate_inputs["cost"],
-                    attention=evaluate_inputs["attention"],
-                    crowding=evaluate_inputs["crowding"],
-                    liquidity=evaluate_inputs["liquidity"],
-                    downside=evaluate_inputs["downside"],
-                    current_scenarios=_candidate_scenarios(candidate),
-                    current_catalysts=_candidate_catalysts(candidate),
-                    current_evidence=(
-                        _candidate_evidence(
-                            candidate,
-                            catalog,
-                            entailment_score=entailment_score,
-                        )
-                        + _contradiction_signals(decision, challenge_signals)
-                    ),
-                )
-
-            if decision.state == "breached" and _pause_thesis(session, thesis_id):
-                paused_count += 1
-        except Exception as exc:
-            error_count += 1
-            errors.append(type(exc).__name__[:60])
-            if len(errors) >= _MAX_ERRORS:
-                break
-
-    # Second bounded falsification pass over high-opportunity existing
-    # theses, even when nothing was regenerated this cycle.  Frozen
-    # snapshots are rebuilt from persisted rows visible at the reference
-    # plus relevant new+attached evidence; prior snapshot rows are never
-    # mutated.
-    second_pass_limit = max(0, challenge_limit - challenge_attempts)
-    # Second-pass reconstruction is reference-bounded and fails closed: a
-    # thesis whose current state is not provable at the reference (missing
-    # or post-reference created/updated timestamps) is never selected,
-    # challenged, or paused, and the conservative exclusion stays
-    # observable as a bounded diagnostic counter.
-    second_pass_candidates = _second_pass_candidates(
-        session,
-        limit=second_pass_limit,
-        excluded_ids=promoted_ids,
-        reference=reference,
-        context_since=reference - timedelta(days=_CONTEXT_MATCH_WINDOW_DAYS),
-    )
-    second_pass_unversioned_excluded = _count_unversioned_second_pass_candidates(
-        session,
-        reference=reference,
-    )
-    second_pass_challenged = 0
-    second_pass_stale_skipped = 0
-    context_affected = sum(
-        1 for row in second_pass_candidates if row.get("has_context")
-    )
-    for row in second_pass_candidates:
-        thesis_id = str(row["id"])
-        try:
-            snapshot, attached_signals = _load_second_pass_snapshot(
-                session,
-                row,
-                reference=reference,
-                cost=evaluate_inputs["cost"],
-                cycle_key=cycle_key,
-            )
-            combined = tuple(list(attached_signals) + list(challenge_signals))[
-                :_MAX_SECOND_PASS_EVIDENCE
-            ]
-            challenge_attempts += 1
-            decision = challenge_thesis(
-                snapshot,
-                combined,
-                runner=challenger,
-            )
-            if decision.runner_failed:
-                challenger_failures += 1
-            _, changed = _persist_falsification(
-                session,
-                thesis_id,
-                decision,
-                run_key=f"autonomy:{cycle_key}",
-                reference=reference,
-            )
-            if changed:
-                falsification_runs += 1
-                second_pass_challenged += 1
-            attached = _attach_contradictions(session, thesis_id, decision, combined)
-            if attached:
-                contradictions_attached += attached
-                evaluate_thesis(
-                    session,
-                    thesis_id,
-                    as_of=reference,
-                    cost=evaluate_inputs["cost"],
-                    attention=evaluate_inputs["attention"],
-                    crowding=evaluate_inputs["crowding"],
-                    liquidity=evaluate_inputs["liquidity"],
-                    downside=evaluate_inputs["downside"],
-                    # A catalyst backfilled earlier this cycle postdates the
-                    # reference; keep it scoring here exactly as the backfill
-                    # evaluation did (a no-op for every other thesis).  The
-                    # contradiction links just attached also postdate the
-                    # reference, so the attached signals enter scoring
-                    # explicitly too.
-                    current_catalysts=_catalyst_signals(
-                        backfilled_catalysts.get(thesis_id)
-                    ),
-                    current_evidence=_contradiction_signals(decision, combined),
-                )
-            if decision.state == "breached":
-                if _pause_thesis_if_unchanged(
-                    session,
-                    thesis_id,
-                    status=str(row["status"]),
-                    updated_at=row.get("updated_at"),
-                    last_evaluated_at=row.get("last_evaluated_at"),
-                    fusion_reference_at=row.get("fusion_reference_at"),
-                    reference=reference,
-                ):
-                    paused_count += 1
-                else:
-                    # A concurrent/newer cycle re-evaluated, re-fused, or
-                    # re-stated the thesis after selection (model latency);
-                    # the older verdict must not pause newer state.  The
-                    # challenge/falsification audit above is reference-
-                    # bounded and already persisted, so only the pause is
-                    # skipped, as one bounded diagnostic.
-                    second_pass_stale_skipped += 1
         except Exception as exc:
             error_count += 1
             errors.append(type(exc).__name__[:60])
@@ -3561,39 +2195,20 @@ def run_autonomous_thesis_cycle(
         "correlation_id": correlation_id,
         "evidence_collected": len(evidence_items),
         "evidence_failures": dict(evidence_failures),
-        "legacy_catalyst_backfills": len(legacy_catalyst_ids),
-        "forecast_backfills": forecast_backfills,
         "raw_candidate_count": int(tournament.raw_candidate_count),
-        "promoted_count": thesis_count,
+        "promoted_count": 0,
+        "proposals_staged": proposals_staged,
+        "proposals_created": proposals_created,
+        "proposals_replayed": proposals_replayed,
         "tournament_promoted_count": len(tournament.ranked),
         "promotion_gate_rejections": promotion_gate_rejections,
         "source_gate_rejections": source_gate_rejections,
         "actionability_gate_rejections": actionability_gate_rejections,
         "opposition_gate_rejections": opposition_gate_rejections,
         "rejected_count": len(tournament.rejected),
-        "thesis_count": thesis_count,
-        "stale_candidates": stale_candidates,
-        "scenario_upserts": scenario_upserts,
-        "risk_upserts": risk_upserts,
-        "forecasts_frozen": forecasts_frozen,
-        "identity_backfills": identity_backfills,
         "outcome_resolution": outcome_counts,
-        "watch_links": watch_links,
-        "playbook_upserts": playbook_upserts,
-        "catalyst_upserts": catalyst_upserts,
-        "question_generation_failures": question_generation_failures,
-        "group_count": len(groups_used),
-        "opportunity_snapshots": opportunity_snapshots,
-        "falsification_runs": falsification_runs,
         "challenge_attempts": challenge_attempts,
         "challenge_limit": challenge_limit,
-        "contradictions_attached": contradictions_attached,
-        "paused_count": paused_count,
-        "second_pass_candidates": len(second_pass_candidates),
-        "second_pass_challenged": second_pass_challenged,
-        "second_pass_unversioned_excluded": second_pass_unversioned_excluded,
-        "second_pass_stale_skipped": second_pass_stale_skipped,
-        "context_affected": context_affected,
         "semantic_audit_rejections": sum(
             1
             for rejected in tournament.rejected

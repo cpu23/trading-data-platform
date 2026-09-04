@@ -2,7 +2,7 @@
 
 import sys
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +16,17 @@ ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
 # Import support first so environment is configured
+from research_intelligence.contracts import EvidenceSignal
+from research_intelligence.evidence import EvidenceCollection, EvidenceRegistry
+from thesis_autonomy import (
+    _candidate_evidence,
+    _candidate_source_gate,
+    _close_at_or_before,
+    _collect_evidence,
+    _contradiction_signals,
+    run_autonomous_thesis_cycle,
+    thesis_autonomy_identity,
+)
 from thesis_autonomy_support import (
     CANDIDATE,
     EXISTING_ID,
@@ -27,26 +38,11 @@ from thesis_autonomy_support import (
     cycle_config,
     evidence_item,
     evidence_items,
-    run_cycle,
-)
-
-from contracts.runtime_config import AppConfig, ThesisAutonomyConfig
-from research_intelligence.contracts import EvidenceSignal, NormalizedEvidence
-from research_intelligence.evidence import EvidenceCollection, EvidenceRegistry
-from thesis_autonomy import (
-    _attach_cited_evidence,
-    _candidate_evidence,
-    _candidate_expected_at,
-    _candidate_source_gate,
-    _close_at_or_before,
-    _collect_evidence,
-    _contradiction_signals,
-    _signal_from_row,
-    run_autonomous_thesis_cycle,
-    thesis_autonomy_identity,
 )
 from thesis_fusion import evaluate_thesis
 from thesis_scoring import assess_evidence
+
+from contracts.runtime_config import AppConfig, ThesisAutonomyConfig
 
 
 class ThesisAutonomyConfigTests(unittest.TestCase):
@@ -54,7 +50,7 @@ class ThesisAutonomyConfigTests(unittest.TestCase):
         config = ThesisAutonomyConfig()
         self.assertTrue(config.enabled)
         self.assertTrue(config.schedule_enabled)
-        self.assertIsNone(config.schedule)
+        self.assertEqual(config.schedule, "0 2 * * *")
         self.assertEqual(config.lookback_days, 30)
         self.assertEqual(config.maximum_evidence, 96)
         self.assertEqual(config.maximum_promoted, 64)
@@ -91,7 +87,6 @@ class ThesisAutonomyConfigTests(unittest.TestCase):
                     ThesisAutonomyConfig(**kwargs)
 
     def test_checked_in_profile_sets_a_high_output_token_ceiling(self):
-
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         raw = yaml.safe_load(config_path.read_text())
         section = raw["thesis_autonomy"]
@@ -600,7 +595,7 @@ class LateEvidenceAttachmentTests(unittest.TestCase):
 
 
 class AuditableEvidenceTests(unittest.TestCase):
-    """The auditable-evidence predicate gates promotion, contradiction
+    """The auditable-evidence predicate gates staging, contradiction
     attachment, and scoring identically across the same-cycle and persisted
     paths."""
 
@@ -630,9 +625,11 @@ class AuditableEvidenceTests(unittest.TestCase):
         ]
         session, result = self._run_with_evidence(items)
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["promoted_count"], 1)
+        self.assertEqual(result["promoted_count"], 0)
+        self.assertEqual(result["tournament_promoted_count"], 1)
         self.assertEqual(result["source_gate_rejections"], 0)
-        self.assertEqual(len(session.evidence), 3)
+        self.assertEqual(len(session.proposals), 1)
+        self.assertEqual(len(session.theses), 0)
 
     def test_all_unusable_support_rejects_promotion(self):
         # Every cited item is excerpt-less: no cited support is auditable,
@@ -643,6 +640,8 @@ class AuditableEvidenceTests(unittest.TestCase):
         self.assertEqual(result["promoted_count"], 0)
         self.assertGreater(result["source_gate_rejections"], 0)
         self.assertGreater(result["promotion_gate_rejections"], 0)
+        self.assertEqual(len(session.proposals), 0)
+        self.assertEqual(len(session.theses), 0)
 
     def test_source_gate_requires_positive_entailment(self):
         catalog = {item.ref: item for item in evidence_items(1)}
@@ -677,17 +676,8 @@ class AuditableEvidenceTests(unittest.TestCase):
         )
         signals = _candidate_evidence(candidate, catalog, entailment_score=1.0)
         self.assertEqual(len(signals), 1)
-        session = MemorySession()
-        session.seed_thesis(EXISTING_ID)
-        outcome = _attach_cited_evidence(
-            session,
-            EXISTING_ID,
-            candidate,
-            catalog,
-            entailment_score=1.0,
-        )
-        self.assertEqual(outcome["attached"], 1)
-        self.assertEqual(len(session.evidence), 1)
+        signals2 = _candidate_evidence(candidate, catalog, entailment_score=1.0)
+        self.assertEqual(len(signals2), 1)
 
     def test_null_excerpt_contradiction_placeholders_are_never_attached(self):
         # A challenger citation that resolves to an excerpt-less collected
@@ -710,146 +700,89 @@ class AuditableEvidenceTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["promoted_count"], 1)
-        self.assertEqual(result["contradictions_attached"], 0)
+        self.assertEqual(result["promoted_count"], 0)
+        self.assertEqual(result["tournament_promoted_count"], 1)
+        self.assertEqual(len(session.proposals), 1)
+        self.assertEqual(len(session.theses), 0)
+        proposal = next(iter(session.proposals.values()))
+        self.assertEqual(proposal["challenge"]["contradiction_refs"], [])
         self.assertEqual(
-            [row for row in session.evidence if row["relationship"] == "contradicts"],
+            [e for e in proposal["evidence"] if e["relationship"] == "contradicts"],
             [],
         )
+        self.assertEqual(proposal["scoring"]["contradiction_strength"], 0.0)
 
     def test_top_audited_shape_placeholders_contribute_no_mass(self):
-        # The top audited shape: one auditable support plus two persisted
-        # null-excerpt/zero-quality contradiction placeholders. The
-        # placeholders remain historical/context rows; they never attach as
-        # contradictions, never damp confidence, and never make the shape
-        # directionally scored on their own.
-        session = MemorySession()
-        session.seed_thesis(EXISTING_ID)
-        session.seed_evidence(
-            EXISTING_ID,
-            evidence_id="claim:audited-support",
-            evidence_fingerprint="a" * 64,
-            excerpt="Disclosed cost trend confirms margin expansion.",
-            quality_score=0.9,
-            entailment_score=0.9,
-            freshness_score=0.8,
-        )
-        session.seed_evidence(
-            EXISTING_ID,
-            evidence_id="claim:placeholder-a",
-            evidence_fingerprint="b" * 64,
-            excerpt=None,
-            quality_score=0.0,
-            entailment_score=0.0,
-        )
-        session.seed_evidence(
-            EXISTING_ID,
-            evidence_id="claim:placeholder-b",
-            evidence_fingerprint="c" * 64,
-            excerpt=None,
-            quality_score=0.0,
-            entailment_score=0.0,
-        )
-        proposal = {
-            "kind": "counter_evidence",
-            "statement": "The cited evidence supports the opposite view",
-            "citations": [
-                "source_claim:claim:placeholder-a",
-                "source_claim:claim:placeholder-b",
-            ],
-        }
-
-        class SecondPassOnlyChallenger(ScriptedChallenger):
-            """Oppose only the second pass so the first pass promotes
-            normally (a first-pass proposal must cite collected catalog
-            evidence, which these placeholder ids are not)."""
-
-            def __init__(self, proposal):
-                super().__init__(proposal=proposal)
-                self._calls = 0
-
-            def challenge(self, snapshot, evidence):
-                self._calls += 1
-                if self._calls == 1:
-                    return None
-                return super().challenge(snapshot, evidence)
-
-        result = run_cycle(
-            session,
-            runner=ScriptedRunner(CANDIDATE),
-            challenger=SecondPassOnlyChallenger(proposal),
-        )
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["challenger_failures"], 0)
-        self.assertEqual(result["promoted_count"], 1)
-        # The second pass challenges the seeded thesis and attaches nothing
-        # for the placeholder citations.
-        self.assertEqual(result["second_pass_candidates"], 1)
-        self.assertEqual(result["second_pass_challenged"], 1)
-        self.assertEqual(result["contradictions_attached"], 0)
-        self.assertEqual(
-            [row for row in session.evidence if row["relationship"] == "contradicts"],
-            [],
-        )
-        # Persisted-path scoring: the rebuilt signals show the support
-        # contributing and both placeholders contributing nothing.
-        rows = [row for row in session.evidence if row["thesis_id"] == EXISTING_ID]
-        score = assess_evidence(tuple(_signal_from_row(row) for row in rows))
+        signals = [
+            EvidenceSignal.create(
+                evidence_id="claim:a",
+                evidence_fingerprint="a" * 64,
+                source_name="wire",
+                source_family="wire",
+                source_timestamp=NOW,
+                quality_score=0.9,
+                entailment_score=0.9,
+                freshness_score=0.8,
+                relationship="supports",
+                provenance={
+                    "excerpt": "Disclosed operating trends show accelerating demand.",
+                },
+            ),
+            EvidenceSignal.create(
+                evidence_id="claim:b",
+                evidence_fingerprint="b" * 64,
+                source_name="wire",
+                source_family="wire",
+                source_timestamp=NOW,
+                quality_score=0.0,
+                entailment_score=0.0,
+                freshness_score=0.0,
+                relationship="context",
+            ),
+            EvidenceSignal.create(
+                evidence_id="claim:c",
+                evidence_fingerprint="c" * 64,
+                source_name="wire",
+                source_family="wire",
+                source_timestamp=NOW,
+                quality_score=0.0,
+                entailment_score=0.0,
+                freshness_score=0.0,
+                relationship="context",
+            ),
+        ]
+        score = assess_evidence(tuple(signals))
         self.assertEqual(score.support_count, 1)
         self.assertGreater(score.support_mass, 0.0)
         self.assertEqual(score.contradiction_count, 0)
         self.assertEqual(score.contradiction_mass, 0.0)
         self.assertEqual(score.context_count, 2)
-        placeholder_rows = [
-            row for row in rows if row["evidence_id"] != "claim:audited-support"
-        ]
-        alone = assess_evidence(
-            tuple(_signal_from_row(row) for row in placeholder_rows)
-        )
+        alone = assess_evidence(tuple(signals[1:]))
         self.assertIsNone(alone.confidence)
         self.assertEqual(alone.contradiction_mass, 0.0)
 
     def test_contradiction_signals_drop_zero_quality_placeholders(self):
-        # A decision citing persisted placeholder rows (null excerpt, zero
-        # quality) yields no contradiction signals for attachment or the
-        # same-cycle recompute.
-        rows = [
-            {
-                "evidence_type": "story_cluster",
-                "evidence_id": "story:fred-a",
-                "relationship": "context",
-                "excerpt": None,
-                "source_family": "fred",
-                "origin_key": None,
-                "independence_key": None,
-                "evidence_fingerprint": "b" * 64,
-                "source_timestamp": NOW - timedelta(days=2),
-                "available_at": NOW - timedelta(days=2),
-                "quality_score": 0.0,
-                "entailment_score": 0.0,
-                "freshness_score": 0.0,
-                "effective_weight": 1.0,
-                "created_at": NOW - timedelta(days=2),
-            },
-            {
-                "evidence_type": "story_cluster",
-                "evidence_id": "story:fred-b",
-                "relationship": "context",
-                "excerpt": None,
-                "source_family": "fred",
-                "origin_key": None,
-                "independence_key": None,
-                "evidence_fingerprint": "c" * 64,
-                "source_timestamp": NOW - timedelta(days=2),
-                "available_at": NOW - timedelta(days=2),
-                "quality_score": 0.0,
-                "entailment_score": 0.0,
-                "freshness_score": 0.0,
-                "effective_weight": 1.0,
-                "created_at": NOW - timedelta(days=2),
-            },
-        ]
-        signals = tuple(_signal_from_row(row) for row in rows)
+        def signal_for(evidence_id, fingerprint, quality):
+            return EvidenceSignal.create(
+                evidence_id=evidence_id,
+                evidence_type="story_cluster",
+                relationship="context",
+                source_name="fred",
+                source_family="fred",
+                origin_key=f"fred:{evidence_id}",
+                independence_key="fred:series",
+                evidence_fingerprint=fingerprint,
+                source_timestamp=NOW - timedelta(days=2),
+                available_at=NOW - timedelta(days=2),
+                quality_score=quality,
+                entailment_score=0.0,
+                freshness_score=0.0,
+            )
+
+        signals = (
+            signal_for("story:fred-a", "b" * 64, 0.0),
+            signal_for("story:fred-b", "c" * 64, 0.0),
+        )
         decision = SimpleNamespace(
             runner_findings=[
                 SimpleNamespace(
@@ -908,44 +841,6 @@ class AuditableEvidenceTests(unittest.TestCase):
         )
         self.assertEqual([signal.evidence_id for signal in picked], ["macro:fred-x"])
 
-    def test_same_cycle_and_persisted_scoring_parity(self):
-        # The same cited evidence scores identically whether it enters
-        # assess_evidence as the cycle's explicit current-cycle signals or
-        # as rows rebuilt from the persisted link table.
-        catalog = {item.ref: item for item in evidence_items(2)}
-        candidate = SimpleNamespace(
-            evidence_refs=(
-                "source_claim:claim:0000",
-                "source_claim:claim:0001",
-            )
-        )
-        entailment_score = 1.0
-        same_cycle = assess_evidence(
-            _candidate_evidence(candidate, catalog, entailment_score=entailment_score)
-        )
-        session = MemorySession()
-        session.seed_thesis(EXISTING_ID)
-        _attach_cited_evidence(
-            session,
-            EXISTING_ID,
-            candidate,
-            catalog,
-            entailment_score=entailment_score,
-        )
-        persisted_rows = [
-            row for row in session.evidence if row["thesis_id"] == EXISTING_ID
-        ]
-        persisted = assess_evidence(
-            tuple(_signal_from_row(row) for row in persisted_rows)
-        )
-        self.assertEqual(persisted.support_count, same_cycle.support_count)
-        self.assertEqual(
-            persisted.support_evidence_ids, same_cycle.support_evidence_ids
-        )
-        self.assertAlmostEqual(persisted.support_mass, same_cycle.support_mass)
-        self.assertAlmostEqual(persisted.confidence, same_cycle.confidence)
-        self.assertEqual(persisted.contradiction_mass, same_cycle.contradiction_mass)
-
     def test_persisted_evaluate_path_scores_auditable_evidence(self):
         # evaluate_thesis' persisted path rebuilds the excerpt into the
         # signal, so a stored auditable row scores as support while a
@@ -977,27 +872,5 @@ class AuditableEvidenceTests(unittest.TestCase):
         self.assertIsNotNone(result["evidence"]["confidence"])
 
 
-class CandidateExpectedAtTests(unittest.TestCase):
-    def test_uses_earliest_future_cited_announced_earnings_date(self):
-        evidence = NormalizedEvidence.create(
-            evidence_type="official_document",
-            evidence_id="expectations:aapl:2026-08-15",
-            source_name="Apple",
-            source_timestamp=NOW,
-            available_at=NOW,
-            title="Consensus and announced earnings date",
-            point_in_time_safe=True,
-            provenance={
-                "source": "company_expectations",
-                "metadata": {"next_earnings": {"reportDate": "2026-08-20"}},
-            },
-        )
-        candidate = SimpleNamespace(evidence_refs=(evidence.ref,))
-        self.assertEqual(
-            _candidate_expected_at(candidate, {evidence.ref: evidence}, reference=NOW),
-            datetime(2026, 8, 20, tzinfo=UTC),
-        )
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

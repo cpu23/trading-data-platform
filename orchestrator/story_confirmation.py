@@ -55,8 +55,6 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-
-
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -196,13 +194,15 @@ def calculate_story_confirmation(
     """Calculate and upsert bounded observations for one story event."""
     settings = _settings(config)
     current = _timestamp(now, datetime.now(UTC)) or datetime.now(UTC)
-    context = result_first(session.execute(
-        text("""SELECT c.id AS cluster_id, c.markets, e.id AS event_id,
+    context = result_first(
+        session.execute(
+            text("""SELECT c.id AS cluster_id, c.markets, e.id AS event_id,
             COALESCE(e.published_at, e.effective_at, e.observed_at) AS headline_at
             FROM story_clusters c JOIN market_events e ON e.id = :event_id
             WHERE c.id = :cluster_id LIMIT 1"""),
-        {"cluster_id": cluster_id, "event_id": event_id},
-    ))
+            {"cluster_id": cluster_id, "event_id": event_id},
+        )
+    )
     if context is None:
         return {
             "cluster_id": str(cluster_id),
@@ -236,18 +236,20 @@ def calculate_story_confirmation(
             0.25,
         )
     session_close = session_target(headline_at, settings)
-    rows = result_rows(session.execute(
-        text("""SELECT symbol, timestamp, close FROM market_data
+    rows = result_rows(
+        session.execute(
+            text("""SELECT symbol, timestamp, close FROM market_data
             WHERE symbol = ANY(:symbols) AND timeframe = 'PRICE'
               AND timestamp >= :start_at AND timestamp <= :end_at
             ORDER BY timestamp ASC LIMIT :row_limit"""),
-        {
-            "symbols": symbols,
-            "start_at": headline_at - timedelta(minutes=pre_minutes) - tolerance,
-            "end_at": min(current, session_close + tolerance),
-            "row_limit": row_limit,
-        },
-    ))
+            {
+                "symbols": symbols,
+                "start_at": headline_at - timedelta(minutes=pre_minutes) - tolerance,
+                "end_at": min(current, session_close + tolerance),
+                "row_limit": row_limit,
+            },
+        )
+    )
     by_symbol = {
         symbol: [row for row in rows if str(row.get("symbol", "")).upper() == symbol]
         for symbol in symbols
@@ -351,14 +353,16 @@ def list_story_confirmations(
     session: Any, cluster_id: Any, limit: int = 100
 ) -> list[dict[str, Any]]:
     bounded = max(1, min(_MAX_LIST, int(limit)))
-    return result_rows(session.execute(
-        text("""SELECT id, cluster_id, source_event_id, market_symbol, headline_at,
+    return result_rows(
+        session.execute(
+            text("""SELECT id, cluster_id, source_event_id, market_symbol, headline_at,
             observed_at, pre_headline_move, move_5m, move_30m, move_session,
             flags, missing_reasons, provenance, created_at, updated_at
             FROM story_market_confirmations WHERE cluster_id = :cluster_id
             ORDER BY observed_at DESC, market_symbol LIMIT :limit"""),
-        {"cluster_id": cluster_id, "limit": bounded},
-    ))
+            {"cluster_id": cluster_id, "limit": bounded},
+        )
+    )
 
 
 def backfill_story_confirmations(
@@ -366,13 +370,15 @@ def backfill_story_confirmations(
 ) -> dict[str, int]:
     current = _timestamp(now, datetime.now(UTC)) or datetime.now(UTC)
     bounded = max(1, min(500, int(limit)))
-    rows = result_rows(session.execute(
-        text("""SELECT DISTINCT cluster_id, source_event_id
+    rows = result_rows(
+        session.execute(
+            text("""SELECT DISTINCT cluster_id, source_event_id
             FROM story_market_confirmations
             WHERE flags ? 'insufficient_market_data' AND headline_at <= :now
             ORDER BY cluster_id, source_event_id LIMIT :limit"""),
-        {"now": current, "limit": bounded},
-    ))
+            {"now": current, "limit": bounded},
+        )
+    )
     updated = 0
     for row in rows:
         result = calculate_story_confirmation(

@@ -15,12 +15,20 @@ UNIVERSE_SOURCE: str = _DATA["source"]
 EU_UNIVERSE_SOURCE: str = _DATA["eu_source"]
 
 _ALL_COMPANIES: list[dict] = _DATA["companies"]
-TOP_US_COMPANIES: tuple[dict, ...] = tuple(c for c in _ALL_COMPANIES if c.get("market") == "US")
-TOP_UK_COMPANIES: tuple[dict, ...] = tuple(c for c in _ALL_COMPANIES if c.get("market") == "UK")
-TOP_EU_COMPANIES: tuple[dict, ...] = tuple(c for c in _ALL_COMPANIES if c.get("market") == "EU")
+TOP_US_COMPANIES: tuple[dict, ...] = tuple(
+    c for c in _ALL_COMPANIES if c.get("market") == "US"
+)
+TOP_UK_COMPANIES: tuple[dict, ...] = tuple(
+    c for c in _ALL_COMPANIES if c.get("market") == "UK"
+)
+TOP_EU_COMPANIES: tuple[dict, ...] = tuple(
+    c for c in _ALL_COMPANIES if c.get("market") == "EU"
+)
 
 _COMPANY_BY_SYMBOL: dict[str, str] = {
-    c["symbol"]: c["company"] for c in _ALL_COMPANIES if "symbol" in c and "company" in c
+    c["symbol"]: c["company"]
+    for c in _ALL_COMPANIES
+    if "symbol" in c and "company" in c
 }
 
 ISSUER_INDUSTRIES: tuple[tuple[str, str, str], ...] = tuple(

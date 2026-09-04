@@ -1,18 +1,16 @@
-"""Credential-free deterministic price and UI-invalidation publisher for demo mode."""
+"""Credential-free deterministic price publisher for demo mode."""
 
 from __future__ import annotations
 
 import os
-import time
 from datetime import UTC, datetime
 from typing import Any
 
+from config_loader import load_config
+from logging_config import get_logger, setup_logging
 from sqlalchemy import text
 
-from config_loader import load_config
 from db import get_session
-from logging_config import get_logger, setup_logging
-from ui_events import append_ui_invalidation
 
 logger = get_logger("demo_live")
 
@@ -56,27 +54,20 @@ def publish_demo_tick(
                 _INSERT_PRICE,
                 {"symbol": symbol, "timestamp": observed_at, "price": price},
             )
-        event = append_ui_invalidation(
-            session,
-            section_key="watchlist",
-            scope_key="global",
-            section_version=version,
-        )
         session.commit()
     return {
         "tick": int(tick),
         "observed_at": observed_at.isoformat(),
         "price_rows": len(DEMO_PRICES),
         "section_version": version,
-        "event_id": event.get("id") if event else None,
+        "event_id": None,
     }
 
 
-def main() -> None:
-    config = load_config()
-    setup_logging(level=config.get("logging", {}).get("level", "INFO"))
+def run_demo_live(config: dict[str, Any], stop_event: Any) -> None:
+    """Publish deterministic demo ticks until the combined worker stops."""
     if not _demo_enabled(config):
-        raise SystemExit("demo live publisher refuses to run outside DEMO_MODE=true")
+        return
     interval = max(
         2.0,
         min(
@@ -88,14 +79,24 @@ def main() -> None:
     )
     tick = 0
     logger.info("demo_live_started", interval_seconds=interval)
-    while True:
+    while not stop_event.is_set():
         try:
             result = publish_demo_tick(config, tick)
             logger.info("demo_live_tick", **result)
             tick += 1
         except Exception as exc:
             logger.warning("demo_live_tick_failed", error_type=type(exc).__name__)
-        time.sleep(interval)
+        stop_event.wait(interval)
+
+
+def main() -> None:
+    import threading
+
+    config = load_config()
+    setup_logging(level=config.get("logging", {}).get("level", "INFO"))
+    if not _demo_enabled(config):
+        raise SystemExit("demo live publisher refuses to run outside DEMO_MODE=true")
+    run_demo_live(config, threading.Event())
 
 
 if __name__ == "__main__":

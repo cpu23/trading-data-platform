@@ -143,7 +143,9 @@ class FreeSourceEventTypeTests(unittest.TestCase):
         self.observed_at = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
     def test_new_free_source_event_types_are_explicit(self):
-        self.assertEqual(MarketEventType.TRANSCRIPT_PUBLISHED.value, "transcript_published")
+        self.assertEqual(
+            MarketEventType.TRANSCRIPT_PUBLISHED.value, "transcript_published"
+        )
         self.assertEqual(
             MarketEventType.OPTION_CHAIN_PUBLISHED.value, "option_chain_published"
         )
@@ -192,9 +194,7 @@ class FreeSourceEventTypeTests(unittest.TestCase):
             identity={"symbol": "AAPL", "captured_at": captured.isoformat()},
         )
         self.assertEqual(event.event_type, "option_chain_published")
-        self.assertEqual(
-            event.dedupe_key, f"cboe_options:AAPL:{captured.isoformat()}"
-        )
+        self.assertEqual(event.dedupe_key, f"cboe_options:AAPL:{captured.isoformat()}")
         self.assertEqual(event.source_event_id, f"AAPL:{captured.isoformat()}")
         self.assertEqual(event.markets[0].canonical_id, "equity:AAPL")
         # Identical snapshots hash identically; changed quotes do not.

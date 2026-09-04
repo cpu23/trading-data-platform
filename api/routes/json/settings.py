@@ -6,23 +6,22 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
-from fastapi import APIRouter, Body, HTTPException, Request, Response
-from pydantic import BaseModel
-
 from auth import setup_complete
+from fastapi import APIRouter, Body, HTTPException, Request, Response
+from llm_client import model_preflight
+from pydantic import BaseModel
+from setup_state import (
+    commit_setup,
+    merge_profile,
+    parse_secrets_file,
+    read_live_state,
+    setup_lock,
+)
+
 from config import (
     config_status,
     load_config,
     reload_config,
-)
-from orchestrator_client import orchestrator_post
-from setup_state import (
-    commit_setup,
-    merge_profile,
-    migrate_legacy_profile,
-    parse_secrets_file,
-    read_live_state,
-    setup_lock,
 )
 
 router = APIRouter()
@@ -180,8 +179,7 @@ def active_model(config: dict | Mapping | None = None) -> str:
     """The single active model slug (mirrors orchestrator resolution).
 
     Only ``llm.models.default`` is read at runtime; per-processor selectors
-    and legacy ``llm.default_model`` are unsupported (setup_state promotes
-    any legacy default during migration).
+    and ``llm.default_model`` are rejected by the frozen configuration schema.
     """
     llm = (config or load_config()).get("llm", {})
     llm = llm if isinstance(llm, Mapping) else {}
@@ -242,18 +240,8 @@ def set_timezone_setting(update: TimezoneUpdate, response: Response):
 def update_operator_settings(body: dict):
     llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
     models = llm.get("models") if isinstance(llm.get("models"), dict) else {}
-    candidates = [models.get("default"), llm.get("default_model")]
-    candidates.extend(
-        value for key, value in models.items() if key != "default"
-    )
-    default_model = next(
-        (
-            str(candidate).strip()
-            for candidate in candidates
-            if isinstance(candidate, str) and candidate.strip()
-        ),
-        "",
-    )
+    candidate = models.get("default")
+    default_model = str(candidate).strip() if candidate is not None else ""
     if not default_model or len(default_model) > 200:
         raise HTTPException(422, "A valid default model is required")
     try:
@@ -269,18 +257,14 @@ def update_operator_settings(body: dict):
     secrets_update = (
         body.get("secrets") if isinstance(body.get("secrets"), dict) else {}
     )
-    version, migrated_fields = _save_operator_state(update, secrets_update)
+    _save_operator_state(update, secrets_update)
     restart_required = _reload_or_restart()
-    response = {
+    return {
         "saved": True,
         "applies_to_next_run": True,
         "model": default_model,
         "restart_required": restart_required,
     }
-    if migrated_fields:
-        response["legacy_profile_migrated"] = True
-        response["legacy_migration"] = migrated_fields
-    return response
 
 
 def _reload_or_restart() -> bool:
@@ -297,16 +281,8 @@ def _reload_or_restart() -> bool:
         return True
 
 
-def _save_operator_state(update: dict, secrets_update: dict) -> tuple[int, list[str]]:
-    """Merge and commit a profile/secret update as a versioned snapshot.
-
-    The existing operator profile is preserved (coverage, watchlist, timezone
-    and other sections are not clobbered); a legacy base profile is migrated
-    explicitly (the changed fields are returned for reporting, never silently).
-    Secrets follow explicit set/unchanged/delete semantics, and the commit is
-    a single atomic pointer swap. A failed commit leaves the prior live state
-    untouched.
-    """
+def _save_operator_state(update: dict, secrets_update: dict) -> int:
+    """Merge and atomically commit one versioned profile/secret update."""
     with setup_lock(STATE_DIR):
         base = read_live_state(STATE_DIR, STATE_DIR / "activated.json", _live_paths())
         try:
@@ -319,7 +295,6 @@ def _save_operator_state(update: dict, secrets_update: dict) -> tuple[int, list[
             base_profile = {}
         if not isinstance(base_profile, dict):
             base_profile = {}
-        base_profile, migrated_fields = migrate_legacy_profile(base_profile)
         profile = merge_profile(base_profile, update)
         current_secrets = (
             parse_secrets_file(base["secrets.env"]) if base.get("secrets.env") else {}
@@ -335,7 +310,7 @@ def _save_operator_state(update: dict, secrets_update: dict) -> tuple[int, list[
         }
         if not payload["auth.json"]:
             raise HTTPException(409, "Setup is not complete")
-        return _commit_state(payload), migrated_fields
+        return _commit_state(payload)
 
 
 def _restart_required() -> bool:
@@ -379,20 +354,13 @@ def test_openrouter(body: dict):
 
 
 @router.post("/settings/test-model")
-async def test_model(request: Request, body: dict | None = Body(default=None)):
+def test_model(request: Request, body: dict | None = Body(default=None)):
     """Preflight the active (or requested) model slug without paid inference."""
     requested = None
     if isinstance(body, dict) and isinstance(body.get("model"), str):
         requested = body.get("model").strip() or None
-    payload = {"model": requested} if requested else {}
-    response = await orchestrator_post(
-        request,
-        "/model/preflight",
-        json=payload,
-    )
-    if response.status_code != 200:
-        raise HTTPException(502, "Model preflight could not be completed")
-    result = response.json()
-    if not isinstance(result, dict):
-        raise HTTPException(502, "Model preflight returned an invalid payload")
-    return result
+    config = load_config()
+    try:
+        return model_preflight(config, model=requested)
+    except Exception as exc:
+        raise HTTPException(502, "Model preflight could not be completed") from exc

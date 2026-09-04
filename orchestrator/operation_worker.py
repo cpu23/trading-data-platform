@@ -1,10 +1,9 @@
-"""Polling worker for durable operation jobs.
+"""Polling executor for durable operation jobs.
 
-The operation worker claims ``operation_jobs`` rows (leased), claims the
-matching accepted ``cycle_runs`` row, executes the run with the durable
-cycle_runs heartbeat while renewing the job lease, then finalizes both
-atomically.  Lease expiry/reclaim, retry/backoff, and poison terminal state
-follow the ``analysis_jobs`` worker contract.
+The executor claims leased rows from ``jobs``, claims the matching accepted
+``cycle_runs`` row, executes the run while renewing both heartbeats, and
+finalizes both atomically. Lease expiry, retry/backoff, and poison terminal
+state use the same queue contract as every other job type.
 """
 
 from __future__ import annotations
@@ -15,10 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from cycle_planning import VALID_CYCLE_MODES, aggregate_stage_statuses
-from operation_jobs import (
+from jobs import (
     OperationJob,
     claim_operation_jobs,
     reconcile_operation_jobs,
@@ -28,6 +25,11 @@ from operation_jobs import (
     succeed_operation_job,
     terminal_fail_operation_job,
 )
+from polling_worker import BasePollingWorker, filter_result_ref
+from recovery import recover_operation_runs
+from run_lifecycle import finish_run_in_session
+from sqlalchemy import text
+
 from orchestrator import (
     maintain_run_heartbeat,
     run_collector,
@@ -36,9 +38,6 @@ from orchestrator import (
     run_processor,
     start_run,
 )
-from polling_worker import BasePollingWorker, filter_result_ref
-from recovery import recover_operation_runs
-from run_lifecycle import finish_run_in_session
 
 
 class LeaseLostError(RuntimeError):

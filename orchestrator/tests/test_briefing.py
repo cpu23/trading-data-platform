@@ -7,13 +7,15 @@ from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "contracts"))
 
-from contracts.runtime_config import WatchlistInstrumentConfig
 from processors._validators import (
     coerce_briefing_fields,
     validate_briefing_sections,
 )
 from processors.briefing import DailyBriefingProcessor
+
+from contracts.runtime_config import WatchlistInstrumentConfig
 
 WATCHLIST = [
     {"symbol": "EURUSD", "type": "forex"},
@@ -331,6 +333,93 @@ class BriefingTests(unittest.TestCase):
         # Retry should have produced valid watchlist_notes
         self.assertIn("watchlist_notes", result)
         self.assertGreater(len(result["watchlist_notes"]), 0)
+
+    @patch.object(DailyBriefingProcessor, "_get_regime_summary", return_value="regime")
+    @patch.object(
+        DailyBriefingProcessor,
+        "_get_calendar_bundle",
+        return_value={
+            "today_prompt": "",
+            "week_prompt": "",
+            "today_count": 0,
+            "week_count": 0,
+            "window": {},
+        },
+    )
+    @patch.object(
+        DailyBriefingProcessor, "_get_previous_briefing_text", return_value=""
+    )
+    @patch("processors.briefing.load_classified_news", return_value=[])
+    @patch.object(DailyBriefingProcessor, "_get_atom_section", return_value="")
+    @patch("processors.briefing.LLMStage")
+    def test_process_reads_asset_context_from_briefing_config(
+        self,
+        mock_stage_cls,
+        _atoms,
+        _news,
+        _prev,
+        _cal,
+        _regime,
+    ):
+        mock_stage = Mock()
+        mock_stage.policy.model = "test-model"
+        mock_stage.policy.validation_retries = 0
+        mock_stage.telemetry.tokens_input_total = 10
+        mock_stage.telemetry.tokens_output_total = 10
+        mock_stage.telemetry.cost_usd_total = 0.0
+        mock_stage.telemetry.as_dict.return_value = {}
+        mock_stage.call.return_value = {
+            "content": json.dumps(
+                {
+                    "what_changed": "changed",
+                    "interpretation": "interpretation",
+                    "invalidation": "invalidation",
+                    "watchlist_notes": [
+                        {
+                            "symbol": item["symbol"],
+                            "asset_class": item["type"],
+                            "bias": "neutral",
+                            "confidence": "moderate",
+                            "summary": "s",
+                            "reason": "r",
+                            "next_catalyst": "c",
+                            "note": "n",
+                        }
+                        for item in WATCHLIST
+                    ],
+                }
+            ),
+            "model": "test-model",
+            "tokens_input": 10,
+            "tokens_output": 10,
+            "cost_usd": 0.0,
+        }
+        mock_stage_cls.return_value = mock_stage
+        prompt_path = str(
+            Path(__file__).resolve().parents[2] / "prompts" / "briefing_v5.txt"
+        )
+        processor = DailyBriefingProcessor()
+        test_config = {
+            **CONFIG,
+            "processors": {
+                "briefing": {
+                    "prompt_template": prompt_path,
+                    "asset_context": {"EURUSD": {"channels": ["rate spread"]}},
+                },
+                "market_intelligence": {
+                    "asset_context": {
+                        "EURUSD": {"channels": ["ignored legacy channel"]}
+                    },
+                },
+            },
+        }
+        result = processor.process(test_config, correlation_id="test-corr")
+
+        call_args = mock_stage.call.call_args[0][0]
+        self.assertIn("rate spread", call_args)
+        self.assertNotIn("ignored legacy channel", call_args)
+        self.assertIn("opinion", result)
+        self.assertIn("extra_records", result)
 
 
 if __name__ == "__main__":

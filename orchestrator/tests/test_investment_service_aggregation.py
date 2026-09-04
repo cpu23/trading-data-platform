@@ -9,12 +9,11 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import investment_service as service
 from investment_service_support import (
     metric,
     session_context,
 )
-
-import investment_service as service
 
 
 class InvestmentAggregationTests(unittest.TestCase):
@@ -681,5 +680,5 @@ class InvestmentAggregationTests(unittest.TestCase):
         self.assertEqual(industries["Unclassified"]["company_count"], 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

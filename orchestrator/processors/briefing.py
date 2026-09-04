@@ -6,14 +6,14 @@ from datetime import time as dt_time
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
-
 from atoms import assemble_atom_context
 from budgets import BudgetContext
-from db import get_session
 from investment_news import load_classified_news
 from llm_client import LLMStage, LLMStageFailure, LLMValidationError, call_llm
 from logging_config import get_logger
+from sqlalchemy import text
+
+from db import get_session
 from processors._validators import coerce_briefing_fields, validate_briefing_sections
 from processors.base import (
     canonical_fingerprint,
@@ -130,9 +130,7 @@ class DailyBriefingProcessor:
         watchlist_config = config.get("watchlist", {}).get("trading", [])
         watchlist_str = self._format_watchlist(config)
         asset_context = (
-            config.get("processors", {})
-            .get("market_intelligence", {})
-            .get("asset_context", {})
+            config.get("processors", {}).get("briefing", {}).get("asset_context", {})
         )
         london_tz = self._primary_timezone(config)
         current_london = datetime.now(london_tz)

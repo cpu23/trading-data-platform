@@ -85,7 +85,9 @@ class BenchmarkEpisode:
     manual_milestones: MappingProxyType
     source_path: str
 
-    def evidence_as_of(self, context: ResearchContext) -> tuple[NormalizedEvidence, ...]:
+    def evidence_as_of(
+        self, context: ResearchContext
+    ) -> tuple[NormalizedEvidence, ...]:
         if not context.is_replay:
             raise ValueError("benchmark evidence requires replay context")
         return context.filter_evidence(self.evidence)
@@ -170,7 +172,9 @@ def _evidence(raw: Any, episode_id: str, synthetic: bool) -> NormalizedEvidence:
             "adapter": "benchmark_fixture",
             "benchmark_id": episode_id,
             "synthetic": synthetic,
-            **(raw.get("provenance") if isinstance(raw.get("provenance"), dict) else {}),
+            **(
+                raw.get("provenance") if isinstance(raw.get("provenance"), dict) else {}
+            ),
         },
         freshness="historical_fixture",
     )
@@ -183,7 +187,11 @@ def load_benchmark(path: str | Path) -> BenchmarkEpisode:
         raise ValueError("benchmark episode has unexpected or missing fields")
     episode_id = _text(raw.get("id"), "id", 120)
     version = raw.get("version")
-    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= 1_000:
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or not 1 <= version <= 1_000
+    ):
         raise ValueError("benchmark version must be 1..1000")
     synthetic = raw.get("synthetic")
     if not isinstance(synthetic, bool):
@@ -194,9 +202,14 @@ def load_benchmark(path: str | Path) -> BenchmarkEpisode:
     replay_raw = raw.get("replay_dates")
     if not isinstance(replay_raw, list) or not 1 <= len(replay_raw) <= 20:
         raise ValueError("benchmark replay_dates must contain 1..20 dates")
-    replay_dates = tuple(sorted({_timestamp(item, "replay_date") for item in replay_raw}))
+    replay_dates = tuple(
+        sorted({_timestamp(item, "replay_date") for item in replay_raw})
+    )
     evidence_raw = raw.get("evidence")
-    if not isinstance(evidence_raw, list) or not 1 <= len(evidence_raw) <= _MAX_EVIDENCE:
+    if (
+        not isinstance(evidence_raw, list)
+        or not 1 <= len(evidence_raw) <= _MAX_EVIDENCE
+    ):
         raise ValueError("benchmark evidence must contain 1..200 rows")
     evidence = tuple(_evidence(item, episode_id, synthetic) for item in evidence_raw)
     identities = [item.ref for item in evidence]
@@ -207,12 +220,17 @@ def load_benchmark(path: str | Path) -> BenchmarkEpisode:
         raise ValueError("benchmark forbidden_hindsight must be a bounded list")
     hindsight: list[ForbiddenHindsight] = []
     for item in hindsight_raw:
-        if not isinstance(item, dict) or set(item) != {"description", "available_after"}:
+        if not isinstance(item, dict) or set(item) != {
+            "description",
+            "available_after",
+        }:
             raise ValueError("forbidden hindsight row is invalid")
         hindsight.append(
             ForbiddenHindsight(
                 _text(item.get("description"), "forbidden_hindsight", 500),
-                _timestamp(item.get("available_after"), "forbidden_hindsight.available_after"),
+                _timestamp(
+                    item.get("available_after"), "forbidden_hindsight.available_after"
+                ),
             )
         )
     milestones_raw = raw.get("manual_milestones")
@@ -246,7 +264,9 @@ def load_benchmark(path: str | Path) -> BenchmarkEpisode:
     )
 
 
-def list_benchmarks(directory: str | Path | None = None) -> tuple[BenchmarkEpisode, ...]:
+def list_benchmarks(
+    directory: str | Path | None = None,
+) -> tuple[BenchmarkEpisode, ...]:
     root = Path(directory) if directory is not None else DEFAULT_BENCHMARK_DIR
     paths = sorted(root.glob("*.yaml"))[:_MAX_EPISODES]
     episodes = tuple(load_benchmark(path) for path in paths)

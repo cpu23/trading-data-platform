@@ -17,10 +17,6 @@ if str(TESTS_DIR) not in sys.path:
 os.environ.update(
     {
         "STATE_DIR": "/tmp/trading-data-thesis-fusion-test-state",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
-        "DEPLOYMENT_MODE": "test",
-        "LEGACY_BASIC_AUTH": "1",
         "CONFIG_DIR": str(ORCH_ROOT.parent / "config"),
         "DB_USER": "test",
         "DB_PASSWORD": "test",

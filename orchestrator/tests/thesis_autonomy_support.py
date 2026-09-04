@@ -18,10 +18,6 @@ sys.path.insert(0, str(ORCH_ROOT))
 os.environ.update(
     {
         "STATE_DIR": "/tmp/trading-data-thesis-autonomy-test-state",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
-        "DEPLOYMENT_MODE": "test",
-        "LEGACY_BASIC_AUTH": "1",
         "CONFIG_DIR": str(ORCH_ROOT.parent / "config"),
         "DB_USER": "test",
         "DB_PASSWORD": "test",
@@ -36,8 +32,6 @@ os.environ.update(
     }
 )
 
-from sqlalchemy.dialects import postgresql  # noqa: E402
-
 from research_intelligence.contracts import (  # noqa: E402
     NormalizedEntity,
     NormalizedEvidence,
@@ -49,6 +43,7 @@ from research_intelligence.evidence import (  # noqa: E402
     EvidenceCollection,
     EvidenceRegistry,
 )
+from sqlalchemy.dialects import postgresql  # noqa: E402
 from thesis_autonomy import (  # noqa: E402
     JOB_TYPE as JOB_TYPE,
 )
@@ -62,29 +57,14 @@ from thesis_autonomy import (
     LLMSemanticCitationAuditor as LLMSemanticCitationAuditor,
 )
 from thesis_autonomy import (
-    _backfill_missing_forecasts as _backfill_missing_forecasts,
-)
-from thesis_autonomy import (
     _canonical_market_symbol,
     run_autonomous_thesis_cycle,
-)
-from thesis_autonomy import (
-    _count_unversioned_second_pass_candidates as _count_unversioned_second_pass_candidates,
 )
 from thesis_autonomy import (
     _cycle_key as _cycle_key,
 )
 from thesis_autonomy import (
-    _load_second_pass_snapshot as _load_second_pass_snapshot,
-)
-from thesis_autonomy import (
-    _persist_candidate_risks as _persist_candidate_risks,
-)
-from thesis_autonomy import (
     _resolve_matured_forecasts as _resolve_matured_forecasts,
-)
-from thesis_autonomy import (
-    _second_pass_candidates as _second_pass_candidates,
 )
 from thesis_autonomy import (
     _signal as _signal,
@@ -96,12 +76,29 @@ from thesis_autonomy import (
     thesis_autonomy_identity as thesis_autonomy_identity,
 )
 from thesis_challenges import ChallengeProposal  # noqa: E402
+from thesis_fusion import (  # noqa: E402
+    canonical_thesis_key as canonical_thesis_key,
+)
 from thesis_tournament import (  # noqa: E402
     CITATION_FIELDS as CITATION_FIELDS,
 )
 from thesis_tournament import (
     role_output_schema as role_output_schema,
 )
+
+
+def _decode_json_column(val: Any, default: Any) -> Any:
+    if val is None:
+        return default
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return default
+    if isinstance(val, (dict, list)):
+        return copy.deepcopy(val)
+    return val
+
 
 NOW = datetime(2026, 8, 15, 9, 30, tzinfo=UTC)
 THEME_ID = "11111111-1111-4111-8111-111111111111"
@@ -481,6 +478,8 @@ class MemorySession:
         self.position_links: list[dict] = []
         self.playbooks: list[dict] = []
         self.portfolio_holdings: dict[str, dict] = {}
+        self.proposals: dict[str, dict] = {}
+        self.proposal_keys: dict[str, str] = {}
         self.market_events: set[str] = set()
         self.event_matches: set[tuple[str, str, str]] = set()
         # Reference visibility of each match row: (playbook, event, kind) ->
@@ -511,9 +510,11 @@ class MemorySession:
     def seed_thesis(self, thesis_id: str, **overrides) -> dict:
         row = {
             "id": thesis_id,
+            "subject": None,
             "claim": "Existing claim",
             "variant_perception": None,
             "confidence": None,
+            "confidence_score": None,
             "status": "active",
             "trend_context": None,
             "valuation_context": None,
@@ -529,6 +530,9 @@ class MemorySession:
             "catalyst_summary": None,
             "invalidation_conditions": [],
             "opportunity_score": 0.0,
+            "evidence_strength": 0.0,
+            "contradiction_strength": 0.0,
+            "version": 1,
             "last_evaluated_at": None,
             # Mirrors the nullable migration 055 accepted-reference guard
             # pair: absent for manual/legacy content, set together by
@@ -838,6 +842,100 @@ class MemorySession:
                     run["findings"] = entries[0]["findings"]
                     run["completed_at"] = entries[0]["completed_at"]
             return Result(rowcount=1)
+        if "INSERT INTO investment_thesis_proposals" in sql:
+            p_key = entries[0]["proposal_key"]
+            if p_key in self.proposal_keys:
+                existing_id = self.proposal_keys[p_key]
+                row = dict(self.proposals[existing_id])
+                row["created"] = False
+                return Result(first=row)
+            p_id = _id(f"proposal:{p_key}")
+            row = {
+                "id": p_id,
+                "proposal_key": p_key,
+                "canonical_key": entries[0]["canonical_key"],
+                "theme_id": entries[0].get("theme_id"),
+                "company": entries[0].get("company"),
+                "symbol": entries[0].get("symbol"),
+                "subject": entries[0]["subject"],
+                "direction": entries[0].get("direction", "neutral"),
+                "horizon": entries[0].get("horizon", "months"),
+                "mechanism": entries[0].get("mechanism"),
+                "status": "pending_review",
+                "payload": _decode_json_column(entries[0].get("payload"), {}),
+                "evidence": _decode_json_column(entries[0].get("evidence"), []),
+                "scenarios": _decode_json_column(entries[0].get("scenarios"), []),
+                "scoring": _decode_json_column(entries[0].get("scoring"), {}),
+                "challenge": _decode_json_column(entries[0].get("challenge"), {}),
+                "diff": _decode_json_column(entries[0].get("diff"), {}),
+                "matching_thesis_id": entries[0].get("matching_thesis_id"),
+                "materialized_thesis_id": None,
+                "reviewer_id": None,
+                "review_note": None,
+                "reviewed_at": None,
+                "parent_proposal_id": entries[0].get("parent_proposal_id"),
+                "revision_instructions": entries[0].get("revision_instructions"),
+                "accepted_reference": entries[0].get("accepted_reference", NOW),
+                "created_at": NOW,
+                "updated_at": NOW,
+                "created": True,
+            }
+            self.proposals[p_id] = row
+            self.proposal_keys[p_key] = p_id
+            return Result(first=row)
+
+        if "SELECT" in sql and "FROM investment_thesis_proposals" in sql:
+            if (
+                "WHERE id = CAST(:key AS UUID)" in sql
+                or "WHERE id = CAST(:id AS UUID)" in sql
+            ):
+                k = str(entries[0].get("key") or entries[0].get("id"))
+                row = self.proposals.get(k)
+                return Result(first=row)
+            if "WHERE proposal_key = :key" in sql:
+                k = str(entries[0]["key"])
+                p_id = self.proposal_keys.get(k)
+                row = self.proposals.get(p_id) if p_id else None
+                return Result(first=row)
+            rows = list(self.proposals.values())
+            if "status = ANY(:statuses)" in sql:
+                st = entries[0]["statuses"]
+                rows = [r for r in rows if r["status"] in st]
+            if "symbol = :symbol" in sql:
+                rows = [r for r in rows if r["symbol"] == entries[0]["symbol"]]
+            if "theme_id = CAST(:theme_id AS UUID)" in sql:
+                rows = [
+                    r for r in rows if str(r["theme_id"]) == str(entries[0]["theme_id"])
+                ]
+            limit = entries[0].get("limit", len(rows))
+            offset = entries[0].get("offset", 0)
+            return Result(rows=rows[offset : offset + limit])
+
+        if "UPDATE investment_thesis_proposals" in sql:
+            p_id = str(entries[0]["id"])
+            if p_id in self.proposals:
+                row = self.proposals[p_id]
+                if "status = 'approved'" in sql:
+                    row["status"] = "approved"
+                    row["materialized_thesis_id"] = entries[0].get("thesis_id")
+                    row["reviewer_id"] = entries[0].get("reviewer_id")
+                    row["review_note"] = entries[0].get("review_note")
+                    row["reviewed_at"] = entries[0].get("reviewed_at", NOW)
+                elif "status = 'rejected'" in sql:
+                    row["status"] = "rejected"
+                    row["reviewer_id"] = entries[0].get("reviewer_id")
+                    row["review_note"] = entries[0].get("review_note")
+                    row["reviewed_at"] = entries[0].get("reviewed_at", NOW)
+                elif "status = 'revision_requested'" in sql:
+                    row["status"] = "revision_requested"
+                    row["reviewer_id"] = entries[0].get("reviewer_id")
+                    row["revision_instructions"] = entries[0].get(
+                        "revision_instructions"
+                    )
+                    row["review_note"] = entries[0].get("review_note")
+                    row["reviewed_at"] = entries[0].get("reviewed_at", NOW)
+                row["updated_at"] = NOW
+            return Result(first={"updated": True})
 
         if "autonomy_forecast_backfill" in sql:
             reference = entries[0]["reference"]
@@ -1349,7 +1447,7 @@ class MemorySession:
                     None,
                 )
             elif "canonical_key" in sql:
-                key = str(params.get("key") or "")
+                key = str(params.get("canonical_key") or params.get("key") or "")
                 row = next(
                     (
                         thesis
@@ -1381,16 +1479,33 @@ class MemorySession:
                 }
             )
         if "FROM investment_theses WHERE canonical_key" in sql:
-            key = str(entries[0]["key"])
+            key = str(entries[0].get("canonical_key") or entries[0].get("key") or "")
             for row in self.theses.values():
                 if row.get("canonical_key") == key:
                     return Result(
                         first={
                             "id": row["id"],
-                            "claim": row["claim"],
-                            "variant_perception": row["variant_perception"],
-                            "confidence": row["confidence"],
-                            "status": row["status"],
+                            "subject": row.get("subject"),
+                            "claim": row.get("claim"),
+                            "variant_perception": row.get("variant_perception"),
+                            "catalyst_summary": row.get("catalyst_summary"),
+                            "direction": row.get("direction"),
+                            "horizon": row.get("horizon"),
+                            "mechanism": row.get("mechanism"),
+                            "confidence": row.get("confidence"),
+                            "confidence_score": (
+                                row.get("confidence_score")
+                                if row.get("confidence_score") is not None
+                                else row.get("confidence")
+                            ),
+                            "opportunity_score": row.get("opportunity_score", 0.0),
+                            "evidence_strength": row.get("evidence_strength", 0.0),
+                            "contradiction_strength": row.get(
+                                "contradiction_strength", 0.0
+                            ),
+                            "version": row.get("version", 1),
+                            "updated_at": row.get("updated_at"),
+                            "status": row.get("status"),
                             "canonical_key": row.get("canonical_key"),
                             "fusion_reference_at": row.get("fusion_reference_at"),
                             "fusion_candidate_fingerprint": row.get(
@@ -2003,5 +2118,3 @@ def attempt_rows(session: RecordingSession) -> list[dict]:
         if "INSERT INTO generation_attempts" in sql:
             rows.append(params)
     return rows
-
-

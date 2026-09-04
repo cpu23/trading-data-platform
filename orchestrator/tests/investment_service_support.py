@@ -140,4 +140,3 @@ def relationship_metric(value, *, role, metric_family, cash_basis):
             "cash_basis": cash_basis,
         },
     }
-

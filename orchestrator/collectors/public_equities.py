@@ -45,8 +45,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
-
-from collectors.base import CollectionResult, CollectionWriteBatch
 from errors import (
     InvalidSourceData,
     TransientSourceError,
@@ -55,6 +53,8 @@ from errors import (
 from http_client import ResponseBodyTooLarge, make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
+
+from collectors.base import CollectionResult, CollectionWriteBatch
 
 logger = get_logger("collector.public_equities")
 

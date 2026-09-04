@@ -1,6 +1,3 @@
-# Bounded container log growth: the json-file driver is unbounded by default,
-# and an unsupervised production host eventually fills its disk. Application
-# logs still flow to the logsdata volume; this caps the docker-side copy only.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -31,26 +28,7 @@ services:
       retries: 10
       start_period: 10s
 
-  migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    logging: *default-logging
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "cli.py", "migrate"]
-    env_file: .env
-    volumes:
-      - operatorstate:/app/state:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  orchestrator:
+  web:
     build:
       context: .
       dockerfile: Dockerfile
@@ -59,50 +37,22 @@ services:
     pids_limit: 128
     mem_limit: 1g
     security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "api"]
+    working_dir: /app/api
+    command: ["/app/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:
-      - newsdata:/var/lib/trading-data/news
       - logsdata:/var/log/trading-data
-      - operatorstate:/app/state:ro
+      - newsdata:/var/lib/trading-data/news:ro
+      - operatorstate:/app/state
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    logging: *default-logging
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "scheduler"]
-    env_file: .env
-    volumes:
-      - logsdata:/var/log/trading-data
-      - operatorstate:/app/state:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "scheduler"]
-      interval: 60s
       timeout: 5s
       retries: 5
       start_period: 20s
@@ -113,14 +63,11 @@ services:
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
     logging: *default-logging
-    pids_limit: 128
-    # 2g: faster-whisper small.en transcription runs in-process on the
-    # worker and needs headroom over the CPU int8 baseline (CPU-only; no
-    # CUDA/device contract in this compose).
+    pids_limit: 256
     mem_limit: 2g
     security_opt: ["no-new-privileges:true"]
     working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "worker"]
+    command: ["/app/.venv/bin/python", "-m", "roles", "run", "worker"]
     env_file: .env
     environment:
       HF_HOME: /var/lib/trading-data/news/models/huggingface
@@ -132,121 +79,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
-    # Let claimed jobs reach their transactional finalization boundary.
     stop_grace_period: 30m
     healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "worker"]
-      interval: 60s
+      test: ["CMD", "/app/.venv/bin/python", "-m", "roles", "check", "worker"]
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 20s
-
-  outbox:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    logging: *default-logging
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "outbox"]
-    env_file: .env
-    volumes:
-      - logsdata:/var/log/trading-data
-      - operatorstate:/app/state:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    # Let an in-flight dispatch reach its completion or lease-release boundary
-    # (outbox leases are 30s with bounded retry backoff) before SIGKILL; an
-    # expired lease would otherwise re-dispatch the event elsewhere.
-    stop_grace_period: 60s
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "outbox"]
-      interval: 60s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  quotes:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    logging: *default-logging
-    pids_limit: 64
-    mem_limit: 512m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "quotes"]
-    env_file: .env
-    volumes:
-      - logsdata:/var/log/trading-data
-      - operatorstate:/app/state:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "quotes"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    logging: *default-logging
-    pids_limit: 128
-    mem_limit: 512m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/api
-    command: ["/app/api/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-    env_file: .env
-    environment:
-      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-http://orchestrator:8000}
-      DEPLOYMENT_MODE: production
-    ports:
-      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
-    volumes:
-      - logsdata:/var/log/trading-data
-      - newsdata:/var/lib/trading-data/news:ro
-      - operatorstate:/app/state
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      orchestrator:
-        condition: service_healthy
-      scheduler:
-        condition: service_healthy
-      worker:
-        condition: service_healthy
-      outbox:
-        condition: service_healthy
-      quotes:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      start_period: 30s
 
 volumes:
   pgdata:

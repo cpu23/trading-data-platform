@@ -11,14 +11,7 @@ ENV UV_PYTHON=/usr/bin/python3 \
     UV_LINK_MODE=copy
 
 WORKDIR /build
-COPY contracts /build/contracts
-
-WORKDIR /build/api
-COPY api/pyproject.toml api/uv.lock ./
-RUN uv sync --frozen --no-dev --no-editable
-
-WORKDIR /build/orchestrator
-COPY orchestrator/pyproject.toml orchestrator/uv.lock ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM cgr.dev/chainguard/python@sha256:cd42e3e78f19faffe161fccf60af83503ee3851dd12efdae7d2488148e2fcd49
@@ -28,13 +21,13 @@ RUN apk update \
     && apk add --no-cache poppler-utils tesseract tesseract-eng tesseract-osd tzdata
 
 WORKDIR /app
-COPY --from=builder /build/api/.venv /app/api/.venv
-COPY --from=builder /build/orchestrator/.venv /app/orchestrator/.venv
+COPY --from=builder /build/.venv /app/.venv
 COPY api /app/api
 COPY orchestrator /app/orchestrator
+COPY contracts /app/contracts
 COPY config /app/config
 COPY prompts /app/prompts
-COPY db/migrations /app/db/migrations
+COPY db/schema.sql /app/db/schema.sql
 RUN addgroup --gid 10001 trading-data \
     && adduser --uid 10001 --ingroup trading-data --disabled-password \
         --no-create-home --shell /sbin/nologin trading-data \
@@ -43,11 +36,13 @@ RUN addgroup --gid 10001 trading-data \
     && chown 10001:10001 /app/state \
     && chmod 700 /app/state
 
-# Image artifacts (code, config, prompts, migrations, venvs) stay root-owned
+# Image artifacts (code, config, prompts, schema, venv) stay root-owned
 # and read-only for the runtime user; only the state and data paths above are
 # writable. Bytecode caching would otherwise try to write under /app and is
 # useless in an immutable image anyway.
-ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app:/app/orchestrator:/app/api \
+    PATH="/app/.venv/bin:$PATH"
 
 USER 10001:10001
 

@@ -153,7 +153,6 @@ class PassOneValidatorTests(unittest.TestCase):
             with self.subTest(example=example):
                 self.assertEqual(scan_prohibited_language(example), [])
 
-
     def test_scanner_rejects_execution_and_technical_analysis(self):
         findings = scan_prohibited_language(
             "Buy at support with a stop-loss after the RSI breakout."

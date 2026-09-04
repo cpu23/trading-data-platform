@@ -10,10 +10,9 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import text
-
 from errors import PersistenceError
 from logging_config import get_logger
+from sqlalchemy import text
 
 logger = get_logger("orchestrator.publication")
 NEWS_SOURCES = ("reuters", "kobeissi")

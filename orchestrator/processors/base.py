@@ -39,6 +39,8 @@ def canonical_fingerprint(payload: dict) -> str:
         ensure_ascii=False,
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def load_prompt_template(template_path: str) -> tuple[str, dict[str, str]]:
     """Load one prompt and return only bounded, non-content identity metadata."""
     configured = os.fspath(template_path)

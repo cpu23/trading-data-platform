@@ -9,9 +9,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
+from budgets import BudgetContext
 from sqlalchemy import text
 
-from budgets import BudgetContext
 from contracts.db_results import result_first, result_rows
 from contracts.runtime_config import DEFAULT_STAGE_NAMES, AppConfig
 from research_intelligence.adversarial import validate_adversarial_output
@@ -609,7 +609,6 @@ def execute_replay_research(
         deterministic_metrics=deterministic_metrics,
         cost_usd=sum(float(item.get("cost_usd") or 0) for item in stage_metrics),
     )
-
 
 
 def _load_prior_benchmark_cases(

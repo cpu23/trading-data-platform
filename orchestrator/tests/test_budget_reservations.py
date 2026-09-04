@@ -20,8 +20,6 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pg_support import parse_config, provision, require_postgres, truncate  # noqa: E402
-
 from budgets import (
     BudgetExceeded,
     BudgetUnavailable,
@@ -34,6 +32,8 @@ from budgets import (
     retain_budget_reservation,
     settle_budget_reservation,
 )
+from pg_support import parse_config, provision, require_postgres, truncate  # noqa: E402
+
 from db import get_engine  # noqa: E402
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -176,7 +176,7 @@ class ReservationAdmissionTests(unittest.TestCase):
         with patch("budgets.get_session") as get_session:
             reservation_id = _reserve_budget_quota(
                 {},
-                "research_control_plane",
+                "thesis_autonomy",
                 cap=2.0,
                 estimate_usd=0.5,
                 ttl_seconds=600,
@@ -215,7 +215,10 @@ class ReservationAdmissionTests(unittest.TestCase):
                     get_session.return_value.__enter__.return_value = session
                     with self.assertRaises(Exception):
                         _reserve_budget_quota(
-                            {}, "briefing", cap=2.0, estimate_usd=0.5,
+                            {},
+                            "briefing",
+                            cap=2.0,
+                            estimate_usd=0.5,
                             ttl_seconds=600,
                         )
 
@@ -328,9 +331,7 @@ class ReservationAdmissionTests(unittest.TestCase):
     def test_negative_cap_fails_closed_not_unlimited(self):
         with patch("budgets._reserve_budget_quota") as reserve:
             with self.assertRaises(BudgetUnavailable):
-                enforce_budget(
-                    {"budgets": {"daily_llm_usd": -5.0}}, "briefing"
-                )
+                enforce_budget({"budgets": {"daily_llm_usd": -5.0}}, "briefing")
         reserve.assert_not_called()
         with self.assertRaises(ValueError):
             from budgets import get_budget_config
@@ -522,9 +523,7 @@ class PostgresReservationContractTests(unittest.TestCase):
         for _, permit, _cid in admitted:
             settle_budget_reservation(permit.reservation_id, 0.4, self.config)
         outcomes = self._run_concurrent(2)
-        self.assertEqual(
-            len([o for o in outcomes if o and o[0] == "ok"]), 0
-        )
+        self.assertEqual(len([o for o in outcomes if o and o[0] == "ok"]), 0)
 
         # The durable processing_log rows for those calls are excluded from
         # spend by the reservation dedupe: no double count, and the committed
@@ -538,9 +537,7 @@ class PostgresReservationContractTests(unittest.TestCase):
                     (cid,),
                 )
         outcomes = self._run_concurrent(2)
-        self.assertEqual(
-            len([o for o in outcomes if o and o[0] == "ok"]), 0
-        )
+        self.assertEqual(len([o for o in outcomes if o and o[0] == "ok"]), 0)
         blocked_exc = next(o[1] for o in outcomes if o and o[0] == "blocked")
         self.assertAlmostEqual(blocked_exc.today_cost, 1.6)
 
@@ -548,9 +545,7 @@ class PostgresReservationContractTests(unittest.TestCase):
         # A run started before midnight pays after midnight: its reservation
         # is on the new day, its processing_log row on the old day. The new
         # day must still count the settled actual (not vanish, not double).
-        day_start = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         utc_day = day_start.date().isoformat()
         reserved_at = (day_start + timedelta(minutes=1)).isoformat()
         settled_at = (day_start + timedelta(minutes=2)).isoformat()
@@ -581,34 +576,28 @@ class PostgresReservationContractTests(unittest.TestCase):
         # disappears at midnight.
         with self.assertRaises(BudgetExceeded) as raised:
             enforce_budget(
-                self.config, "briefing", correlation_id="cid-midnight",
-                run_kind="processor", component="briefing",
+                self.config,
+                "briefing",
+                correlation_id="cid-midnight",
+                run_kind="processor",
+                component="briefing",
             )
         self.assertAlmostEqual(raised.exception.today_cost, 1.6)
         # And no double count: a second blocked worker sees the same 1.6.
         with self.assertRaises(BudgetExceeded) as raised:
             enforce_budget(
-                self.config, "briefing", correlation_id="cid-midnight-2",
-                run_kind="processor", component="briefing",
+                self.config,
+                "briefing",
+                correlation_id="cid-midnight-2",
+                run_kind="processor",
+                component="briefing",
             )
         self.assertAlmostEqual(raised.exception.today_cost, 1.6)
-
-    def test_migration_reruns_idempotently(self):
-        migration = (
-            REPOSITORY_ROOT / "db" / "migrations" / "045_budget_reservations.sql"
-        ).read_text()
-        with self.engine.begin() as conn:
-            conn.exec_driver_sql(migration)
-            conn.exec_driver_sql(migration)
-        # The table remains usable after the second application.
-        truncate(self.config, ("budget_reservations", "processing_log"))
 
     def test_lifecycle_invariants_reject_invalid_rows(self):
         from sqlalchemy.exc import IntegrityError
 
-        day_start = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         reserved_at = (day_start + timedelta(minutes=1)).isoformat()
         base = {
             "budget_day": day_start.date().isoformat(),
@@ -640,7 +629,9 @@ class PostgresReservationContractTests(unittest.TestCase):
                 "settled_usd": 0.1,
                 "settled_at": (day_start - timedelta(minutes=1)).isoformat(),
             },
-            "day_mismatch": {"budget_day": (day_start - timedelta(days=1)).date().isoformat()},
+            "day_mismatch": {
+                "budget_day": (day_start - timedelta(days=1)).date().isoformat()
+            },
         }
         for name, overrides in cases.items():
             with self.subTest(name=name):
@@ -688,9 +679,7 @@ class PostgresReservationContractTests(unittest.TestCase):
         # One processing_log row mixes an unreserved legacy call (0.3) with
         # two reserved calls (0.1 + 0.1). Per-pair reconciliation keeps the
         # unreserved remainder: committed must be 0.5, not 0.2 (lost) or 0.7.
-        day_start = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.engine.begin() as conn:
             conn.exec_driver_sql(
                 "INSERT INTO processing_log "
@@ -711,8 +700,11 @@ class PostgresReservationContractTests(unittest.TestCase):
         config = self._config_with(cap=0.8, estimate=0.4)
         with self.assertRaises(BudgetExceeded) as raised:
             enforce_budget(
-                config, "briefing", correlation_id="cid-mixed",
-                run_kind="processor", component="briefing",
+                config,
+                "briefing",
+                correlation_id="cid-mixed",
+                run_kind="processor",
+                component="briefing",
             )
         self.assertAlmostEqual(raised.exception.today_cost, 0.5)
 
@@ -720,9 +712,7 @@ class PostgresReservationContractTests(unittest.TestCase):
         # The processing_log row (0.05) records less than the settled actual
         # (0.1). The settled actual is authoritative: committed is 0.1, never
         # 0.15 (log + settlement) and never 0.05 (lost remainder).
-        day_start = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.engine.begin() as conn:
             conn.exec_driver_sql(
                 "INSERT INTO processing_log "
@@ -742,8 +732,11 @@ class PostgresReservationContractTests(unittest.TestCase):
         config = self._config_with(cap=0.4, estimate=0.4)
         with self.assertRaises(BudgetExceeded) as raised:
             enforce_budget(
-                config, "briefing", correlation_id="cid-small",
-                run_kind="processor", component="briefing",
+                config,
+                "briefing",
+                correlation_id="cid-small",
+                run_kind="processor",
+                component="briefing",
             )
         self.assertAlmostEqual(raised.exception.today_cost, 0.1)
 
@@ -752,9 +745,7 @@ class PostgresReservationContractTests(unittest.TestCase):
         # admitted after midnight (settled reservation on tomorrow) must not
         # count as full legacy spend on today: the reservation day owns the
         # call, so today's residual is the log total minus the settled actual.
-        day_start = datetime.now(UTC).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow = day_start + timedelta(days=1)
         with self.engine.begin() as conn:
             conn.exec_driver_sql(
@@ -784,8 +775,11 @@ class PostgresReservationContractTests(unittest.TestCase):
         config = self._config_with(cap=0.4, estimate=0.4)
         with self.assertRaises(BudgetExceeded) as raised:
             enforce_budget(
-                config, "briefing", correlation_id="cid-midnight-owns",
-                run_kind="processor", component="briefing",
+                config,
+                "briefing",
+                correlation_id="cid-midnight-owns",
+                run_kind="processor",
+                component="briefing",
             )
         # 0.3 = 0.5 log minus 0.2 reserved actual; the reserved 0.2 belongs to
         # tomorrow and is NOT counted on today (would be 0.5 with the old join).
@@ -799,14 +793,20 @@ class PostgresReservationContractTests(unittest.TestCase):
         short_ttl = self.config
         with patch("budgets._reservation_policy", return_value=(1.5, 0.3)):
             first = enforce_budget(
-                short_ttl, "briefing", correlation_id=str(uuid4()),
-                run_kind="processor", component="briefing",
+                short_ttl,
+                "briefing",
+                correlation_id=str(uuid4()),
+                run_kind="processor",
+                component="briefing",
             )
             self.assertTrue(first.valid)
             with self.assertRaises(BudgetExceeded):
                 enforce_budget(
-                    short_ttl, "briefing", correlation_id=str(uuid4()),
-                    run_kind="processor", component="briefing",
+                    short_ttl,
+                    "briefing",
+                    correlation_id=str(uuid4()),
+                    run_kind="processor",
+                    component="briefing",
                 )
             time.sleep(0.6)
             expired_count = expire_abandoned_reservations(short_ttl)
@@ -819,8 +819,11 @@ class PostgresReservationContractTests(unittest.TestCase):
             self.assertEqual(row[0], "expired")
             # Funds are released: the same worker slot admits again.
             second = enforce_budget(
-                short_ttl, "briefing", correlation_id=str(uuid4()),
-                run_kind="processor", component="briefing",
+                short_ttl,
+                "briefing",
+                correlation_id=str(uuid4()),
+                run_kind="processor",
+                component="briefing",
             )
             self.assertTrue(second.valid)
             settle_budget_reservation(second.reservation_id, 0.1, short_ttl)

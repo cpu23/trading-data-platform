@@ -8,20 +8,17 @@ Focused, template-level contracts for the lean dashboard refactor:
   sections/includes.
 * ``markets.html`` is a lazy shell composing exactly the six market surfaces
   in contract order; each shell section loads its canonical partial once and
-  never polls or registers SSE on the shell.
-* The six market partials refresh through the single ``marketRefresh``
-  heartbeat except macro releases, whose producer-backed SSE identity replaces
-  fallback refresh while live updates are enabled.
+  delegates refresh to that partial.
+* The six market partials, top strip, since-last-view, and briefing sections
+  refresh through one ``marketRefresh`` polling heartbeat.
 * ``partials/top_strip.html`` renders exactly three cells (Current session,
-  Current regime, Next catalyst) with truthful unavailable placeholders and a
-  ``marketRefresh``-only refresh contract.
+  Current regime, Next catalyst) with truthful unavailable placeholders.
 * ``partials/briefing_prose.html`` is the single merged briefing surface
   (What changed / Current interpretation / What would invalidate this,
   visible delta, atom counts and provenance behind disclosure, lazy evidence
-  hooks) with the same refresh contract.
-* ``partials/briefing_delta.html`` remains only as a compatible direct-hit
-  presentation target; the dashboard must not include it separately.
-* No legacy ``every 90s`` polling anywhere in the owned templates.
+  hooks).
+* Obsolete standalone compatibility partials are absent.
+* No per-section interval or streaming registration remains.
 """
 
 import unittest
@@ -109,16 +106,10 @@ MARKETS_LAZY_SECTIONS = (
     ("/partials/markets/events", "Economic calendar"),
 )
 
-# Cross-asset context, catalysts, and macro releases retain their production
-# section_changed identities; the heartbeat is their disconnected-SSE fallback.
-MARKETS_SSE_PARTIALS = {
+MARKETS_POLLING_PARTIALS = {
     "cross_asset": "/partials/markets/cross-asset",
     "catalysts": "/partials/markets/catalysts",
     "macro_release_cards": "/partials/markets/macro-releases",
-}
-
-# These partials have no matching publisher and always use the heartbeat.
-MARKETS_HEARTBEAT_PARTIALS = {
     "regime_section": "/partials/markets/regime",
     "indicators_section": "/partials/markets/indicators",
     "events_section": "/partials/markets/events",
@@ -126,9 +117,7 @@ MARKETS_HEARTBEAT_PARTIALS = {
 
 MARKET_PARTIAL_CONTEXTS = {
     "cross_asset": {"cross_asset": {"available": False, "panels": []}},
-    "catalysts": {
-        "catalysts": {"available": False, "days": 7, "catalysts": []}
-    },
+    "catalysts": {"catalysts": {"available": False, "days": 7, "catalysts": []}},
     "macro_release_cards": {"macro_releases": {"error": None, "cards": []}},
     "regime_section": {"regime": {}},
     "indicators_section": {
@@ -160,9 +149,6 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         cls.briefing_prose = (
             API_ROOT / "templates/partials/briefing_prose.html"
         ).read_text()
-        cls.briefing_delta = (
-            API_ROOT / "templates/partials/briefing_delta.html"
-        ).read_text()
 
     def render(self, name, **context):
         return self.env.get_template(name).render(**context)
@@ -172,9 +158,12 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
     def test_dashboard_renders_only_allowed_surfaces_in_contract_order(self):
         for marker in ALLOWED_DASHBOARD_INCLUDES:
             self.assertIn(marker, self.dashboard)
-        positions = [self.dashboard.index(marker) for marker in ALLOWED_DASHBOARD_INCLUDES]
+        positions = [
+            self.dashboard.index(marker) for marker in ALLOWED_DASHBOARD_INCLUDES
+        ]
         self.assertEqual(
-            positions, sorted(positions),
+            positions,
+            sorted(positions),
             "Dashboard surfaces must appear in contract order",
         )
 
@@ -204,17 +193,15 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
     def test_markets_page_is_lazy_shell_with_six_sections_in_contract_order(self):
         # /markets composes exactly the six market surfaces in contract
         # order, each as a load-once placeholder that swaps in the canonical
-        # partial (which then owns refresh). The shell itself never polls and
-        # never registers SSE sections.
+        # partial (which then owns refresh). The shell itself does not poll.
         for url, heading in MARKETS_LAZY_SECTIONS:
             with self.subTest(url=url):
                 self.assertIn(url, self.markets)
                 self.assertIn(heading, self.markets)
-        positions = [
-            self.markets.index(url) for url, _ in MARKETS_LAZY_SECTIONS
-        ]
+        positions = [self.markets.index(url) for url, _ in MARKETS_LAZY_SECTIONS]
         self.assertEqual(
-            positions, sorted(positions),
+            positions,
+            sorted(positions),
             "Markets surfaces must appear in contract order",
         )
         self.assertEqual(self.markets.count('hx-trigger="load"'), 6)
@@ -226,53 +213,20 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
 
     # ── market partial refresh contracts ────────────────────────────────────
 
-    def test_market_partials_refresh_through_heartbeat_when_not_sse(self):
-        # Non-SSE rendering of every market partial listens to the single
-        # marketRefresh heartbeat and never polls.
-        all_partials = {**MARKETS_SSE_PARTIALS, **MARKETS_HEARTBEAT_PARTIALS}
-        for partial, canonical in all_partials.items():
-            with self.subTest(partial=partial):
-                source = self.render(
-                    f"partials/{partial}.html",
-                    live_updates_enabled=False,
-                    **MARKET_PARTIAL_CONTEXTS[partial],
-                )
-                self.assertIn(f'hx-get="{canonical}"', source)
-                self.assertIn('hx-trigger="marketRefresh from:body', source)
-                self.assertNotIn("data-live-section", source)
-                self.assertNotIn("every 90s", source)
-                self.assertNotIn("setInterval", source)
-
-    def test_sse_capable_market_partials_never_pair_stream_with_self_refresh(self):
-        # SSE-enabled market partials expose only data-live attributes: no
-        # self-fetch and no marketRefresh/poll trigger on the section.
-        for partial, canonical in MARKETS_SSE_PARTIALS.items():
-            with self.subTest(partial=partial):
-                source = self.render(
-                    f"partials/{partial}.html",
-                    live_updates_enabled=True,
-                    **MARKET_PARTIAL_CONTEXTS[partial],
-                )
-                self.assertIn("data-live-section", source)
-                self.assertIn(f'data-live-url="{canonical}"', source)
-                self.assertNotIn("hx-get=", source)
-                self.assertNotIn("hx-trigger=", source)
-                self.assertNotIn("every 90s", source)
-
-    def test_regime_indicators_events_are_heartbeat_driven_never_sse(self):
-        # These three surfaces never register as SSE sections: they listen to
-        # the single marketRefresh heartbeat (plus cycleComplete) and never
-        # poll.
-        for partial in MARKETS_HEARTBEAT_PARTIALS:
-            with self.subTest(partial=partial):
-                source = self.render(
-                    f"partials/{partial}.html",
-                    live_updates_enabled=True,
-                    **MARKET_PARTIAL_CONTEXTS[partial],
-                )
-                self.assertNotIn("data-live-section", source)
-                self.assertIn('hx-trigger="marketRefresh from:body', source)
-                self.assertNotIn("every 90s", source)
+    def test_market_partials_always_use_the_shared_heartbeat(self):
+        for partial, canonical in MARKETS_POLLING_PARTIALS.items():
+            for enabled in (False, True):
+                with self.subTest(partial=partial, enabled=enabled):
+                    source = self.render(
+                        f"partials/{partial}.html",
+                        live_updates_enabled=enabled,
+                        **MARKET_PARTIAL_CONTEXTS[partial],
+                    )
+                    self.assertIn(f'hx-get="{canonical}"', source)
+                    self.assertIn('hx-trigger="marketRefresh from:body', source)
+                    self.assertNotIn("data-live-section", source)
+                    self.assertNotIn("every 90s", source)
+                    self.assertNotIn("setInterval", source)
 
     # ── compact top strip ────────────────────────────────────────────────────
 
@@ -345,30 +299,17 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         self.assertIn('id="top-strip-title"', rendered)
 
     def test_top_strip_refresh_contract(self):
-        heartbeat = self.render(
-            "partials/top_strip.html",
-            strip=STRIP,
-            live_updates_enabled=False,
-        )
-        self.assertIn('hx-get="/partials/dashboard/top-strip"', heartbeat)
-        self.assertIn('hx-trigger="marketRefresh from:body"', heartbeat)
-        self.assertNotIn("data-live-section", heartbeat)
+        for enabled in (False, True):
+            rendered = self.render(
+                "partials/top_strip.html",
+                strip=STRIP,
+                live_updates_enabled=enabled,
+            )
+            self.assertIn('hx-get="/partials/dashboard/top-strip"', rendered)
+            self.assertIn('hx-trigger="marketRefresh from:body"', rendered)
+            self.assertNotIn("data-live-section", rendered)
 
-        live = self.render(
-            "partials/top_strip.html",
-            strip=STRIP,
-            live_updates_enabled=True,
-        )
-        self.assertIn('data-live-section="top_strip"', live)
-        self.assertIn('data-live-event="section_changed"', live)
-        self.assertIn(
-            'data-live-url="/partials/dashboard/top-strip"', live
-        )
-        self.assertNotIn("hx-get=", live)
-        self.assertNotIn("hx-trigger=", live)
-        self.assertNotIn("every 90s", live)
-
-    def test_since_last_view_preserves_sse_with_heartbeat_fallback(self):
+    def test_since_last_view_uses_shared_heartbeat(self):
         context = {
             "since_last_view": {
                 "available": True,
@@ -377,25 +318,14 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
                 "counts": {},
             }
         }
-        heartbeat = self.render(
-            "partials/since_last_view.html",
-            live_updates_enabled=False,
-            **context,
-        )
-        self.assertIn('hx-trigger="marketRefresh from:body"', heartbeat)
-        self.assertNotIn("data-live-section", heartbeat)
-
-        live = self.render(
-            "partials/since_last_view.html",
-            live_updates_enabled=True,
-            **context,
-        )
-        self.assertIn('data-live-section="since_last_view"', live)
-        self.assertIn('data-live-event="section_changed"', live)
-        self.assertIn(
-            'data-live-url="/partials/dashboard/since-last-view"', live
-        )
-        self.assertNotIn("hx-trigger=", live)
+        for enabled in (False, True):
+            rendered = self.render(
+                "partials/since_last_view.html",
+                live_updates_enabled=enabled,
+                **context,
+            )
+            self.assertIn('hx-trigger="marketRefresh from:body"', rendered)
+            self.assertNotIn("data-live-section", rendered)
 
     # ── merged briefing surface ──────────────────────────────────────────────
 
@@ -433,7 +363,7 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
         rendered = self._render_briefing(live=False)
         self.assertIn("Briefing sources &amp; claims", rendered)
         # Atom counts live behind the disclosure.
-        disclosure = rendered[rendered.index("<details"):]
+        disclosure = rendered[rendered.index("<details") :]
         self.assertIn('class="atom-counts"', disclosure)
         self.assertIn("macro_series", disclosure)
         self.assertIn(": 3</span>", disclosure)
@@ -446,9 +376,7 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
             with self.subTest(live=live):
                 rendered = self._render_briefing(live=live)
                 self.assertIn('hx-get="/partials/briefing"', rendered)
-                self.assertIn(
-                    'hx-trigger="marketRefresh from:body"', rendered
-                )
+                self.assertIn('hx-trigger="marketRefresh from:body"', rendered)
                 self.assertNotIn("every 90s", rendered)
                 self.assertNotIn("cycleComplete", rendered)
                 self.assertNotIn("data-live-section", rendered)
@@ -476,43 +404,15 @@ class LeanDashboardTemplateContracts(unittest.TestCase):
             briefing_delta=DELTA_UNAVAILABLE,
             live_updates_enabled=False,
         )
-        self.assertIn("No briefing has been generated yet. Run a cycle to create one.", rendered)
-        self.assertNotIn("delta-bullets", rendered)
-
-    # ── briefing_delta.html compatibility target ─────────────────────────────
-
-    def test_briefing_delta_remains_compatible_presentation_target(self):
-        for live in (False, True):
-            with self.subTest(live=live):
-                rendered = self.render(
-                    "partials/briefing_delta.html",
-                    briefing_delta=BRIEFING_DELTA,
-                    live_updates_enabled=live,
-                )
-                self.assertIn("Briefing delta", rendered)
-                self.assertIn("Changed section: interpretation", rendered)
-                self.assertIn('class="atom-counts"', rendered)
-                self.assertIn(
-                    'hx-get="/partials/dashboard/briefing-delta"', rendered
-                )
-                self.assertIn(
-                    'hx-trigger="marketRefresh from:body"', rendered
-                )
-                self.assertNotIn("data-live-section", rendered)
-                self.assertNotIn("every 90s", rendered)
-
-    def test_briefing_delta_unavailable_is_truthful(self):
-        rendered = self.render(
-            "partials/briefing_delta.html",
-            briefing_delta=DELTA_UNAVAILABLE,
-            live_updates_enabled=False,
+        self.assertIn(
+            "No briefing has been generated yet. Run a cycle to create one.", rendered
         )
-        self.assertIn("No briefing has been generated yet. Run a cycle to create one.", rendered)
+        self.assertNotIn("delta-bullets", rendered)
 
     # ── cross-file refresh invariants ────────────────────────────────────────
 
     def test_no_legacy_polling_in_any_owned_template(self):
-        for source in (self.dashboard, self.top_strip, self.briefing_prose, self.briefing_delta):
+        for source in (self.dashboard, self.top_strip, self.briefing_prose):
             self.assertNotIn("every 90s", source)
             self.assertNotIn("cycleComplete", source)
 

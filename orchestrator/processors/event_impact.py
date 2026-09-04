@@ -5,12 +5,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from budgets import BudgetContext
-from db import get_session
 from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
+from sqlalchemy import text
+
+from db import get_session
 
 logger = get_logger("processor.event_impact")
 
@@ -205,6 +205,7 @@ class EventImpactProcessor:
             return None
         try:
             from atoms import publish_atom
+
             from processors.base import canonical_fingerprint
 
             try:

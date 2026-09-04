@@ -32,6 +32,11 @@ The platform is decision support, not a signal or execution engine. Analytical
 outputs provide context for human review and do not produce trade calls,
 entries, or position-sizing instructions.
 
+The deployed runtime is deliberately small: `postgres`, `web`, and `worker`.
+The worker owns scheduling, the canonical durable queue, outbox publication,
+quotes, and autonomous research; the web process calls orchestration modules
+directly rather than through an internal HTTP service.
+
 ## Architecture
 
 ```mermaid
@@ -68,7 +73,7 @@ flowchart LR
         Cases["Versioned cases and theses,<br/>forecasts, playbooks and evidence"]
         Operations["Run history, logs, costs"]
         ControlPlane["Questions, plans, budgets,<br/>work orders, effects and scorecards"]
-        EventDelivery["Dependency graph, outbox,<br/>and UI invalidations"]
+        EventDelivery["Dependency graph, outbox,<br/>and canonical jobs queue"]
     end
 
     subgraph Delivery["Delivery Layer"]
@@ -80,7 +85,7 @@ flowchart LR
         Research["Research case and thesis desks"]
         Evaluation["Point-in-time replay<br/>and quality evaluation"]
         Health["Health, live quality, and logs"]
-        Heartbeat["Browser `marketRefresh` heartbeat:<br/>one timer; SSE sections never poll"]
+        Heartbeat["Browser `marketRefresh` heartbeat:<br/>one polling timer"]
         OpsTopology["Operations `/operations` —<br/>truthful live system topology"]
     end
 
@@ -159,16 +164,16 @@ derived outputs inspectable without mixing raw source data with analysis.
   and market snapshots as hypertables.
 - **Operational visibility:** health, freshness, cycle status, logs, and daily
   LLM spend are available through both the API and dashboard.
-- **Durable live delivery:** append-only domain events, transactional outbox,
-  leased analysis jobs, immutable section snapshots, replayable SSE
-  invalidations, one centralized `marketRefresh` heartbeat, and bounded HTMX
-  partial refreshes decouple ingestion from presentation.
+- **Durable delivery:** append-only domain events, transactional outbox,
+  one leased `jobs` queue, immutable section snapshots, one centralized
+  `marketRefresh` polling heartbeat, and bounded HTMX refreshes decouple
+  ingestion from presentation.
 - **Separated delivery layer:** JSON endpoints and server-rendered HTMX views
   share the same stored data without coupling collection to presentation.
 - **Bounded read latency:** the dashboard `/` renders a compact context with
   lazy surfaces, `/markets` is an empty shell until its partials load, macro
-  indicators use one batched query, and the health path reuses a 30-second
-  quality snapshot while `/quality` remains an explicit live diagnostic.
+  indicators use one batched query, and `/quality` remains an explicit
+  diagnostic.
 - **Investment research:** deterministic filing deltas, versioned themes and
   theses, evidence history, company dossiers, optional read-only portfolio
   context, and automated SEC/Companies House intake. See
@@ -230,14 +235,6 @@ regime, key macro indicators, and the economic calendar. The page itself
 renders no dataset; each section swaps in its partial, which then owns its
 refresh contract.
 
-Existing integrations may continue to call the former market partial URLs:
-`/partials/dashboard/cross-asset`, `/partials/dashboard/catalysts`,
-`/partials/dashboard/macro-releases`, `/partials/regime`,
-`/partials/indicators`, and `/partials/events`. Each is an alias on the
-canonical Markets handler, not a second loader. The former dashboard Change
-Feed URL, `/partials/dashboard/change-feed`, similarly aliases the News-owned
-handler. These low-cost aliases are retained for compatibility; the page
-templates use only destination-owned canonical URLs.
 
 ### News (`/news`)
 
@@ -247,13 +244,11 @@ source controls, the canonical story monitor, and story lane/state filters.
 ### Refresh model
 
 One browser heartbeat event (`marketRefresh`) is the only periodic timer in
-the client. Non-SSE partials refresh on that event; SSE-registered sections
-invalidate through the event stream and never poll. Lazy placeholders swap in
+the client. Polling partials refresh on that event. Lazy placeholders swap in
 their partial once on `load`; the swapped-in partial then owns its refresh
-contract, so no placeholder ever creates a second timer. The heartbeat pauses
-while the tab is hidden and dispatches one immediate refresh when visibility
-returns. If the SSE stream is unavailable or disconnected, the same heartbeat
-drives registered live sections — there is no second interval.
+contract, so no placeholder creates a second timer. The heartbeat pauses while
+the tab is hidden and dispatches one immediate refresh when visibility returns.
+There is no SSE route or streaming fallback.
 
 ### Since your last view
 
@@ -269,11 +264,11 @@ each consume one consolidated system-health response instead of rerunning the
 quality suite, and macro indicator summaries are fetched in one batched
 database query.
 
-The authenticated `/operations` page shows a bounded live topology assembled
-from persisted source, scheduler, queue, worker, control-plane, database,
-outbox, SSE and API state. Nodes are keyboard accessible and status is
-evidence-based; missing query evidence is shown as unknown or unavailable, not
-healthy. See
+The authenticated `/operations` page shows a bounded topology assembled from
+persisted source, canonical queue, worker, control-plane, database, outbox, and
+web state. Nodes are keyboard accessible and missing evidence is shown as
+unknown or unavailable, never healthy.
+See
 [Autonomous Research Control Plane](docs/autonomous-research-control-plane.md)
 for question, planning, skill, budget, recovery and feedback semantics.
 
@@ -314,7 +309,7 @@ Reuters and Kobeissi collection can be invoked through the orchestrator CLI or
 the authenticated durable API trigger. Reuters is scheduled every two hours;
 Kobeissi remains on-demand by default because it consumes a paid API.
 
-When the API service is running, interactive OpenAPI documentation is available
+When the web service is running, interactive OpenAPI documentation is available
 at `/docs`.
 
 ## Data Model
@@ -325,8 +320,9 @@ The database keeps responsibilities explicit:
 | --- | --- | --- |
 | Raw | `macro_series`, `econ_events`, `market_data`, `source_payload_cache`, `investment_documents` | Normalised source observations, report evidence, and cached upstream payloads |
 | Derived | `regime_classifications`, `structured_opinions`, `daily_briefings`, `investment_analyses`, `research_cases`, `research_causal_edges`, `research_market_drivers` | Versioned market, company, causal, and research-case analytical outputs |
-| Operations | `collection_log`, `processing_log`, `cycle_runs`, `analysis_jobs`, `generation_attempts` | Durable work state, lineage, validation failures, duration, model usage, and cost |
+| Operations | `collection_log`, `processing_log`, `cycle_runs`, `jobs`, `generation_attempts` | One durable work lifecycle, lineage, validation failures, duration, model usage, and cost |
 | Research control plane | `research_questions`, `research_plans`, `research_plan_decisions`, `budget_reservations`, `research_skill_versions`, `research_work_orders`, `research_dependency_nodes`, `research_dependency_edges`, `research_source_capabilities`, `research_source_gaps`, `research_effects`, `research_outcome_attributions` | Atomic question identity, deterministic planning, exact skill/job lineage, incremental dirty propagation, material/no-op effects, productivity, forecast feedback, and source/skill scorecards |
+| Human review | `investment_thesis_proposals` | Immutable autonomous research proposals and explicit approval, rejection, or revision state |
 
 ## Quick Start
 
@@ -335,17 +331,14 @@ volume with no setup intervention:
 
 ```bash
 docker compose -f docker-compose.demo.yml up --build
-# Open http://127.0.0.1:8000; the browser shows a native sign-in prompt,
-# enter demo / demo
+# Open http://127.0.0.1:8000
 ```
 
-A fresh demo volume has no setup state, so the API presents the HTTP Basic
-challenge at the root instead of the setup form; the demo never shows the
-setup page and needs no `SETUP_TOKEN` or placeholder credentials. The demo
-seeds deterministic fictional analysis and operational history, then
-publishes four bounded fictional prices plus real replayable watchlist
-invalidations every five seconds. It exercises the production DB→SSE→HTMX
-partial path and makes no external or paid API calls.
+The credential-free demo sets `DISABLE_AUTH=true` in explicit demo mode. It
+seeds deterministic fictional analysis and operational history, then publishes
+bounded fictional prices through the unified worker. The browser exercises the
+same polling-only HTMX partials as production and makes no external or paid API
+calls.
 
 ### Prerequisites
 
@@ -366,30 +359,26 @@ demo placeholders and disabling external collection.
 
 ```bash
 cp .env.example .env
-# Populate OpenRouter and any selected collector credentials, replace the
-# dashboard password, and independently generate SETUP_TOKEN plus all three
-# signing keys.
+# Populate OpenRouter and any selected collector credentials, then independently
+# generate SETUP_TOKEN and the session/CSRF signing keys.
 docker compose up -d
 ```
 
-Docker Compose starts independently owned lifecycles:
+Docker Compose starts exactly:
 
 - PostgreSQL with TimescaleDB
-- A checksum-verified one-shot migration gate
-- An internal orchestrator HTTP API
-- A singleton scheduler that only enqueues durable work
-- A leased operation/analysis worker
-- Transactional-outbox and quote-stream workers
-- The public FastAPI JSON API and dashboard
+- The public FastAPI JSON API and HTMX dashboard (`web`)
+- One durable worker owning scheduling, jobs, outbox publication, quotes, and
+  autonomous research
 
 Application processes run as UID 10001 with no-new-privileges, bounded memory
 and PID limits, immutable upstream image digests, and shared named volumes for
-logs and published News. Only the API publishes a host port.
+logs and published News. Only `web` publishes a host port.
 
 The dashboard is exposed at `http://127.0.0.1:8000` by default.
 
-Normal deployment runs code, configuration, prompts, migrations, and database
-bootstrap SQL copied into immutable images. PostgreSQL is reachable only on the
+Normal deployment runs code, configuration, prompts, and the authoritative
+schema copied into immutable images. PostgreSQL is reachable only on the
 Compose network. For source/configuration bind mounts and loopback database
 access during development, opt in explicitly:
 
@@ -406,30 +395,23 @@ three purpose-specific signing-key placeholders in `.env`, then open `/setup`.
 The activation request must present the bootstrap token and commits a complete
 versioned state atomically.
 
-Demo/test deployments that enable `LEGACY_BASIC_AUTH` with configured
-`DASHBOARD_USER`/`DASHBOARD_PASSWORD` credentials (the demo Compose file uses
-`demo`/`demo`) skip the setup bootstrap: the root challenges HTTP Basic, and
-`/login` and `/setup` redirect to it, so a fresh volume can sign in exactly as
-documented. Production deployments never skip the setup bootstrap; their
-setup form and token boundary are unchanged.
+Demo and test deployments may set `DISABLE_AUTH=true`; production rejects it.
+Production bootstrap always uses `/setup` and `SETUP_TOKEN`, then session
+authentication through `/login`. HTTP Basic is unsupported.
 
 Browser mutations require a session, a signed CSRF token, and an `Origin` that
 matches `EXTERNAL_ORIGIN`. `TRUSTED_HOSTS` constrains accepted Host headers.
 Remote production browser origins must use HTTPS with `COOKIE_SECURE=1`; plain
-HTTP is accepted only for an explicit loopback origin. `ORCHESTRATOR_URL` is a
-deployment-controlled root origin and cannot be changed through setup/operator
-state, preventing that lower-trust state from retargeting internal credentials.
+HTTP is accepted only for an explicit loopback origin.
 `SESSION_SIGNING_KEY_PREVIOUS` provides a bounded session-rotation grace period;
-new sessions are always signed with `SESSION_SIGNING_KEY`. CSRF and SSE keys are
-never reused as session keys or derived from the dashboard password.
+new sessions are always signed with `SESSION_SIGNING_KEY`. CSRF and session keys
+must remain distinct.
 
 Configuration commits are versioned, validated snapshots. The API adopts a
-valid commit atomically; long-running scheduler, worker, outbox, and quote roles
-detect the committed version, stop gracefully, and are restarted by Compose.
-During convergence, readiness reports a version mismatch rather than claiming
-the old and new configuration are equivalent. A rejected reload retains the
-last valid snapshot. `restart_required` means one or more runtime roles must
-restart; Compose normally performs that recycling automatically.
+valid commit atomically; the worker detects the committed version, stops
+gracefully, and is restarted by Compose. During convergence, readiness reports
+a version mismatch rather than claiming the old and new configuration are
+equivalent. A rejected reload retains the last valid snapshot.
 
 ### First Authenticated Run
 
@@ -437,10 +419,9 @@ restart; Compose normally performs that recycling automatically.
    password of at least 12 characters, select coverage, and add the model slug
    and provider credentials required by the selected sources.
 2. Activate the platform. If the committed configuration changes a
-   restart-sensitive section, readiness may be non-2xx while the supervised
-   scheduler and workers exit at a safe boundary and restart against the new
-   configuration version. Wait for `docker compose ps` to report the required
-   services healthy.
+   restart-sensitive section, readiness may be non-2xx while the worker exits
+   at a safe boundary and restarts against the new configuration version. Wait
+   for `docker compose ps` to report the required services healthy.
 3. Open `/login` and sign in with the administrator password. Browser sessions
    are authenticated and all state-changing requests use the signed CSRF token
    issued by the application.
@@ -463,26 +444,26 @@ queue, retry, and health semantics.
 ### Run And Inspect Collectors
 
 ```bash
-docker compose exec orchestrator .venv/bin/python cli.py collect --all
-docker compose exec orchestrator .venv/bin/python cli.py status
-docker compose exec orchestrator .venv/bin/python cli.py health
-docker compose logs orchestrator
+docker compose exec worker /app/.venv/bin/python cli.py collect --all
+docker compose exec worker /app/.venv/bin/python cli.py status
+docker compose exec worker /app/.venv/bin/python cli.py health
+docker compose logs worker
 ```
 
 Additional collector commands:
 
 ```bash
-docker compose exec orchestrator .venv/bin/python cli.py collect fred
-docker compose exec orchestrator .venv/bin/python cli.py collect oanda
-docker compose exec orchestrator .venv/bin/python cli.py db-check
+docker compose exec worker /app/.venv/bin/python cli.py collect fred
+docker compose exec worker /app/.venv/bin/python cli.py collect oanda
+docker compose exec worker /app/.venv/bin/python cli.py db-check
 ```
 
 On-demand news collection also runs through the orchestrator CLI:
 
 ```bash
-docker compose exec orchestrator .venv/bin/python cli.py news reuters
-docker compose exec orchestrator .venv/bin/python cli.py news kobeissi
-docker compose exec orchestrator .venv/bin/python cli.py news all
+docker compose exec worker /app/.venv/bin/python cli.py news reuters
+docker compose exec worker /app/.venv/bin/python cli.py news kobeissi
+docker compose exec worker /app/.venv/bin/python cli.py news all
 ```
 
 Kobeissi collection requires `TWITTERAPI_KEY`; Reuters and the read-only news
@@ -495,12 +476,12 @@ Research discovery is a budgeted durable job. Read commands do not invoke the
 model:
 
 ```bash
-docker compose exec orchestrator .venv/bin/python cli.py research-run
-docker compose exec orchestrator .venv/bin/python cli.py research-status
-docker compose exec orchestrator .venv/bin/python cli.py research-inspect <case-uuid>
-docker compose exec orchestrator .venv/bin/python cli.py research benchmark list
-docker compose exec orchestrator .venv/bin/python cli.py research inspect-replay <replay-run-uuid>
-docker compose exec orchestrator .venv/bin/python cli.py research metrics --scope comparison
+docker compose exec worker /app/.venv/bin/python cli.py research-run
+docker compose exec worker /app/.venv/bin/python cli.py research-status
+docker compose exec worker /app/.venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark list
+docker compose exec worker /app/.venv/bin/python cli.py research inspect-replay <replay-run-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research metrics --scope comparison
 ```
 
 Open `http://127.0.0.1:8000/research` for dynamic cases and
@@ -511,31 +492,27 @@ commands, API bounds, lifecycle semantics, and source-adapter extension rules.
 
 ## Local Verification
 
-The repository uses locked `uv` environments for the API and orchestrator.
-Test commands run through the 4 GiB address-space guard. Set
-`TEST_MEMORY_LIMIT_BYTES` to a positive byte count when a smaller host requires
-a lower ceiling.
+The repository uses one locked root `uv` environment. Test commands run
+through the 4 GiB address-space guard; set `TEST_MEMORY_LIMIT_BYTES` to a
+positive byte count when a smaller host requires a lower ceiling.
 
 ```bash
-python3 -m compileall -q -x '/\.venv/' api orchestrator
-cd api && uv run python ../scripts/run_bounded_tests.py discover -s tests
-cd ../orchestrator && uv run python ../scripts/run_bounded_tests.py discover -s tests
-cd ..
-api/.venv/bin/python scripts/run_bounded_tests.py discover -s tests
-api/.venv/bin/python scripts/failure_drills.py --unit-only
+uv sync --frozen
+uv run python -m compileall -q -x '/\.venv/' api orchestrator contracts scripts tests
+uv run python scripts/run_bounded_tests.py discover -s api/tests
+uv run python scripts/run_bounded_tests.py discover -s orchestrator/tests
+uv run python scripts/run_bounded_tests.py discover -s tests
+uv run ruff check api orchestrator contracts scripts tests
+uv run mypy api/api_db.py api/config.py orchestrator/db.py orchestrator/config_loader.py contracts
 docker compose config --quiet
 docker compose -f docker-compose.demo.yml config --quiet
-scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 ```
 
 The GitHub Actions workflow runs compilation, API/orchestrator/root tests,
-deterministic failure drills, migration and fixture checks, Compose validation,
-Ruff, dependency audits, clean-migration and live cross-service contracts, the
-credential-free demo smoke, and a Trivy image gate that requires zero High and
-Critical vulnerabilities on the built application image on every push and pull
-request. The gate enforces every HIGH/CRITICAL finding — fixed or not — with no
-`ignore-unfixed` exemption, no severity overrides, and no ignore rules.
+PostgreSQL integration tests, deterministic fixtures, Compose validation,
+Ruff, mypy, dependency audits, the credential-free demo smoke, and a Trivy
+image gate requiring zero High or Critical findings on the application image.
 
 ## Project Structure
 
@@ -544,8 +521,8 @@ request. The gate enforces every HIGH/CRITICAL finding — fixed or not — with
 ├── api/                    # FastAPI JSON routes, HTMX views, templates, assets
 ├── config/                 # Collectors, processors, models, schedules, dashboard
 ├── db/
-│   ├── init/               # Initial TimescaleDB and PostgreSQL schema
-│   └── migrations/         # Incremental schema, investment, and research intelligence
+│   ├── schema.sql          # Authoritative fresh-database schema
+│   └── Dockerfile          # Production and deterministic demo database images
 ├── docs/                   # Architecture, operations, research, performance
 ├── orchestrator/
 │   ├── collectors/         # FRED, economic-calendar, and OANDA collectors
@@ -558,7 +535,7 @@ request. The gate enforces every HIGH/CRITICAL finding — fixed or not — with
 │   ├── cli.py              # Operator commands
 │   └── orchestrator.py     # Dependency-aware cycle execution
 ├── prompts/                # Versioned public-safe analytical prompt templates
-└── docker-compose.yml      # Database, orchestrator, and API services
+└── docker-compose.yml      # Exact postgres, web, and worker services
 ```
 
 ## Design Decisions

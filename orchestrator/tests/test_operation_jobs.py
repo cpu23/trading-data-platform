@@ -17,10 +17,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-
-from operation_jobs import (
+from jobs import (
     OperationJob,
     accept_and_enqueue_operation,
     claim_operation_jobs,
@@ -43,6 +40,8 @@ from role_heartbeat import (
     update_role_heartbeat,
 )
 from run_lifecycle import RunAcceptanceConflict
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 SCHEMA = """
 CREATE TABLE cycle_runs (
@@ -64,9 +63,10 @@ CREATE TABLE cycle_runs (
 CREATE UNIQUE INDEX idx_cycle_runs_idempotency_key
     ON cycle_runs (idempotency_key)
     WHERE idempotency_key IS NOT NULL;
-CREATE TABLE operation_jobs (
+CREATE TABLE jobs (
     id TEXT PRIMARY KEY,
-    run_kind TEXT NOT NULL,
+    job_type TEXT,
+    run_kind TEXT,
     requested_component TEXT,
     correlation_id TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL DEFAULT 'queued',
@@ -86,24 +86,9 @@ CREATE TABLE operation_jobs (
     completed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ
 );
-CREATE UNIQUE INDEX idx_operation_jobs_active_identity
-    ON operation_jobs (run_kind, dedupe_key, input_fingerprint)
+CREATE UNIQUE INDEX idx_jobs_active_identity
+    ON jobs (run_kind, dedupe_key, input_fingerprint)
     WHERE state IN ('queued','leased','running','failed_retryable');
-CREATE TABLE analysis_jobs (
-    id TEXT PRIMARY KEY,
-    job_type TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'queued',
-    priority INTEGER NOT NULL DEFAULT 100,
-    dedupe_key TEXT NOT NULL,
-    input_fingerprint TEXT NOT NULL,
-    not_before TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    lease_expires_at TIMESTAMPTZ,
-    claimed_by TEXT,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 5,
-    payload TEXT NOT NULL DEFAULT '{}',
-    correlation_id TEXT NOT NULL
-);
 CREATE TABLE role_heartbeats (
     role TEXT NOT NULL,
     instance_id TEXT NOT NULL,
@@ -174,7 +159,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         with self.session() as session:
             row = (
                 session.execute(
-                    text("SELECT * FROM operation_jobs WHERE id = :id"),
+                    text("SELECT * FROM jobs WHERE id = :id"),
                     {"id": job_id},
                 )
                 .mappings()
@@ -221,7 +206,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         with self.assertRaises(RunAcceptanceConflict):
             self._accept_and_enqueue(correlation_id=correlation_id)
         with self.session() as session:
-            jobs = session.execute(text("SELECT COUNT(*) FROM operation_jobs")).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(jobs, 1)
 
     def test_idempotency_key_replay_returns_original_acceptance(self):
@@ -248,7 +233,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         self.assertEqual(accepted_at2, accepted_at)
         with self.session() as session:
             runs = session.execute(text("SELECT COUNT(*) FROM cycle_runs")).scalar()
-            jobs = session.execute(text("SELECT COUNT(*) FROM operation_jobs")).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual((runs, jobs), (1, 1))
         # Same key with a DIFFERENT request identity is a 409 conflict.
         with self.assertRaises(RunAcceptanceConflict):
@@ -260,7 +245,7 @@ class OperationJobSqliteTests(unittest.TestCase):
             )
         with self.session() as session:
             runs = session.execute(text("SELECT COUNT(*) FROM cycle_runs")).scalar()
-            jobs = session.execute(text("SELECT COUNT(*) FROM operation_jobs")).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual((runs, jobs), (1, 1))
 
     def test_budget_override_placeholder_row_is_adopted(self):
@@ -320,10 +305,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         with self.session() as session:
             # Simulate a crashed worker: expire the lease directly.
             session.execute(
-                text(
-                    "UPDATE operation_jobs SET lease_expires_at = :expired "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
         with self.session() as session:
@@ -345,10 +327,7 @@ class OperationJobSqliteTests(unittest.TestCase):
             claim_operation_jobs(session, "worker-a", lease_seconds=120)
         with self.session() as session:
             session.execute(
-                text(
-                    "UPDATE operation_jobs SET lease_expires_at = :expired "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
             repaired = reconcile_operation_jobs(session, limit=10)
@@ -360,10 +339,7 @@ class OperationJobSqliteTests(unittest.TestCase):
             claim_operation_jobs(session, "worker-b", lease_seconds=120)
         with self.session() as session:
             session.execute(
-                text(
-                    "UPDATE operation_jobs SET lease_expires_at = :expired "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
             repaired = reconcile_operation_jobs(session, limit=10)
@@ -404,7 +380,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         # waiting for any stale timeout.
         with self.session() as session:
             session.execute(
-                text("UPDATE operation_jobs SET not_before = :n WHERE id = :id"),
+                text("UPDATE jobs SET not_before = :n WHERE id = :id"),
                 {"n": datetime.now(UTC), "id": job_id},
             )
             claimed = claim_operation_jobs(session, "worker-b", lease_seconds=120)
@@ -696,10 +672,7 @@ class OperationJobSqliteTests(unittest.TestCase):
             claim_operation_jobs(session, "worker-a", lease_seconds=1)
         with self.session() as session:
             session.execute(
-                text(
-                    "UPDATE operation_jobs SET lease_expires_at = :expired "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
         with self.session() as session:
@@ -727,7 +700,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         with self.session() as session:
             session.execute(
                 text(
-                    "UPDATE operation_jobs SET state = 'failed_terminal', "
+                    "UPDATE jobs SET state = 'failed_terminal', "
                     "completed_at = :n WHERE id = :id"
                 ),
                 {"id": job_id, "n": datetime.now(UTC)},
@@ -740,9 +713,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         self.assertTrue(fresh.inserted)
         self.assertNotEqual(str(fresh.job.id), job_id)
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 2)
 
     def test_terminal_finish_failure_rolls_back_poison(self):
@@ -820,7 +791,7 @@ class OperationJobSqliteTests(unittest.TestCase):
                 with self.session() as session:
                     session.execute(
                         text(
-                            "UPDATE operation_jobs SET state = 'queued', "
+                            "UPDATE jobs SET state = 'queued', "
                             "attempt_count = 0, claimed_by = NULL, "
                             "lease_expires_at = NULL WHERE id = :id"
                         ),
@@ -1023,9 +994,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         # Only one operation job exists; the duplicate acceptance row was
         # finalized as already_queued instead of left for a worker.
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 1)
         self.assertEqual(self._run_row(first_correlation)["status"], "accepted")
         self.assertEqual(self._run_row(second_correlation)["status"], "completed")
@@ -1042,9 +1011,7 @@ class OperationJobSqliteTests(unittest.TestCase):
             )
             self.assertTrue(enqueued.inserted)
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 2)
 
     # ── durable status helpers ────────────────────────────────────────────
@@ -1075,9 +1042,7 @@ class OperationJobSqliteTests(unittest.TestCase):
     def test_operation_queue_summary_counts_states(self):
         self._accept_and_enqueue()
         with self.session() as session:
-            session.execute(
-                text("UPDATE operation_jobs SET state = 'running' WHERE 1=1")
-            )
+            session.execute(text("UPDATE jobs SET state = 'running' WHERE 1=1"))
         with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
             summary = operation_queue_summary(self.config)
         self.assertEqual(summary["active"], 1)
@@ -1119,18 +1084,6 @@ class OperationJobSqliteTests(unittest.TestCase):
             )
             self.assertTrue(
                 role_has_fresh_healthy_instance(self.config, "worker", {"running"})
-            )
-        # Scheduler semantics: a fresh running leader required; a standby row
-        # alone is not enough.
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
-            update_role_heartbeat(
-                self.config, "scheduler", "running", {}, instance_id="leader:1"
-            )
-            update_role_heartbeat(
-                self.config, "scheduler", "standby", {}, instance_id="standby:1"
-            )
-            self.assertTrue(
-                role_has_fresh_healthy_instance(self.config, "scheduler", {"running"})
             )
 
     def test_prune_stale_role_heartbeats_is_bounded(self):
@@ -1190,33 +1143,30 @@ class PgSupportGuardTests(unittest.TestCase):
 
 
 class RoleCheckCommandTests(unittest.TestCase):
-    SCHEDULER_CONFIG = {
-        "collectors": {"fred": {"enabled": True, "schedule": "0 6 * * *"}},
-        "processors": {},
-    }
+    WORKER_CONFIG = {}
 
     def test_check_role_fails_for_missing_heartbeat(self):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.SCHEDULER_CONFIG),
+            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
             patch("db.check_connection", return_value=True),
             patch("roles.fresh_role_heartbeats", return_value=[]),
         ):
-            self.assertEqual(roles.check_role("scheduler"), 1)
+            self.assertEqual(roles.check_role("worker"), 1)
 
     def test_check_role_succeeds_for_fresh_heartbeat(self):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.SCHEDULER_CONFIG),
+            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
             patch("db.check_connection", return_value=True),
             patch(
                 "roles.fresh_role_heartbeats",
                 return_value=[
                     {
-                        "role": "scheduler",
-                        "instance_id": "leader:1",
+                        "role": "worker",
+                        "instance_id": "worker:1",
                         "status": "running",
                         "last_heartbeat_at": datetime.now(UTC),
                         "detail": {},
@@ -1224,23 +1174,7 @@ class RoleCheckCommandTests(unittest.TestCase):
                 ],
             ),
         ):
-            self.assertEqual(roles.check_role("scheduler"), 0)
-
-    def test_check_role_optional_disabled_role_passes_without_heartbeat(self):
-        import roles
-
-        # No schedules configured -> the scheduler role is optional; a missing
-        # heartbeat must not fail the healthcheck.
-        with (
-            patch(
-                "config_loader.load_config",
-                return_value={"collectors": {}, "processors": {}},
-            ),
-            patch("db.check_connection", return_value=True),
-            patch("roles.fresh_role_heartbeats") as fresh,
-        ):
-            self.assertEqual(roles.check_role("scheduler"), 0)
-        fresh.assert_not_called()
+            self.assertEqual(roles.check_role("worker"), 0)
 
     def test_check_role_required_role_rejects_unhealthy_status(self):
         import roles
@@ -1263,45 +1197,6 @@ class RoleCheckCommandTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(roles.check_role("worker"), 1)
-
-    def test_check_role_required_quotes_accepts_simulated_rejects_reconnecting(self):
-        import roles
-
-        demo_config = {"demo": {"enabled": True}}
-        with (
-            patch("config_loader.load_config", return_value=demo_config),
-            patch("db.check_connection", return_value=True),
-            patch(
-                "roles.fresh_role_heartbeats",
-                return_value=[
-                    {
-                        "role": "quotes",
-                        "instance_id": "host:1",
-                        "status": "simulated",
-                        "last_heartbeat_at": datetime.now(UTC),
-                        "detail": {},
-                    }
-                ],
-            ),
-        ):
-            self.assertEqual(roles.check_role("quotes"), 0)
-        with (
-            patch("config_loader.load_config", return_value=demo_config),
-            patch("db.check_connection", return_value=True),
-            patch(
-                "roles.fresh_role_heartbeats",
-                return_value=[
-                    {
-                        "role": "quotes",
-                        "instance_id": "host:1",
-                        "status": "reconnecting",
-                        "last_heartbeat_at": datetime.now(UTC),
-                        "detail": {},
-                    }
-                ],
-            ),
-        ):
-            self.assertEqual(roles.check_role("quotes"), 1)
 
     def test_heartbeat_tick_logs_bounded_failure_and_keeps_started_at(self):
         import roles
@@ -1373,14 +1268,14 @@ class RoleCheckCommandTests(unittest.TestCase):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.SCHEDULER_CONFIG),
+            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
             patch("db.check_connection", return_value=True),
             patch(
                 "roles.fresh_role_heartbeats",
                 return_value=[
                     {
-                        "role": "scheduler",
-                        "instance_id": "leader:1",
+                        "role": "worker",
+                        "instance_id": "worker:1",
                         "status": "running",
                         "last_heartbeat_at": datetime.now(UTC) + timedelta(hours=1),
                         "detail": {},
@@ -1388,7 +1283,7 @@ class RoleCheckCommandTests(unittest.TestCase):
                 ],
             ),
         ):
-            self.assertEqual(roles.check_role("scheduler"), 1)
+            self.assertEqual(roles.check_role("worker"), 1)
 
     def test_heartbeat_defaults_are_coherent(self):
         import roles
@@ -1409,58 +1304,22 @@ class RoleCheckCommandTests(unittest.TestCase):
         self.assertEqual(update.call_args.args[1], "worker")
         self.assertEqual(update.call_args.args[2], "stopped")
 
-    def test_worker_status_requires_every_enabled_worker_alive(self):
-        import roles
+    def test_canonical_job_worker_starts_and_stops_both_handlers(self):
+        from jobs import run_job_worker_forever
 
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
         with (
-            patch("job_worker.job_worker") as job_worker,
-            patch("operation_worker.operation_worker") as operation_worker,
-        ):
-            operation_worker.state = {"running": True}
-            job_worker.state = {"running": True}
-            operation_worker.enabled.return_value = True
-            job_worker.enabled.return_value = True
-            self.assertEqual(roles._worker_status(), "running")
-            # One dead required worker must not be masked by the live sibling.
-            job_worker.state = {"running": False}
-            self.assertEqual(roles._worker_status(), "stopped")
-            # Disabled workers are excluded from the required set.
-            job_worker.enabled.return_value = False
-            job_worker.state = {"running": False}
-            self.assertEqual(roles._worker_status(), "running")
-
-    def test_worker_role_quiesces_both_claimers_before_draining(self):
-        import roles
-
-        order = []
-        with (
-            patch("config_loader.load_config", return_value={}),
-            patch("config_loader.config_version", return_value="v1"),
-            patch("roles._signal_handlers"),
-            patch("roles._config_version_exit_hook", return_value=lambda: True),
-            patch("roles._heartbeat_loop"),
-            patch("roles._write_stopped"),
             patch("job_worker.job_worker") as analysis,
             patch("operation_worker.operation_worker") as operation,
+            patch("time.sleep"),
         ):
-            analysis.request_stop.side_effect = lambda: order.append("analysis-request")
-            operation.request_stop.side_effect = lambda: order.append(
-                "operation-request"
-            )
-            analysis.wait_stopped.side_effect = lambda: order.append("analysis-wait")
-            operation.wait_stopped.side_effect = lambda: order.append("operation-wait")
+            run_job_worker_forever({}, stop_event=stop_event)
 
-            roles.run_worker()
-
-        self.assertEqual(
-            order,
-            [
-                "analysis-request",
-                "operation-request",
-                "analysis-wait",
-                "operation-wait",
-            ],
-        )
+        analysis.start.assert_called_once_with({})
+        operation.start.assert_called_once_with({})
+        analysis.stop.assert_called_once_with(timeout=15.0)
+        operation.stop.assert_called_once_with(timeout=15.0)
 
     def test_scheduler_leadership_uses_database_advisory_lock(self):
         import scheduler
@@ -1475,83 +1334,6 @@ class RoleCheckCommandTests(unittest.TestCase):
         self.assertIs(acquired, connection)
         statement = connection.execute.call_args.args[0]
         self.assertIn("pg_try_advisory_lock", str(statement))
-
-    def test_scheduler_standby_until_leadership_then_running(self):
-        import roles
-
-        ticks = []
-        stop_calls = []
-        order: list[str] = []
-        leader_conn = Mock()
-        leader_conn.close = Mock()
-        leader_conn.close.side_effect = lambda: order.append("close")
-
-        def tick(config, role, status, detail, started_at):
-            ticks.append(status)
-
-        def heartbeat_loop(config, role, **kwargs):
-            roles._HEARTBEAT_LOOP_STOP[0] = True
-
-        def start(config):
-            stop_calls.append("start")
-
-        def stop():
-            stop_calls.append("stop")
-
-        roles._HEARTBEAT_LOOP_STOP[0] = False
-        with (
-            patch("config_loader.load_config", return_value={}),
-            patch("roles._signal_handlers"),
-            patch("roles._config_version_exit_hook", return_value=lambda: False),
-            patch(
-                "scheduler._try_acquire_leader_connection",
-                side_effect=[None, None, leader_conn],
-            ),
-            patch("scheduler.start_scheduler", side_effect=start),
-            patch("scheduler.stop_scheduler", side_effect=stop),
-            patch("roles._heartbeat_loop", side_effect=heartbeat_loop),
-            patch("roles._heartbeat_tick", side_effect=tick),
-            patch("roles._sleep_interruptibly"),
-            patch(
-                "roles._write_stopped",
-                side_effect=lambda *a, **k: order.append("write"),
-            ) as write_stopped,
-        ):
-            roles.run_scheduler()
-
-        # Standby replicas never touch the shared scheduler heartbeat (they
-        # must not overwrite the leader's 'running' row); only the leader's
-        # loop writes it.  Then takeover: leader acquired, scheduler started
-        # then stopped, and 'stopped' is written while still holding the lock
-        # (before the connection closes, so a new leader's row is never
-        # clobbered by this shutdown write).
-        self.assertEqual(ticks, [])
-        self.assertEqual(stop_calls, ["start", "stop"])
-        leader_conn.close.assert_called_once()
-        write_stopped.assert_called_once()
-        self.assertEqual(order, ["write", "close"])
-
-    def test_scheduler_standby_never_writes_heartbeat_and_never_stops_leader_row(
-        self,
-    ):
-        import roles
-
-        roles._HEARTBEAT_LOOP_STOP[0] = False
-        with (
-            patch("config_loader.load_config", return_value={}),
-            patch("roles._signal_handlers"),
-            patch("roles._config_version_exit_hook", return_value=lambda: True),
-            patch("scheduler._try_acquire_leader_connection", return_value=None),
-            patch("roles._heartbeat_tick") as tick,
-            patch("roles._sleep_interruptibly"),
-            patch("roles._write_stopped") as write_stopped,
-        ):
-            roles.run_scheduler()
-
-        # A standby that never acquires the lock writes NO scheduler heartbeat
-        # and no 'stopped' row (both would clobber a live/new leader).
-        tick.assert_not_called()
-        write_stopped.assert_not_called()
 
     def test_config_version_exit_hook_triggers_graceful_stop(self):
         import roles

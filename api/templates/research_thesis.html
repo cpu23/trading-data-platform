@@ -29,6 +29,35 @@
     <div class="thesis-view-status" data-thesis-message role="status" aria-live="polite">Loading evidence, scenarios, and history…</div>
   </section>
 
+  {% if is_proposal %}
+  <section class="section thesis-proposal-review-box" aria-labelledby="proposal-review-title">
+    <div class="section-heading">
+      <span class="label" id="proposal-review-title">Proposal Review Actions &amp; Staged Diff</span>
+      <span class="section-note">Staged candidate proposal awaiting explicit human approval or revision. Canonical state remains unchanged until approved.</span>
+    </div>
+    <div class="proposal-review-controls" data-proposal-id="{{ proposal_id }}">
+      <div class="proposal-actions">
+        <button class="btn btn-primary" type="button" data-proposal-action="approve">Approve &amp; Materialize</button>
+        <button class="btn btn-secondary" type="button" data-proposal-action="revision">Request Revision</button>
+        <button class="btn btn-danger" type="button" data-proposal-action="reject">Reject</button>
+      </div>
+      <div class="proposal-review-inputs">
+        <label for="proposal-review-note"><span>Review Note (Optional)</span>
+          <textarea id="proposal-review-note" class="proposal-note-input" maxlength="4000" rows="2" placeholder="Optional review commentary..."></textarea>
+        </label>
+        <label for="proposal-revision-instructions" class="revision-instructions-group"><span>Revision Instructions (Required for revision)</span>
+          <textarea id="proposal-revision-instructions" class="proposal-instructions-input" maxlength="4000" rows="3" placeholder="Specific instructions for candidate revision..."></textarea>
+        </label>
+      </div>
+      <div class="proposal-action-status" role="status" aria-live="polite"></div>
+    </div>
+    <div class="proposal-diff-view" data-proposal-diff>
+      <div class="section-heading"><span class="label">Proposed Diff vs Canonical</span></div>
+      <pre class="proposal-diff-content" data-proposal-diff-content>Loading diff…</pre>
+    </div>
+  </section>
+  {% endif %}
+
   <div class="thesis-detail-grid">
     <section class="section thesis-mechanism" aria-labelledby="thesis-mechanism-title">
       <div class="section-heading"><span class="label" id="thesis-mechanism-title">Mechanism &amp; variant</span></div>

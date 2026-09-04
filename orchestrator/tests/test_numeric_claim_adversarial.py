@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from pydantic import ValidationError
-
 from investment_schemas import InvestmentReport, NumericClaimItem
+from pydantic import ValidationError
 
 
 class TestNumericClaimAdversarial(unittest.TestCase):

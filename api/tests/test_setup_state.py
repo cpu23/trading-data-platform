@@ -18,17 +18,16 @@ _TEST_STATE_DIR = tempfile.mkdtemp(prefix="trading-api-setup-state-tests-")
 os.environ["STATE_DIR"] = _TEST_STATE_DIR
 os.environ["DEPLOYMENT_MODE"] = "test"
 os.environ.update(
-    SSE_SIGNING_KEY="test-sse-signing-key-0123456789abcdef",
     CSRF_SIGNING_KEY="test-csrf-signing-key-0123456789abcdef",
     SESSION_SIGNING_KEY="test-session-signing-key-0123456789abcdef",
-    DASHBOARD_PASSWORD="test",
 )
 
 import auth  # noqa: E402
-import config as config_module  # noqa: E402
 import setup_state  # noqa: E402
 from routes.json import settings as settings_route  # noqa: E402
 from routes.json import setup  # noqa: E402
+
+import config as config_module  # noqa: E402
 
 VALID_PASSWORD = "a sufficiently long password"
 VALID_SETUP_TOKEN = "9f2c1a77e4b5d6098a3f1c2e4d5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
@@ -38,8 +37,6 @@ REAL_CONFIG_ENV = {
     "DB_USER": "trading",
     "DB_PASSWORD": "x",
     "DB_NAME": "trading_data",
-    "DASHBOARD_USER": "test",
-    "DASHBOARD_PASSWORD": "test",
     "FRED_API_KEY": "fred",
     "OPENROUTER_API_KEY": "sk",
     "OPENROUTER_MODEL": "provider/model",
@@ -191,18 +188,6 @@ class SetupStateTests(unittest.TestCase):
             self.live["operator.yaml"].write_text(self.payload["operator.yaml"])
             self.assertFalse(auth.setup_complete())
 
-    def test_legacy_marker_without_layout_validates_root_files(self):
-        with ExitStack() as stack:
-            for entry in self._patches():
-                stack.enter_context(entry)
-            self.marker.write_text(json.dumps({"migrated": True, "version": 1}))
-            self.live["auth.json"].write_text(self.payload["auth.json"])
-            self.live["operator.yaml"].write_text(self.payload["operator.yaml"])
-            self.assertTrue(auth.setup_complete())
-            # A corrupt legacy record fails validation.
-            self.live["auth.json"].write_text('{"hash": "broken"}')
-            self.assertFalse(auth.setup_complete())
-
     def test_second_activation_is_locked(self):
         with ExitStack() as stack:
             for entry in self._patches():
@@ -341,46 +326,6 @@ class SetupStateTests(unittest.TestCase):
         secrets = setup_state.parse_secrets_file(self.live["secrets.env"].read_text())
         self.assertEqual(secrets, {"FRED_API_KEY": "old"})
         self.assertTrue(self._is_complete())
-
-    def test_legacy_state_converts_to_versioned_topology_on_first_update(self):
-        # A pre-versioning deployment: real root files and a legacy marker.
-        self.live["auth.json"].write_text(self.payload["auth.json"])
-        self.live["operator.yaml"].write_text("llm:\n  default_model: legacy-model\n")
-        self.live["secrets.env"].write_text("FRED_API_KEY=legacy\n")
-        self.marker.write_text(json.dumps({"migrated": True, "version": 1}))
-        with ExitStack() as stack:
-            for entry in self._patches():
-                stack.enter_context(entry)
-            self.assertTrue(auth.setup_complete())
-            result = setup.update_profile(
-                setup.ProfileUpdateRequest(
-                    profile={"llm": {"default_model": "new-model"}}
-                ),
-                _admin_request(),
-            )
-            self.assertEqual(result["version"], 2)
-            self.assertTrue(auth.setup_complete())
-        # The legacy content is preserved as version 1; the update is v2.
-        legacy_profile = yaml_load(self.state / "versions" / "v1" / "operator.yaml")
-        self.assertEqual(legacy_profile["llm"]["default_model"], "legacy-model")
-        profile = yaml_load(self.state / "versions" / "v2" / "operator.yaml")
-        self.assertEqual(profile["llm"]["default_model"], "new-model")
-        # The topology is established: current points at v2 and every root
-        # path is a stable link through it.
-        self.assertTrue((self.state / "current").is_symlink())
-        self.assertEqual(
-            (self.state / "current").resolve(),
-            (self.state / "versions" / "v2").resolve(),
-        )
-        for name in ("auth.json", "operator.yaml", "secrets.env"):
-            self.assertTrue((self.state / name).is_symlink(), name)
-            self.assertEqual(
-                (self.state / name).resolve(),
-                (self.state / "versions" / "v2" / name).resolve(),
-            )
-        self.assertTrue((self.state / "activated.json").is_symlink())
-        secrets = setup_state.parse_secrets_file(self.live["secrets.env"].read_text())
-        self.assertEqual(secrets, {"FRED_API_KEY": "legacy"})
 
     def test_failed_activation_remains_retryable(self):
         with ExitStack() as stack:
@@ -1166,47 +1111,6 @@ class SetupStateTests(unittest.TestCase):
             self.assertEqual(profile["llm"]["models"]["default"], "intended")
             self.assertTrue(auth.setup_complete())
 
-    def test_legacy_base_profile_is_migrated_explicitly_once(self):
-        """A legacy base profile is migrated explicitly and reported, never
-        silently; the original content stays observable in version v1."""
-        with ExitStack() as stack:
-            for entry in self._patches():
-                stack.enter_context(entry)
-            self.live["auth.json"].write_text(self.payload["auth.json"])
-            self.live["operator.yaml"].write_text(
-                "llm:\n"
-                "  default_model: legacy-model\n"
-                "  base_url: https://old.example\n"
-                "  reasoning_effort: high\n"
-            )
-            self.marker.write_text(json.dumps({"migrated": True, "version": 1}))
-            self.assertTrue(auth.setup_complete())
-            res = setup.update_profile(
-                setup.ProfileUpdateRequest(secrets={"FRED_API_KEY": "x"}),
-                _admin_request(),
-            )
-            self.assertTrue(res.get("legacy_profile_migrated"), res)
-            self.assertIn(
-                "llm.default_model promoted to llm.models.default",
-                res["legacy_migration"],
-            )
-            self.assertEqual(res["version"], 2)
-            profile = yaml_load(self.state / "versions" / "v2" / "operator.yaml")
-            self.assertEqual(profile["llm"]["models"]["default"], "legacy-model")
-            self.assertNotIn("default_model", profile["llm"])
-            self.assertNotIn("base_url", profile["llm"])
-            # v1 preserves the original legacy content verbatim.
-            v1 = yaml_load(self.state / "versions" / "v1" / "operator.yaml")
-            self.assertEqual(v1["llm"]["default_model"], "legacy-model")
-            self.assertEqual(v1["llm"]["base_url"], "https://old.example")
-            # A second write reports no migration.
-            res2 = setup.update_profile(
-                setup.ProfileUpdateRequest(secrets={"FRED_API_KEY": "y"}),
-                _admin_request(),
-            )
-            self.assertNotIn("legacy_profile_migrated", res2)
-            self.assertEqual(res2["version"], 3)
-
     def test_activation_with_unsupported_profile_fields_is_rejected(self):
         """Legacy/unsupported llm profile keys fail strict staged validation
         with 422 and nothing is committed (no silent canonicalization)."""
@@ -1310,7 +1214,6 @@ class SetupTokenBoundaryTests(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.templating import Jinja2Templates
         from fastapi.testclient import TestClient
-
         from routes.views import setup as setup_view
 
         app = FastAPI()
@@ -1320,12 +1223,10 @@ class SetupTokenBoundaryTests(unittest.TestCase):
         app.include_router(setup_view.router)
         with (
             patch.object(setup_view, "setup_complete", return_value=False),
-            # Pin a production deployment: the setup form must render there,
-            # while demo deployments with configured credentials redirect the
-            # setup page to the root Basic challenge (never show the form).
+            # Setup remains available in production until activation completes.
             patch.dict(
                 os.environ,
-                {"DEPLOYMENT_MODE": "production", "LEGACY_BASIC_AUTH": ""},
+                {"DEPLOYMENT_MODE": "production"},
                 clear=False,
             ),
         ):
@@ -1400,7 +1301,6 @@ class SetupTokenBoundaryTests(unittest.TestCase):
         strong_keys = {
             "SESSION_SIGNING_KEY": secrets_module.token_urlsafe(48),
             "CSRF_SIGNING_KEY": secrets_module.token_urlsafe(48),
-            "SSE_SIGNING_KEY": secrets_module.token_urlsafe(48),
         }
         with patch.dict(
             os.environ,

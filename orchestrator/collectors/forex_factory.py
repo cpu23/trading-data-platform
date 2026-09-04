@@ -8,13 +8,13 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
-from sqlalchemy import text
-
-from db import get_session
 from http_client import make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+from sqlalchemy import text
+
+from db import get_session
 
 logger = get_logger("collector.forex_factory")
 
@@ -65,9 +65,7 @@ class ForexFactoryCollector:
             },
         )
         export_base_url = validate_configured_origin(
-            ff_config.get(
-                "weekly_export_base_url", "https://nfs.faireconomy.media"
-            ),
+            ff_config.get("weekly_export_base_url", "https://nfs.faireconomy.media"),
             ff_config,
             label="forex_factory weekly_export_base_url",
             canonical={

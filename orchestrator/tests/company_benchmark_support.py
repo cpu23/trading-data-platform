@@ -8,9 +8,8 @@ from types import MappingProxyType
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import yaml  # noqa: E402
-
 import investment_service as service  # noqa: E402
+import yaml  # noqa: E402
 from research_intelligence import company_benchmarks as cb  # noqa: E402
 from research_intelligence import company_judging as judging  # noqa: E402
 
@@ -131,7 +130,9 @@ def narrative_payload(
         },
         "qualitative": qualitative,
         "summary": summary,
-        "thesis": thesis if thesis is not None else "Thesis holds unless orders reverse.",
+        "thesis": thesis
+        if thesis is not None
+        else "Thesis holds unless orders reverse.",
         "counter_thesis": counter_thesis,
         "materiality_assessment": (
             materiality_assessment
@@ -151,6 +152,7 @@ def narrative_payload(
     if numeric_claims is not None:
         payload["numeric_claims"] = list(numeric_claims)
     return payload
+
 
 def executor_identity(execution_id):
     """Exact executor identity block required in stage_config."""
@@ -260,17 +262,18 @@ def narrative_payload_for_request(request, *, alternate=False):
         fact_clauses = []
         required_refs = relationship["required_facts"]
         for fact_index, ref in enumerate(required_refs):
-            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
-            fact = request.relationship_facts.get(ref["fact_path"]) or request.relationship_facts[fact_key]
+            fact_key = ref["fact_path"].removeprefix(
+                "deterministic_current.relationship_facts."
+            )
+            fact = (
+                request.relationship_facts.get(ref["fact_path"])
+                or request.relationship_facts[fact_key]
+            )
             fact_clauses.append(relationship_fact_clause(fact))
             numeric_claims.append(
                 {
-                    "claim_id": (
-                        f"relationship-{index}-fact-{fact_index}-observation"
-                    ),
-                    "path": (
-                        f"$.relationship_reconciliations[{index}].observation"
-                    ),
+                    "claim_id": (f"relationship-{index}-fact-{fact_index}-observation"),
+                    "path": (f"$.relationship_reconciliations[{index}].observation"),
                     "value": fact["value"],
                     "metric": fact["metric_label"],
                     "period": fact["period"],
@@ -294,8 +297,13 @@ def narrative_payload_for_request(request, *, alternate=False):
             if fact_path in selected_summary_facts:
                 continue
             selected_summary_facts.add(fact_path)
-            fact_key = fact_path.removeprefix("deterministic_current.relationship_facts.")
-            fact = request.relationship_facts.get(fact_path) or request.relationship_facts[fact_key]
+            fact_key = fact_path.removeprefix(
+                "deterministic_current.relationship_facts."
+            )
+            fact = (
+                request.relationship_facts.get(fact_path)
+                or request.relationship_facts[fact_key]
+            )
             numeric_claims.append(
                 {
                     "claim_id": f"relationship-summary-{len(selected_summary_facts)}",
@@ -313,9 +321,7 @@ def narrative_payload_for_request(request, *, alternate=False):
         rows.append(
             {
                 "relationship_id": relationship["relationship_id"],
-                "status": (
-                    "reconciled" if compatible else "abstained_incompatible"
-                ),
+                "status": ("reconciled" if compatible else "abstained_incompatible"),
                 "fact_paths": [ref["fact_path"] for ref in required_refs],
                 "observation": (
                     " ".join(fact_clauses)
@@ -326,9 +332,7 @@ def narrative_payload_for_request(request, *, alternate=False):
                 "uncertainty": f"Relationship uncertainty {label} remains.",
                 "summary_synthesis": summary_synthesis,
                 "thesis_synthesis": thesis_synthesis,
-                "summary_fact_paths": [
-                    ref["fact_path"] for ref in selected_refs
-                ],
+                "summary_fact_paths": [ref["fact_path"] for ref in selected_refs],
             }
         )
         if summary_synthesis and summary_synthesis not in summary_syntheses:
@@ -342,6 +346,7 @@ def narrative_payload_for_request(request, *, alternate=False):
     payload["summary"] = " ".join([payload["summary"], *summary_syntheses])
     payload["thesis"] = " ".join([payload["thesis"], *thesis_syntheses])
     return payload
+
 
 def relationship_metric(value, *, role, family):
     return {
@@ -377,6 +382,7 @@ def relationship_producer_raw():
         ),
     }
     return raw
+
 
 def _frozen_structure_problems(value, path="packet"):
     """Report every nested container that is not a proxy-over-copy or tuple."""
@@ -414,6 +420,7 @@ def _iter_mutation_attempts(value):
         for item in value:
             yield from _iter_mutation_attempts(item)
 
+
 def _put(container, path, value):
     """Build a ``producer_raw`` mutator setting ``value`` at a dotted path."""
     steps = path.split(".")
@@ -429,6 +436,7 @@ def _put(container, path, value):
         node[steps[-1]] = value
 
     return mutate
+
 
 def _judge_round_for(producer, evaluator, finalized, blind_salt):
     """Rebuild requests and strictly parse each raw response in salt order."""
@@ -466,9 +474,9 @@ def _finalized_for(case, payload):
         *payload.get("numeric_claims", []),
         *request_payload.get("numeric_claims", []),
     ]
-    relationship_summary = request_payload["summary"].removeprefix(
-        narrative_payload()["summary"]
-    ).strip()
+    relationship_summary = (
+        request_payload["summary"].removeprefix(narrative_payload()["summary"]).strip()
+    )
     decorated["summary"] = " ".join(
         part for part in (payload["summary"], relationship_summary) if part
     )

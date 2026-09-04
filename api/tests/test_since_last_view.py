@@ -14,8 +14,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "DEPLOYMENT_MODE": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
@@ -193,49 +191,33 @@ class SinceLastViewTests(unittest.TestCase):
         self.assertIn("Nothing material changed", response.text)
         self.assertNotIn("secret sql", response.text)
 
-    def test_partial_preserves_sse_with_heartbeat_fallback(self):
+    def test_partial_uses_shared_polling_heartbeat(self):
         summary = {
             "available": True,
             "marker": None,
             "sections": [],
             "counts": {},
         }
-        client = self._client()
-        for enabled in (False, True):
-            config = {"event_pipeline": {"sse": {"enabled": enabled}}}
-            with (
-                self.subTest(enabled=enabled),
-                patch(
-                    "routes.views.since_last_view.load_config",
-                    return_value=config,
-                ),
-                patch(
-                    "routes.views.since_last_view.load_since_last_view",
-                    return_value=summary,
-                ),
-            ):
-                response = client.get(
-                    "/partials/dashboard/since-last-view", headers=AUTH
-                )
-            self.assertEqual(response.status_code, 200)
-            if enabled:
-                self.assertIn(
-                    'data-live-section="since_last_view"', response.text
-                )
-                self.assertIn(
-                    'data-live-url="/partials/dashboard/since-last-view"',
-                    response.text,
-                )
-                self.assertNotIn("hx-trigger=", response.text)
-            else:
-                self.assertIn(
-                    'hx-trigger="marketRefresh from:body"', response.text
-                )
-                self.assertNotIn("data-live-section", response.text)
+        with (
+            patch(
+                "routes.views.since_last_view.load_config",
+                return_value={},
+            ),
+            patch(
+                "routes.views.since_last_view.load_since_last_view",
+                return_value=summary,
+            ),
+        ):
+            response = self._client().get(
+                "/partials/dashboard/since-last-view",
+                headers=AUTH,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
+        self.assertNotIn("data-live-section", response.text)
 
-    def test_post_marker_requires_auth_and_persists(self):
+    def test_post_marker_persists(self):
         client = self._client()
-        self.assertEqual(client.post("/api/dashboard/last-view").status_code, 401)
         with tempfile.TemporaryDirectory() as directory:
             state_dir, marker_file, marker_path = self._marker_env(directory)
             with state_dir, marker_file:

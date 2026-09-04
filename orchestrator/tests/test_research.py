@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 import unittest
 from datetime import UTC, datetime
@@ -9,20 +8,11 @@ from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 ORCH_ROOT = Path(__file__).resolve().parents[1]
-API_ROOT = ORCH_ROOT.parent / "api"
-# Orchestrator root first: the main process runs orchestrator modules that
-# import the orchestrator ``db``.  The api application is imported only inside
-# the ResearchApiApiTests subprocess, which temporarily puts api/ first.
-sys.path.insert(0, str(API_ROOT))
 sys.path.insert(0, str(ORCH_ROOT))
 
 os.environ.update(
     {
         "STATE_DIR": "/tmp/trading-data-research-test-state",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
-        "DEPLOYMENT_MODE": "test",
-        "LEGACY_BASIC_AUTH": "1",
         "CONFIG_DIR": str(ORCH_ROOT.parent / "config"),
         "DB_USER": "test",
         "DB_PASSWORD": "test",
@@ -166,7 +156,9 @@ class PortfolioTests(unittest.TestCase):
         session = Session(
             [
                 Result(first={"total": 0.15}),  # total
-                Result(rows=[{"theme": "AI Compute", "exposure": 0.15, "holdings": 2}]),  # themes
+                Result(
+                    rows=[{"theme": "AI Compute", "exposure": 0.15, "holdings": 2}]
+                ),  # themes
                 Result(
                     rows=[
                         {
@@ -194,7 +186,11 @@ class PortfolioTests(unittest.TestCase):
                 ),  # review_schedule
                 Result(
                     rows=[
-                        {"bucket": "Information Technology", "exposure": 0.15, "holdings": 2}
+                        {
+                            "bucket": "Information Technology",
+                            "exposure": 0.15,
+                            "holdings": 2,
+                        }
                     ]
                 ),  # sectors
                 Result(
@@ -203,7 +199,9 @@ class PortfolioTests(unittest.TestCase):
                         {"bucket": "TW", "exposure": 0.05, "holdings": 1},
                     ]
                 ),  # countries
-                Result(rows=[{"bucket": "USD", "exposure": 0.10, "holdings": 1}]),  # currencies
+                Result(
+                    rows=[{"bucket": "USD", "exposure": 0.10, "holdings": 1}]
+                ),  # currencies
             ]
         )
         context = portfolio_context(session)
@@ -420,117 +418,6 @@ class ResearchSnapshotTests(unittest.TestCase):
         self.assertEqual(themes.call_args.kwargs["limit"], 20)
         self.assertEqual(publish.call_args.kwargs["payload"], {"themes": []})
         self.assertIsNone(publish.call_args.kwargs["data_freshness_at"])
-
-
-class ResearchApiTests(unittest.TestCase):
-    """Run the api-facing assertions in a subprocess with an api-first path."""
-
-    def test_api_contracts(self):
-        env = dict(os.environ)
-        env["RESEARCH_TEST_API_FIRST"] = "1"
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "unittest",
-                "tests.test_research.ResearchApiApiTests",
-                "-v",
-            ],
-            cwd=ORCH_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        self.assertEqual(
-            result.returncode,
-            0,
-            msg=(
-                "api contract tests failed:\n"
-                f"--- stdout ---\n{result.stdout}\n"
-                f"--- stderr ---\n{result.stderr}"
-            ),
-        )
-
-
-class ResearchApiApiTests(unittest.TestCase):
-    """Main-app TestClient behaviour; runs only in the api-first subprocess."""
-
-    @classmethod
-    def setUpClass(cls):
-        if os.environ.get("RESEARCH_TEST_API_FIRST") != "1":
-            raise unittest.SkipTest("api contract tests run in a dedicated subprocess")
-        cls._previous_cwd = Path.cwd()
-        os.chdir(API_ROOT)
-        sys.path.insert(0, str(API_ROOT))
-        try:
-            from auth import mint_csrf_token
-
-            from main import app
-        except Exception as exc:
-            raise unittest.SkipTest(
-                f"api main app unavailable in this environment: {exc}"
-            ) from exc
-        finally:
-            try:
-                sys.path.remove(str(API_ROOT))
-            except ValueError:
-                pass
-            os.chdir(cls._previous_cwd)
-        cls.app = app
-        cls.csrf_token = mint_csrf_token()
-        cls.auth = {
-            "Authorization": "Basic dGVzdDp0ZXN0",
-            "Origin": "http://testserver",
-            "X-CSRF-Token": cls.csrf_token,
-        }
-
-    def _client(self):
-        from fastapi.testclient import TestClient
-
-        client = TestClient(self.app)
-        client.cookies.set("csrf-token", self.csrf_token)
-        return client
-
-    def test_requires_auth_without_headers(self):
-        client = self._client()
-        with patch("routes.json.research.get_session") as get_session:
-            response = client.get("/api/research/theses/status")
-            self.assertEqual(response.status_code, 401)
-        get_session.assert_not_called()
-
-    def test_thesis_status_serialises_correctly(self):
-        client = self._client()
-        with (
-            patch("thesis_fusion.thesis_desk_status", return_value={"total_theses": 5}),
-            patch("routes.json.research.get_session") as get_session,
-        ):
-            response = client.get("/api/research/theses/status", headers=self.auth)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"total_theses": 5})
-        get_session.assert_called_once()
-
-    def test_thesis_opportunities_endpoint(self):
-        client = self._client()
-        with (
-            patch("thesis_fusion.list_ranked_opportunities", return_value=[]),
-            patch("routes.json.research.get_session") as get_session,
-        ):
-            response = client.get("/api/research/theses/opportunities", headers=self.auth)
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["opportunities"], [])
-        get_session.assert_called_once()
-
-    def test_thesis_detail_not_found_404(self):
-        client = self._client()
-        with (
-            patch("thesis_fusion.load_thesis_detail", return_value=None),
-            patch("routes.json.research.get_session") as get_session,
-        ):
-            response = client.get(f"/api/research/theses/{THESIS_ID}", headers=self.auth)
-        self.assertEqual(response.status_code, 404)
-        get_session.assert_called_once()
 
 
 if __name__ == "__main__":

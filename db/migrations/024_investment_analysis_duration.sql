@@ -1,2 +1,0 @@
-ALTER TABLE investment_analyses
-    ADD COLUMN IF NOT EXISTS duration_ms INTEGER NOT NULL DEFAULT 0;

@@ -13,9 +13,8 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import text
-
 from logging_config import get_logger
+from sqlalchemy import text
 
 logger = get_logger("investment.filing_deltas")
 

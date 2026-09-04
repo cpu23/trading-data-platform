@@ -2,11 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
-
 from errors import PersistenceError
 from logging_config import get_logger
 from run_lifecycle import DEFAULT_ACCEPTED_TIMEOUT, DEFAULT_HEARTBEAT_TIMEOUT
+from sqlalchemy import text
 
 logger = get_logger("orchestrator.recovery")
 
@@ -79,14 +78,11 @@ _ACTIVE_JOB_STATES = "('queued', 'leased', 'running', 'failed_retryable')"
 
 
 def _active_job_exists_sql() -> str:
-    """A correlation has active durable work in either job queue."""
+    """A correlation has active durable work in the canonical job queue."""
     return (
-        "EXISTS (SELECT 1 FROM operation_jobs oj "
-        "WHERE oj.correlation_id = cycle_runs.correlation_id "
-        f"AND oj.state IN {_ACTIVE_JOB_STATES})"
-        " OR EXISTS (SELECT 1 FROM analysis_jobs aj "
-        "WHERE aj.correlation_id = cycle_runs.correlation_id "
-        f"AND aj.state IN {_ACTIVE_JOB_STATES})"
+        "EXISTS (SELECT 1 FROM jobs "
+        "WHERE jobs.correlation_id = cycle_runs.correlation_id "
+        f"AND jobs.state IN {_ACTIVE_JOB_STATES})"
     )
 
 

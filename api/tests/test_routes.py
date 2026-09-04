@@ -14,11 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-import httpx
-
 # ── Environment (auth) ──────────────────────────────────────────────────────
-os.environ["DASHBOARD_USER"] = "test"
-os.environ["DASHBOARD_PASSWORD"] = "test"
 os.environ["DEPLOYMENT_MODE"] = "test"
 
 from auth import mint_csrf_token
@@ -77,13 +73,11 @@ def setUpModule():
         os.environ,
         {
             "DEPLOYMENT_MODE": "test",
-            "DASHBOARD_USER": "test",
-            "DASHBOARD_PASSWORD": "test",
+            "DISABLE_AUTH": "true",
             "EXTERNAL_ORIGIN": "http://testserver",
             "COOKIE_SECURE": "0",
             "CSRF_SIGNING_KEY": "test-csrf-signing-key-0123456789abcdef",
             "SESSION_SIGNING_KEY": "test-session-signing-key-0123456789abcdef",
-            "SSE_SIGNING_KEY": "test-sse-signing-key-0123456789abcdef",
         },
         clear=False,
     )
@@ -107,7 +101,6 @@ def tearDownModule():
 # ── Auth helpers ────────────────────────────────────────────────────────────
 CSRF_TOKEN = mint_csrf_token()
 AUTH = {
-    "Authorization": "Basic dGVzdDp0ZXN0",  # test:test
     "Origin": "http://testserver",
     "X-CSRF-Token": CSRF_TOKEN,
 }
@@ -139,59 +132,71 @@ class TestComponentIdValidation(unittest.TestCase):
         resp = client.post("/api/triggers/process/not-real", headers=AUTH)
         self.assertEqual(resp.status_code, 404)
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_news_validates_exact_source_before_forwarding(self, mock_client):
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_news_validates_exact_source_before_forwarding(self, mock_enqueue):
         response = client.post("/api/triggers/news/not-real", headers=AUTH)
         self.assertEqual(response.status_code, 404)
-        mock_client.post.assert_not_awaited()
+        mock_enqueue.assert_not_called()
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_news_forwards_with_shared_client_and_status_url(self, mock_client):
-        upstream = MagicMock(status_code=202)
-        upstream.json.return_value = {"job_id": "news-job", "accepted_at": "now"}
-        mock_client.post.return_value = upstream
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_news_forwards_with_shared_client_and_status_url(self, mock_enqueue):
+        fake_job = MagicMock()
+        fake_job.job.correlation_id = "news-job"
+        mock_enqueue.return_value = (datetime(2026, 1, 1, tzinfo=UTC), fake_job)
 
         response = client.post("/api/triggers/news/reuters", headers=AUTH)
 
         self.assertEqual(response.status_code, 202)
+        mock_enqueue.assert_called_once()
+        self.assertEqual(mock_enqueue.call_args.kwargs["run_kind"], "news")
         self.assertEqual(
-            mock_client.post.await_args.args[0], "http://orchestrator:8000/run_news/reuters"
+            mock_enqueue.call_args.kwargs["requested_component"], "reuters"
         )
         self.assertEqual(
             response.json()["status_url"], "/api/system/logs?correlation_id=news-job"
         )
+        self.assertEqual(response.json()["job_id"], "news-job")
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_news_maps_safe_orchestrator_statuses(self, mock_client):
-        for status in (409, 503):
-            with self.subTest(status=status):
-                upstream = MagicMock(status_code=status)
-                upstream.json.return_value = {"detail": "safe rejection"}
-                mock_client.post.return_value = upstream
-                response = client.post("/api/triggers/news/kobeissi", headers=AUTH)
-                self.assertEqual(response.status_code, status)
-                self.assertEqual(response.json()["detail"], "safe rejection")
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_news_maps_safe_orchestrator_statuses(self, mock_enqueue):
+        from run_lifecycle import RunAcceptanceConflict
+
+        mock_enqueue.side_effect = RunAcceptanceConflict("safe rejection")
+        response = client.post("/api/triggers/news/kobeissi", headers=AUTH)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "safe rejection")
+
+        mock_enqueue.side_effect = RuntimeError("safe rejection")
+        response = client.post("/api/triggers/news/kobeissi", headers=AUTH)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Run acceptance unavailable")
+
 
 class TestCycleModes(unittest.TestCase):
     def _accepted(self):
-        response = MagicMock(status_code=202, text='{"job_id":"job-1"}')
-        response.json.return_value = {"job_id": "job-1", "accepted_at": "now"}
-        return response
+        fake_job = MagicMock()
+        fake_job.job.correlation_id = "job-1"
+        return (datetime(2026, 1, 1, tzinfo=UTC), fake_job)
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_cycle_defaults_to_refresh_and_propagates_safe_confirmation(self, mock_client):
-        mock_client.post.return_value = self._accepted()
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_cycle_defaults_to_refresh_and_propagates_safe_confirmation(
+        self, mock_enqueue
+    ):
+        mock_enqueue.return_value = self._accepted()
 
         response = client.post("/api/triggers/cycle", headers=AUTH, json={})
 
         self.assertEqual(response.status_code, 202)
-        payload = mock_client.post.await_args.kwargs["json"]
+        payload = mock_enqueue.call_args.kwargs["payload"]
         self.assertEqual(payload["mode"], "refresh")
-        self.assertFalse(payload["budget_confirmed"])
-        self.assertIn("auth", mock_client.post.await_args.kwargs)
+        self.assertFalse(
+            mock_enqueue.call_args.kwargs["request_summary"]["budget_confirmed"]
+        )
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(self, mock_client):
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_invalid_mode_values_and_types_are_422_before_orchestrator_call(
+        self, mock_enqueue
+    ):
         for mode in ("everything", ["refresh"], {"mode": "refresh"}, 1, True, None):
             with self.subTest(mode=mode):
                 response = client.post(
@@ -199,11 +204,11 @@ class TestCycleModes(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 422)
 
-        mock_client.post.assert_not_awaited()
+        mock_enqueue.assert_not_called()
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     def test_invalid_body_and_confirmation_types_are_422_before_orchestrator_call(
-        self, mock_client
+        self, mock_enqueue
     ):
         for body in (
             ["refresh"],
@@ -218,11 +223,11 @@ class TestCycleModes(unittest.TestCase):
                 response = client.post("/api/triggers/cycle", headers=AUTH, json=body)
                 self.assertEqual(response.status_code, 422)
 
-        mock_client.post.assert_not_awaited()
+        mock_enqueue.assert_not_called()
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_absent_or_null_body_defaults_to_refresh(self, mock_client):
-        mock_client.post.return_value = self._accepted()
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_absent_or_null_body_defaults_to_refresh(self, mock_enqueue):
+        mock_enqueue.return_value = self._accepted()
         for send_null in (False, True):
             with self.subTest(send_null=send_null):
                 if send_null:
@@ -234,20 +239,24 @@ class TestCycleModes(unittest.TestCase):
                 else:
                     response = client.post("/api/triggers/cycle", headers=AUTH)
                 self.assertEqual(response.status_code, 202)
-                self.assertEqual(mock_client.post.await_args.kwargs["json"]["mode"], "refresh")
+                self.assertEqual(
+                    mock_enqueue.call_args.kwargs["payload"]["mode"], "refresh"
+                )
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_force_full_requires_explicit_confirmation_before_call(self, mock_client):
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_force_full_requires_explicit_confirmation_before_call(self, mock_enqueue):
         response = client.post(
             "/api/triggers/cycle", headers=AUTH, json={"mode": "force_full"}
         )
 
         self.assertEqual(response.status_code, 422)
-        mock_client.post.assert_not_awaited()
+        mock_enqueue.assert_not_called()
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_force_full_forwards_internal_basic_auth_after_global_auth(self, mock_client):
-        mock_client.post.return_value = self._accepted()
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
+    def test_force_full_forwards_internal_basic_auth_after_global_auth(
+        self, mock_enqueue
+    ):
+        mock_enqueue.return_value = self._accepted()
 
         response = client.post(
             "/api/triggers/cycle",
@@ -256,14 +265,15 @@ class TestCycleModes(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 202)
-        request = mock_client.post.await_args
-        self.assertEqual(request.kwargs["json"]["mode"], "force_full")
-        self.assertTrue(request.kwargs["json"]["budget_confirmed"])
-        self.assertIsInstance(request.kwargs["auth"], httpx.BasicAuth)
+        request_summary = mock_enqueue.call_args.kwargs["request_summary"]
+        self.assertEqual(request_summary["mode"], "force_full")
+        self.assertTrue(request_summary["budget_confirmed"])
 
-    @patch("orchestrator_client.internal_basic_auth", side_effect=RuntimeError)
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_force_full_missing_internal_credentials_fails_closed(self, mock_client, _auth):
+    @patch(
+        "routes.json.triggers.accept_and_enqueue_operation",
+        side_effect=RuntimeError("acceptance error"),
+    )
+    def test_force_full_missing_internal_credentials_fails_closed(self, mock_enqueue):
         response = client.post(
             "/api/triggers/cycle",
             headers=AUTH,
@@ -271,7 +281,7 @@ class TestCycleModes(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 503)
-        mock_client.post.assert_not_awaited()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Test cases
@@ -282,26 +292,18 @@ class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_health_returns_200(self, mock_client, _mock_qm):
+    @patch("routes.json.system.fresh_role_heartbeats")
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="healthy")
+    @patch("routes.json.system.normalize_quality_results")
+    def test_health_returns_200(
+        self, mock_norm, _mock_eval, _mock_run_qc, mock_hb, _mock_qm
+    ):
         """GET /api/system/health with empty DB should return 200 + contract keys."""
-        mock_health_resp = MagicMock()
-        mock_health_resp.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "status": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected", "last_heartbeat": "2026-01-01T00:00:00Z"},
-            "quality": {
-                "overall": "healthy",
-                "checks": {
-                    "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
-                },
-            },
+        mock_hb.return_value = [{"status": "running"}]
+        mock_norm.return_value = {
+            "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
         }
-        mock_client.get.return_value = mock_health_resp
 
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
@@ -315,83 +317,66 @@ class TestSystemRoutes(unittest.TestCase):
         # With healthy stream and no stale components, should be ready/healthy
         self.assertEqual(data["readiness"], "ready")
         self.assertEqual(data["data_health"], "healthy")
-        mock_client.get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_disabled_optional_quote_stream_does_not_fail_readiness(
-        self, mock_client, _query
+    @patch("routes.json.system.fresh_role_heartbeats")
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="healthy")
+    @patch("routes.json.system.normalize_quality_results")
+    def test_market_stream_is_not_an_independent_runtime_dependency(
+        self, mock_norm, _mock_eval, _mock_run_qc, mock_hb, _query
     ):
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "disabled"},
-            "quality": {
-                "overall": "healthy",
-                "checks": {"fred": {"healthy": True}},
-            },
-        }
-        mock_client.get.return_value = health
-
-        response = client.get("/api/system/health", headers=AUTH)
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["readiness"], "ready")
-        self.assertEqual(response.json()["data_health"], "healthy")
-
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_disabled_required_quote_stream_fails_readiness(self, mock_client, _query):
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "disabled"},
-            "quality": {
-                "overall": "healthy",
-                "checks": {"fred": {"healthy": True}},
-            },
-        }
-        mock_client.get.return_value = health
+        mock_hb.return_value = [{"status": "running"}]
+        mock_norm.return_value = {"fred": {"healthy": True}}
         config = {
             **MOCK_CONFIG,
             "collectors": {"oanda": {"enabled": True, "stream_enabled": True}},
         }
-
         with patch("routes.json.system.app_config.load_config", return_value=config):
             response = client.get("/api/system/health", headers=AUTH)
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["readiness"], "unready")
-        self.assertEqual(response.json()["data_health"], "degraded")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["readiness"], "ready")
+        self.assertNotIn(
+            "live_prices",
+            {component["name"] for component in response.json()["components"]},
+        )
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_degraded_quality_without_source_id_degrades_api_health(
-        self, mock_client, _query
+    @patch("routes.json.system.fresh_role_heartbeats")
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="healthy")
+    @patch("routes.json.system.normalize_quality_results")
+    def test_missing_worker_fails_readiness(
+        self, mock_norm, _mock_eval, _mock_run_qc, mock_hb, _query
     ):
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "status": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-            "quality": {
-                "overall": "degraded",
-                "checks": {"fred_freshness": {"healthy": False, "detail": "stale"}},
-            },
+        mock_hb.return_value = []
+        mock_norm.return_value = {"fred": {"healthy": True}}
+
+        response = client.get("/api/system/health", headers=AUTH)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["readiness"], "unready")
+        worker = next(
+            component
+            for component in response.json()["components"]
+            if component["name"] == "role:worker"
+        )
+        self.assertEqual(worker["last_status"], "error")
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch(
+        "routes.json.system.fresh_role_heartbeats", return_value=[{"status": "running"}]
+    )
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="degraded")
+    @patch("routes.json.system.normalize_quality_results")
+    def test_degraded_quality_without_source_id_degrades_api_health(
+        self, mock_norm, _mock_eval, _mock_run_qc, _mock_hb, _query
+    ):
+        mock_norm.return_value = {
+            "fred_freshness": {"healthy": False, "detail": "stale"}
         }
-        mock_client.get.return_value = health
 
         resp = client.get("/api/system/health", headers=AUTH)
 
@@ -404,25 +389,18 @@ class TestSystemRoutes(unittest.TestCase):
         )
         self.assertEqual(quality_component["last_status"], "degraded")
         self.assertIn("fred_freshness", quality_component["error_message"])
-        mock_client.get.assert_awaited_once()
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_empty_quality_checks_are_unknown(self, mock_client, _query):
+    @patch(
+        "routes.json.system.fresh_role_heartbeats", return_value=[{"status": "running"}]
+    )
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="healthy")
+    @patch("routes.json.system.normalize_quality_results", return_value={})
+    def test_empty_quality_checks_are_unknown(
+        self, _mock_norm, _mock_eval, _mock_run_qc, _mock_hb, _query
+    ):
         """An empty check result is unknown, never silently healthy."""
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "status": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-            "quality": {"overall": "healthy", "checks": {}},
-        }
-        mock_client.get.return_value = health
-
         resp = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(resp.status_code, 200)
@@ -431,317 +409,54 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(data["quality"]["overall"], "unknown")
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_quality_unknown_remains_unknown(self, mock_client, _query):
+    @patch(
+        "routes.json.system.fresh_role_heartbeats", return_value=[{"status": "running"}]
+    )
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="unknown")
+    @patch("routes.json.system.normalize_quality_results", return_value={})
+    def test_quality_unknown_remains_unknown(
+        self, _mock_norm, _mock_eval, _mock_run_qc, _mock_hb, _query
+    ):
         """Unknown quality remains distinct from known degradation."""
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "unknown",
-            "status": "unknown",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-            "quality": {"overall": "unknown", "checks": {}},
-        }
-        mock_client.get.return_value = health
-
         resp = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["data_health"], "unknown")
 
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_orchestrator_network_failure_returns_503(self, mock_client, _query):
-        mock_client.get.side_effect = httpx.ConnectError("connection refused")
+    @patch(
+        "routes.json.system.query_many", side_effect=RuntimeError("connection refused")
+    )
+    def test_orchestrator_network_failure_returns_503(self, _query):
         resp = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(resp.status_code, 503)
         data = resp.json()
         self.assertEqual(data["liveness"], "ok")
         self.assertEqual(data["readiness"], "unready")
-        self.assertEqual(data["data_health"], "unknown")
-        component = next(c for c in data["components"] if c["name"] == "orchestrator")
-        self.assertEqual(
-            component["error_message"], "orchestrator dependency unavailable"
-        )
+        self.assertEqual(data["data_health"], "degraded")
+        component = next(c for c in data["components"] if c["name"] == "database")
+        self.assertEqual(component["error_message"], "database dependency unavailable")
         self.assertNotIn("connection refused", resp.text)
 
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_orchestrator_http_500_returns_503(self, mock_client, _query):
-        request = httpx.Request("GET", "http://orchestrator:8000/health")
-        response = httpx.Response(500, request=request)
-        failed = MagicMock()
-        failed.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "server error", request=request, response=response
-        )
-        mock_client.get.return_value = failed
-
+    @patch(
+        "routes.json.system._load_local_health_data",
+        side_effect=RuntimeError("server error"),
+    )
+    def test_orchestrator_http_500_returns_503(self, _load):
         resp = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(resp.json()["readiness"], "unready")
-        self.assertTrue(
-            any(c["name"] == "orchestrator" for c in resp.json()["components"])
-        )
+        self.assertTrue(any(c["name"] == "database" for c in resp.json()["components"]))
 
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_invalid_orchestrator_contract_returns_503(self, mock_client, _query):
-        invalid = MagicMock()
-        invalid.json.return_value = {"status": "ok"}
-        mock_client.get.return_value = invalid
-
-        resp = client.get("/api/system/health", headers=AUTH)
-
-        self.assertEqual(resp.status_code, 503)
-        self.assertEqual(resp.json()["readiness"], "unready")
-        self.assertIn(
-            "invalid orchestrator health contract",
-            resp.json()["components"][0]["error_message"],
-        )
-
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_malformed_complete_orchestrator_health_contract_returns_503(
-        self, mock_client, _query
-    ):
-        malformed_payloads = {
-            "invalid data_health": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "nonsense",
-                "components": [],
-            },
-            "null components": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": None,
-            },
-            "non-list components": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": {},
-            },
-            "non-dict component": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": ["database"],
-            },
-            "component missing name": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": [{"status": "available"}],
-            },
-            "component missing status": {
-                "liveness": "ok",
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": [{"name": "database"}],
-            },
-            "invalid readiness": {
-                "liveness": "ok",
-                "readiness": "unknown",
-                "data_health": "healthy",
-                "components": [],
-            },
-            "non-string liveness": {
-                "liveness": True,
-                "readiness": "ready",
-                "data_health": "healthy",
-                "components": [],
-            },
-        }
-
-        for case, payload in malformed_payloads.items():
-            with self.subTest(case=case):
-                health = MagicMock()
-                health.json.return_value = payload
-                mock_client.get.return_value = health
-                resp = client.get("/api/system/health", headers=AUTH)
-
-                self.assertEqual(resp.status_code, 503)
-                data = resp.json()
-                self.assertEqual(data["liveness"], "ok")
-                self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "unknown")
-                component = next(
-                    item
-                    for item in data["components"]
-                    if item["name"] == "orchestrator"
-                )
-                self.assertEqual(component["last_status"], "error")
-                self.assertIn(
-                    "invalid orchestrator health contract", component["error_message"]
-                )
-
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_invalid_component_enums_return_controlled_503(self, mock_client, _query):
-        malformed_components = {
-            "invalid status": {
-                "name": "database",
-                "kind": "service",
-                "status": "nonsense",
-            },
-            "invalid kind": {
-                "name": "database",
-                "kind": "nonsense",
-                "status": "available",
-            },
-            "blank name": {"name": "   ", "kind": "service", "status": "available"},
-        }
-
-        for case, component in malformed_components.items():
-            with self.subTest(case=case):
-                health = MagicMock()
-                health.json.return_value = {
-                    "liveness": "ok",
-                    "readiness": "ready",
-                    "data_health": "healthy",
-                    "components": [component],
-                    "scheduler": {"jobs": []},
-                    "stream": {"status": "connected"},
-                    "quality": {"overall": "healthy", "checks": {}},
-                }
-                mock_client.get.reset_mock()
-                mock_client.get.return_value = health
-
-                resp = client.get("/api/system/health", headers=AUTH)
-
-                self.assertEqual(resp.status_code, 503)
-                data = resp.json()
-                self.assertEqual(data["liveness"], "ok")
-                self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "unknown")
-                self.assertIn(
-                    "invalid orchestrator health contract",
-                    data["components"][0]["error_message"],
-                )
-
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_invalid_scheduler_and_stream_contracts_return_controlled_503(
-        self, mock_client, _query
-    ):
-        malformed_fields = {
-            "scalar scheduler": {
-                "scheduler": "broken",
-                "stream": {"status": "connected"},
-            },
-            "scalar scheduler jobs": {
-                "scheduler": {"jobs": "broken"},
-                "stream": {"status": "connected"},
-            },
-            "non-object scheduler job": {
-                "scheduler": {"jobs": ["broken"]},
-                "stream": {"status": "connected"},
-            },
-            "scheduler job missing id": {
-                "scheduler": {"jobs": [{"next_due_at": None}]},
-                "stream": {"status": "connected"},
-            },
-            "scalar stream": {"scheduler": {"jobs": []}, "stream": "broken"},
-            "list stream": {"scheduler": {"jobs": []}, "stream": []},
-            "invalid stream status type": {
-                "scheduler": {"jobs": []},
-                "stream": {"status": ["connected"]},
-            },
-            "invalid stream heartbeat type": {
-                "scheduler": {"jobs": []},
-                "stream": {"status": "connected", "last_heartbeat": []},
-            },
-        }
-
-        for case, fields in malformed_fields.items():
-            with self.subTest(case=case):
-                health = MagicMock()
-                health.json.return_value = {
-                    "liveness": "ok",
-                    "readiness": "ready",
-                    "data_health": "healthy",
-                    "components": [],
-                    **fields,
-                    "quality": {"overall": "healthy", "checks": {}},
-                }
-                mock_client.get.reset_mock()
-                mock_client.get.return_value = health
-
-                resp = client.get("/api/system/health", headers=AUTH)
-
-                self.assertEqual(resp.status_code, 503)
-                data = resp.json()
-                self.assertEqual(data["liveness"], "ok")
-                self.assertEqual(data["readiness"], "unready")
-                self.assertEqual(data["data_health"], "unknown")
-                self.assertIn(
-                    "invalid orchestrator health contract",
-                    data["components"][0]["error_message"],
-                )
-
-    @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_malformed_nested_orchestrator_quality_contract_returns_503(
-        self, mock_client, _query
-    ):
-        health = MagicMock()
-
-        malformed_checks = {
-            "non-dict list entry": ["fresh"],
-            "non-dict mapping value": {"fred_freshness": "fresh"},
-            "invalid status enum": {
-                "fred_freshness": {
-                    "healthy": True,
-                    "detail": "fresh",
-                    "status": "nonsense",
-                }
-            },
-            "invalid freshness enum": {
-                "fred_freshness": {
-                    "healthy": True,
-                    "detail": "fresh",
-                    "freshness": "nonsense",
-                }
-            },
-            "empty mapping entry": {"fred_freshness": {}},
-        }
-        for case, checks in malformed_checks.items():
-            with self.subTest(case=case):
-                health.json.return_value = {
-                    "liveness": "ok",
-                    "readiness": "ready",
-                    "data_health": "healthy",
-                    "components": [],
-                    "scheduler": {"jobs": []},
-                    "stream": {"status": "connected"},
-                    "quality": {"overall": "healthy", "checks": checks},
-                }
-                mock_client.get.reset_mock()
-                mock_client.get.return_value = health
-
-                resp = client.get("/api/system/health", headers=AUTH)
-
-                self.assertEqual(resp.status_code, 503)
-                component = next(
-                    item
-                    for item in resp.json()["components"]
-                    if item["name"] == "orchestrator"
-                )
-                self.assertIn(
-                    "invalid orchestrator health contract", component["error_message"]
-                )
-
-    def test_health_requires_auth(self):
-        """GET /api/system/health without Basic-Auth header returns 401."""
-        resp = client.get("/api/system/health")
+    def test_health_requires_session(self):
+        with (
+            patch.dict(os.environ, {"DISABLE_AUTH": ""}, clear=False),
+            patch("auth.setup_complete", return_value=True),
+        ):
+            resp = client.get("/api/system/health")
         self.assertEqual(resp.status_code, 401)
 
     @patch("routes.json.system.query_many")
@@ -785,8 +500,8 @@ class TestSystemRoutes(unittest.TestCase):
             {"state": "succeeded", "count": 5, "oldest_created_at": None},
         ],
     )
-    def test_analysis_job_status_exposes_aggregates_only(self, _query_many):
-        resp = client.get("/api/analysis/jobs/status", headers=AUTH)
+    def test_job_status_exposes_aggregates_only(self, _query_many):
+        resp = client.get("/api/jobs/status", headers=AUTH)
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["counts"], {"queued": 2, "succeeded": 5})
@@ -1091,12 +806,8 @@ class TestLiveViewPartials(unittest.TestCase):
         )
         self.assertNotIn('hx-get="/partials/dashboard/watchlist"', initial.text)
         self.assertIn("Watchlist grid", partial.text)
-        self.assertIn('data-live-section="watchlist"', partial.text)
-        self.assertIn('data-live-event="watchlist_changed"', partial.text)
-        self.assertIn(
-            'data-live-url="/partials/dashboard/watchlist-grid"',
-            partial.text,
-        )
+        self.assertIn('hx-trigger="marketRefresh from:body"', partial.text)
+        self.assertNotIn("data-live-section", partial.text)
 
     def test_source_health_partial_matches_enabled_initial_and_is_bounded(self):
         components = [
@@ -1144,39 +855,17 @@ class TestLiveViewPartials(unittest.TestCase):
         self.assertNotIn("overflow-source", partial.text)
         self.assertIn('class="table-wrap"', partial.text)
         self.assertIn('aria-labelledby="source-state-title"', partial.text)
-        self.assertIn('data-live-section="source_health"', partial.text)
-        self.assertIn('data-live-event="source_health_changed"', partial.text)
-        self.assertIn(
-            'data-live-url="/partials/operations/source-health"',
-            partial.text,
-        )
+        self.assertIn('hx-trigger="marketRefresh from:body"', partial.text)
+        self.assertNotIn("data-live-section", partial.text)
 
-    def test_partial_routes_fail_soft_and_remain_authenticated(self):
-        self.assertEqual(
-            client.get("/partials/dashboard/watchlist").status_code,
-            401,
-        )
-        self.assertEqual(
-            client.get("/partials/operations/source-health").status_code,
-            401,
-        )
+    def test_source_health_fails_soft_and_remains_authenticated(self):
         with (
-            patch(
-                "routes.views.dashboard.app_config.load_config",
-                return_value=self.ENABLED_CONFIG,
-            ),
-            patch(
-                "routes.views.dashboard.get_briefing_latest",
-                side_effect=RuntimeError("RAW_BRIEFING_SECRET"),
-            ),
-            patch(
-                "routes.views.dashboard._get_latest_prices",
-                side_effect=RuntimeError("RAW_PRICE_SECRET"),
-            ),
+            patch.dict(os.environ, {"DISABLE_AUTH": ""}, clear=False),
+            patch("auth.setup_complete", return_value=True),
         ):
-            watchlist = client.get(
-                "/partials/dashboard/watchlist",
-                headers=AUTH,
+            self.assertEqual(
+                client.get("/partials/operations/source-health").status_code,
+                401,
             )
         with (
             patch(
@@ -1194,9 +883,6 @@ class TestLiveViewPartials(unittest.TestCase):
                 headers=AUTH,
             )
 
-        self.assertEqual(watchlist.status_code, 200)
-        self.assertIn("No briefing has been generated yet", watchlist.text)
-        self.assertNotIn("RAW_", watchlist.text)
         self.assertEqual(source_health.status_code, 200)
         self.assertIn("Unavailable", source_health.text)
         self.assertNotIn("RAW_", source_health.text)
@@ -1285,8 +971,8 @@ class TestLiveViewPartials(unittest.TestCase):
         )
         self.assertIn("US nonfarm payrolls", partial.text)
         self.assertIn("Deterministic · no model inference", partial.text)
-        self.assertIn('data-live-section="macro_releases"', partial.text)
-        self.assertIn('data-live-event="section_changed"', partial.text)
+        self.assertIn('hx-trigger="marketRefresh from:body"', partial.text)
+        self.assertNotIn("data-live-section", partial.text)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["cards"][0]["actual"], 180.0)
         self.assertNotIn("source_payload", response.text)
@@ -1503,8 +1189,8 @@ class TestEvidenceRoutes(unittest.TestCase):
 class TestBudgetRoute(unittest.TestCase):
     """Integration tests for /api/system/budget."""
 
-    @patch("budgets.load_config", return_value=MOCK_CONFIG)
-    @patch("budgets.query_one", return_value=None)
+    @patch("api_budgets.load_config", return_value=MOCK_CONFIG)
+    @patch("api_budgets.query_one", return_value=None)
     def test_budget_returns_status(self, _mock_qo, _mock_config):
         """GET /api/system/budget returns a budget status dict."""
         resp = client.get("/api/system/budget", headers=AUTH)
@@ -1570,27 +1256,29 @@ class TestNewsRoutes(unittest.TestCase):
 
 
 class TestQualityPage(unittest.TestCase):
-    """Task 11: Quality page returns 200 with mocked orchestrator response."""
+    """Task 11: Quality page returns 200 with direct quality check data."""
 
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_quality_page_returns_200_with_orchestrator_response(self, mock_client):
-        """GET /quality returns 200 when orchestrator quality is healthy."""
-        orchestrator_response = MagicMock()
-        orchestrator_response.is_success = True
-        orchestrator_response.json.return_value = {
-            "overall": "healthy",
-            "checks": {
-                "fred_freshness": {"healthy": True, "detail": "fresh"},
-                "oanda_freshness": {"healthy": True, "detail": "fresh"},
-            },
+    @patch("routes.views.quality.run_quality_checks")
+    @patch(
+        "routes.views.quality.required_quality_checks",
+        return_value=["fred_freshness", "oanda_freshness"],
+    )
+    @patch("routes.views.quality.evaluate_quality", return_value="healthy")
+    @patch("routes.views.quality.normalize_quality_results")
+    def test_quality_page_returns_200_with_orchestrator_response(
+        self, mock_norm, _mock_eval, _mock_req, _mock_run
+    ):
+        """GET /quality returns 200 when quality is healthy."""
+        mock_norm.return_value = {
+            "fred_freshness": {"healthy": True, "detail": "fresh"},
+            "oanda_freshness": {"healthy": True, "detail": "fresh"},
         }
-        mock_client.get.return_value = orchestrator_response
 
         resp = client.get("/quality", headers=AUTH)
         self.assertEqual(
             resp.status_code,
             200,
-            "Quality page should return 200 with mocked orchestrator",
+            "Quality page should return 200 with quality check data",
         )
         self.assertIn("fred freshness", resp.text)
         self.assertIn("fresh", resp.text)
@@ -1605,25 +1293,19 @@ class TestHealthContract(unittest.TestCase):
     """Task 12: Separate liveness/readiness/data-health contract."""
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
-    def test_health_returns_contract_shape(self, mock_client, _mock_qm):
+    @patch(
+        "routes.json.system.fresh_role_heartbeats", return_value=[{"status": "running"}]
+    )
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="healthy")
+    @patch("routes.json.system.normalize_quality_results")
+    def test_health_returns_contract_shape(
+        self, mock_norm, _mock_eval, _mock_run_qc, _mock_hb, _mock_qm
+    ):
         """GET /api/system/health returns liveness, readiness, data_health keys."""
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "healthy",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-            "quality": {
-                "overall": "healthy",
-                "checks": {
-                    "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
-                },
-            },
+        mock_norm.return_value = {
+            "fred_DGS10_freshness": {"healthy": True, "detail": "fresh"}
         }
-        mock_client.get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -1651,30 +1333,22 @@ class TestHealthContract(unittest.TestCase):
         self.assertIsInstance(data["components"], list)
 
     @patch("routes.json.system.query_many", return_value=[])
-    @patch.object(app.state, "orchestrator_client", new_callable=AsyncMock)
+    @patch(
+        "routes.json.system.fresh_role_heartbeats", return_value=[{"status": "running"}]
+    )
+    @patch("routes.json.system.run_quality_checks")
+    @patch("routes.json.system.evaluate_quality", return_value="degraded")
+    @patch("routes.json.system.normalize_quality_results")
     def test_stale_data_yields_liveness_ok_data_health_degraded(
-        self, mock_client, _mock_qm
+        self, mock_norm, _mock_eval, _mock_run_qc, _mock_hb, _mock_qm
     ):
         """Stale data keeps liveness 'ok' but degrades data_health."""
-        health = MagicMock()
-        health.json.return_value = {
-            "liveness": "ok",
-            "readiness": "ready",
-            "data_health": "degraded",
-            "components": [],
-            "scheduler": {"jobs": []},
-            "stream": {"status": "connected"},
-            "quality": {
-                "overall": "degraded",
-                "checks": {
-                    "fred_DGS10_freshness": {
-                        "healthy": False,
-                        "detail": "stale",
-                    }
-                },
-            },
+        mock_norm.return_value = {
+            "fred_DGS10_freshness": {
+                "healthy": False,
+                "detail": "stale",
+            }
         }
-        mock_client.get.return_value = health
         resp = client.get("/api/system/health", headers=AUTH)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -1720,5 +1394,3 @@ class TestCalendarDisplayTimezone(unittest.TestCase):
         self.assertEqual(event["day_key"], "2026-01-02")
         self.assertEqual(event["day_label_short"], "Fri")
         self.assertEqual(event["display_timezone"], "Asia/Tokyo")
-
-

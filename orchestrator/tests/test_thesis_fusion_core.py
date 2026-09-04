@@ -23,7 +23,6 @@ from support_thesis_fusion import (  # noqa: E402
     Result,
     Session,
 )
-
 from thesis_fusion import (  # noqa: E402
     add_group_membership,
     canonical_thesis_key,
@@ -102,7 +101,6 @@ class CanonicalKeyTests(unittest.TestCase):
             )
 
 
-
 class GroupHelperTests(unittest.TestCase):
     def test_create_find_group_creates_then_finds(self):
         session = Session([Result(first={"id": GROUP_ID})])  # INSERT RETURNING id
@@ -164,7 +162,6 @@ class GroupHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported group status"):
             create_find_group(session, name="x", status="deleted")
         self.assertEqual(session.calls, [])
-
 
 
 class MergeCreateThesisTests(unittest.TestCase):
@@ -416,7 +413,6 @@ class MergeCreateThesisTests(unittest.TestCase):
                 claim="AI capex compounds.",
             )
         session.commit.assert_not_called()
-
 
 
 class FusionReferenceClaimTests(unittest.TestCase):
@@ -1102,7 +1098,6 @@ class FusionReferenceClaimTests(unittest.TestCase):
         self.assertIn("FROM investment_theses", session.calls[2][0])
         self.assertIn("WHERE input_fingerprint", session.calls[2][0])
         session.commit.assert_not_called()
-
 
 
 class GroupMembershipTests(unittest.TestCase):

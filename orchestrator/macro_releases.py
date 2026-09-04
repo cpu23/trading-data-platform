@@ -397,7 +397,6 @@ def build_macro_release_card(
     }
 
 
-
 def upsert_macro_release_card(
     session: Any,
     event: Any,

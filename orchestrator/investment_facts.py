@@ -110,6 +110,7 @@ _RELATIONSHIP_METRIC_FAMILIES: dict[str, str] = {
     "gross_margin": "gross_margin",
 }
 
+
 def _relationship_tags_for_metric(
     metric: str, *, scope: str = "consolidated"
 ) -> dict[str, Any] | None:
@@ -165,8 +166,7 @@ def _derive_free_cash_flow(
     if (
         operating_cash_flow["unit"] != capital_investment["unit"]
         or operating_cash_flow["period"] != capital_investment["period"]
-        or operating_tags.get("duration_days")
-        != investment_tags.get("duration_days")
+        or operating_tags.get("duration_days") != investment_tags.get("duration_days")
     ):
         return
     record = {
@@ -311,7 +311,9 @@ def _records(
         }
         start = _iso(entry.get("start"))
         end = _iso(entry.get("end"))
-        duration_days = (end - start).days if start is not None and end is not None else None
+        duration_days = (
+            (end - start).days if start is not None and end is not None else None
+        )
         _tag_relationship_metric(metric, result, duration_days=duration_days)
         return result
 
@@ -1080,7 +1082,9 @@ def extract_ixbrl_facts(
         }
         start = _iso(context.get("start"))
         end = _iso(context.get("end"))
-        duration_days = (end - start).days if start is not None and end is not None else None
+        duration_days = (
+            (end - start).days if start is not None and end is not None else None
+        )
         _tag_relationship_metric(metric, candidate, duration_days=duration_days)
         candidates.setdefault(key, []).append(candidate)
     selected: dict[str, list[dict[str, Any]]] = {}
@@ -1353,6 +1357,7 @@ def _external_period(clause: str) -> str | None:
     explicit = _YEAR_RE.search(clause)
     return explicit.group(1) if explicit else None
 
+
 def _external_duration_days(
     clause: str,
     current: dict[str, dict[str, Any]],
@@ -1404,6 +1409,7 @@ def _external_comparison_basis(clause: str) -> str:
         return "sequential"
     return "none"
 
+
 def _external_effect_basis(match: re.Match[str]) -> str:
     basis = match.group("basis").casefold()
     if "point" in basis:
@@ -1425,9 +1431,7 @@ def _external_value_and_unit(
     match: re.Match[str], effect_kind: str
 ) -> tuple[float, str] | None:
     raw = match.group("amount")
-    numeric_raw = re.sub(
-        r"^(?:GBP|USD|EUR|CAD|AUD|CHF|JPY)\s*", "", raw, flags=re.I
-    )
+    numeric_raw = re.sub(r"^(?:GBP|USD|EUR|CAD|AUD|CHF|JPY)\s*", "", raw, flags=re.I)
     value = _parse_number(numeric_raw)
     if value is None:
         return None
@@ -1549,10 +1553,10 @@ def _extract_external_effect_facts(
     periods: list[str] | tuple[str, ...],
 ) -> dict[str, dict[str, Any]]:
     """Extract bounded explicit quantified effects without interpreting subjects."""
-    del periods  # Do not invent a period when neither clause nor recipient supplies one.
-    sentences = re.split(
-        r"(?<=[.!?])\s+|\n+", text[:_MAX_EXTERNAL_EFFECT_TEXT_CHARS]
-    )
+    del (
+        periods
+    )  # Do not invent a period when neither clause nor recipient supplies one.
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text[:_MAX_EXTERNAL_EFFECT_TEXT_CHARS])
     trigger = re.compile(r"\b(?:contribut|drag|headwind|impact|reclassif)", re.I)
     candidate_sentences = [
         (index, sentence)
@@ -1569,9 +1573,12 @@ def _extract_external_effect_facts(
             attached = " ".join(sentences[sentence_index + 1].split())
             if re.match(r"^this net impact includes\b", attached, re.I):
                 evidence = f"{sentence} {attached}"
-        group_id = "external_" + hashlib.sha256(
-            f"external-effect:{sentence_index}:{sentence.casefold()}".encode()
-        ).hexdigest()[:16]
+        group_id = (
+            "external_"
+            + hashlib.sha256(
+                f"external-effect:{sentence_index}:{sentence.casefold()}".encode()
+            ).hexdigest()[:16]
+        )
         clauses = re.split(r"\s*(?:;|,\s+(?:and|while|but)\s+)\s*", sentence)
         for clause in clauses[:_MAX_EXTERNAL_EFFECT_CLAUSES]:
             for effect_kind, pattern in _EXTERNAL_EFFECT_PATTERNS:
@@ -1655,6 +1662,7 @@ def _text_currency_scale(
     elif re.search(r"\b(?:thousand|thousands|k)\b", nearby, re.I):
         scale, scale_label = 0.001, "k"
     return currency, scale, scale_label
+
 
 def _unavailable_report_text_with_external(
     text: str, base_meta: dict[str, Any], reason: str

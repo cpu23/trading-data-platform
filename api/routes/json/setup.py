@@ -10,9 +10,6 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, field_validator
-
 from auth import (
     ACTIVATION_FILE,
     AUTH_FILE,
@@ -24,23 +21,25 @@ from auth import (
     setup_complete,
     verify_login_password,
 )
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, field_validator
+from setup_state import (
+    CommitDurabilityError,
+    commit_setup,
+    merge_profile,
+    parse_secrets_file,
+    pointer_version,
+    read_live_state,
+    read_pointer,
+    setup_lock,
+)
+
 from routes.json.settings import (
     _read_secrets,
     _reload_or_restart,
     apply_secret_updates,
     managed_secret,
     serialize_secrets,
-)
-from setup_state import (
-    CommitDurabilityError,
-    commit_setup,
-    merge_profile,
-    migrate_legacy_profile,
-    parse_secrets_file,
-    pointer_version,
-    read_live_state,
-    read_pointer,
-    setup_lock,
 )
 
 router = APIRouter()
@@ -397,9 +396,7 @@ def activate(body: ActivationRequest, request: Request):
     _require_bootstrap_token(body.token)
     password = body.password or ""
     if len(password) < _PASSWORD_MIN_LENGTH:
-        raise HTTPException(
-            400, "Password must contain at least 12 characters"
-        )
+        raise HTTPException(400, "Password must contain at least 12 characters")
     profile = dict(body.profile or {})
     try:
         _validate_profile(profile)
@@ -427,9 +424,7 @@ def activate(body: ActivationRequest, request: Request):
                 validate_candidate=_candidate_validator(),
             )
         except ValueError as exc:
-            raise HTTPException(
-                422, f"Setup could not be activated: {exc}"
-            ) from exc
+            raise HTTPException(422, f"Setup could not be activated: {exc}") from exc
         except CommitDurabilityError as exc:
             raise HTTPException(
                 500,
@@ -466,11 +461,6 @@ def update_profile(body: ProfileUpdateRequest, request: Request):
             existing = {}
         if not isinstance(existing, dict):
             existing = {}
-        # One-time, explicitly reported migration of a legacy base profile
-        # (promotes llm.default_model, drops inert legacy keys); the user's
-        # submitted fields are never modified and unsupported submissions
-        # fail the strict staged validation with 422.
-        existing, migrated_fields = migrate_legacy_profile(existing)
         if "coverage" in body.model_fields_set:
             profile_update = dict(profile_update)
             profile_update["collectors"] = _coverage_config(body.coverage or {})
@@ -509,15 +499,11 @@ def update_profile(body: ProfileUpdateRequest, request: Request):
                 500, "Profile could not be saved; the previous settings remain active"
             ) from exc
     restart_required = _reload_or_restart()
-    response = {
+    return {
         "saved": True,
         "restart_required": restart_required,
         "version": result.version,
     }
-    if migrated_fields:
-        response["legacy_profile_migrated"] = True
-        response["legacy_migration"] = migrated_fields
-    return response
 
 
 @router.post("/setup/test-connection")
@@ -547,13 +533,7 @@ def test_connection(body: TestConnectionRequest, request: Request):
         # an empty value means explicitly deleted and is never re-sourced.
         api_key = (body.api_key or "").strip() or live["OPENROUTER_API_KEY"]
     else:
-        # Legacy alias, or the environment before activation (demo/CI);
-        # managed_secret fails closed once setup is committed.
-        api_key = (
-            (body.api_key or "").strip()
-            or managed_secret("OPENROUTER_API_KEY")
-            or managed_secret("LLM_API_KEY")
-        )
+        api_key = (body.api_key or "").strip() or managed_secret("OPENROUTER_API_KEY")
 
     if not api_key:
         # A deleted (tombstoned) or absent managed key is unavailable; never
@@ -589,14 +569,10 @@ def test_connection(body: TestConnectionRequest, request: Request):
             while response.status_code in {301, 302, 303, 307, 308}:
                 hops += 1
                 if hops > 3:
-                    raise HTTPException(
-                        400, "Provider redirected too many times"
-                    )
+                    raise HTTPException(400, "Provider redirected too many times")
                 location = response.headers.get("location")
                 if not location:
-                    raise HTTPException(
-                        400, "Provider redirected without a location"
-                    )
+                    raise HTTPException(400, "Provider redirected without a location")
                 try:
                     target = resolve_redirect_url(current_url, location)
                     target_origin = parse_origin(target)

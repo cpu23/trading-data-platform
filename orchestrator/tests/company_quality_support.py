@@ -9,15 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import yaml
-
 import investment_service as service
+import yaml
 from research_intelligence import company_benchmarks as cb
 from research_intelligence import company_quality as cq
 
 EXCERPT = (
-    "AI demand remained durable while supply stayed tight. Revenue rose "
-    "12 percent."
+    "AI demand remained durable while supply stayed tight. Revenue rose 12 percent."
 )
 NEWS_ITEM = {
     "title": "Chip demand steady",
@@ -145,7 +143,9 @@ def narrative_payload(
         },
         "qualitative": qualitative,
         "summary": summary,
-        "thesis": thesis if thesis is not None else "Thesis holds unless orders reverse.",
+        "thesis": thesis
+        if thesis is not None
+        else "Thesis holds unless orders reverse.",
         "counter_thesis": counter_thesis,
         "materiality_assessment": (
             materiality_assessment
@@ -206,9 +206,7 @@ def finalized_for(payload, **overrides):
         "material_relationships": (),
     }
     arguments.update(overrides)
-    return service.finalize_investment_analysis(
-        copy.deepcopy(payload), **arguments
-    )
+    return service.finalize_investment_analysis(copy.deepcopy(payload), **arguments)
 
 
 def ledger_row(kind, path, expected, *, severity="material", rationale="r"):
@@ -269,9 +267,7 @@ class NumericClaimBindingTestBase(unittest.TestCase):
     def _producer(self, **overrides):
         raw = producer_raw(excerpt=overrides.pop("excerpt", MSFT_EXCERPT))
         raw.update(overrides)
-        return cb.load_producer_case(
-            write_yaml(self.directory, "producer.yaml", raw)
-        )
+        return cb.load_producer_case(write_yaml(self.directory, "producer.yaml", raw))
 
     def _evaluator(self, producer, **overrides):
         return cb.load_evaluator_case(
@@ -288,15 +284,19 @@ class NumericClaimBindingTestBase(unittest.TestCase):
         # inside this suite's Microsoft excerpt, so the narrative carries a
         # quote that does — keeping every other gate green by design.
         payload = narrative_payload(summary=summary)
-        payload["qualitative"]["ai_demand"]["evidence"] = (
-            "revenue was $64.7 billion"
-        )
+        payload["qualitative"]["ai_demand"]["evidence"] = "revenue was $64.7 billion"
         if rows is not None:
             payload["numeric_claims"] = rows
         return payload
 
-    def _run(self, producer=None, evaluator=None, summary="", rows=None,
-             deterministic_current=None):
+    def _run(
+        self,
+        producer=None,
+        evaluator=None,
+        summary="",
+        rows=None,
+        deterministic_current=None,
+    ):
         if deterministic_current is not None:
             # The frozen case and the finalization must see the SAME
             # deterministic facts: build the producer with them before any
@@ -338,12 +338,8 @@ class NumericClaimBindingTestBase(unittest.TestCase):
             )
         )
         replayed = service.InvestmentFinalizedAnalysis(**replay_blob)
-        direct_report = cq.run_company_hard_gates(
-            producer, evaluator, finalized
-        )
-        replay_report = cq.run_company_hard_gates(
-            producer, evaluator, replayed
-        )
+        direct_report = cq.run_company_hard_gates(producer, evaluator, finalized)
+        replay_report = cq.run_company_hard_gates(producer, evaluator, replayed)
         self.assertEqual(replay_report, direct_report)
         return direct_report
 
@@ -381,8 +377,7 @@ class NumericClaimBindingTestBase(unittest.TestCase):
             "unit": "usd_billions",
             "currency": "USD",
             "source_kind": "text",
-            "quote": quote
-            or "Remaining performance obligation was $269 billion",
+            "quote": quote or "Remaining performance obligation was $269 billion",
         }
 
     def _target_domain_outcomes(self, payload):

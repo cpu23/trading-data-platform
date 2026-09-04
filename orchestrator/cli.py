@@ -2,20 +2,19 @@ import json
 from datetime import UTC, datetime
 
 import click
-from sqlalchemy import text
-
 from collectors import get_all_collectors
 from config_loader import load_config
-from db import check_connection, check_tables_exist, get_session
 from logging_config import setup_logging
-from migrate import run_migrations
+from processors import get_all_processors
+from sqlalchemy import text
+
+from db import check_connection, check_tables_exist, get_session
 from orchestrator import (
     get_last_collection_runs,
     run_collector,
     run_full_cycle,
     run_processor,
 )
-from processors import get_all_processors
 
 REQUIRED_TABLES = [
     "macro_series",
@@ -488,17 +487,6 @@ def db_check():
         raise SystemExit(1)
 
 
-@cli.command()
-def migrate():
-    """Apply pending database migrations."""
-    config = load_config()
-    applied = run_migrations(config)
-    if applied:
-        click.echo(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
-    else:
-        click.echo("No pending migrations.")
-
-
 # ── News feed commands ────────────────────────────────────────────────────
 
 
@@ -664,7 +652,9 @@ def _emit_json(value):
 
 
 @cli.command("research-run")
-@click.option("--force", is_flag=True, help="Re-run model stages instead of cached outputs.")
+@click.option(
+    "--force", is_flag=True, help="Re-run model stages instead of cached outputs."
+)
 def research_run(force):
     """Queue the bounded macro and dynamic research workflow now."""
     from research_intelligence.operations import enqueue_research_job
@@ -683,7 +673,9 @@ def research_run(force):
 
 @cli.command("research-update")
 @click.argument("case_id")
-@click.option("--force", is_flag=True, help="Re-run model stages instead of cached outputs.")
+@click.option(
+    "--force", is_flag=True, help="Re-run model stages instead of cached outputs."
+)
 def research_update(case_id, force):
     """Queue one research case for bounded incremental update."""
     from research_intelligence.operations import enqueue_research_job
@@ -802,8 +794,12 @@ def research_evaluation():
 
 @research_evaluation.command("replay")
 @click.option("--as-of", "as_of", required=True, help="Timezone-aware ISO timestamp.")
-@click.option("--model", "models", multiple=True, help="Per-stage STAGE=MODEL override.")
-@click.option("--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override.")
+@click.option(
+    "--model", "models", multiple=True, help="Per-stage STAGE=MODEL override."
+)
+@click.option(
+    "--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override."
+)
 @click.option("--comparison-group", default=None, type=str)
 @click.option("--force", is_flag=True, help="Bypass reusable model-stage outputs.")
 def research_replay(as_of, models, prompts, comparison_group, force):
@@ -870,9 +866,15 @@ def research_benchmark_list():
 
 @research_benchmark.command("run")
 @click.argument("benchmark_id")
-@click.option("--date", "dates", multiple=True, help="Authored ISO replay date; repeatable.")
-@click.option("--model", "models", multiple=True, help="Per-stage STAGE=MODEL override.")
-@click.option("--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override.")
+@click.option(
+    "--date", "dates", multiple=True, help="Authored ISO replay date; repeatable."
+)
+@click.option(
+    "--model", "models", multiple=True, help="Per-stage STAGE=MODEL override."
+)
+@click.option(
+    "--prompt", "prompts", multiple=True, help="Per-stage STAGE=PATH override."
+)
 @click.option("--comparison-group", default=None, type=str)
 @click.option("--force", is_flag=True, help="Bypass reusable model-stage outputs.")
 def research_benchmark_run(
@@ -1032,9 +1034,7 @@ def research_cohorts(since, persist):
     cutoff = _research_timestamp(since) if since else None
     with get_session(load_config()) as session:
         rows = live_case_cohorts(session, since=cutoff)
-        inserted = (
-            persist_live_case_cohorts(session, rows) if persist else 0
-        )
+        inserted = persist_live_case_cohorts(session, rows) if persist else 0
     _emit_json({"cohorts": rows, "persisted": inserted})
 
 
@@ -1063,7 +1063,7 @@ def roles_group():
 
 
 @roles_group.command("run")
-@click.argument("role", type=click.Choice(["api", "scheduler", "worker", "outbox", "quotes"]))
+@click.argument("role", type=click.Choice(["worker"]))
 def roles_run(role):
     """Run one role process in the foreground (blocks until signal)."""
     import roles
@@ -1072,7 +1072,7 @@ def roles_run(role):
 
 
 @roles_group.command("check")
-@click.argument("role", type=click.Choice(["api", "scheduler", "worker", "outbox", "quotes"]))
+@click.argument("role", type=click.Choice(["worker"]))
 @click.option(
     "--stale-after",
     type=float,

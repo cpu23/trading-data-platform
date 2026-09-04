@@ -1,16 +1,16 @@
 from datetime import datetime
 
+from api_db import query_many
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from topology import build_system_topology, unavailable_system_topology
 
-from config import live_updates_enabled, load_config
-from db import query_many
+from config import load_config
 from routes.json.atoms import load_atom_context
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health
 from routes.views.news import load_news_context
-from topology import build_system_topology, unavailable_system_topology
 
 router = APIRouter()
 OVERVIEW_LIMIT = 10
@@ -230,7 +230,6 @@ def _local_snapshot(request: Request) -> dict:
         "runs": runs,
         "event_pipeline": event_pipeline,
         "claim_history": claim_history,
-        "live_updates_enabled": live_updates_enabled(config),
         "topology": topology,
     }
 
@@ -248,7 +247,6 @@ async def operations_overview(request: Request):
             **snapshot["tz"],
             "source_state": source_state,
             "topology": snapshot.get("topology", {}),
-            "live_updates_enabled": snapshot.get("live_updates_enabled", False),
             "processors": snapshot["processors"],
             "feed": snapshot["feed"],
             "runs": snapshot["runs"],
@@ -260,7 +258,6 @@ async def operations_overview(request: Request):
 
 @router.get("/partials/operations/source-health")
 async def partial_source_health(request: Request):
-    config = await run_in_threadpool(load_config)
     source_state = await _source_state(request)
     return request.app.state.templates.TemplateResponse(
         request,
@@ -268,18 +265,12 @@ async def partial_source_health(request: Request):
         {
             "request": request,
             "source_state": source_state,
-            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 
 
 @router.get("/partials/operations/system-topology")
 async def partial_system_topology(request: Request):
-    try:
-        config = await run_in_threadpool(load_config)
-        is_live_enabled = live_updates_enabled(config)
-    except Exception:
-        is_live_enabled = False
     try:
         topology = await run_in_threadpool(build_system_topology)
     except Exception:
@@ -290,7 +281,6 @@ async def partial_system_topology(request: Request):
         {
             "request": request,
             "topology": topology.model_dump(mode="json"),
-            "live_updates_enabled": is_live_enabled,
         },
     )
 

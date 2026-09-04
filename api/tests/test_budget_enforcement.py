@@ -1,29 +1,26 @@
 import asyncio
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
-
-import httpx
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from api_budgets import get_budget_status  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
-
-from budgets import get_budget_status  # noqa: E402
 from routes.json.triggers import trigger_cycle, trigger_process  # noqa: E402
+from run_lifecycle import RunAcceptanceConflict  # noqa: E402
 
 
-def _request_with_client(client):
-    """Build a direct-call request whose app exposes the shared client."""
-    request = Mock(client=Mock(host="testclient"))
-    request.app.state.orchestrator_client = client
-    return request
+def _request():
+    """Build a direct-call request with a mock client."""
+    return Mock(client=Mock(host="testclient"))
 
 
 class BudgetEnforcementTests(unittest.TestCase):
     @patch(
-        "budgets.query_one",
+        "api_budgets.query_one",
         side_effect=[
             {"total_cost": 2.0, "total_tokens": 100},
             {"spent_usd": 2.0, "reserved_usd": 0.0},
@@ -38,8 +35,11 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertFalse(status["paid_calls_allowed"])
         self.assertEqual(status["remaining_usd"], 0.0)
 
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.get_budget_status")
-    def test_denied_processor_is_not_dispatched(self, budget_status):
+    def test_denied_processor_is_not_dispatched(
+        self, budget_status, accept_and_enqueue
+    ):
         budget_status.return_value = {
             "available": True,
             "paid_calls_allowed": False,
@@ -47,37 +47,38 @@ class BudgetEnforcementTests(unittest.TestCase):
             "budget_cap_usd": 2.0,
         }
 
-        client = AsyncMock()
-        request = _request_with_client(client)
+        request = _request()
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(trigger_process("briefing", request, None))
 
         self.assertEqual(raised.exception.status_code, 429)
-        client.post.assert_not_awaited()
+        accept_and_enqueue.assert_not_called()
 
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.get_budget_status")
     def test_unavailable_budget_status_fails_closed_without_override(
-        self, budget_status
+        self, budget_status, accept_and_enqueue
     ):
         budget_status.return_value = {
             "available": False,
             "status": "unavailable",
         }
 
-        client = AsyncMock()
-        request = _request_with_client(client)
+        request = _request()
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(trigger_process("briefing", request, None))
 
         self.assertEqual(raised.exception.status_code, 503)
-        client.post.assert_not_awaited()
+        accept_and_enqueue.assert_not_called()
 
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.register_manual_override")
     @patch("routes.json.triggers.get_budget_status")
     def test_override_proceeds_even_when_budget_status_unavailable(
         self,
         budget_status,
         register_override,
+        accept_and_enqueue,
     ):
         budget_status.return_value = {
             "available": False,
@@ -88,14 +89,11 @@ class BudgetEnforcementTests(unittest.TestCase):
             "reason": "manual review",
             "scope": "one_run",
         }
-        orchestrator_response = Mock(status_code=202)
-        orchestrator_response.json.return_value = {
-            "job_id": "123",
-            "accepted_at": "now",
-        }
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
+        accept_and_enqueue.return_value = (
+            datetime(2026, 8, 4, 0, 0, 0),
+            Mock(job=Mock(correlation_id="123")),
+        )
+        request = _request()
 
         response = asyncio.run(
             trigger_process(
@@ -109,14 +107,16 @@ class BudgetEnforcementTests(unittest.TestCase):
         )
 
         self.assertEqual(response["job_id"], "123")
-        client.post.assert_awaited_once()
+        accept_and_enqueue.assert_called_once()
 
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.register_manual_override")
     @patch("routes.json.triggers.get_budget_status")
     def test_explicit_override_is_registered_and_dispatched(
         self,
         budget_status,
         register_override,
+        accept_and_enqueue,
     ):
         budget_status.return_value = {
             "available": True,
@@ -129,14 +129,11 @@ class BudgetEnforcementTests(unittest.TestCase):
             "reason": "manual review",
             "scope": "one_run",
         }
-        orchestrator_response = Mock(status_code=202)
-        orchestrator_response.json.return_value = {
-            "job_id": "123",
-            "accepted_at": "now",
-        }
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
+        accept_and_enqueue.return_value = (
+            datetime(2026, 8, 4, 0, 0, 0),
+            Mock(job=Mock(correlation_id="123")),
+        )
+        request = _request()
 
         response = asyncio.run(
             trigger_process(
@@ -151,13 +148,14 @@ class BudgetEnforcementTests(unittest.TestCase):
 
         register_override.assert_called_once()
         self.assertTrue(response["budget_override"]["requested"])
-        client.post.assert_awaited_once()
+        accept_and_enqueue.assert_called_once()
 
     @patch("routes.json.triggers.mark_override_dispatch_failed")
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.register_manual_override")
     @patch("routes.json.triggers.get_budget_status")
-    def test_ambiguous_transport_error_does_not_revoke_override(
-        self, budget_status, register_override, mark_failed
+    def test_enqueue_failure_revokes_override(
+        self, budget_status, register_override, accept_and_enqueue, mark_failed
     ):
         budget_status.return_value = {
             "available": True,
@@ -168,44 +166,8 @@ class BudgetEnforcementTests(unittest.TestCase):
             "reason": "manual review",
             "scope": "one_run",
         }
-        client = AsyncMock()
-        client.post = AsyncMock(side_effect=httpx.ReadTimeout("read timed out"))
-        request = _request_with_client(client)
-
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(
-                trigger_process(
-                    "briefing",
-                    request,
-                    {
-                        "budget_override": True,
-                        "override_reason": "manual review",
-                    },
-                )
-            )
-
-        self.assertEqual(raised.exception.status_code, 503)
-        mark_failed.assert_not_called()
-        self.assertIn("correlation_id", raised.exception.detail)
-
-    @patch("routes.json.triggers.mark_override_dispatch_failed")
-    @patch("routes.json.triggers.register_manual_override")
-    @patch("routes.json.triggers.get_budget_status")
-    def test_connect_error_revokes_override(
-        self, budget_status, register_override, mark_failed
-    ):
-        budget_status.return_value = {
-            "available": True,
-            "paid_calls_allowed": True,
-        }
-        register_override.return_value = {
-            "requested": True,
-            "reason": "manual review",
-            "scope": "one_run",
-        }
-        client = AsyncMock()
-        client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        request = _request_with_client(client)
+        accept_and_enqueue.side_effect = RuntimeError("queue connection failed")
+        request = _request()
 
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
@@ -224,10 +186,11 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIn("correlation_id", raised.exception.detail)
 
     @patch("routes.json.triggers.mark_override_dispatch_failed")
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.register_manual_override")
     @patch("routes.json.triggers.get_budget_status")
-    def test_http_5xx_response_keeps_override_active(
-        self, budget_status, register_override, mark_failed
+    def test_acceptance_conflict_revokes_override(
+        self, budget_status, register_override, accept_and_enqueue, mark_failed
     ):
         budget_status.return_value = {
             "available": True,
@@ -238,10 +201,8 @@ class BudgetEnforcementTests(unittest.TestCase):
             "reason": "manual review",
             "scope": "one_run",
         }
-        orchestrator_response = Mock(status_code=500)
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
+        accept_and_enqueue.side_effect = RunAcceptanceConflict("already running")
+        request = _request()
 
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
@@ -255,86 +216,15 @@ class BudgetEnforcementTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(raised.exception.status_code, 502)
-        mark_failed.assert_not_called()
-        self.assertIn("correlation_id", raised.exception.detail)
-
-    @patch("routes.json.triggers.mark_override_dispatch_failed")
-    @patch("routes.json.triggers.register_manual_override")
-    @patch("routes.json.triggers.get_budget_status")
-    def test_validated_4xx_rejection_revokes_override(
-        self, budget_status, register_override, mark_failed
-    ):
-        budget_status.return_value = {
-            "available": True,
-            "paid_calls_allowed": True,
-        }
-        register_override.return_value = {
-            "requested": True,
-            "reason": "manual review",
-            "scope": "one_run",
-        }
-        orchestrator_response = Mock(status_code=409)
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
-
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(
-                trigger_process(
-                    "briefing",
-                    request,
-                    {
-                        "budget_override": True,
-                        "override_reason": "manual review",
-                    },
-                )
-            )
-
-        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.status_code, 409)
         mark_failed.assert_called_once()
-
-    @patch("routes.json.triggers.mark_override_dispatch_failed")
-    @patch("routes.json.triggers.register_manual_override")
-    @patch("routes.json.triggers.get_budget_status")
-    def test_malformed_202_body_keeps_override_active(
-        self, budget_status, register_override, mark_failed
-    ):
-        budget_status.return_value = {
-            "available": True,
-            "paid_calls_allowed": True,
-        }
-        register_override.return_value = {
-            "requested": True,
-            "reason": "manual review",
-            "scope": "one_run",
-        }
-        orchestrator_response = Mock(status_code=202)
-        orchestrator_response.json.return_value = {"unexpected": True}
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
-
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(
-                trigger_process(
-                    "briefing",
-                    request,
-                    {
-                        "budget_override": True,
-                        "override_reason": "manual review",
-                    },
-                )
-            )
-
-        self.assertEqual(raised.exception.status_code, 502)
-        mark_failed.assert_not_called()
+        self.assertEqual(raised.exception.detail, "already running")
 
     @patch("routes.json.triggers.get_budget_status")
     def test_override_reason_must_be_string_not_coerced(self, budget_status):
         for reason in (123, ["nested"], {"nested": True}, None):
             with self.subTest(reason=reason):
-                request = Mock(client=Mock(host="testclient"))
+                request = _request()
                 with self.assertRaises(HTTPException) as raised:
                     asyncio.run(
                         trigger_process(
@@ -352,7 +242,7 @@ class BudgetEnforcementTests(unittest.TestCase):
 
     @patch("routes.json.triggers.get_budget_status")
     def test_override_reason_length_is_bounded(self, budget_status):
-        request = Mock(client=Mock(host="testclient"))
+        request = _request()
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
                 trigger_process(
@@ -372,7 +262,7 @@ class BudgetEnforcementTests(unittest.TestCase):
     def test_budget_override_flag_must_be_boolean(self, budget_status):
         for flag in (1, "true", "yes", []):
             with self.subTest(flag=flag):
-                request = Mock(client=Mock(host="testclient"))
+                request = _request()
                 with self.assertRaises(HTTPException) as raised:
                     asyncio.run(
                         trigger_process(
@@ -389,7 +279,7 @@ class BudgetEnforcementTests(unittest.TestCase):
 
     @patch("routes.json.triggers.get_budget_status")
     def test_override_requires_reason(self, budget_status):
-        request = Mock(client=Mock(host="testclient"))
+        request = _request()
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
                 trigger_cycle(
@@ -401,30 +291,29 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 422)
         budget_status.assert_not_called()
 
+    @patch("routes.json.triggers.accept_and_enqueue_operation")
     @patch("routes.json.triggers.get_budget_status")
     def test_cycle_dispatches_collectors_when_budget_is_exhausted(
         self,
         budget_status,
+        accept_and_enqueue,
     ):
         budget_status.return_value = {
             "paid_calls_allowed": False,
             "today_cost_usd": 2.0,
             "budget_cap_usd": 2.0,
         }
-        orchestrator_response = Mock(status_code=202)
-        orchestrator_response.json.return_value = {
-            "job_id": "123",
-            "accepted_at": "now",
-        }
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=orchestrator_response)
-        request = _request_with_client(client)
+        accept_and_enqueue.return_value = (
+            datetime(2026, 8, 4, 0, 0, 0),
+            Mock(job=Mock(correlation_id="123")),
+        )
+        request = _request()
 
         response = asyncio.run(trigger_cycle(request, None))
 
         self.assertEqual(response["job_id"], "123")
         self.assertFalse(response["budget"]["paid_calls_allowed"])
-        client.post.assert_awaited_once()
+        accept_and_enqueue.assert_called_once()
 
 
 if __name__ == "__main__":

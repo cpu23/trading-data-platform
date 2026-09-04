@@ -12,6 +12,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import http_client
+
 from contracts.outbound_security import OutboundSecurityError
 
 
@@ -849,9 +850,7 @@ class BoundedStreamConsumptionTests(unittest.TestCase):
         return stream, client
 
     def test_oversized_declared_content_length_rejected_before_any_bytes(self):
-        stream, client = self._stream_client(
-            b"x" * 5000, {"content-length": "5000"}
-        )
+        stream, client = self._stream_client(b"x" * 5000, {"content-length": "5000"})
         with self.assertRaises(http_client.ResponseBodyTooLarge):
             http_client.make_request(
                 "GET",
@@ -863,9 +862,7 @@ class BoundedStreamConsumptionTests(unittest.TestCase):
         self.assertEqual(stream.bytes_read, 0)
 
     def test_false_small_content_length_stops_incrementally(self):
-        stream, client = self._stream_client(
-            b"x" * 5000, {"content-length": "10"}
-        )
+        stream, client = self._stream_client(b"x" * 5000, {"content-length": "10"})
         with self.assertRaises(http_client.ResponseBodyTooLarge):
             http_client.make_request(
                 "GET",
@@ -893,9 +890,7 @@ class BoundedStreamConsumptionTests(unittest.TestCase):
         self.assertGreater(stream.bytes_read, 100)
 
     def test_bounded_body_is_returned_fully(self):
-        stream, client = self._stream_client(
-            b"bounded body", {"content-length": "12"}
-        )
+        stream, client = self._stream_client(b"bounded body", {"content-length": "12"})
         result = http_client.make_request(
             "GET",
             "https://example.test/resource",
@@ -1103,9 +1098,7 @@ class BoundedRedirectTests(unittest.TestCase):
         requested = []
 
         def handler(request):
-            requested.append(
-                (str(request.url), request.headers.get("authorization"))
-            )
+            requested.append((str(request.url), request.headers.get("authorization")))
             if request.url.path == "/first":
                 return httpx.Response(
                     302,
@@ -1139,9 +1132,7 @@ class BoundedRedirectTests(unittest.TestCase):
         requested = []
 
         def handler(request):
-            requested.append(
-                (str(request.url), request.headers.get("authorization"))
-            )
+            requested.append((str(request.url), request.headers.get("authorization")))
             if request.url.path == "/first":
                 return httpx.Response(
                     302,

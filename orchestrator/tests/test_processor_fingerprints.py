@@ -9,12 +9,13 @@ from uuid import UUID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import orchestrator
 from budgets import BudgetContext
-from contracts.runtime_config import ProcessorAssetContextConfig
 from processors.base import canonical_fingerprint, canonical_json_value
 from processors.briefing import DailyBriefingProcessor
 from processors.macro_regime import MacroRegimeProcessor
+
+import orchestrator
+from contracts.runtime_config import ProcessorAssetContextConfig
 
 
 class Row:

@@ -75,6 +75,46 @@
     </div>
   </section>
 
+  <section class="section thesis-review-queue-section" aria-labelledby="thesis-review-queue-title">
+    <div class="section-heading thesis-section-heading">
+      <div>
+        <span class="label" id="thesis-review-queue-title">Thesis proposal review queue</span>
+        <span class="section-note">Autonomous proposals staged for mandatory human review; canonical records materialize only on explicit approval.</span>
+      </div>
+      <div class="thesis-toolbar" aria-label="Proposal filters">
+        <label><span>Status</span>
+          <select class="compact-select" data-thesis-proposal-status-filter>
+            <option value="">All statuses</option>
+            <option value="pending_review" selected>Pending review</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="revision_requested">Revision requested</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="thesis-table-wrap" data-thesis-proposal-region aria-busy="true">
+      <table class="thesis-table thesis-proposals-table">
+        <caption class="sr-only">Thesis proposals awaiting human review</caption>
+        <thead>
+          <tr>
+            <th scope="col">Proposal / Subject</th>
+            <th scope="col">Company / Symbol</th>
+            <th scope="col">Direction / Horizon</th>
+            <th scope="col">Status</th>
+            <th scope="col">Proposed Diff</th>
+            <th scope="col">Evidence &amp; Scoring</th>
+            <th scope="col">Challenge</th>
+            <th scope="col">Review Actions</th>
+          </tr>
+        </thead>
+        <tbody data-thesis-proposals>
+          <tr><td colspan="8" class="thesis-state-cell">Loading proposal review queue…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="section" aria-labelledby="thesis-falsification-title">
     <div class="section-heading">
       <span class="label" id="thesis-falsification-title">Falsification queue</span>

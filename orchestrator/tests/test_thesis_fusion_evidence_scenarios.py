@@ -13,6 +13,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
+from research_intelligence.contracts import EvidenceSignal  # noqa: E402
 from support_thesis_fusion import (  # noqa: E402
     BEAR_THESIS_ID,
     FORECAST_ID,
@@ -26,8 +27,6 @@ from support_thesis_fusion import (  # noqa: E402
     Session,
     desk_evidence_item,
 )
-
-from research_intelligence.contracts import EvidenceSignal  # noqa: E402
 from thesis_fusion import (  # noqa: E402
     attach_evidence,
     freeze_forecast,
@@ -306,7 +305,6 @@ class EvidenceAttachmentTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(session.calls, [])
-
 
 
 class ScenarioTests(unittest.TestCase):
@@ -668,7 +666,6 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(session.calls[3][1]["expected_return"], 0.5)
         self.assertIsNone(session.calls[3][1]["probability"])
         session.commit.assert_not_called()
-
 
 
 class ForecastTests(unittest.TestCase):
@@ -1290,7 +1287,6 @@ class ForecastTests(unittest.TestCase):
         session.commit.assert_not_called()
 
 
-
 class OutcomeTests(unittest.TestCase):
     def test_record_forecast_outcome_is_idempotent(self):
         session = Session(
@@ -1363,7 +1359,6 @@ class OutcomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown forecast"):
             record_forecast_outcome(session, str(FORECAST_ID), status="hit")
         session.commit.assert_not_called()
-
 
 
 class FalsificationRunTests(unittest.TestCase):
@@ -1511,7 +1506,6 @@ class FalsificationRunTests(unittest.TestCase):
                 status="pending",
                 completed_at=NOW,
             )
-
 
 
 class PositionLinkTests(unittest.TestCase):

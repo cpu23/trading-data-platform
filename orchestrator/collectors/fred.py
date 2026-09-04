@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import text
-
-from collectors.base import CollectionResult, elapsed_ms
-from db import get_session, query_latest
 from errors import InvalidSourceData, PersistenceError, TransientSourceError
 from http_client import make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
+from sqlalchemy import text
+
+from collectors.base import CollectionResult, elapsed_ms
+from db import get_session, query_latest
 
 logger = get_logger("collector.fred")
 

@@ -4,13 +4,13 @@ import threading
 from datetime import UTC, datetime
 
 import httpx
-from sqlalchemy import text
-
 from collectors.oanda import OandaCollector
-from db import get_session
 from http_client import PublicOnlyHTTPTransport
 from logging_config import get_logger
 from role_heartbeat import fresh_role_heartbeats
+from sqlalchemy import text
+
+from db import get_session
 
 logger = get_logger("price_stream")
 
@@ -34,7 +34,9 @@ def _upsert_quote(config: dict, symbol: str, price: float, observed_at: str) -> 
                 },
             )
     except Exception as exc:
-        logger.warning("quote_persist_failed", symbol=symbol, error_type=type(exc).__name__)
+        logger.warning(
+            "quote_persist_failed", symbol=symbol, error_type=type(exc).__name__
+        )
 
 
 def db_snapshot(config: dict) -> dict:
@@ -67,9 +69,7 @@ def db_snapshot(config: dict) -> dict:
                     }
                 )
     except Exception as exc:
-        logger.warning(
-            "quote_snapshot_unavailable", error_type=type(exc).__name__
-        )
+        logger.warning("quote_snapshot_unavailable", error_type=type(exc).__name__)
     stream = {"status": "stopped", "last_heartbeat": None, "error": None}
     try:
         fresh = fresh_role_heartbeats(config, "quotes")

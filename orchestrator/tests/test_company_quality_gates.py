@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import investment_service as service
 from company_quality_support import (
     ARITHMETIC_METRICS,
     ARITHMETIC_ROW,
@@ -32,8 +33,6 @@ from company_quality_support import (
     producer_raw,
     write_yaml,
 )
-
-import investment_service as service
 from research_intelligence import company_benchmarks as cb
 from research_intelligence import company_quality as cq
 
@@ -45,7 +44,9 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                 "relationship_id": "mr_growth",
                 "compatibility": "compatible",
                 "required_facts": (
-                    {"fact_path": "deterministic_current.relationship_facts.rf_revenue"},
+                    {
+                        "fact_path": "deterministic_current.relationship_facts.rf_revenue"
+                    },
                     {"fact_path": "deterministic_current.relationship_facts.rf_profit"},
                 ),
             },
@@ -54,7 +55,9 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                 "compatibility": "incompatible",
                 "required_facts": (
                     {"fact_path": "deterministic_current.relationship_facts.rf_cash"},
-                    {"fact_path": "deterministic_current.relationship_facts.rf_spending"},
+                    {
+                        "fact_path": "deterministic_current.relationship_facts.rf_spending"
+                    },
                 ),
             },
         )
@@ -75,9 +78,7 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                     "summary_synthesis": (
                         "Revenue growth did not translate into profit growth."
                     ),
-                    "thesis_synthesis": (
-                        "The divergence points to margin pressure."
-                    ),
+                    "thesis_synthesis": ("The divergence points to margin pressure."),
                     "summary_fact_paths": [
                         "deterministic_current.relationship_facts.rf_revenue"
                     ],
@@ -175,7 +176,10 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                 self.assertIn(expected, " ".join(raised.exception.problems))
 
     def test_missing_and_partial_reconciliations_fail_closed(self):
-        for rows, expected_count in (([], 0), (self.payload["relationship_reconciliations"][:1], 1)):
+        for rows, expected_count in (
+            ([], 0),
+            (self.payload["relationship_reconciliations"][:1], 1),
+        ):
             with self.subTest(row_count=expected_count):
                 payload = copy.deepcopy(self.payload)
                 payload["relationship_reconciliations"] = copy.deepcopy(rows)
@@ -213,9 +217,7 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
 
     def test_compatible_relationship_cannot_falsely_abstain(self):
         payload = copy.deepcopy(self.payload)
-        payload["relationship_reconciliations"][0]["status"] = (
-            "abstained_incompatible"
-        )
+        payload["relationship_reconciliations"][0]["status"] = "abstained_incompatible"
         self.assertIn(
             (
                 "relationship_reconciliations[0].status: must be 'reconciled' "
@@ -262,12 +264,12 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                 self.assertTrue(self._problems(payload))
 
         concise = copy.deepcopy(self.payload)
-        concise["summary"] = (
-            concise["relationship_reconciliations"][0]["summary_synthesis"]
-        )
-        concise["thesis"] = (
-            concise["relationship_reconciliations"][0]["thesis_synthesis"]
-        )
+        concise["summary"] = concise["relationship_reconciliations"][0][
+            "summary_synthesis"
+        ]
+        concise["thesis"] = concise["relationship_reconciliations"][0][
+            "thesis_synthesis"
+        ]
         self.assertEqual(self._problems(concise), [])
 
     def test_incompatible_relationship_requires_empty_synthesis_fields(self):
@@ -284,7 +286,6 @@ class RelationshipReconciliationHardGateTests(unittest.TestCase):
                 payload = copy.deepcopy(self.payload)
                 payload["relationship_reconciliations"][1][field] = value
                 self.assertTrue(self._problems(payload))
-
 
 
 class CompanyQualityGateTests(unittest.TestCase):
@@ -351,7 +352,6 @@ class CompanyQualityGateTests(unittest.TestCase):
                 self.assertFalse(report.passed)
                 violations = self._codes(report, "investment_evidence_violation")
                 self.assertEqual(len(violations), 1)
-
 
     def test_risk_and_catalyst_evidence_grounding_does_not_claim_entailment(self):
         payload = narrative_payload()
@@ -441,7 +441,9 @@ class CompanyQualityGateTests(unittest.TestCase):
         # 1. Clean valid payload with default not_disclosed materiality passes.
         clean_payload = narrative_payload()
         clean_report = self._run(
-            producer=producer, evaluator=evaluator, finalized=finalized_for(clean_payload)
+            producer=producer,
+            evaluator=evaluator,
+            finalized=finalized_for(clean_payload),
         )
         self.assertTrue(clean_report.passed, clean_report.failures)
         self.assertEqual(clean_report.failures, ())
@@ -483,7 +485,9 @@ class CompanyQualityGateTests(unittest.TestCase):
         addressed_payload = narrative_payload(
             materiality_assessment=addressed_materiality
         )
-        self.assertEqual(service.validate_investment_report_payload(addressed_payload), [])
+        self.assertEqual(
+            service.validate_investment_report_payload(addressed_payload), []
+        )
         self.assertEqual(
             service.investment_evidence_violations(
                 addressed_payload, excerpt=producer.excerpt, news_items=()
@@ -491,7 +495,9 @@ class CompanyQualityGateTests(unittest.TestCase):
             [],
         )
         addressed_report = self._run(
-            producer=producer, evaluator=evaluator, finalized=finalized_for(addressed_payload)
+            producer=producer,
+            evaluator=evaluator,
+            finalized=finalized_for(addressed_payload),
         )
         self.assertTrue(addressed_report.passed, addressed_report.failures)
 
@@ -510,10 +516,14 @@ class CompanyQualityGateTests(unittest.TestCase):
             ),
         )
         ungrounded_report = self._run(
-            producer=producer, evaluator=evaluator, finalized=finalized_for(ungrounded_payload)
+            producer=producer,
+            evaluator=evaluator,
+            finalized=finalized_for(ungrounded_payload),
         )
         self.assertFalse(ungrounded_report.passed)
-        evidence_failures = self._codes(ungrounded_report, "investment_evidence_violation")
+        evidence_failures = self._codes(
+            ungrounded_report, "investment_evidence_violation"
+        )
         self.assertTrue(
             any(
                 "materiality_assessment.reported_variance_driver" in failure.observed
@@ -548,6 +558,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             producer=producer, evaluator=evaluator, finalized=finalized_for(bad_payload)
         )
         self.assertFalse(bad_report.passed)
+
     def test_unsupported_authored_number_fails_grounded_passes(self):
         # The excerpt carries the supported figure together with its unit
         # rendering, metric identity, and source-carried fiscal period so
@@ -559,9 +570,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             )
         )
         evaluator = self._evaluator(producer)
-        invalid_payload = narrative_payload(
-            summary="Revenue up 12% in FY2025."
-        )
+        invalid_payload = narrative_payload(summary="Revenue up 12% in FY2025.")
         invalid_payload["numeric_claims"] = [
             {
                 "claim_id": "revenue_growth_fy2025",
@@ -582,9 +591,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertEqual(len(self._codes(report, "numeric_claim_invalid_row")), 1)
 
-        supported_payload = narrative_payload(
-            summary="Revenue up 12% in FY2025."
-        )
+        supported_payload = narrative_payload(summary="Revenue up 12% in FY2025.")
         supported_payload["numeric_claims"] = [
             {
                 "claim_id": "revenue_growth_fy2025",
@@ -599,9 +606,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             }
         ]
         supported = finalized_for(supported_payload)
-        report = self._run(
-            producer=producer, evaluator=evaluator, finalized=supported
-        )
+        report = self._run(producer=producer, evaluator=evaluator, finalized=supported)
         self.assertTrue(report.passed)
 
     def test_target_path_forms_cover_the_same_material_narrative_number(self):
@@ -619,9 +624,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             ("/invalid_target", False),
         ):
             with self.subTest(path=authored_path):
-                payload = narrative_payload(
-                    summary="Revenue up 12% in FY2025."
-                )
+                payload = narrative_payload(summary="Revenue up 12% in FY2025.")
                 payload["numeric_claims"] = [
                     {
                         "claim_id": "revenue_growth_fy2025",
@@ -651,12 +654,13 @@ class CompanyQualityGateTests(unittest.TestCase):
                     )
                 else:
                     self.assertFalse(report.passed)
-                    self.assertEqual(len(self._codes(report, "numeric_claim_invalid_target")), 1)
+                    self.assertEqual(
+                        len(self._codes(report, "numeric_claim_invalid_target")), 1
+                    )
+
     def test_qualitative_evidence_target_names_match_replayed_hard_gates(self):
         quote = "AI demand rose 12% in FY2025."
-        producer = self._producer(
-            excerpt=f"AI demand remained durable. {quote}"
-        )
+        producer = self._producer(excerpt=f"AI demand remained durable. {quote}")
         evaluator = self._evaluator(producer)
 
         def payload_for(signal):
@@ -667,7 +671,11 @@ class CompanyQualityGateTests(unittest.TestCase):
                 "evidence": quote,
             }
             payload["qualitative"][signal] = signal_evidence
-            path_val = f"$.qualitative.{signal}.evidence" if signal != "forged_signal" else f"/{signal}"
+            path_val = (
+                f"$.qualitative.{signal}.evidence"
+                if signal != "forged_signal"
+                else f"/{signal}"
+            )
             payload["numeric_claims"] = [
                 {
                     "claim_id": f"{signal}_growth_fy2025",
@@ -702,9 +710,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             ("replay", replay(known)),
         ):
             with self.subTest(signal="ai_demand", mode=mode):
-                report = cq.run_company_hard_gates(
-                    producer, evaluator, finalized
-                )
+                report = cq.run_company_hard_gates(producer, evaluator, finalized)
                 self.assertTrue(report.passed, report.failures)
                 self.assertEqual(report.failures, ())
 
@@ -714,9 +720,7 @@ class CompanyQualityGateTests(unittest.TestCase):
             ("replay", replay(forged)),
         ):
             with self.subTest(signal="forged_signal", mode=mode):
-                report = cq.run_company_hard_gates(
-                    producer, evaluator, finalized
-                )
+                report = cq.run_company_hard_gates(producer, evaluator, finalized)
                 self.assertFalse(report.passed)
                 self.assertEqual(
                     [failure.code for failure in report.failures],
@@ -827,6 +831,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         self.assertGreaterEqual(
             len(self._codes(report, "numeric_claim_invalid_row")), 1
         )
+
     def test_required_material_evidence_is_filing_span_integrity_only(self):
         producer = self._producer()
         # A quote absent from every producer filing span fails: the evaluator
@@ -834,9 +839,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         absent_from_filing = self._evaluator(
             producer, required_material_evidence=["Backlog doubled"]
         )
-        report = self._run(
-            producer=producer, evaluator=absent_from_filing
-        )
+        report = self._run(producer=producer, evaluator=absent_from_filing)
         self.assertFalse(report.passed)
         self.assertEqual(
             len(self._codes(report, "required_evidence_absent_from_filing_span")), 1
@@ -850,9 +853,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         filed_but_unquoted = self._evaluator(
             producer, required_material_evidence=["Revenue rose 12 percent"]
         )
-        report = self._run(
-            producer=producer, evaluator=filed_but_unquoted
-        )
+        report = self._run(producer=producer, evaluator=filed_but_unquoted)
         self.assertTrue(report.passed, report.failures)
         # An evaluator quote can never force an artificial risk or catalyst:
         # the payload below has none, and the gate stays green.
@@ -923,28 +924,20 @@ class CompanyQualityGateTests(unittest.TestCase):
         negatives = [
             (
                 "wrong-metric",
-                narrative_payload(
-                    summary="Revenue reached $20 billion next quarter."
-                ),
+                narrative_payload(summary="Revenue reached $20 billion next quarter."),
             ),
             (
                 "wrong-period",
-                narrative_payload(
-                    summary="Current-quarter capex reached $20 billion."
-                ),
+                narrative_payload(summary="Current-quarter capex reached $20 billion."),
             ),
             ("split-fields", split_payload),
             (
                 "wrong-value",
-                narrative_payload(
-                    summary="Next quarter capex reached $19 billion."
-                ),
+                narrative_payload(summary="Next quarter capex reached $19 billion."),
             ),
             (
                 "opposite-signed-value",
-                narrative_payload(
-                    summary="Next quarter capex reached -$20B."
-                ),
+                narrative_payload(summary="Next quarter capex reached -$20B."),
             ),
         ]
         for label, payload in negatives:
@@ -985,9 +978,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         for claim in claims:
             with self.subTest(claim_id=claim["claim_id"]):
                 producer = self._producer()
-                evaluator = self._evaluator(
-                    producer, forbidden_hindsight=[dict(claim)]
-                )
+                evaluator = self._evaluator(producer, forbidden_hindsight=[dict(claim)])
                 leaked = {
                     "azure_growth": "Azure growth hit 33% in Q1 FY2025.",
                     "cloud_margin": "Cloud gross margin was 71% in Q1 FY2025.",
@@ -1090,21 +1081,33 @@ class CompanyQualityGateTests(unittest.TestCase):
         producer = self._producer()
         evaluator = self._evaluator(producer)
         cases = [
-            ("equals", ledger_row("equals", "facts.summary",
-                                  "Demand durable, supply tight."),
-             ledger_row("equals", "facts.summary", "Different entirely.")),
-            ("contains", ledger_row("contains", "facts.summary", "Demand"),
-             ledger_row("contains", "facts.summary", "orders exploded")),
-            ("not_contains", ledger_row("not_contains", "facts.summary",
-                                        "buy shares"),
-             ledger_row("not_contains", "facts.summary", "Demand")),
-            ("nonblank", nonblank_ledger_row("facts.summary"),
-             nonblank_ledger_row("facts.watch_items")),
+            (
+                "equals",
+                ledger_row("equals", "facts.summary", "Demand durable, supply tight."),
+                ledger_row("equals", "facts.summary", "Different entirely."),
+            ),
+            (
+                "contains",
+                ledger_row("contains", "facts.summary", "Demand"),
+                ledger_row("contains", "facts.summary", "orders exploded"),
+            ),
+            (
+                "not_contains",
+                ledger_row("not_contains", "facts.summary", "buy shares"),
+                ledger_row("not_contains", "facts.summary", "Demand"),
+            ),
+            (
+                "nonblank",
+                nonblank_ledger_row("facts.summary"),
+                nonblank_ledger_row("facts.watch_items"),
+            ),
             # No-tolerance pass is intentional: tolerance is optional and
             # defaults to zero, so an exact 100 vs 100 match passes.
-            ("number_close",
-             ledger_row("number_close", "facts.metrics.revenue.value", 100),
-             None),
+            (
+                "number_close",
+                ledger_row("number_close", "facts.metrics.revenue.value", 100),
+                None,
+            ),
         ]
         for kind, passing_row, failing_row in cases:
             with self.subTest(kind=f"{kind}-pass"):
@@ -1151,7 +1154,8 @@ class CompanyQualityGateTests(unittest.TestCase):
                 producer=producer,
                 evaluator=evaluator,
                 finalized=finalized_for(
-                    narrative_payload(), deterministic_current={"revenue": {"value": 100}}
+                    narrative_payload(),
+                    deterministic_current={"revenue": {"value": 100}},
                 ),
             )
             self.assertFalse(report.passed)
@@ -1163,7 +1167,8 @@ class CompanyQualityGateTests(unittest.TestCase):
                 producer=producer,
                 evaluator=evaluator,
                 finalized=finalized_for(
-                    narrative_payload(), deterministic_current=copy.deepcopy(ARITHMETIC_METRICS)
+                    narrative_payload(),
+                    deterministic_current=copy.deepcopy(ARITHMETIC_METRICS),
                 ),
             )
             self.assertTrue(report.passed, report.failures)
@@ -1181,9 +1186,7 @@ class CompanyQualityGateTests(unittest.TestCase):
                 ),
             )
             self.assertFalse(report.passed)
-            self.assertEqual(
-                len(self._codes(report, "deterministic_check_failed")), 1
-            )
+            self.assertEqual(len(self._codes(report, "deterministic_check_failed")), 1)
 
     def test_malformed_or_unknown_ledger_rows_fail_critical(self):
         producer = self._producer()
@@ -1198,9 +1201,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         )
         unknown = dataclass_replace(
             self._evaluator(producer),
-            deterministic_checks=[
-                ledger_row("teleport", "facts.summary", "x")
-            ],
+            deterministic_checks=[ledger_row("teleport", "facts.summary", "x")],
         )
         report = self._run(producer=producer, evaluator=unknown)
         self.assertFalse(report.passed)
@@ -1211,16 +1212,22 @@ class CompanyQualityGateTests(unittest.TestCase):
     def test_arithmetic_edge_cases_fail_closed(self):
         producer = self._producer()
         zero_scale_row = dict(ARITHMETIC_ROW, scale=0)
-        missing_row = dict(
-            ARITHMETIC_ROW, numerator_path="facts.metrics.gone.value"
-        )
+        missing_row = dict(ARITHMETIC_ROW, numerator_path="facts.metrics.gone.value")
         scenarios = (
             ("zero-scale", zero_scale_row, {}, "contract"),
             ("missing-numerator", missing_row, {}, "failed"),
-            ("zero-denominator", ARITHMETIC_ROW,
-             {"shares_outstanding": {"value": 0}}, "failed"),
-            ("nonfinite-denominator", ARITHMETIC_ROW,
-             {"shares_outstanding": {"value": float("nan")}}, "failed"),
+            (
+                "zero-denominator",
+                ARITHMETIC_ROW,
+                {"shares_outstanding": {"value": 0}},
+                "failed",
+            ),
+            (
+                "nonfinite-denominator",
+                ARITHMETIC_ROW,
+                {"shares_outstanding": {"value": float("nan")}},
+                "failed",
+            ),
         )
         for name, row, overrides, expectation in scenarios:
             with self.subTest(name=name):
@@ -1263,9 +1270,7 @@ class CompanyQualityGateTests(unittest.TestCase):
         )
         payload = narrative_payload(summary="Demand up 13 percent.")
         payload["watch_items"] = ["Investors may buy shares early."]
-        payload["qualitative"]["ai_demand"]["evidence"] = (
-            "Orders surged unexpectedly"
-        )
+        payload["qualitative"]["ai_demand"]["evidence"] = "Orders surged unexpectedly"
         first = self._run(
             producer=producer, evaluator=evaluator, finalized=finalized_for(payload)
         )
@@ -1275,12 +1280,10 @@ class CompanyQualityGateTests(unittest.TestCase):
         self.assertFalse(first.passed)
         self.assertEqual(first.failures, second.failures)
         ordered = [
-            (failure.code, failure.path, failure.evidence)
-            for failure in first.failures
+            (failure.code, failure.path, failure.evidence) for failure in first.failures
         ]
         self.assertEqual(ordered, sorted(set(ordered)))
         self.assertEqual(
             [failure.code for failure in first.failures],
             sorted(failure.code for failure in first.failures),
         )
-

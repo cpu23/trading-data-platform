@@ -5,49 +5,24 @@ services:
     ports:
       - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
 
-  migrate:
+  web:
     volumes:
-      - ./config:/app/config:ro
-      - ./db/migrations:/app/db/migrations:ro
-
-  orchestrator:
-    working_dir: /workspace/orchestrator
-    volumes:
+      - ./api:/app/api:ro
+      - ./orchestrator:/app/orchestrator:ro
+      - ./contracts:/app/contracts:ro
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./orchestrator:/workspace/orchestrator
-
-  scheduler:
-    working_dir: /workspace/orchestrator
-    volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
-      - ./orchestrator:/workspace/orchestrator
+      - logsdata:/var/log/trading-data
+      - newsdata:/var/lib/trading-data/news:ro
+      - operatorstate:/app/state
 
   worker:
-    working_dir: /workspace/orchestrator
     volumes:
+      - ./api:/app/api:ro
+      - ./orchestrator:/app/orchestrator:ro
+      - ./contracts:/app/contracts:ro
       - ./config:/app/config:ro
       - ./prompts:/app/prompts:ro
-      - ./orchestrator:/workspace/orchestrator
-
-  outbox:
-    working_dir: /workspace/orchestrator
-    volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
-      - ./orchestrator:/workspace/orchestrator
-
-  quotes:
-    working_dir: /workspace/orchestrator
-    volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
-      - ./orchestrator:/workspace/orchestrator
-
-  api:
-    working_dir: /workspace/api
-    volumes:
-      - ./config:/app/config:ro
-      - ./prompts:/app/prompts:ro
-      - ./api:/workspace/api
+      - newsdata:/var/lib/trading-data/news
+      - logsdata:/var/log/trading-data
+      - operatorstate:/app/state:ro

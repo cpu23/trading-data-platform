@@ -16,7 +16,7 @@ class FailureDrillScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         expected = {
             "API DB unavailable",
-            "orchestrator DB unavailable",
+            "worker heartbeat unavailable",
             "malformed config fail closed",
             "collector truthful partial/failed",
             "LLM timeout safe telemetry",
@@ -24,9 +24,10 @@ class FailureDrillScriptTests(unittest.TestCase):
             "restart prerequisite",
             "concurrent cycle conflict",
             "news cursor unchanged",
-            "migration checksum abort",
         }
-        actual = {line[5:] for line in result.stdout.splitlines() if line.startswith("PASS ")}
+        actual = {
+            line[5:] for line in result.stdout.splitlines() if line.startswith("PASS ")
+        }
         self.assertEqual(actual, expected)
         self.assertNotIn("FAIL", result.stdout)
         self.assertEqual(result.stderr, "")

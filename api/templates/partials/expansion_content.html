@@ -3,9 +3,9 @@
     <div class="expansion-header-left">
       <span class="instrument-symbol tabular">{{ note.symbol }}</span>
       {% if price %}
-        <span class="expansion-price tabular" data-live-price="{{ note.symbol }}">{{ "%.5g"|format(price.price) }}</span>
+        <span class="expansion-price tabular">{{ "%.5g"|format(price.price) }}</span>
       {% else %}
-        <span class="expansion-price tabular" data-live-price="{{ note.symbol }}">—</span>
+        <span class="expansion-price tabular">—</span>
       {% endif %}
       <span class="bias-text bias-{{ (note.bias or 'neutral') | lower }}">{{ (note.bias or 'neutral') | upper }}</span>
       <span class="expansion-meta">{{ note.confidence or '—' }} confidence</span>

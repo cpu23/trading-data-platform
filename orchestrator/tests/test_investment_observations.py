@@ -171,7 +171,13 @@ class InvestmentObservationTests(unittest.TestCase):
                 "evidence",
             },
         )
-        for legacy_key in ("risk", "catalyst", "description", "probability", "timeframe"):
+        for legacy_key in (
+            "risk",
+            "catalyst",
+            "description",
+            "probability",
+            "timeframe",
+        ):
             self.assertNotIn(legacy_key, narrative["risks"][0])
             self.assertNotIn(legacy_key, narrative["catalysts"][0])
         self.assertEqual(

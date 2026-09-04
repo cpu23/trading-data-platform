@@ -140,18 +140,16 @@ class SystemTopologyPartialContract(unittest.TestCase):
             live_updates_enabled=live,
         )
 
-    def test_registers_one_canonical_live_section(self):
-        rendered = self.render(_topology())
-        probe = _MarkupProbe()
-        probe.feed(rendered)
-
-        registrations = probe.select(
-            data__live__section="system_topology",
-            data__live__event="system_topology_changed",
-            data__live__url="/partials/operations/system-topology",
-        )
-        self.assertEqual(len(registrations), 1)
-        self.assertNotIn("data-live-section", self.render(_topology(), live=False))
+    def test_uses_shared_polling_heartbeat(self):
+        for live in (False, True):
+            rendered = self.render(_topology(), live=live)
+            self.assertIn(
+                'hx-get="/partials/operations/system-topology"',
+                rendered,
+            )
+            self.assertIn('hx-trigger="marketRefresh from:body"', rendered)
+            self.assertIn('hx-swap="outerHTML"', rendered)
+            self.assertNotIn("data-live-section", rendered)
 
     def test_renders_bounded_inline_svg_layers_edges_and_nodes(self):
         topology = _topology()

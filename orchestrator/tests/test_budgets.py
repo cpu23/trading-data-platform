@@ -20,13 +20,14 @@ from budgets import (
     mint_trusted_manual_authorization,
     trusted_manual_budget_context,
 )
+from llm_client import LLMStage, call_llm
+
 from contracts.budgets import (
     budget_status,
     coerce_finite_number,
     get_budget_config,
     utc_day_bounds,
 )
-from llm_client import LLMStage, call_llm
 
 
 def _reservation_session(spent=0.0, reserved=0.0, insert_id="reservation-1"):
@@ -92,6 +93,7 @@ class BudgetPolicyTests(unittest.TestCase):
             with self.subTest(cap=cap):
                 with self.assertRaises(ValueError):
                     budget_status(0, cap, 80)
+
     def test_get_budget_config_supports_nested_and_flat(self):
         self.assertEqual(
             get_budget_config({"budgets": {"daily_llm_usd": 3.5, "warn_at_pct": 70}}),
@@ -162,7 +164,9 @@ class LLMEnforcementTests(unittest.TestCase):
 
     @patch("llm_client.make_request")
     @patch("budgets.get_session")
-    def test_spend_failure_fails_closed_typed_before_http(self, get_session, make_request):
+    def test_spend_failure_fails_closed_typed_before_http(
+        self, get_session, make_request
+    ):
         session = Mock()
         lock = Mock()
         lock.fetchone.return_value = None
@@ -258,9 +262,7 @@ class LLMEnforcementTests(unittest.TestCase):
 
     @patch("llm_client.call_llm")
     @patch("budgets._reserve_budget_quota", return_value="reservation-1")
-    def test_stage_reserves_freshly_per_distinct_call(
-        self, reserve, request
-    ):
+    def test_stage_reserves_freshly_per_distinct_call(self, reserve, request):
         request.side_effect = [{"content": "bad"}, {"content": "ok"}]
         stage = LLMStage(self.config, "briefing", correlation_id="cid-1")
         stage.call("first")
@@ -542,6 +544,7 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
 
     def test_default_and_scheduler_paths_do_not_create_trusted_force(self):
         import operation_worker
+
         import orchestrator
 
         processor = Mock()

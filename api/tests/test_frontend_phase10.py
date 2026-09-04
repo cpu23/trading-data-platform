@@ -22,7 +22,6 @@ class Phase10FrontendContracts(unittest.TestCase):
         cls.base = (API_ROOT / "templates/base.html").read_text()
         cls.header = (API_ROOT / "templates/partials/header.html").read_text()
         cls.events = (API_ROOT / "templates/partials/events_section.html").read_text()
-        cls.cards = (API_ROOT / "templates/partials/cards_section.html").read_text()
         cls.expansion = (
             API_ROOT / "templates/partials/expansion_content.html"
         ).read_text()
@@ -164,7 +163,7 @@ class Phase10FrontendContracts(unittest.TestCase):
         from routes.views.news import load_story_context
 
         self.assertIn('id="news-section"', self.news)
-        self.assertIn('data-live-section="news_clusters"', self.news)
+        self.assertIn('hx-trigger="marketRefresh from:body"', self.news)
         self.assertIn("stories.status", self.news)
         with patch("routes.views.news.query_many", side_effect=RuntimeError("boom")):
             context = load_story_context()

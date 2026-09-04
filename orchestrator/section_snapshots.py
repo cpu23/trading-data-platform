@@ -19,10 +19,8 @@ from contracts.db_results import result_first, result_rows
 
 try:
     from .events.canonicalize import canonical_json, content_hash
-    from .ui_events import append_ui_invalidation
 except ImportError:  # pragma: no cover - legacy imports with orchestrator on sys.path
     from events.canonicalize import canonical_json, content_hash
-    from ui_events import append_ui_invalidation
 
 MAX_SOURCE_EVENT_IDS = 256
 MAX_RENDER_CONTEXT_BYTES = 16_384
@@ -49,8 +47,6 @@ def _dialect_name(session: Any) -> str | None:
     dialect = getattr(bind, "dialect", None)
     name = getattr(dialect, "name", None)
     return str(name).lower() if name else None
-
-
 
 
 def _execute(
@@ -282,12 +278,6 @@ def publish_section_snapshot(
             "version": version,
             "content_hash": digest,
         }
-    append_ui_invalidation(
-        session,
-        section_key=section_key,
-        scope_key=scope_key,
-        section_version=version,
-    )
     return _result(
         inserted,
         section_key=section_key,

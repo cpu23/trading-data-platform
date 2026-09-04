@@ -5,13 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
-
 # Ensure api/ is on sys.path so "import main" / "import config" resolve here.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ["DASHBOARD_USER"] = "test"
-os.environ["DASHBOARD_PASSWORD"] = "test"
 os.environ["STATE_DIR"] = "/tmp/test_runtime_config_state"
 os.environ["DEPLOYMENT_MODE"] = "test"  # bypass signing-key startup validation
 
@@ -35,7 +31,6 @@ from config import (  # noqa: E402
     config_snapshot,
     config_version,
     load_config,
-    orchestrator_url,
     reload_config,
     restart_required,
 )
@@ -51,29 +46,6 @@ def _write_config(path: Path, extra: str = "", database: str | None = None) -> N
         "  password: correct-horse-battery\n"
     )
     path.write_text(f"{db}{extra}")
-
-
-class FakeUpstream:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def get(self, url, **kwargs):
-        self.requests.append(("GET", url, kwargs))
-        return self.response
-
-    async def post(self, url, **kwargs):
-        self.requests.append(("POST", url, kwargs))
-        return self.response
-
-    async def aclose(self):
-        pass
-
-
-def _response(status_code: int, json_body: dict) -> httpx.Response:
-    return httpx.Response(
-        status_code, json=json_body, request=httpx.Request("GET", "http://test")
-    )
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -219,7 +191,7 @@ class ConfigValidationTests(unittest.TestCase):
 
     def test_loaded_config_feeds_real_budget_consumer(self):
         """A validated snapshot must satisfy real config consumers end to end."""
-        from budgets import get_budget_config
+        from api_budgets import get_budget_config
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
@@ -404,7 +376,7 @@ class SecretHandlingTests(unittest.TestCase):
 
 class DatabaseUrlTests(unittest.TestCase):
     def test_database_url_escapes_special_credentials(self):
-        import db as api_db
+        import api_db
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
@@ -436,7 +408,7 @@ class DatabaseUrlTests(unittest.TestCase):
                 engine.dispose()
 
     def test_database_cache_switches_atomically_when_profile_url_changes(self):
-        import db as api_db
+        import api_db
 
         first_config = {
             "database": {
@@ -475,52 +447,20 @@ class DatabaseUrlTests(unittest.TestCase):
 
 
 class HealthEndpointTests(unittest.TestCase):
-    def make_client(self, upstream):
-        app = create_app(orchestrator_client_factory=lambda **_: upstream)
+    def make_client(self):
+        app = create_app()
         from fastapi.testclient import TestClient
 
         return TestClient(app)
 
     def test_live_is_always_ok(self):
-        upstream = FakeUpstream(_response(200, {"status": "ok"}))
-        with self.make_client(upstream) as client:
+        with self.make_client() as client:
             response = client.get("/live")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
 
-    def test_ready_returns_503_when_orchestrator_returns_non_2xx(self):
-        upstream = FakeUpstream(_response(503, {"detail": "down"}))
-        with self.make_client(upstream) as client:
-            with patch("main.check_connection", return_value=True):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
-                    response = client.get("/ready")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["status"], "unready")
-        self.assertEqual(response.json()["dependencies"]["orchestrator"], "503")
-        self.assertEqual(upstream.requests[0][1], "http://orchestrator:8000/health")
-
-    def test_ready_returns_503_when_orchestrator_is_not_ready(self):
-        upstream = FakeUpstream(
-            _response(
-                200,
-                {"liveness": "ok", "readiness": "unready", "components": []},
-            )
-        )
-        with self.make_client(upstream) as client:
-            with patch("main.check_connection", return_value=True):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
-                    response = client.get("/ready")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["status"], "unready")
-
     def test_ready_returns_503_when_database_unavailable(self):
-        upstream = FakeUpstream(
-            _response(
-                200,
-                {"liveness": "ok", "readiness": "ready", "components": []},
-            )
-        )
-        with self.make_client(upstream) as client:
+        with self.make_client() as client:
             with patch("main.check_connection", return_value=False):
                 with patch("config.load_config", return_value=MOCK_CONFIG):
                     response = client.get("/ready")
@@ -529,13 +469,7 @@ class HealthEndpointTests(unittest.TestCase):
 
     def test_ready_handles_database_check_exception_as_503(self):
         """A raising DB check must be a bounded 503 dependency state, not a 500."""
-        upstream = FakeUpstream(
-            _response(
-                200,
-                {"liveness": "ok", "readiness": "ready", "components": []},
-            )
-        )
-        with self.make_client(upstream) as client:
+        with self.make_client() as client:
             with patch(
                 "main.check_connection",
                 side_effect=RuntimeError("RAW_DB_EXCEPTION"),
@@ -547,37 +481,8 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response.json()["dependencies"]["database"], "unavailable")
         self.assertNotIn("RAW_DB_EXCEPTION", response.text)
 
-    def test_ready_fails_on_config_version_mismatch_with_orchestrator(self):
-        """A differing orchestrator config version means unready (rolling start)."""
-        upstream = FakeUpstream(
-            _response(
-                200,
-                {
-                    "liveness": "ok",
-                    "readiness": "ready",
-                    "components": [],
-                    "config_version": "other-version",
-                },
-            )
-        )
-        with self.make_client(upstream) as client:
-            with patch("main.check_connection", return_value=True):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
-                    with patch("config.config_version", return_value="active-version"):
-                        response = client.get("/ready")
-        self.assertEqual(response.status_code, 503)
-        data = response.json()
-        self.assertEqual(data["status"], "unready")
-        self.assertTrue(data["dependencies"]["config_version"]["mismatch"])
-
     def test_ready_returns_200_when_all_dependencies_pass(self):
-        upstream = FakeUpstream(
-            _response(
-                200,
-                {"liveness": "ok", "readiness": "ready", "components": []},
-            )
-        )
-        with self.make_client(upstream) as client:
+        with self.make_client() as client:
             with patch("main.check_connection", return_value=True):
                 with patch("config.load_config", return_value=MOCK_CONFIG):
                     response = client.get("/ready")
@@ -585,31 +490,6 @@ class HealthEndpointTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["status"], "ok")
         self.assertEqual(data["dependencies"]["database"], "ok")
-        self.assertEqual(data["dependencies"]["orchestrator"], "200")
-
-    def test_orchestrator_url_is_deployment_controlled_and_root_only(self):
-        with patch.dict(
-            os.environ,
-            {"ORCHESTRATOR_URL": "http://env-orch:9000"},
-            clear=False,
-        ):
-            self.assertEqual(orchestrator_url(), "http://env-orch:9000")
-        with patch.dict(os.environ, {"ORCHESTRATOR_URL": ""}, clear=False):
-            with patch(
-                "config.load_config",
-                return_value={"api": {"orchestrator_url": "http://attacker.test"}},
-            ) as loader:
-                self.assertEqual(orchestrator_url(), "http://orchestrator:8000")
-                loader.assert_not_called()
-        for invalid in (
-            "http://user:pass@orchestrator:8000",
-            "http://orchestrator:8000/path",
-            "http://orchestrator:8000?path=/quotes",
-        ):
-            with self.subTest(invalid=invalid):
-                with patch.dict(os.environ, {"ORCHESTRATOR_URL": invalid}, clear=False):
-                    with self.assertRaisesRegex(RuntimeError, "root HTTP"):
-                        orchestrator_url()
 
 
 if __name__ == "__main__":

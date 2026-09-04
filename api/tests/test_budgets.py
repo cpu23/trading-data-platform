@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from budgets import budget_status, get_budget_config, get_budget_status, get_today_spend
+from api_budgets import (
+    budget_status,
+    get_budget_config,
+    get_budget_status,
+    get_today_spend,
+)
+
 from contracts.budgets import coerce_finite_number
 
 
@@ -15,7 +21,8 @@ class ApiBudgetTests(unittest.TestCase):
     def test_spend_query_uses_bounded_utc_day_and_null_safe_tokens(self):
         now = datetime(2026, 7, 15, 23, 59, tzinfo=UTC)
         with patch(
-            "budgets.query_one", return_value={"total_cost": None, "total_tokens": None}
+            "api_budgets.query_one",
+            return_value={"total_cost": None, "total_tokens": None},
         ) as query:
             self.assertEqual(get_today_spend({}, now=now), (0.0, 0))
         sql = query.call_args.args[0]
@@ -42,7 +49,7 @@ class ApiBudgetTests(unittest.TestCase):
         config = {"budgets": {"daily_llm_usd": 2.0, "warn_at_pct": 80}}
         with (
             patch(
-                "budgets.query_one",
+                "api_budgets.query_one",
                 side_effect=[
                     {"total_cost": 1.0, "total_tokens": 10},
                     {"spent_usd": 0.5, "reserved_usd": 0.75},
@@ -70,7 +77,7 @@ class ApiBudgetTests(unittest.TestCase):
             with (
                 self.subTest(spend_result=spend_result),
                 patch(
-                    "budgets.get_today_spend",
+                    "api_budgets.get_today_spend",
                     side_effect=spend_result
                     if isinstance(spend_result, Exception)
                     else None,
@@ -89,7 +96,7 @@ class ApiBudgetTests(unittest.TestCase):
         for cap in ("bad", None, math.nan, math.inf, -math.inf, True, -1, -0.01):
             with (
                 self.subTest(cap=cap),
-                patch("budgets.get_today_spend", return_value=(0, 0)),
+                patch("api_budgets.get_today_spend", return_value=(0, 0)),
             ):
                 status = get_budget_status(
                     {"budgets": {"daily_llm_usd": cap, "warn_at_pct": 80}}
@@ -97,6 +104,7 @@ class ApiBudgetTests(unittest.TestCase):
                 self.assertFalse(status["available"])
                 self.assertFalse(status["unlimited"])
                 self.assertEqual(status["status"], "invalid_config")
+
     def test_get_budget_config_extracts_nested_and_flat(self):
         self.assertEqual(
             get_budget_config({"budgets": {"daily_llm_usd": 5.0, "warn_at_pct": 75}}),

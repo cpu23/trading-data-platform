@@ -10,18 +10,17 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from investment_service_support import (
-    investment_report_payload,
-    relationship_metric,
-    session_context,
-)
-
 import investment_service as service
 from investment_schemas import (
     filing_content_spans,
     material_numeric_tokens,
     validate_investment_report_payload,
     validate_numeric_claim_rows,
+)
+from investment_service_support import (
+    investment_report_payload,
+    relationship_metric,
+    session_context,
 )
 
 
@@ -153,8 +152,14 @@ class InvestmentRequestImmutabilityTests(unittest.TestCase):
 
         with (
             patch.object(service, "_load_document", return_value=document),
-            patch.object(service, "_ensure_extracted_text", return_value="stored_document"),
-            patch.object(service, "load_deterministic_facts", return_value=({}, {}, {"source": "none"})),
+            patch.object(
+                service, "_ensure_extracted_text", return_value="stored_document"
+            ),
+            patch.object(
+                service,
+                "load_deterministic_facts",
+                return_value=({}, {}, {"source": "none"}),
+            ),
             patch.object(service, "_load_news_context", return_value=[]),
             patch.object(service, "_previous_analysis", return_value=(None, 0)),
             patch.object(service, "LLMStage", side_effect=make_stage),
@@ -184,7 +189,9 @@ class InvestmentReportContractValidationTests(unittest.TestCase):
 
     def test_valid_payload_passes_validation(self):
         payload = investment_report_payload()
-        problems = validate_investment_report_payload(payload, excerpt="Demand remained durable.")
+        problems = validate_investment_report_payload(
+            payload, excerpt="Demand remained durable."
+        )
         self.assertEqual(problems, [])
 
     def test_missing_required_section_rejected(self):
@@ -214,31 +221,48 @@ class InvestmentReportContractValidationTests(unittest.TestCase):
     def test_ungrounded_evidence_quote_rejected(self):
         payload = investment_report_payload()
         payload["qualitative"]["ai_demand"]["present"] = True
-        payload["qualitative"]["ai_demand"]["evidence"] = "Completely ungrounded quote from nowhere."
-        problems = validate_investment_report_payload(payload, excerpt="Demand remained durable.")
+        payload["qualitative"]["ai_demand"]["evidence"] = (
+            "Completely ungrounded quote from nowhere."
+        )
+        problems = validate_investment_report_payload(
+            payload, excerpt="Demand remained durable."
+        )
         self.assertTrue(any("not grounded" in p for p in problems))
 
     def test_grounded_evidence_quote_accepted(self):
         payload = investment_report_payload()
         payload["qualitative"]["ai_demand"]["present"] = True
         payload["qualitative"]["ai_demand"]["evidence"] = "Demand remained durable"
-        problems = validate_investment_report_payload(payload, excerpt="Demand remained durable across markets.")
+        problems = validate_investment_report_payload(
+            payload, excerpt="Demand remained durable across markets."
+        )
         self.assertEqual(problems, [])
 
     def test_prohibited_language_advisory_detected(self):
         payload = investment_report_payload()
-        payload["summary"] = "We recommend you buy the stock at support level with a stop-loss."
-        problems = validate_investment_report_payload(payload, excerpt="Demand remained durable.")
+        payload["summary"] = (
+            "We recommend you buy the stock at support level with a stop-loss."
+        )
+        problems = validate_investment_report_payload(
+            payload, excerpt="Demand remained durable."
+        )
         self.assertTrue(any("prohibited" in p for p in problems))
 
     def test_materiality_assessment_status_and_evidence(self):
         payload = investment_report_payload()
         payload["materiality_assessment"]["forward_guidance"]["status"] = "addressed"
-        payload["materiality_assessment"]["forward_guidance"]["evidence"] = "Guidance raised"
-        payload["materiality_assessment"]["forward_guidance"]["observation"] = "Guidance raised"
-        payload["materiality_assessment"]["forward_guidance"]["implication"] = "Positive outlook"
+        payload["materiality_assessment"]["forward_guidance"]["evidence"] = (
+            "Guidance raised"
+        )
+        payload["materiality_assessment"]["forward_guidance"]["observation"] = (
+            "Guidance raised"
+        )
+        payload["materiality_assessment"]["forward_guidance"]["implication"] = (
+            "Positive outlook"
+        )
         problems = validate_investment_report_payload(
-            payload, excerpt="Demand remained durable. Guidance raised for the fiscal year."
+            payload,
+            excerpt="Demand remained durable. Guidance raised for the fiscal year.",
         )
         self.assertEqual(problems, [])
 
@@ -267,7 +291,8 @@ class InvestmentReportContractValidationTests(unittest.TestCase):
             }
         ]
         problems = validate_investment_report_payload(
-            payload, excerpt="Demand remained durable. Product launch planned. Supply constraints noted."
+            payload,
+            excerpt="Demand remained durable. Product launch planned. Supply constraints noted.",
         )
         self.assertEqual(problems, [])
 

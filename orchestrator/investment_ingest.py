@@ -25,6 +25,10 @@ from xml.etree import ElementTree
 
 import httpx
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+from http_client import PublicOnlyHTTPTransport
+from investment_news import canonicalize_industry
+from investment_universe import industry_for
+from logging_config import get_logger
 from sqlalchemy import text
 
 from contracts.outbound_security import (
@@ -33,12 +37,9 @@ from contracts.outbound_security import (
     validate_public_url,
 )
 from db import get_session
-from http_client import PublicOnlyHTTPTransport
-from investment_news import canonicalize_industry
-from investment_universe import industry_for
-from logging_config import get_logger
 
 logger = get_logger("investment.ingest")
+
 
 class AnalysisInProgress(RuntimeError):
     pass
@@ -1647,5 +1648,3 @@ def store_document_url(config: dict, metadata: dict) -> dict:
             os.unlink(temp_path)
         except OSError:
             pass
-
-

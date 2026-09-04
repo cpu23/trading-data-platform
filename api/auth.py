@@ -6,7 +6,6 @@ import json
 import math
 import os
 import secrets
-import shutil
 import threading
 import time
 import uuid
@@ -14,12 +13,9 @@ from collections import OrderedDict, deque
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import HTTPException, Request, status
 
-security = HTTPBasic(auto_error=False)
 CSRF_COOKIE = "csrf-token"
-SSE_PURPOSE = "quotes-stream"
 CSRF_PURPOSE = "csrf"
 
 # Unsafe-method routes that may run without a CSRF token. Exact paths only:
@@ -33,11 +29,8 @@ DISABLE_AUTH_VAR = "DISABLE_AUTH"
 SESSION_SIGNING_KEY_VAR = "SESSION_SIGNING_KEY"
 SESSION_SIGNING_KEY_PREVIOUS_VAR = "SESSION_SIGNING_KEY_PREVIOUS"
 CSRF_SIGNING_KEY_VAR = "CSRF_SIGNING_KEY"
-SSE_SIGNING_KEY_VAR = "SSE_SIGNING_KEY"
 EXTERNAL_ORIGIN_VAR = "EXTERNAL_ORIGIN"
 TRUSTED_HOSTS_VAR = "TRUSTED_HOSTS"
-DASHBOARD_USER_VAR = "DASHBOARD_USER"
-DASHBOARD_PASSWORD_VAR = "DASHBOARD_PASSWORD"
 SESSION_MAX_AGE_VAR = "SESSION_MAX_AGE_SECONDS"
 COOKIE_SECURE_VAR = "COOKIE_SECURE"
 
@@ -174,35 +167,7 @@ def auth_disabled() -> bool:
     return raw.lower() in {"1", "true", "yes"} and is_demo_or_test()
 
 
-def legacy_basic_auth_enabled() -> bool:
-    """True when the operator opted into the legacy HTTP Basic credential path."""
-    raw = os.environ.get("LEGACY_BASIC_AUTH", "")
-    return raw.lower() in {"1", "true", "yes"}
-
-
-def demo_basic_auth_configured() -> bool:
-    """True when this demo/test deployment authenticates through configured
-    HTTP Basic credentials (LEGACY_BASIC_AUTH plus both DASHBOARD_* vars).
-
-    Demo bootstrap: a fresh volume has no committed setup state, and the demo
-    Compose file supplies non-secret demo credentials instead of the setup
-    form. When they are configured, the browser receives the native Basic
-    challenge at the root (sign in with demo/demo) and never the setup
-    bootstrap. This is explicitly demo/test-only; production (the default)
-    keeps the fail-closed setup bootstrap even when legacy auth is enabled.
-    """
-    return (
-        is_demo_or_test()
-        and legacy_basic_auth_enabled()
-        and bool(os.environ.get(DASHBOARD_USER_VAR, ""))
-        and bool(os.environ.get(DASHBOARD_PASSWORD_VAR, ""))
-    )
-
-
-def verify_credentials(
-    request: Request,
-    credentials: HTTPBasicCredentials | None = Depends(security),
-) -> str:
+def verify_credentials(request: Request) -> str:
     if auth_disabled():
         return "admin"
     public_paths = {
@@ -213,18 +178,13 @@ def verify_credentials(
         "/login",
         "/api/login",
         "/api/meta/build",
-        "/api/quotes/stream",
         "/ready",
         "/live",
     }
     if request.url.path in public_paths or request.url.path.startswith("/static/"):
         return "bootstrap"
     if request.url.path == "/" and not setup_complete():
-        # A fresh root shows the setup bootstrap only when no demo credentials
-        # are configured; demo deployments challenge HTTP Basic instead so a
-        # brand-new volume can sign in with demo/demo and never sees /setup.
-        if not demo_basic_auth_configured():
-            return "bootstrap"
+        return "bootstrap"
     session = (
         request.scope.get("session", {})
         if hasattr(request, "scope")
@@ -232,37 +192,18 @@ def verify_credentials(
     )
     if session.get("authenticated"):
         return "admin"
-    if setup_complete():
-        if is_html_request(request):
-            raise login_redirect(request)
-        raise HTTPException(status_code=401, detail="Login required")
-
-    expected_user = os.environ.get("DASHBOARD_USER", "")
-    expected_pass = os.environ.get("DASHBOARD_PASSWORD", "")
-    legacy_enabled = legacy_basic_auth_enabled()
-    if legacy_enabled and credentials and expected_user and expected_pass:
-        if secrets.compare_digest(
-            credentials.username, expected_user
-        ) and secrets.compare_digest(credentials.password, expected_pass):
-            return credentials.username
-    if is_html_request(request) and not (
-        request.url.path == "/" and demo_basic_auth_configured()
-    ):
+    if is_html_request(request):
         raise login_redirect(request)
-    headers = {"WWW-Authenticate": "Basic"} if legacy_enabled else None
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Setup required" if not legacy_enabled else "Invalid credentials",
-        headers=headers,
+        detail="Login required" if setup_complete() else "Setup required",
     )
 
 
 def _try_decode_key(value: str) -> bytes | None:
     """Decode a base64url or hex key; None when the value is neither."""
     try:
-        return base64.urlsafe_b64decode(
-            value + "=" * (-len(value) % 4), validate=True
-        )
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4), validate=True)
     except (ValueError, TypeError):
         pass
     try:
@@ -344,18 +285,6 @@ def csrf_secret() -> bytes:
     )
 
 
-def sse_secret() -> bytes:
-    """Signing key for SSE tokens: SSE_SIGNING_KEY (ephemeral in demo/test)."""
-    key = _resolve_env_signing_key(SSE_SIGNING_KEY_VAR)
-    if key is not None:
-        return key
-    if is_demo_or_test():
-        return _ephemeral_signing_key(SSE_SIGNING_KEY_VAR)
-    raise RuntimeError(
-        f"{SSE_SIGNING_KEY_VAR} is not set; refusing to run in {deployment_mode()} mode"
-    )
-
-
 def _sign_payload(secret: bytes, payload: dict) -> str:
     encoded = (
         base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode())
@@ -382,16 +311,6 @@ def _verify_payload(secret: bytes, token: str) -> dict | None:
         return None
 
 
-def mint_sse_token(path: str = "/api/quotes/stream", ttl: int = 60) -> str:
-    payload = {
-        "path": path,
-        "purpose": SSE_PURPOSE,
-        "exp": int(time.time()) + ttl,
-        "jti": uuid.uuid4().hex,
-    }
-    return _sign_payload(sse_secret(), payload)
-
-
 def mint_csrf_token(ttl: int = 3600) -> str:
     return _sign_payload(
         csrf_secret(),
@@ -408,23 +327,6 @@ def _token_not_expired(payload: dict) -> bool:
         return int(payload.get("exp", 0)) > int(time.time())
     except (TypeError, ValueError, OverflowError):
         return False
-
-
-def verify_sse_token(token: str | None, path: str) -> bool:
-    if not token:
-        return False
-    try:
-        secret = sse_secret()
-    except RuntimeError:
-        return False
-    payload = _verify_payload(secret, token)
-    if payload is None:
-        return False
-    return (
-        payload.get("path") == path
-        and payload.get("purpose") == SSE_PURPOSE
-        and _token_not_expired(payload)
-    )
 
 
 def verify_csrf_token(token: str | None) -> bool:
@@ -494,24 +396,8 @@ def verify_login_password(password: str, record: dict, client_host: str) -> bool
         _login_hash_slots.release()
 
 
-def create_admin(password: str) -> None:
-    if len(password) < 12:
-        raise ValueError("Password must contain at least 12 characters")
-    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = AUTH_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps(hash_password(password)))
-    temporary.chmod(0o600)
-    temporary.replace(AUTH_FILE)
-
-
 def setup_complete() -> bool:
-    """True only when a committed, complete setup state exists and validates.
-
-    The activation marker is the atomic current pointer: activation and every
-    profile/secret commit publish a fully validated versioned snapshot before
-    flipping it, so this function never reports partial or mixed state as
-    complete. Legacy (pre-versioning) states are validated from the root files.
-    """
+    """Return whether a complete versioned setup snapshot is active."""
     from setup_state import validate_committed_state
 
     return validate_committed_state(
@@ -589,9 +475,7 @@ def canonical_origin() -> tuple[str, str] | None:
         except ValueError:
             loopback = parsed.hostname.lower() == "localhost"
         if not loopback:
-            raise RuntimeError(
-                f"{EXTERNAL_ORIGIN_VAR} must use HTTPS outside loopback"
-            )
+            raise RuntimeError(f"{EXTERNAL_ORIGIN_VAR} must use HTTPS outside loopback")
     try:
         return normalize_origin(parsed)
     except ValueError as exc:
@@ -631,12 +515,11 @@ def validate_signing_keys() -> None:
         return
     session = load_session_secret()
     csrf = csrf_secret()
-    sse = sse_secret()
     load_previous_session_secret()
-    if len({session, csrf, sse}) != 3:
+    if session == csrf:
         raise RuntimeError(
-            f"{SESSION_SIGNING_KEY_VAR}, {CSRF_SIGNING_KEY_VAR} and "
-            f"{SSE_SIGNING_KEY_VAR} must be distinct in {deployment_mode()} mode"
+            f"{SESSION_SIGNING_KEY_VAR} and {CSRF_SIGNING_KEY_VAR} "
+            f"must be distinct in {deployment_mode()} mode"
         )
     if os.environ.get(DISABLE_AUTH_VAR, "").lower() in {"1", "true", "yes"}:
         raise RuntimeError(
@@ -784,64 +667,3 @@ def session_max_age_seconds() -> int:
             f"and {_MAX_SESSION_MAX_AGE} seconds"
         )
     return value
-
-
-def validate_operator_credentials() -> None:
-    """Fail-closed startup gate for internal basic-auth credentials.
-
-    Delegates to the shared stdlib-only rule set in
-    ``contracts.runtime_config`` so the API and orchestrator enforce identical
-    rules: outside demo/test the DASHBOARD_USER/DASHBOARD_PASSWORD pair must be
-    set, non-placeholder, and the password at least 12 characters. Error
-    messages name the variables, never the values.
-    """
-    if is_demo_or_test():
-        return
-    from contracts.runtime_config import (
-        validate_operator_credentials as validate_shared,
-    )
-
-    try:
-        validate_shared(
-            os.environ.get(DASHBOARD_USER_VAR, ""),
-            os.environ.get(DASHBOARD_PASSWORD_VAR, ""),
-            deployment_mode=deployment_mode(),
-        )
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-
-def migrate_legacy_state() -> bool:
-    legacy_value = os.environ.get("LEGACY_STATE_DIR", "")
-    if not legacy_value:
-        return False
-    legacy_dir = Path(legacy_value)
-    if not legacy_dir.is_dir():
-        return False
-    if AUTH_FILE.exists() and OPERATOR_FILE.exists():
-        if ACTIVATION_FILE.exists():
-            return False
-        temporary = ACTIVATION_FILE.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"migrated": True, "version": 1}))
-        temporary.chmod(0o600)
-        temporary.replace(ACTIVATION_FILE)
-        return True
-    if (STATE_DIR / "current").exists() or any(
-        (STATE_DIR / name).exists() for name in STATE_FILENAMES
-    ):
-        return False
-    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    copied = False
-    for name in STATE_FILENAMES:
-        source = legacy_dir / name
-        if source.exists():
-            destination = STATE_DIR / name
-            shutil.copy2(source, destination)
-            destination.chmod(0o600)
-            copied = True
-    if copied:
-        temporary = ACTIVATION_FILE.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"migrated": True, "version": 1}))
-        temporary.chmod(0o600)
-        temporary.replace(ACTIVATION_FILE)
-    return copied

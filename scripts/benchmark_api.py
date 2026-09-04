@@ -9,22 +9,21 @@ trend runs do not depend on PostgreSQL, provider APIs, or a deployed service.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
-import re
 import os
 import platform
+import re
 import socket
 import threading
 import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
-from typing import Callable, Iterator
-from urllib.error import HTTPError, URLError
 
 RequestFn = Callable[[str, float, dict[str, str]], tuple[int, bytes]]
 
@@ -45,7 +44,9 @@ def percentile(samples: list[float], percent: float) -> float | None:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
-def _request_url(url: str, timeout: float, headers: dict[str, str]) -> tuple[int, bytes]:
+def _request_url(
+    url: str, timeout: float, headers: dict[str, str]
+) -> tuple[int, bytes]:
     request = Request(url, headers=headers, method="GET")
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -97,7 +98,9 @@ def run_benchmark(
     if dataset_cardinality is not None and dataset_cardinality < 0:
         raise ValueError("dataset_cardinality must not be negative")
     if dataset_cardinality is not None and not dataset_cardinality_source:
-        raise ValueError("dataset_cardinality_source is required when cardinality is known")
+        raise ValueError(
+            "dataset_cardinality_source is required when cardinality is known"
+        )
 
     scenario_name = scenario or _default_scenario(url)
     request_headers = {"Accept": "application/json", **(headers or {})}
@@ -112,23 +115,27 @@ def run_benchmark(
             status, body = request_fn(url, timeout, request_headers)
             latency = (time.perf_counter() - started) * 1000
             if not 200 <= status < 300:
-                failures.append({
-                    "phase": phase,
-                    "index": index,
-                    "kind": "http_status",
-                    "status": status,
-                    "message": f"HTTP {status}",
-                })
+                failures.append(
+                    {
+                        "phase": phase,
+                        "index": index,
+                        "kind": "http_status",
+                        "status": status,
+                        "message": f"HTTP {status}",
+                    }
+                )
             return latency, status, body
         except Exception as exc:  # request failures must be distinguishable in JSON
             latency = (time.perf_counter() - started) * 1000
-            failures.append({
-                "phase": phase,
-                "index": index,
-                "kind": "request_error",
-                "error_type": type(exc).__name__,
-                "message": str(exc),
-            })
+            failures.append(
+                {
+                    "phase": phase,
+                    "index": index,
+                    "kind": "request_error",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
             return latency, None, None
 
     cold_latency, cold_status, cold_body = measure("cold", 0)
@@ -139,7 +146,9 @@ def run_benchmark(
         "ok": cold_ok,
         "status": cold_status,
         "latency_ms": round(cold_latency, 3),
-        "response_size_bytes": len(cold_body) if cold_ok and cold_body is not None else None,
+        "response_size_bytes": len(cold_body)
+        if cold_ok and cold_body is not None
+        else None,
     }
 
     for index in range(1, warm_count + 1):
@@ -205,7 +214,7 @@ def _fixture_payload(item_count: int) -> bytes:
 
 
 class _FixtureHandler(BaseHTTPRequestHandler):
-    server: "_FixtureServer"
+    server: _FixtureServer
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         if self.path.split("?", 1)[0] != self.server.route_path:
@@ -247,7 +256,9 @@ def fixture_server(
     server.body = _fixture_payload(item_count)
     server.delay_seconds = delay_ms / 1000
     server.route_path = route_path
-    thread = threading.Thread(target=server.serve_forever, name="benchmark-fixture", daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, name="benchmark-fixture", daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}{route_path}"
@@ -261,20 +272,46 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--url",
-        default=os.environ.get("BENCHMARK_URL", "http://127.0.0.1:8000/api/investment/dashboard"),
+        default=os.environ.get(
+            "BENCHMARK_URL", "http://127.0.0.1:8000/api/investment/dashboard"
+        ),
         help="Published API URL to measure (ignored as the target in --fixture mode).",
     )
-    parser.add_argument("--warm-count", type=int, default=5, help="Sequential warm requests (default: 5).")
-    parser.add_argument("--timeout", type=float, default=30.0, help="Per-request timeout in seconds.")
-    parser.add_argument("--username", default=os.environ.get("DASHBOARD_USER"), help="Optional HTTP Basic username.")
-    parser.add_argument("--password", default=os.environ.get("DASHBOARD_PASSWORD"), help="Optional HTTP Basic password.")
-    parser.add_argument("--fixture", action="store_true", help="Use a deterministic local fixture server.")
+    parser.add_argument(
+        "--warm-count",
+        type=int,
+        default=5,
+        help="Sequential warm requests (default: 5).",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=30.0, help="Per-request timeout in seconds."
+    )
+    parser.add_argument(
+        "--session-cookie",
+        default=os.environ.get("MARKET_SESSION"),
+        help="Optional signed market_session cookie value.",
+    )
+    parser.add_argument(
+        "--fixture",
+        action="store_true",
+        help="Use a deterministic local fixture server.",
+    )
     parser.add_argument(
         "--scenario",
         help="Machine-readable label for this route (default: URL path with '/' replaced by '-').",
     )
-    parser.add_argument("--fixture-items", type=int, default=8, help="Number of deterministic fixture records.")
-    parser.add_argument("--fixture-delay-ms", type=float, default=0.0, help="Optional deterministic fixture delay.")
+    parser.add_argument(
+        "--fixture-items",
+        type=int,
+        default=8,
+        help="Number of deterministic fixture records.",
+    )
+    parser.add_argument(
+        "--fixture-delay-ms",
+        type=float,
+        default=0.0,
+        help="Optional deterministic fixture delay.",
+    )
     parser.add_argument("--output", type=Path, help="Also write JSON to this path.")
     return parser
 
@@ -291,13 +328,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--fixture-delay-ms must not be negative")
 
     headers: dict[str, str] = {}
-    if args.username is not None and args.password is not None:
-        token = base64.b64encode(f"{args.username}:{args.password}".encode()).decode("ascii")
-        headers["Authorization"] = f"Basic {token}"
+    if args.session_cookie:
+        headers["Cookie"] = f"market_session={args.session_cookie}"
 
     if args.fixture:
         route_path = urlsplit(args.url).path or "/api/investment/dashboard"
-        with fixture_server(args.fixture_items, args.fixture_delay_ms, route_path) as fixture_url:
+        with fixture_server(
+            args.fixture_items, args.fixture_delay_ms, route_path
+        ) as fixture_url:
             report = run_benchmark(
                 fixture_url,
                 warm_count=args.warm_count,

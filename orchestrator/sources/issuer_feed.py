@@ -37,6 +37,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 from bs4 import BeautifulSoup
+from http_client import get_shared_client
+from logging_config import get_logger
 
 from contracts.outbound_security import (
     DEFAULT_PORTS,
@@ -44,8 +46,6 @@ from contracts.outbound_security import (
     parse_origin,
     resolve_redirect_url,
 )
-from http_client import get_shared_client
-from logging_config import get_logger
 
 logger = get_logger("issuer_feed")
 

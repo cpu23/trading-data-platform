@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
-
 from budgets import BudgetContext
-from contracts.runtime_config import AppConfig
 from llm_client import LLMStage, resolve_model
 from processors.base import load_prompt_template
+from sqlalchemy import text
+
+from contracts.runtime_config import AppConfig
 from research_intelligence.adversarial import RESEARCH_DATA_TYPES
 from research_intelligence.claims import MAX_SOURCE_CLAIMS_PER_BATCH
 from research_intelligence.config import ResearchSettings

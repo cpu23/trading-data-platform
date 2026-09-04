@@ -19,15 +19,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pg_support import (
-    parse_config,
-    provision,
-    require_postgres,
-    truncate,
-)
-from sqlalchemy import text
-
-from operation_jobs import (
+from jobs import (
     OperationJob,
     accept_and_enqueue_operation,
     claim_operation_jobs,
@@ -37,7 +29,14 @@ from operation_jobs import (
     succeed_operation_job,
 )
 from operation_worker import OperationWorker
+from pg_support import (
+    parse_config,
+    provision,
+    require_postgres,
+    truncate,
+)
 from run_lifecycle import RunAcceptanceConflict
+from sqlalchemy import text
 
 
 class OperationJobsPostgresTests(unittest.TestCase):
@@ -91,9 +90,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
         with self.session() as session:
             row = (
                 session.execute(
-                    text(
-                        "SELECT * FROM cycle_runs WHERE correlation_id = :cid"
-                    ),
+                    text("SELECT * FROM cycle_runs WHERE correlation_id = :cid"),
                     {"cid": correlation_id},
                 )
                 .mappings()
@@ -105,7 +102,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
         with self.session() as session:
             row = (
                 session.execute(
-                    text("SELECT * FROM operation_jobs WHERE id = :id"),
+                    text("SELECT * FROM jobs WHERE id = :id"),
                     {"id": job_id},
                 )
                 .mappings()
@@ -147,9 +144,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 payload=None,
             )
         with self.session() as session:
-            count = session.execute(
-                text("SELECT COUNT(*) FROM cycle_runs")
-            ).scalar()
+            count = session.execute(text("SELECT COUNT(*) FROM cycle_runs")).scalar()
         self.assertEqual(count, 0)
 
     def test_duplicate_correlation_is_conflict_without_job(self):
@@ -176,9 +171,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 payload={},
             )
         with self.session() as session:
-            jobs = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(jobs, 1)
 
     def test_budget_override_placeholder_row_is_adopted(self):
@@ -243,12 +236,8 @@ class OperationJobsPostgresTests(unittest.TestCase):
         self.assertEqual(str(enqueued2.job.correlation_id), first_cid)
         self.assertEqual(accepted_at2, accepted_at)
         with self.session() as session:
-            runs = session.execute(
-                text("SELECT COUNT(*) FROM cycle_runs")
-            ).scalar()
-            jobs = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            runs = session.execute(text("SELECT COUNT(*) FROM cycle_runs")).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual((runs, jobs), (1, 1))
         # Same key with a DIFFERENT request identity is a 409 conflict.
         with self.assertRaises(RunAcceptanceConflict):
@@ -262,12 +251,8 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 payload={},
             )
         with self.session() as session:
-            runs = session.execute(
-                text("SELECT COUNT(*) FROM cycle_runs")
-            ).scalar()
-            jobs = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            runs = session.execute(text("SELECT COUNT(*) FROM cycle_runs")).scalar()
+            jobs = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual((runs, jobs), (1, 1))
 
     def test_terminal_prior_job_allows_same_identity_enqueue(self):
@@ -279,7 +264,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
             )
             session.execute(
                 text(
-                    "UPDATE operation_jobs SET state = 'failed_terminal', "
+                    "UPDATE jobs SET state = 'failed_terminal', "
                     "completed_at = :n WHERE id = :id"
                 ),
                 {"id": str(first.job.id), "n": datetime.now(UTC)},
@@ -291,9 +276,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
         self.assertTrue(fresh.inserted)
         self.assertNotEqual(str(fresh.job.id), str(first.job.id))
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 2)
 
     # ── SKIP LOCKED concurrent claims ────────────────────────────────────
@@ -308,10 +291,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 job_ids.append(str(result.job.id))
             for job_id in job_ids:
                 session.execute(
-                    text(
-                        "UPDATE operation_jobs SET state = 'queued' "
-                        "WHERE id = :id"
-                    ),
+                    text("UPDATE jobs SET state = 'queued' WHERE id = :id"),
                     {"id": job_id},
                 )
 
@@ -346,7 +326,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
         with self.session() as session:
             owners = session.execute(
                 text(
-                    "SELECT claimed_by, COUNT(*) FROM operation_jobs "
+                    "SELECT claimed_by, COUNT(*) FROM jobs "
                     "WHERE state = 'leased' GROUP BY claimed_by"
                 )
             ).all()
@@ -363,15 +343,10 @@ class OperationJobsPostgresTests(unittest.TestCase):
         self.assertEqual(len(claimed), 1)
         with self.session() as session:
             session.execute(
-                text(
-                    "UPDATE operation_jobs SET lease_expires_at = :expired "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
-            reclaimed = claim_operation_jobs(
-                session, "worker-b", lease_seconds=60
-            )
+            reclaimed = claim_operation_jobs(session, "worker-b", lease_seconds=60)
         self.assertEqual(len(reclaimed), 1)
         self.assertEqual(reclaimed[0].claimed_by, "worker-b")
         self.assertEqual(reclaimed[0].attempt_count, 2)
@@ -379,9 +354,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
             self.assertFalse(start_operation_job(session, job_id, "worker-a"))
             self.assertTrue(start_operation_job(session, job_id, "worker-b"))
             self.assertFalse(succeed_operation_job(session, job_id, "worker-a"))
-            self.assertTrue(
-                succeed_operation_job(session, job_id, "worker-b")
-            )
+            self.assertTrue(succeed_operation_job(session, job_id, "worker-b"))
 
     def test_retry_transition_reclaims_run_row(self):
         with self.session() as session:
@@ -510,9 +483,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
         self.assertFalse(second[1].inserted)
         self.assertTrue(second[1].suppressed)
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 1)
         self.assertEqual(self._run_row(first_correlation)["status"], "accepted")
         second_run = self._run_row(second_correlation)
@@ -533,9 +504,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
             )
             self.assertTrue(enqueued.inserted)
         with self.session() as session:
-            total = session.execute(
-                text("SELECT COUNT(*) FROM operation_jobs")
-            ).scalar()
+            total = session.execute(text("SELECT COUNT(*) FROM jobs")).scalar()
         self.assertEqual(total, 2)
 
     # ── atomic run + job finalization rollback ────────────────────────────

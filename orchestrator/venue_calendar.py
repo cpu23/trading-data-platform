@@ -584,10 +584,7 @@ class VenueCalendar:
                 f"{self._rule.name} calendar supports years "
                 f"{MIN_SUPPORTED_YEAR}-{MAX_SUPPORTED_YEAR}, got {day.isoformat()}"
             )
-        return (
-            day.weekday() in self._rule.weekdays
-            and day not in self._rule.holidays
-        )
+        return day.weekday() in self._rule.weekdays and day not in self._rule.holidays
 
     def _bounds_on_date(self, day: date) -> tuple[datetime, datetime] | None:
         if not self.is_trading_day(day):
@@ -599,13 +596,17 @@ class VenueCalendar:
             days = rule.weekdays
             if day.weekday() == days[0]:
                 open_at = datetime.combine(day, rule.open_time, tzinfo=self._zone)
-                close_at = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=self._zone)
+                close_at = datetime.combine(
+                    day + timedelta(days=1), time(0, 0), tzinfo=self._zone
+                )
             elif day.weekday() == days[-1]:
                 open_at = datetime.combine(day, time(0, 0), tzinfo=self._zone)
                 close_at = datetime.combine(day, rule.close_time, tzinfo=self._zone)
             else:
                 open_at = datetime.combine(day, time(0, 0), tzinfo=self._zone)
-                close_at = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=self._zone)
+                close_at = datetime.combine(
+                    day + timedelta(days=1), time(0, 0), tzinfo=self._zone
+                )
             return open_at, close_at
         close_time = rule.early_closes.get(day, rule.close_time)
         open_at = datetime.combine(day, rule.open_time, tzinfo=self._zone)
@@ -715,11 +716,7 @@ class VenueCalendar:
             if remaining <= timedelta(0):
                 return cursor
             bounds = self._bounds(cursor)
-            if (
-                bounds is not None
-                and self._rule.weekly
-                and cursor == bounds[0]
-            ):
+            if bounds is not None and self._rule.weekly and cursor == bounds[0]:
                 # A weekly market's midnight slices are contiguous. Rewinding
                 # from the exact boundary must consume the preceding slice,
                 # not repeatedly resolve the same at-or-before close.
@@ -979,9 +976,7 @@ def instrument_policy_for(
     """
     rule, spec = _resolve_rule(symbol, config)
     timeframe = _text(spec.get("price_timeframe"), "") or default_timeframe
-    policy = _text(
-        spec.get("target_selection_policy"), TARGET_SELECTION_POLICY_FIRST
-    )
+    policy = _text(spec.get("target_selection_policy"), TARGET_SELECTION_POLICY_FIRST)
     if policy not in _TARGET_SELECTION_POLICIES:
         raise ValueError(
             f"unsupported target_selection_policy: {policy!r} "

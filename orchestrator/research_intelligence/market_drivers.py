@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.contracts import (
     DriverDirection,
     EconomicFactorDraft,
@@ -125,7 +126,9 @@ def validate_market_driver_output(
     maximum_drivers: int = 24,
 ) -> tuple[MarketDriverDraft, ...]:
     if not isinstance(output, Mapping) or set(output) != {"abstained", "drivers"}:
-        raise ValueError("market-driver output must contain exactly abstained and drivers")
+        raise ValueError(
+            "market-driver output must contain exactly abstained and drivers"
+        )
     reject_embedded_evidence_references(output)
     if not isinstance(output.get("abstained"), bool):
         raise ValueError("market-driver abstained flag must be boolean")
@@ -226,7 +229,9 @@ def validate_factor_market_output(
 ) -> FactorMarketAssessment:
     """Validate one factor state once, then its bounded target transmissions."""
     if not isinstance(output, Mapping) or set(output) != {"abstained", "factors"}:
-        raise ValueError("factor-market output must contain exactly abstained and factors")
+        raise ValueError(
+            "factor-market output must contain exactly abstained and factors"
+        )
     reject_embedded_evidence_references(output)
     if not isinstance(output.get("abstained"), bool):
         raise ValueError("factor-market abstained flag must be boolean")
@@ -293,7 +298,9 @@ def validate_factor_market_output(
                 not isinstance(raw_transmission, Mapping)
                 or set(raw_transmission) != _TRANSMISSION_KEYS
             ):
-                raise ValueError("factor transmission keys do not match strict contract")
+                raise ValueError(
+                    "factor transmission keys do not match strict contract"
+                )
             target = str(raw_transmission.get("target") or "").strip().upper()
             if target not in allowed_targets:
                 raise ValueError(
@@ -302,9 +309,7 @@ def validate_factor_market_output(
             if target in seen_targets:
                 raise ValueError("duplicate target transmission for economic factor")
             seen_targets.add(target)
-            direction = str(
-                raw_transmission.get("direction") or ""
-            ).strip().casefold()
+            direction = str(raw_transmission.get("direction") or "").strip().casefold()
             if direction not in {item.value for item in DriverDirection}:
                 raise ValueError("factor transmission direction is invalid")
             transmission_mechanism = _text(

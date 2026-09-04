@@ -34,7 +34,9 @@ CLAIM_ELIGIBLE_EVIDENCE_TYPES = frozenset(
         "investment_analysis",
     }
 )
-_NUMERIC_TOKEN_RE = re.compile(r"(?<![A-Za-z])[-+]?\d[\d,.]*(?:%|bp|bps)?", re.IGNORECASE)
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z])[-+]?\d[\d,.]*(?:%|bp|bps)?", re.IGNORECASE
+)
 _REQUIRED_KEYS = frozenset(
     {
         "source_evidence_id",
@@ -68,6 +70,7 @@ class SourceClaimDraft:
     confidence: float
     entities: tuple[NormalizedEntity, ...]
     claim_fingerprint: str
+
 
 def claim_evidence(
     claims: Sequence[SourceClaimDraft],
@@ -124,7 +127,9 @@ def claim_evidence(
     return tuple(items)
 
 
-def _text(value: Any, maximum: int, field: str, *, required: bool = False) -> str | None:
+def _text(
+    value: Any, maximum: int, field: str, *, required: bool = False
+) -> str | None:
     cleaned = " ".join(str(value or "").split())
     if required and not cleaned:
         raise ValueError(f"{field} is required")
@@ -150,7 +155,10 @@ def _source_text(evidence: NormalizedEvidence) -> str:
 
 
 def _numeric_tokens(value: str | None) -> set[str]:
-    return {match.casefold().replace(",", "") for match in _NUMERIC_TOKEN_RE.findall(value or "")}
+    return {
+        match.casefold().replace(",", "")
+        for match in _NUMERIC_TOKEN_RE.findall(value or "")
+    }
 
 
 def _validate_source_span(span: str, evidence: NormalizedEvidence) -> None:
@@ -300,9 +308,11 @@ def persist_source_claims(
                 "confidence": claim.confidence,
                 "entities": json.dumps([entity.to_dict() for entity in claim.entities]),
                 "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version or "research_claim_extraction_v2",
+                "prompt_version": provenance.prompt_version
+                or "research_claim_extraction_v2",
                 "generation_attempt_id": provenance.generation_attempt_id,
-                "input_fingerprint": provenance.input_fingerprint or claim.source_evidence.content_fingerprint,
+                "input_fingerprint": provenance.input_fingerprint
+                or claim.source_evidence.content_fingerprint,
                 "provenance": json.dumps(
                     {
                         "source_reference": claim.source_evidence.source_reference,

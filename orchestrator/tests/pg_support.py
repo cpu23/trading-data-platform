@@ -1,14 +1,8 @@
 """Shared real-PostgreSQL integration support.
 
-Env-gated by ``TEST_DATABASE_URL``: tests that import this module skip
-cleanly when it is unset (local default), and run against a disposable
-database when CI sets it.  The database is self-provisioned from
-``db/init/*.sql`` plus the full ``db/migrations`` inventory, so the tests
-exercise the same DDL production applies.  Tables are truncated between
-tests; the schema is rebuilt once per module.
-
-Shared with the budget (045) and reaction/analytics (044) integration tests
-so one CI postgres service + env var serves every slice.
+Env-gated by ``TEST_DATABASE_URL``: tests skip when it is unset and run against
+a disposable database when CI sets it. The database is provisioned from the
+authoritative ``db/schema.sql`` and tables are truncated between tests.
 """
 
 from __future__ import annotations
@@ -22,8 +16,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INIT_DIR = REPO_ROOT / "db" / "init"
-MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
+SCHEMA_PATH = REPO_ROOT / "db" / "schema.sql"
 
 ENV_VAR = "TEST_DATABASE_URL"
 ALLOW_RESET_ENV = "TEST_DATABASE_ALLOW_RESET"
@@ -31,8 +24,7 @@ ALLOW_RESET_ENV = "TEST_DATABASE_ALLOW_RESET"
 # Tables the durable-lifecycle tests touch; truncate between tests.
 LIFECYCLE_TABLES = (
     "cycle_runs",
-    "operation_jobs",
-    "analysis_jobs",
+    "jobs",
     "role_heartbeats",
     "quote_state",
     "event_outbox",
@@ -108,11 +100,7 @@ def require_postgres() -> str:
 
 
 def provision(config: dict, url: str | None = None) -> None:
-    """Rebuild the public schema from init scripts + migrations.
-
-    Destructive by design; guarded by :func:`assert_safe_database` so a
-    mistyped environment variable can never reset a production database.
-    """
+    """Rebuild a disposable database from the authoritative schema."""
     if url is None:
         db = config.get("database", {})
         url = (
@@ -120,7 +108,6 @@ def provision(config: dict, url: str | None = None) -> None:
             f"{db.get('port', 5432)}/{db.get('name', '')}"
         )
     assert_safe_database(url, allow_reset=allow_reset_enabled())
-    import migrate
     from db import get_engine
 
     engine = get_engine(config)
@@ -131,11 +118,10 @@ def provision(config: dict, url: str | None = None) -> None:
     # backend. Recreate the extension on a fresh connection as required by
     # TimescaleDB, rather than reusing SQLAlchemy's pooled reset connection.
     engine.dispose()
-    for path in sorted(INIT_DIR.glob("*.sql")):
-        with engine.begin() as connection:
-            connection.execute(text(path.read_text()))
-    migrate.MIGRATIONS_DIR = str(MIGRATIONS_DIR)
-    migrate.run_migrations(config)
+    with engine.begin() as connection:
+        raw_connection = connection.connection.driver_connection
+        with raw_connection.cursor() as cursor:
+            cursor.execute(SCHEMA_PATH.read_text())
 
 
 def truncate(config: dict, tables: tuple[str, ...] = LIFECYCLE_TABLES) -> None:
@@ -143,6 +129,4 @@ def truncate(config: dict, tables: tuple[str, ...] = LIFECYCLE_TABLES) -> None:
     from db import get_session
 
     with get_session(config) as session:
-        session.execute(
-            text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
-        )
+        session.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))

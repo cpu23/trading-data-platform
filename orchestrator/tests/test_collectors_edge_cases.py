@@ -284,6 +284,7 @@ class FreeCollectorRegistryTests(unittest.TestCase):
 
     def test_known_collectors_equal_executable_registry(self):
         from collectors import STANDALONE_COLLECTORS, get_all_collectors
+
         from contracts.runtime_config import KNOWN_COLLECTORS
 
         executable = set(get_all_collectors()) | set(STANDALONE_COLLECTORS)
@@ -296,6 +297,7 @@ class FreeCollectorRegistryTests(unittest.TestCase):
 
     def test_every_known_collector_id_dispatches(self):
         from collectors import get_collector
+
         from contracts.runtime_config import KNOWN_COLLECTORS
 
         for source_id in sorted(KNOWN_COLLECTORS):

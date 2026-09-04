@@ -3,7 +3,7 @@
 The scheduler never executes a run inline: every scheduled fire calls the
 transactional ``accept_and_enqueue_operation`` and returns.  A worker role
 claims the durable job and executes it.  Duplicate logical runs are prevented
-by the operation_jobs active-identity index plus an advisory transaction lock
+by the jobs active-identity index plus an advisory transaction lock
 keyed by the logical window, so two scheduler processes firing for the same
 window enqueue exactly one job.
 """
@@ -12,11 +12,10 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import text
-
+from jobs import accept_and_enqueue_operation
 from logging_config import get_logger
-from operation_jobs import accept_and_enqueue_operation
 from schedules import build_cron_trigger
+from sqlalchemy import text
 
 logger = get_logger("scheduler")
 _scheduler: BackgroundScheduler | None = None
@@ -174,19 +173,6 @@ def _scheduled_thesis_autonomy(config: dict) -> None:
         )
 
 
-def _scheduled_research_control_plane(config: dict) -> None:
-    """Enqueue one coalesced incremental control-plane agenda."""
-    from research_control_plane.repository import enqueue_planner_job
-
-    try:
-        enqueue_planner_job(config, trigger_kind="scheduled")
-    except Exception as exc:
-        logger.error(
-            "scheduled_research_control_plane_enqueue_failed",
-            error_type=type(exc).__name__,
-        )
-
-
 def _try_acquire_leader_connection(config: dict):
     """Try to take the scheduler advisory leader lock; None when not leader.
 
@@ -279,19 +265,6 @@ def start_scheduler(config: dict) -> None:
             replace_existing=True,
             coalesce=True,
             max_instances=1,
-        )
-    control_plane = config.get("research_control_plane", {})
-    if control_plane.get("enabled", False):
-        _scheduler.add_job(
-            _scheduled_research_control_plane,
-            "interval",
-            minutes=max(1, int(control_plane.get("planning_interval_minutes", 15))),
-            args=[config],
-            id="research-control-plane:plan",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-            next_run_time=datetime.now(UTC),
         )
     if not config.get("demo", {}).get("enabled", False):
         from sources.news_registry import get_news_source_ids

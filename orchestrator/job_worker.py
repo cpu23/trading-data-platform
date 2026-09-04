@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from analysis_jobs import (
+from jobs import (
     AnalysisJob,
     claim_jobs,
     reconcile_jobs,
@@ -55,25 +55,6 @@ class AnalysisJobWorker(BasePollingWorker):
     def _result_ref(cls, value: Any) -> dict[str, Any] | None:
         return filter_result_ref(value, cls._ALLOWED_RESULT_KEYS)
 
-    @staticmethod
-    def _mirror_research_failure(
-        session: Any,
-        job: AnalysisJob,
-        *,
-        retryable: bool,
-        error: BaseException,
-    ) -> None:
-        if job.job_type != "research_skill":
-            return
-        from research_control_plane.repository import mark_work_order_failure
-
-        mark_work_order_failure(
-            session,
-            analysis_job_id=job.id,
-            retryable=retryable,
-            error_kind=type(error).__name__,
-        )
-
     def _handle(self, job: AnalysisJob, settings: dict[str, Any]) -> None:
         import analysis_job_handlers
 
@@ -112,9 +93,6 @@ class AnalysisJobWorker(BasePollingWorker):
                     with self._session() as session:
                         if terminal_fail_job(session, job.id, self.worker_id, exc):
                             self._increment("failed")
-                            self._mirror_research_failure(
-                                session, job, retryable=False, error=exc
-                            )
                 except Exception:
                     self._increment("poll_errors")
             else:
@@ -129,9 +107,6 @@ class AnalysisJobWorker(BasePollingWorker):
                             exc,
                         ):
                             self._increment("retried")
-                            self._mirror_research_failure(
-                                session, job, retryable=True, error=exc
-                            )
                 except Exception:
                     self._increment("poll_errors")
         finally:
@@ -161,16 +136,8 @@ class AnalysisJobWorker(BasePollingWorker):
                     ),
                 )
                 repaired = reconcile_jobs(session, reconcile_limit)
-                mirrored = 0
                 if repaired:
-                    from research_control_plane.repository import (
-                        reconcile_terminal_work_order_failures,
-                    )
-
-                    mirrored = reconcile_terminal_work_order_failures(
-                        session, limit=reconcile_limit
-                    )
-                    self._increment("reconciled", repaired + mirrored)
+                    self._increment("reconciled", repaired)
                 lease = float(
                     settings.get("lease_seconds", worker.get("lease_seconds", 120))
                 )

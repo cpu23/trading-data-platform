@@ -1,5 +1,6 @@
-x-demo-environment: &demo_environment
+x-demo-environment: &demo-environment
   DEPLOYMENT_MODE: demo
+  DISABLE_AUTH: "true"
   EXTERNAL_ORIGIN: http://127.0.0.1:${API_HOST_PORT:-8000}
   DB_USER: demo
   DB_PASSWORD: demo
@@ -9,10 +10,8 @@ x-demo-environment: &demo_environment
   OPENROUTER_MODEL: demo/deterministic
   OANDA_API_KEY: demo-disabled
   TWITTERAPI_KEY: ""
-  DASHBOARD_USER: demo
-  DASHBOARD_PASSWORD: demo
   DEMO_MODE: "true"
-  LEGACY_BASIC_AUTH: "1"
+  DEMO_LIVE_INTERVAL_SECONDS: "5"
 
 services:
   postgres:
@@ -37,23 +36,7 @@ services:
       retries: 15
       start_period: 5s
 
-  migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "cli.py", "migrate"]
-    environment: *demo_environment
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  orchestrator:
+  web:
     build:
       context: .
       dockerfile: Dockerfile
@@ -61,46 +44,21 @@ services:
     pids_limit: 128
     mem_limit: 1g
     security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "api"]
-    environment: *demo_environment
+    working_dir: /app/api
+    command: ["/app/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *demo-environment
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     volumes:
-      - demo_news:/var/lib/trading-data/news
+      - demo_news:/var/lib/trading-data/news:ro
       - demo_logs:/var/log/trading-data
+      - demo_state:/app/state
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-      interval: 5s
-      timeout: 4s
-      retries: 10
-      start_period: 20s
-
-  scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "scheduler"]
-    environment: *demo_environment
-    volumes:
-      - demo_logs:/var/log/trading-data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "scheduler"]
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
       interval: 5s
       timeout: 4s
       retries: 10
@@ -111,139 +69,23 @@ services:
       context: .
       dockerfile: Dockerfile
     image: trading-data-platform:0.1.0
-    pids_limit: 128
-    mem_limit: 1g
+    pids_limit: 256
+    mem_limit: 2g
     security_opt: ["no-new-privileges:true"]
     working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "worker"]
-    environment: *demo_environment
+    command: ["/app/.venv/bin/python", "-m", "roles", "run", "worker"]
+    environment: *demo-environment
     volumes:
       - demo_news:/var/lib/trading-data/news
       - demo_logs:/var/log/trading-data
+      - demo_state:/app/state:ro
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
-    # Let claimed jobs reach their transactional finalization boundary.
     stop_grace_period: 30m
     healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "worker"]
-      interval: 5s
-      timeout: 4s
-      retries: 10
-      start_period: 15s
-
-  outbox:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "outbox"]
-    environment: *demo_environment
-    volumes:
-      - demo_logs:/var/log/trading-data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "outbox"]
-      interval: 5s
-      timeout: 4s
-      retries: 10
-      start_period: 15s
-
-  quotes:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 64
-    mem_limit: 512m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "-m", "roles", "run", "quotes"]
-    environment: *demo_environment
-    volumes:
-      - demo_logs:/var/log/trading-data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/app/orchestrator/.venv/bin/python", "-m", "roles", "check", "quotes"]
-      interval: 5s
-      timeout: 4s
-      retries: 10
-      start_period: 15s
-
-  demo-live:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 64
-    mem_limit: 256m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/orchestrator
-    command: ["/app/orchestrator/.venv/bin/python", "demo_live.py"]
-    environment:
-      <<: *demo_environment
-      DEMO_LIVE_INTERVAL_SECONDS: "5"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trading-data-platform:0.1.0
-    pids_limit: 128
-    mem_limit: 512m
-    security_opt: ["no-new-privileges:true"]
-    working_dir: /app/api
-    command: ["/app/api/.venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment:
-      <<: *demo_environment
-      ORCHESTRATOR_URL: http://orchestrator:8000
-    ports:
-      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
-    volumes:
-      - demo_news:/var/lib/trading-data/news:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      orchestrator:
-        condition: service_healthy
-      demo-live:
-        condition: service_started
-      scheduler:
-        condition: service_healthy
-      worker:
-        condition: service_healthy
-      outbox:
-        condition: service_healthy
-      quotes:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "/app/api/.venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)\""]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "roles", "check", "worker"]
       interval: 5s
       timeout: 4s
       retries: 10
@@ -253,3 +95,4 @@ volumes:
   demo_pgdata:
   demo_news:
   demo_logs:
+  demo_state:

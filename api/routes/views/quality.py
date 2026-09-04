@@ -1,7 +1,14 @@
+from api_logging import get_logger
+from data_quality import (
+    evaluate_quality,
+    normalize_quality_results,
+    required_quality_checks,
+    run_quality_checks,
+)
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 
-from config import orchestrator_url
-from logging_config import get_logger
+from config import load_config
 
 router = APIRouter()
 
@@ -12,6 +19,27 @@ def _get_templates(request: Request):
     return request.app.state.templates
 
 
+def _load_quality_data():
+    config = load_config()
+    results = run_quality_checks(config)
+    required = required_quality_checks(config)
+    overall = evaluate_quality(results, required)
+    normalized = normalize_quality_results(results)
+    checks = []
+    if isinstance(normalized, dict):
+        for check_id, check_data in normalized.items():
+            checks.append(
+                {
+                    "name": check_id.replace("_", " "),
+                    "healthy": check_data.get("healthy", False),
+                    "detail": check_data.get("detail", ""),
+                }
+            )
+    elif isinstance(normalized, list):
+        checks = normalized
+    return overall, checks
+
+
 @router.get("/quality")
 async def quality_page(request: Request):
     templates = _get_templates(request)
@@ -20,29 +48,7 @@ async def quality_page(request: Request):
     error = None
 
     try:
-        resp = await request.app.state.orchestrator_client.get(
-            f"{orchestrator_url()}/quality",
-            timeout=5.0,
-        )
-        if resp.is_success:
-            data = resp.json()
-            overall = data.get("overall")
-            # The orchestrator returns checks as a dict, convert to list
-            raw_checks = data.get("checks", {})
-            if isinstance(raw_checks, dict):
-                for check_id, check_data in raw_checks.items():
-                    checks.append(
-                        {
-                            "name": check_id.replace("_", " "),
-                            "healthy": check_data.get("healthy", False),
-                            "detail": check_data.get("detail", ""),
-                        }
-                    )
-            elif isinstance(raw_checks, list):
-                checks = raw_checks
-        else:
-            error = f"Orchestrator returned {resp.status_code}"
-            logger.error("quality_fetch_failed", status=resp.status_code)
+        overall, checks = await run_in_threadpool(_load_quality_data)
     except Exception as exc:
         error = str(exc)
         logger.error("quality_fetch_error", error=str(exc))

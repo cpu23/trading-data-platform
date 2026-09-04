@@ -5,9 +5,8 @@ import logging
 import sys
 import unittest
 
-import structlog
-
 import logging_config
+import structlog
 
 SENTINELS = {
     "dict-secret-91",

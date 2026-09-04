@@ -32,9 +32,7 @@ class EventRoutingTests(unittest.TestCase):
         with (
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value={}),
-            patch(
-                "analysis_jobs.enqueue_job", side_effect=["source", "watchlist"]
-            ) as enqueue,
+            patch("jobs.enqueue_job", side_effect=["source", "watchlist"]) as enqueue,
         ):
             initial_handler(MagicMock(), event)
 
@@ -87,7 +85,7 @@ class EventRoutingTests(unittest.TestCase):
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value={}),
             patch(
-                "analysis_jobs.enqueue_job",
+                "jobs.enqueue_job",
                 side_effect=["source-1", "watchlist-1", "source-2", "watchlist-2"],
             ) as enqueue,
         ):
@@ -169,72 +167,6 @@ class HandlerBoundTests(unittest.TestCase):
         self.assertIn("DISTINCT ON", sql)
         self.assertIn("LIMIT", sql)
         self.assertEqual(published.call_args.kwargs["payload"], {"instruments": []})
-
-
-class LifecycleAndReconciliationTests(unittest.TestCase):
-    def test_api_lifecycle_owns_no_worker_scheduler_or_stream_singletons(self):
-        import main
-
-        config = {"logging": {"level": "INFO"}}
-        with (
-            patch.object(main, "_get_config", return_value=config),
-            patch.object(main, "check_connection", return_value=True),
-            patch.object(main, "setup_logging"),
-            patch.object(main, "close_shared_client") as close,
-            patch.object(main, "threading") as threading,
-        ):
-            threading.Thread = MagicMock()
-            main.on_startup()
-            main.on_shutdown()
-
-        close.assert_called_once_with()
-        # The API only records its own durable heartbeat; it never starts the
-        # analysis worker, outbox worker, scheduler, or quote stream.
-        self.assertEqual(main.on_startup.__name__, "on_startup")
-        for name in (
-            "outbox_worker",
-            "job_worker",
-            "start_scheduler",
-            "quote_stream",
-        ):
-            self.assertFalse(
-                hasattr(main, name),
-                f"main must not own the {name} singleton",
-            )
-
-    def test_reconciliation_repairs_are_isolated_by_class(self):
-        import reconciliation
-
-        class SessionContext:
-            def __enter__(self):
-                return MagicMock()
-
-            def __exit__(self, *args):
-                return False
-
-        with (
-            patch.object(reconciliation, "get_session", return_value=SessionContext()),
-            patch(
-                "analysis_jobs.reconcile_jobs",
-                side_effect=RuntimeError("private payload"),
-            ),
-            patch(
-                "section_snapshots.reconcile_snapshots", return_value={"repaired": 2}
-            ),
-            patch("ui_events.delete_expired_ui_events", return_value=4),
-            patch(
-                "events.freshness.refresh_freshness_states", return_value={"changed": 3}
-            ),
-        ):
-            result = reconciliation.reconcile_event_pipeline(
-                {"event_pipeline": {"jobs": {}}}
-            )
-        self.assertEqual(result["jobs_reconciled"], 0)
-        self.assertEqual(result["snapshots_reconciled"], 2)
-        self.assertEqual(result["ui_events_expired"], 4)
-        self.assertEqual(result["freshness_reclassified"], 3)
-        self.assertEqual(result["error_count"], 1)
-        self.assertNotIn("private payload", str(result))
 
 
 class ThesisAutonomyRoutingTests(unittest.TestCase):
@@ -340,7 +272,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         from events.routing import _enqueue_thesis_autonomy_job
 
         event = self._event("price_tick", datetime(2026, 8, 15, 9, 10, tzinfo=UTC))
-        with patch("analysis_jobs.enqueue_job") as enqueue:
+        with patch("jobs.enqueue_job") as enqueue:
             enqueue.return_value = SimpleNamespace(inserted=True, suppressed=False)
             jobs = _enqueue_thesis_autonomy_job(
                 MagicMock(),
@@ -380,7 +312,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         config = self._config()
         config["thesis_autonomy"]["maximum_event_runs_per_day"] = 4
 
-        with patch("analysis_jobs.enqueue_job") as enqueue:
+        with patch("jobs.enqueue_job") as enqueue:
             jobs = _enqueue_thesis_autonomy_job(
                 session,
                 event,
@@ -415,7 +347,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         config["thesis_autonomy"]["maximum_event_runs_per_day"] = 4
 
         with patch(
-            "analysis_jobs.enqueue_job",
+            "jobs.enqueue_job",
             return_value=SimpleNamespace(inserted=True, suppressed=False),
         ) as enqueue:
             jobs = _enqueue_thesis_autonomy_job(
@@ -434,7 +366,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         from events.routing import _enqueue_thesis_autonomy_job
 
         event = self._event("price_tick", datetime(2026, 8, 15, 9, 10, tzinfo=UTC))
-        with patch("analysis_jobs.enqueue_job") as enqueue:
+        with patch("jobs.enqueue_job") as enqueue:
             jobs = _enqueue_thesis_autonomy_job(
                 MagicMock(),
                 event,
@@ -454,7 +386,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=self._config()),
             patch(
-                "analysis_jobs.enqueue_job",
+                "jobs.enqueue_job",
                 return_value=SimpleNamespace(inserted=True, suppressed=False),
             ) as enqueue,
         ):
@@ -484,7 +416,7 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=self._config()),
             patch(
-                "analysis_jobs.enqueue_job",
+                "jobs.enqueue_job",
                 return_value=SimpleNamespace(inserted=True, suppressed=False),
             ) as enqueue,
         ):
@@ -493,99 +425,6 @@ class ThesisAutonomyRoutingTests(unittest.TestCase):
         self.assertNotIn("thesis_autonomy_run", job_types)
         # The two stable section jobs are preserved.
         self.assertEqual(len(job_types), 2)
-
-    def test_price_tick_control_plane_propagates_once_per_target_bucket(self):
-        from events.routing import initial_handler
-
-        config = {
-            "thesis_autonomy": {"enabled": False},
-            "research_control_plane": {
-                "enabled": True,
-                "event_debounce_seconds": 120,
-                "priority_policy_version": "v1",
-            },
-        }
-
-        def event(symbol, at, event_id):
-            payload = {
-                "event_id": event_id,
-                "source": "oanda",
-                "event_type": "price_tick",
-                "entities": [{"symbol": symbol}],
-                "markets": [],
-                "importance_hint": "0.5",
-            }
-            return SimpleNamespace(
-                **payload,
-                content_hash="a" * 64,
-                correlation_id="corr-1",
-                ingested_at=at,
-                payload={},
-                model_dump=lambda mode: dict(payload),
-            )
-
-        seen = set()
-        enqueued = []
-
-        def enqueue(_session, **kwargs):
-            identity = (
-                kwargs["job_type"],
-                kwargs["dedupe_key"],
-                kwargs["input_fingerprint"],
-            )
-            inserted = identity not in seen
-            seen.add(identity)
-            enqueued.append(kwargs)
-            return SimpleNamespace(
-                inserted=inserted,
-                job=SimpleNamespace(id=f"job-{len(enqueued)}"),
-            )
-
-        start = datetime(2026, 8, 15, 9, 10, tzinfo=UTC)
-        events = (
-            event("AAPL", start, "tick-1"),
-            event("AAPL", start.replace(minute=11), "tick-2"),
-            event("MSFT", start.replace(minute=11), "tick-3"),
-            event("AAPL", start.replace(minute=12), "tick-4"),
-        )
-        session = MagicMock()
-        with (
-            patch("events.freshness.record_event_observation", return_value={}),
-            patch("events.routing._config", return_value=config),
-            patch("events.routing._enqueue_section_jobs", return_value=[]),
-            patch("analysis_jobs.enqueue_job", side_effect=enqueue),
-            patch(
-                "research_control_plane.repository.propagate_event_dependencies",
-                return_value={
-                    "nodes_touched": 1,
-                    "edges_touched": 1,
-                    "theses_affected": 1,
-                },
-            ) as propagate,
-            patch(
-                "research_control_plane.repository.upsert_question",
-                return_value={"id": "question"},
-            ),
-            patch("ui_events.append_ui_invalidations"),
-        ):
-            results = [initial_handler(session, item) for item in events]
-
-        self.assertEqual(propagate.call_count, 3)
-        self.assertTrue(results[0]["research_control_plane"]["planner_job_created"])
-        self.assertTrue(results[1]["research_control_plane"]["planner_job_coalesced"])
-        self.assertEqual(
-            results[1]["research_control_plane"]["nodes_touched"],
-            0,
-        )
-        self.assertNotEqual(
-            enqueued[0]["dedupe_key"],
-            enqueued[2]["dedupe_key"],
-        )
-        self.assertEqual(enqueued[0]["dedupe_key"], enqueued[1]["dedupe_key"])
-        self.assertNotEqual(
-            enqueued[0]["input_fingerprint"],
-            enqueued[3]["input_fingerprint"],
-        )
 
 
 class PlaybookMatchLedgerTests(unittest.TestCase):
@@ -632,9 +471,8 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         return session, playbook
 
     def test_context_match_recorded_once_per_event(self):
-        from thesis_autonomy_support import EXISTING_ID
-
         from events.routing import _match_due_playbooks
+        from thesis_autonomy_support import EXISTING_ID
 
         session, playbook = self._session()
         event = self._event()
@@ -660,9 +498,8 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_no_due_playbooks_record_nothing(self):
-        from thesis_autonomy_support import MemorySession
-
         from events.routing import _match_due_playbooks
+        from thesis_autonomy_support import MemorySession
 
         session = MemorySession()
         session.market_events.add(self.EVENT_ID)
@@ -679,9 +516,8 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
         self.assertEqual(session.event_matches, set())
 
     def test_initial_handler_records_ledger_before_early_return(self):
-        from thesis_autonomy_support import EXISTING_ID
-
         from events.routing import initial_handler
+        from thesis_autonomy_support import EXISTING_ID
 
         session, _playbook = self._session()
         event = self._event()
@@ -689,7 +525,7 @@ class PlaybookMatchLedgerTests(unittest.TestCase):
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=self._config()),
             patch(
-                "analysis_jobs.enqueue_job",
+                "jobs.enqueue_job",
                 return_value=SimpleNamespace(inserted=True, suppressed=False),
             ) as enqueue,
         ):

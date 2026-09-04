@@ -21,14 +21,6 @@ from uuid import uuid4
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import text
-
-from contracts.outbound_security import (
-    OutboundSecurityError,
-    resolve_redirect_url,
-    validate_public_url,
-)
-from db import get_session
 from http_client import get_shared_client, make_request
 from investment_engine import (
     build_deterministic_analysis,
@@ -104,6 +96,14 @@ from investment_schemas import (
     validate_relationship_reconciliations,
     validate_risk_catalyst_contract_violations,
 )
+from sqlalchemy import text
+
+from contracts.outbound_security import (
+    OutboundSecurityError,
+    resolve_redirect_url,
+    validate_public_url,
+)
+from db import get_session
 
 __all__ = [
     "AnalysisInProgress",
@@ -188,7 +188,6 @@ _VALIDATION_WARNING_BY_CATEGORY = {
 }
 
 
-
 def _response_schema() -> dict:
     return {
         "name": "investment_report_narrative_v7",
@@ -230,14 +229,14 @@ def _validated_investment_facts(
 def enqueue_investment_analysis(
     config: dict, document_id: str, *, market_inputs: dict | None = None
 ) -> dict:
-    """Hand an ingested document to the existing durable analysis queue.
+    """Hand an ingested document to the durable job queue.
 
-    Uses the shared ``analysis_jobs`` queue (job_type ``investment_analysis``)
-    consumed by the durable worker; no second queue is introduced. The job
+    Uses ``jobs`` with job type ``investment_analysis``. The worker consumes
+    the job; no second queue is introduced. The job
     identity deduplicates on the document id, so repeated ingests or triggers
     do not stack duplicate analysis work.
     """
-    from analysis_jobs import enqueue_job
+    from jobs import enqueue_job
 
     document_id = str(document_id).strip()
     if not document_id:
@@ -266,7 +265,6 @@ def enqueue_investment_analysis(
         ),
         "inserted": enqueued.inserted,
     }
-
 
 
 def _canonical_fingerprint(payload: object) -> str:
@@ -405,7 +403,6 @@ def build_investment_analysis_request(
     )
 
 
-
 class InvestmentFinalizedAnalysis(NamedTuple):
     """Pure final-analysis components consumed by ``analyze_document``."""
 
@@ -513,9 +510,7 @@ def finalize_investment_analysis(
             facts.get("materiality_assessment") or {}
         ),
         "classification": facts.get("classification", {}),
-        "drivers": _dedupe_strings(
-            facts.get("drivers"), deterministic.get("drivers")
-        ),
+        "drivers": _dedupe_strings(facts.get("drivers"), deterministic.get("drivers")),
         "catalysts": facts.get("catalysts", [])[:12]
         if isinstance(facts.get("catalysts"), list)
         else [],
@@ -1482,7 +1477,6 @@ def analyze_document(
     if payload is None:
         raise RuntimeError("Investment analysis was stored but could not be read")
     return payload
-
 
 
 _DERIVED_METRIC_NAMES = frozenset(

@@ -188,11 +188,11 @@ class GenerationAndCompactionTests(unittest.TestCase):
     def test_duplicate_role_outputs_compact_without_added_evidence(self):
         item = evidence()
         duplicate = candidate()
-        runner = FakeRunner({"fundamental": [duplicate], "macro_regime": [duplicate]})
+        runner = FakeRunner({"fundamental": [duplicate], "contrarian": [duplicate]})
         result = run(
             [item],
             runner,
-            roles=("fundamental", "macro_regime"),
+            roles=("fundamental", "contrarian"),
         )
         self.assertEqual(result.raw_candidate_count, 2)
         self.assertEqual(len(result.ranked), 1)
@@ -234,14 +234,13 @@ class GenerationAndCompactionTests(unittest.TestCase):
         shared = candidate()
         runner = FakeRunner(
             {
-                "evidence_extractor": [shared],
                 "fundamental": [shared],
-                "expectations_revisions": [shared],
+                "contrarian": [shared],
             }
         )
-        result = run([item], runner, roles=ROLES[:3])
+        result = run([item], runner, roles=ROLES)
         self.assertEqual(len(result.ranked), 1)
-        self.assertEqual(len(result.compacted), 2)
+        self.assertEqual(len(result.compacted), 1)
         self.assertEqual(result.ranked[0].evidence.support_count, 1)
         self.assertEqual(result.ranked[0].evidence.evidence_input_count, 1)
 
@@ -263,6 +262,7 @@ class GenerationAndCompactionTests(unittest.TestCase):
         self.assertEqual(len(keys), 2)
 
     def test_all_roles_participate_with_distinct_candidates(self):
+        self.assertEqual(ROLES, ("fundamental", "contrarian"))
         item = evidence()
         runner = FakeRunner(
             {role: [candidate(mechanism=f"mechanism {role}")] for role in ROLES}
@@ -277,11 +277,11 @@ class GenerationAndCompactionTests(unittest.TestCase):
         item = evidence()
         first = candidate()
         second = candidate(consensus="slightly different consensus wording")
-        runner = FakeRunner({"fundamental": [first], "editor": [second]})
+        runner = FakeRunner({"fundamental": [first], "contrarian": [second]})
         result = run(
             [item],
             runner,
-            roles=("fundamental", "editor"),
+            roles=("fundamental", "contrarian"),
         )
         self.assertEqual(len(result.ranked), 1)
         self.assertEqual(len(result.compacted), 1)
@@ -310,11 +310,11 @@ class ScenarioDescriptionTests(unittest.TestCase):
     def test_paths_survive_compaction(self):
         item = evidence()
         duplicate = candidate()
-        runner = FakeRunner({"fundamental": [duplicate], "macro_regime": [duplicate]})
+        runner = FakeRunner({"fundamental": [duplicate], "contrarian": [duplicate]})
         result = run(
             [item],
             runner,
-            roles=("fundamental", "macro_regime"),
+            roles=("fundamental", "contrarian"),
         )
         self.assertEqual(len(result.ranked), 1)
         self.assertEqual(len(result.compacted), 1)
@@ -728,14 +728,14 @@ class BoundsAndRankingTests(unittest.TestCase):
                 for offset, role in enumerate(ROLES)
             }
         )
-        result = run(items, runner, max_raw_candidates=100)
-        self.assertEqual(result.raw_candidate_count, 100)
+        result = run(items, runner, max_raw_candidates=40)
+        self.assertEqual(result.raw_candidate_count, 40)
         capped = [
             entry
             for entry in result.rejected
             if entry.reason == "raw candidate bound exceeded"
         ]
-        self.assertEqual(len(capped), MAX_RAW_CANDIDATES - 100)
+        self.assertEqual(len(capped), MAX_RAW_CANDIDATES - 40)
 
     def test_promotion_bound_holds(self):
         items = [evidence(evidence_id=f"ev-{i}") for i in range(3)]
@@ -755,16 +755,16 @@ class BoundsAndRankingTests(unittest.TestCase):
                 for offset, role in enumerate(ROLES)
             }
         )
-        result = run(items, runner, max_promoted=64)
+        result = run(items, runner, max_promoted=30)
         self.assertEqual(result.raw_candidate_count, MAX_RAW_CANDIDATES)
-        self.assertEqual(len(result.ranked), 64)
-        self.assertEqual([entry.rank for entry in result.ranked], list(range(1, 65)))
+        self.assertEqual(len(result.ranked), 30)
+        self.assertEqual([entry.rank for entry in result.ranked], list(range(1, 31)))
         bounded = [
             entry
             for entry in result.rejected
             if entry.reason == "promotion bound exceeded"
         ]
-        self.assertEqual(len(bounded), MAX_RAW_CANDIDATES - 64)
+        self.assertEqual(len(bounded), MAX_RAW_CANDIDATES - 30)
 
     def test_deterministic_ordering_survives_input_permutations(self):
         items = [
@@ -1054,7 +1054,7 @@ class PromptAndSchemaTests(unittest.TestCase):
     def test_prompt_scenario_contract_matches_schema(self):
         item = evidence()
         prompt = build_role_prompt(
-            role="editor",
+            role="fundamental",
             theme_id=THEME_ID,
             subject=None,
             evidence=[item],

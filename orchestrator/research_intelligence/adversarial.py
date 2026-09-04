@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.contracts import (
     EpistemicState,
     NormalizedEvidence,
@@ -50,13 +51,31 @@ _COUNTER_KINDS = frozenset(
     }
 )
 _PRIORITIES = frozenset({"low", "moderate", "high"})
-_SOURCE_CLASSES = frozenset({"official", "industry", "company", "market", "academic", "other"})
+_SOURCE_CLASSES = frozenset(
+    {"official", "industry", "company", "market", "academic", "other"}
+)
 _FREQUENCIES = frozenset(
-    {"one_off", "event_driven", "daily", "weekly", "monthly", "quarterly", "annual", "unknown"}
+    {
+        "one_off",
+        "event_driven",
+        "daily",
+        "weekly",
+        "monthly",
+        "quarterly",
+        "annual",
+        "unknown",
+    }
 )
 _RESEARCH_DATA_TYPE_SET = frozenset(RESEARCH_DATA_TYPES)
 _COUNTER_KEYS = frozenset(
-    {"kind", "statement", "epistemic_state", "evidence_ids", "edge_fingerprint", "rationale"}
+    {
+        "kind",
+        "statement",
+        "epistemic_state",
+        "evidence_ids",
+        "edge_fingerprint",
+        "rationale",
+    }
 )
 _REQUEST_KEYS = frozenset(
     {
@@ -144,7 +163,10 @@ def validate_adversarial_output(
         raise ValueError("adversarial abstained flag must be boolean")
     raw_counters = output.get("counterevidence")
     raw_requests = output.get("data_requests")
-    if not isinstance(raw_counters, list) or len(raw_counters) > maximum_counterevidence:
+    if (
+        not isinstance(raw_counters, list)
+        or len(raw_counters) > maximum_counterevidence
+    ):
         raise ValueError("counterevidence exceeds configured bound")
     if not isinstance(raw_requests, list) or len(raw_requests) > maximum_requests:
         raise ValueError("data requests exceed configured bound")
@@ -174,7 +196,9 @@ def validate_adversarial_output(
         edge_fingerprint = _text(raw.get("edge_fingerprint"), 64, "edge fingerprint")
         if edge_fingerprint and edge_fingerprint not in allowed_edges:
             raise ValueError("counterevidence references an unknown edge")
-        statement = _text(raw.get("statement"), 1_000, "counter statement", required=True)
+        statement = _text(
+            raw.get("statement"), 1_000, "counter statement", required=True
+        )
         rationale = _text(raw.get("rationale"), 800, "counter rationale")
         fingerprint = canonical_fingerprint(
             {
@@ -231,9 +255,15 @@ def validate_adversarial_output(
                 request_fingerprint=fingerprint,
             )
         )
-    invalidation = _strings(output.get("invalidation_conditions"), 30, "invalidation conditions")
-    strengthening = _strings(output.get("strengthening_observations"), 30, "strengthening observations")
-    weakest = _text(output.get("weakest_edge_fingerprint"), 64, "weakest edge fingerprint")
+    invalidation = _strings(
+        output.get("invalidation_conditions"), 30, "invalidation conditions"
+    )
+    strengthening = _strings(
+        output.get("strengthening_observations"), 30, "strengthening observations"
+    )
+    weakest = _text(
+        output.get("weakest_edge_fingerprint"), 64, "weakest edge fingerprint"
+    )
     if weakest and weakest not in allowed_edges:
         raise ValueError("weakest edge fingerprint is unknown")
     if scan_prohibited_language(output):

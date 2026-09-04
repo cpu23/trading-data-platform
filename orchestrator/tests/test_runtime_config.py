@@ -1,4 +1,3 @@
-import base64
 import os
 import sys
 import tempfile
@@ -11,13 +10,8 @@ from unittest.mock import patch
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ.setdefault("DASHBOARD_USER", "internal-user")
-os.environ.setdefault("DASHBOARD_PASSWORD", "internal-pass")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "contracts"))
 os.environ.setdefault("DEPLOYMENT_MODE", "test")
-INTERNAL_AUTH = {
-    "Authorization": "Basic "
-    + base64.b64encode(b"internal-user:internal-pass").decode()
-}
 
 from config_loader import (  # noqa: E402
     ConfigError,
@@ -27,6 +21,9 @@ from config_loader import (  # noqa: E402
     restart_required,
     restart_sensitive_changes,
 )
+from data_quality import evaluate_quality, required_quality_checks  # noqa: E402
+from research_intelligence.config import ResearchSettings  # noqa: E402
+
 from contracts.runtime_config import (  # noqa: E402
     DEFAULT_LIFECYCLE_THRESHOLDS,
     DEFAULT_MARKETS,
@@ -39,8 +36,6 @@ from contracts.runtime_config import (  # noqa: E402
     ResearchStageConfig,
     committed_config_paths,
 )
-from data_quality import evaluate_quality, required_quality_checks  # noqa: E402
-from research_intelligence.config import ResearchSettings  # noqa: E402
 
 
 def _write_config(path: Path, extra: str = "") -> None:
@@ -119,6 +114,51 @@ class ConfigLoaderValidationTests(unittest.TestCase):
             )
             self.assertEqual(dict(config["database"])["host"], "localhost")
 
+    def test_market_intelligence_processor_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            _write_config(
+                path,
+                extra=("processors:\n  market_intelligence:\n    enabled: true\n"),
+            )
+            with self.assertRaisesRegex(ConfigError, "unknown processor id"):
+                load_config(str(path))
+
+    def test_briefing_processor_accepts_asset_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            _write_config(
+                path,
+                extra=(
+                    "processors:\n"
+                    "  briefing:\n"
+                    "    enabled: true\n"
+                    "    asset_context:\n"
+                    "      EURUSD:\n"
+                    "        channels: [monetary policy]\n"
+                ),
+            )
+            config = load_config(str(path))
+            self.assertEqual(
+                config.processors["briefing"].asset_context["EURUSD"].channels,
+                ["monetary policy"],
+            )
+
+    def test_intelligence_roles_rejected_under_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            _write_config(
+                path,
+                extra=(
+                    "llm:\n"
+                    "  intelligence_roles:\n"
+                    "    analyst:\n"
+                    "      reasoning_effort: low\n"
+                ),
+            )
+            with self.assertRaises(ConfigError):
+                load_config(str(path))
+
     def test_version_and_restart_semantics(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -171,8 +211,6 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
         "DB_PASSWORD": "correct-horse-battery-staple",
         "OPENROUTER_API_KEY": "configured-openrouter",
         "TWITTERAPI_KEY": "",
-        "DASHBOARD_USER": "operator",
-        "DASHBOARD_PASSWORD": "correct-dashboard-password",
         "DEPLOYMENT_MODE": "production",
     }
 
@@ -786,8 +824,10 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
     def test_checked_in_config_parses_with_registry_equality(self):
         """The checked-in config is valid, fully known, and dispatchable."""
         from collectors import STANDALONE_COLLECTORS, get_all_collectors, get_collector
-        from contracts.runtime_config import KNOWN_COLLECTORS
+        from processors import get_all_processors
         from schedules import build_cron_trigger
+
+        from contracts.runtime_config import KNOWN_COLLECTORS, KNOWN_PROCESSORS
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
@@ -816,6 +856,9 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
         ):
             with self.subTest(enabled=source_id):
                 self.assertTrue(config.collectors[source_id].enabled)
+
+        self.assertEqual(set(KNOWN_PROCESSORS), set(get_all_processors()))
+        self.assertEqual(set(config.processors), set(KNOWN_PROCESSORS))
 
     def test_checked_in_thesis_autonomy_profile_is_enabled_and_bounded(self):
         from schedules import build_cron_trigger
@@ -1150,75 +1193,6 @@ class QualitySemanticsTests(unittest.TestCase):
                 }
             )
         self.assertEqual(results, {})
-
-
-class LiveAndReadyEndpointTests(unittest.TestCase):
-    def setUp(self):
-        from fastapi.testclient import TestClient
-
-        from main import app
-
-        config = {
-            "demo": {"enabled": False},
-            "collectors": {
-                "fred": {"enabled": False},
-                "forex_factory": {"enabled": False},
-                "oanda": {"enabled": False},
-            },
-            "event_pipeline": {
-                "enabled": False,
-                "outbox_worker_enabled": False,
-                "jobs": {"enabled": False},
-            },
-        }
-        self.config_patch = patch("main._get_config", return_value=config)
-        self.config_patch.start()
-        self.addCleanup(self.config_patch.stop)
-        self.client = TestClient(app, headers=INTERNAL_AUTH)
-
-    def _healthy_heartbeat(self, role: str) -> dict:
-        from datetime import UTC, datetime, timedelta
-
-        status = "running" if role != "quotes" else "connected"
-        return {
-            "role": role,
-            "status": status,
-            "last_heartbeat_at": datetime.now(UTC) - timedelta(seconds=5),
-            "detail": {},
-        }
-
-    @patch("main.fresh_role_heartbeats")
-    @patch("main.check_connection", return_value=True)
-    def test_live_returns_200(self, _db, _heartbeat):
-        response = self.client.get("/live")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
-
-    @patch("main.fresh_role_heartbeats")
-    @patch("main.check_connection", return_value=True)
-    def test_ready_returns_200_when_database_and_roles_ok(self, _db, heartbeat):
-        heartbeat.side_effect = lambda config, role: [self._healthy_heartbeat(role)]
-        response = self.client.get("/ready")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ready")
-        self.assertEqual(response.json()["dependencies"]["database"], "ok")
-        self.assertIn("api", response.json()["dependencies"]["roles"]["required"])
-
-    @patch("main.fresh_role_heartbeats", return_value=[])
-    @patch("main.check_connection", return_value=True)
-    def test_ready_returns_503_when_required_role_missing(self, _db, _heartbeat):
-        response = self.client.get("/ready")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["status"], "unready")
-        unhealthy = response.json()["dependencies"]["roles"]["unhealthy"]
-        self.assertIn("api", unhealthy)
-
-    @patch("main.fresh_role_heartbeats")
-    @patch("main.check_connection", return_value=False)
-    def test_ready_returns_503_when_database_unreachable(self, _db, _heartbeat):
-        response = self.client.get("/ready")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["status"], "unready")
 
 
 class ResearchIntelligenceConfigTests(unittest.TestCase):

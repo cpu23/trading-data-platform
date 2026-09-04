@@ -11,10 +11,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from errors import sanitize_error
 from sqlalchemy import text
 
 from db import upsert_records_in_session
-from errors import sanitize_error
 
 from .canonicalize import canonical_json
 from .contracts import MarketEvent

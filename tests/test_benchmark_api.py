@@ -60,7 +60,11 @@ class BenchmarkOutputContractTests(unittest.TestCase):
         def request(_url, _timeout, _headers):
             return next(responses)
 
-        report = run_benchmark("http://fixture.invalid/api/investment/dashboard", warm_count=1, request_fn=request)
+        report = run_benchmark(
+            "http://fixture.invalid/api/investment/dashboard",
+            warm_count=1,
+            request_fn=request,
+        )
         self.assertFalse(report["cold"]["ok"])
         self.assertEqual(report["cold"]["status"], 503)
         self.assertEqual(report["warm"]["count_successful"], 1)

@@ -14,15 +14,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pg_support
-from sqlalchemy import text
-
-from db import get_session
 from reaction_windows import (
     backfill_reaction_windows,
     initialize_reaction_windows,
     list_event_reactions,
     recompute_reaction_windows,
 )
+from sqlalchemy import text
+
+from db import get_session
 
 REACTION_TABLES = ("event_reaction_windows", "market_data", "market_events")
 
@@ -181,9 +181,17 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self._insert_market(
                 session,
                 [
-                    {"symbol": "EURUSD", "timestamp": self.event_at - timedelta(minutes=1), "close": 100.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": self.event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
                     # Exactly at the tolerance upper bound.
-                    {"symbol": "EURUSD", "timestamp": target_at + timedelta(minutes=5), "close": 101.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": target_at + timedelta(minutes=5),
+                        "close": 101.0,
+                    },
                 ],
             )
             summary = initialize_reaction_windows(
@@ -206,8 +214,16 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self._insert_market(
                 session,
                 [
-                    {"symbol": "EURUSD", "timestamp": self.event_at - timedelta(minutes=1), "close": 100.0},
-                    {"symbol": "EURUSD", "timestamp": target_at + timedelta(minutes=5, seconds=1), "close": 101.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": self.event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": target_at + timedelta(minutes=5, seconds=1),
+                        "close": 101.0,
+                    },
                 ],
             )
             summary = initialize_reaction_windows(
@@ -267,9 +283,21 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self._insert_market(
                 session,
                 [
-                    {"symbol": "EURUSD", "timestamp": event_at - timedelta(minutes=1), "close": 100.0},
-                    {"symbol": "EURUSD", "timestamp": event_at + timedelta(minutes=59), "close": 99.0},
-                    {"symbol": "EURUSD", "timestamp": event_at + timedelta(minutes=61), "close": 98.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": event_at + timedelta(minutes=59),
+                        "close": 99.0,
+                    },
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": event_at + timedelta(minutes=61),
+                        "close": 98.0,
+                    },
                 ],
             )
             summary = initialize_reaction_windows(
@@ -303,7 +331,11 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
                 [
                     # Baseline sits outside the eos backward tolerance band
                     # ([20:55, 21:00]) so only the Monday tick could satisfy it.
-                    {"symbol": "EURUSD", "timestamp": event_at - timedelta(minutes=8), "close": 100.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": event_at - timedelta(minutes=8),
+                        "close": 100.0,
+                    },
                     {"symbol": "EURUSD", "timestamp": monday_tick, "close": 99.0},
                 ],
             )
@@ -320,7 +352,9 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self.assertEqual(backfill["unresolved"], 6)
             rows = list_event_reactions(session, self.event_id, limit=10)
             for row in rows:
-                self.assertEqual(row["missing_data_reason"], "missing_target", row["horizon"])
+                self.assertEqual(
+                    row["missing_data_reason"], "missing_target", row["horizon"]
+                )
                 self.assertIsNone(row["observed_price"], row["horizon"])
 
     def test_multi_timeframe_uniqueness_and_identity(self):
@@ -348,7 +382,11 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self._insert_market(
                 session,
                 [
-                    {"symbol": "EURUSD", "timestamp": self.event_at - timedelta(minutes=1), "close": 100.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": self.event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
                 ],
             )
             summary = initialize_reaction_windows(
@@ -375,10 +413,24 @@ class ReactionSqlIntegrationTests(unittest.TestCase):
             self._insert_market(
                 session,
                 [
-                    {"symbol": "EURUSD", "timestamp": self.event_at - timedelta(minutes=1), "close": 100.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timestamp": self.event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
                     {"symbol": "EURUSD", "timestamp": target_at, "close": 99.0},
-                    {"symbol": "EURUSD", "timeframe": "5m", "timestamp": self.event_at - timedelta(minutes=1), "close": 100.0},
-                    {"symbol": "EURUSD", "timeframe": "5m", "timestamp": target_at, "close": 99.0},
+                    {
+                        "symbol": "EURUSD",
+                        "timeframe": "5m",
+                        "timestamp": self.event_at - timedelta(minutes=1),
+                        "close": 100.0,
+                    },
+                    {
+                        "symbol": "EURUSD",
+                        "timeframe": "5m",
+                        "timestamp": target_at,
+                        "close": 99.0,
+                    },
                 ],
             )
             summary = initialize_reaction_windows(

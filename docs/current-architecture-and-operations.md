@@ -1,31 +1,24 @@
 # Current Architecture and Operations
 
-This document describes the deployed platform as of 8 August 2026. Older phase
-documents remain historical design records and are not current operator
-instructions.
+This document describes the current three-service deployment. Older phase
+documents remain historical design records and are not operator instructions.
 
 ## Runtime Services
 
-The production Compose project contains:
+The production Compose project contains exactly:
 
-- `postgres`: PostgreSQL with TimescaleDB.
-- `migrate`: checksum-verified, one-shot schema gate.
-- `orchestrator`: internal HTTP control API only.
-- `scheduler`: durable logical-run scheduling and enqueue.
-- `worker`: leased operation and analysis execution.
-- `outbox`: transactional event publication.
-- `quotes`: quote-stream ownership.
-- `api`: session-authenticated JSON/SSE API and server-rendered HTMX interface.
+- `postgres`: PostgreSQL with TimescaleDB. A fresh volume is initialized from
+  the authoritative `db/schema.sql`.
+- `web`: the session-authenticated FastAPI JSON API and server-rendered HTMX
+  interface. API handlers call orchestration modules directly in-process.
+- `worker`: one foreground runtime owning the scheduler, durable job executor,
+  transactional outbox publisher, quote stream, and demo publisher when enabled.
 
-The credential-free demo adds `demo-live`, a bounded deterministic publisher
-that inserts fictional price observations and watchlist invalidations. It does
-not call external providers or models.
-
-Normal deployment executes image-copied code, configuration, prompts,
-migrations, and database bootstrap SQL. `docker-compose.dev.yml` is the
-explicit bind-mount override. Private operator state is stored in the
-`operatorstate` volume. The API exposes build identity, `/live`, and
-dependency-aware `/ready`.
+`web` and `worker` use one root Python environment and application image.
+Normal deployment executes image-copied code, configuration, prompts, and
+schema. `docker-compose.dev.yml` is the explicit bind-mount override. Private
+operator state is stored in the `operatorstate` volume. The web service exposes
+build identity, `/live`, and dependency-aware `/ready`.
 
 ## State and Configuration Precedence
 
@@ -45,9 +38,9 @@ immutable settings snapshots; loaders do not keep them alive in global
 
 Setup commits versioned directories under `/app/state/versions`. Each version
 contains `auth.json`, `operator.yaml`, `secrets.env`, and a checksummed
-`manifest.json`, all private. `activated.json` is the atomically replaced
-current-version pointer. Readers validate the marker, manifest, checksums, and
-parseability rather than treating partial legacy files as completed setup.
+`manifest.json`, all private. One atomic `current` symlink selects the complete
+snapshot; stable consumer links resolve through it. Readers validate the
+manifest, checksums, and contents.
 
 ## Collection Contracts
 
@@ -108,18 +101,14 @@ Published intelligence includes:
 - rolling global narrative memory
 - deterministic since-last-cycle delta
 
-When the normalized input fingerprint is unchanged, market intelligence emits
-a no-change result without paid inference.
-
 ## AI Client and Accounting
 
-The client targets any OpenAI-compatible endpoint. It supports:
+The client targets one OpenAI-compatible endpoint. It supports:
 
 - one active endpoint profile
-- global and per-processor model overrides
-- per-role market-intelligence profiles
-- reasoning-effort capability fallback
-- sampling-parameter capability fallback
+- one default model inherited by every production processor
+- bounded explicit benchmark/research overrides
+- reasoning-effort and sampling-parameter capability fallback
 - provider routing preferences
 - configurable timeout and retry attempts
 
@@ -137,33 +126,9 @@ Every generation attempt records:
 
 Raw prompts and responses have a 90-day retention contract.
 
-## Intelligence Pipeline
-
-Market intelligence uses four calls:
-
-1. Analyst: strongest evidence-bounded economic interpretation.
-2. Skeptic: challenges causality, confidence, and missing evidence.
-3. Auditor: checks support, freshness, contradictions, and policy.
-4. Editor: synthesizes only validated role claims.
-
-Contracts enforced in code include:
-
-- every configured symbol appears exactly once
-- role and editor schemas reject extra keys
-- evidence IDs must be supplied and asset-eligible
-- CFTC contracts apply only to configured mapped assets
-- positioning claims describe one participant category at a time
-- global narratives cite only global claims
-- asset narratives cite only claims for that asset
-- invalid source references drop the optional narrative
-- editor evidence is derived from cited validated claims
-- sparse assets become neutral, low confidence, and explicitly unavailable
-- advisory and technical-analysis language fails policy validation
-
 ## Research Intelligence
 
-The research-intelligence subsystem is separate from the four-role daily market
-briefing above. It normalizes existing macro, release-card, market-state,
+The research-intelligence subsystem normalizes existing macro, release-card,
 reaction, story, filing, investment-analysis, and observation records through
 source adapters; no second generic raw-data store is introduced.
 
@@ -190,11 +155,15 @@ Cases have immutable version snapshots and deterministic lifecycle transitions:
 research-ready case can extend an existing manual theme or promote to one new
 maintained theme; exact and semantic matching prevent duplicates.
 
-The configured weekday schedule enqueues a deduplicated `research_discovery`
-analysis job. Model attempts, prompt versions, input fingerprints, usage, cost,
-validation failures, and one bounded repair attempt remain inspectable. Adapter,
-macro-stage, and per-candidate failures are isolated. Dashboard reads never
-invoke the model.
+The scheduler enqueues deterministic research discovery and a nightly 02:00 UTC
+autonomous thesis cycle on the canonical `jobs` queue. Two independent
+researcher roles generate competing candidates; deterministic evidence,
+opposition, citation, budget, and scoring gates run before every surviving
+candidate is staged in `investment_thesis_proposals`. Agent output never
+mutates a canonical thesis. Approval, rejection, or revision always requires a
+human review action. Model attempts, prompt versions, fingerprints, usage,
+cost, and validation failures remain inspectable. Dashboard reads never invoke
+the model.
 
 Point-in-time replay reuses the same adapters and validators under a strict
 availability cutoff and never mutates live research state. Four
@@ -249,7 +218,7 @@ The interface uses progressive disclosure:
 - a slim since-last-cycle section
 - compact watchlist cards
 - detailed focus/evidence panels only on demand
-- collapsed long briefing and role details
+- collapsed long briefing details
 - sparse asset history pages
 - no permanent sidebar or competing dashboard grid
 
@@ -276,17 +245,11 @@ previous observations, while a bounded five-day aggregate derives the trend.
 This replaces per-indicator query fanout without changing the response
 contract.
 
-`GET /api/system/health` performs local API checks and one internal
-orchestrator `/health` request. The orchestrator response includes its quality
-result. The expensive quality suite is protected by a process-local,
-configuration-aware snapshot with a 30-second default TTL; set
-`HEALTH_QUALITY_CACHE_SECONDS` to change that bound. An expired snapshot is
-refreshed under a lock so concurrent probes do not duplicate the sweep.
-
-The operator-facing `/quality` page deliberately calls the uncached
-orchestrator `/quality` endpoint. It is the explicit live diagnostic path;
-ordinary dashboard, settings, readiness, and Compose health probes consume the
-bounded snapshot.
+`GET /api/system/health` checks PostgreSQL, the durable `worker` heartbeat,
+collector/processor freshness, and bounded data-quality state. Readiness
+requires the database and current worker heartbeat; missing quote or outbox
+subcomponent detail does not invent extra service dependencies. The
+operator-facing `/quality` page is the explicit detailed diagnostic path.
 
 ## Authentication and Request Security
 
@@ -310,21 +273,22 @@ After activation:
 run. Explicit one-run overrides require a reason and are audited. Data
 collectors can still run when the paid inference budget is exhausted.
 
-## Durable Live Path
+## Durable Event and Refresh Path
 
 Collectors normalize domain changes into the append-only `market_events`
-ledger. The transactionally coupled `event_outbox` is leased by the outbox
-worker, which schedules idempotent `analysis_jobs`. Workers publish immutable
-`section_snapshots`; a changed current snapshot appends a small `ui_events`
-invalidation. `/stream` replays retained invalidations and then streams new
-wakeups. Browsers fetch the named HTMX partial; SSE never transports report,
-price, evidence, or source payloads.
+ledger. The transactionally coupled `event_outbox` is leased by the worker,
+which schedules idempotent work on the canonical `jobs` queue. The same worker
+claims every job kind and publishes immutable `section_snapshots`.
+
+Browsers use one visibility-aware 90-second `marketRefresh` timer. HTMX
+partials refresh from stored data on that event; there is no SSE endpoint,
+invalidation table, or streaming fallback.
 
 The full cycle remains authoritative reconciliation. It repairs abandoned
 leases, refreshes freshness classifications, backfills reaction windows and
-market confirmations, expires claims, republishes missing snapshots, and
-removes expired UI events. A failed publication leaves the previous valid
-snapshot visible with stale/failure metadata.
+market confirmations, expires claims, and republishes missing snapshots. A
+failed publication leaves the previous valid snapshot visible with
+stale/failure metadata.
 
 ## Model Evaluation and Promotion
 
@@ -341,12 +305,10 @@ fallback to make a candidate pass.
 docker compose ps
 curl http://127.0.0.1:8000/api/meta/build
 
-# Full cycle
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py collect --all
-
-# Individual source or processor
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py collect ecb
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py process market_intelligence
+# Full cycle or individual component
+docker compose exec worker /app/.venv/bin/python cli.py collect --all
+docker compose exec worker /app/.venv/bin/python cli.py collect ecb
+docker compose exec worker /app/.venv/bin/python cli.py process briefing
 
 # Investment and research-intelligence read paths
 curl http://127.0.0.1:8000/api/investment/dashboard
@@ -360,22 +322,22 @@ curl http://127.0.0.1:8000/api/research/replays?limit=20
 curl http://127.0.0.1:8000/api/research/metrics?limit=20
 
 # Research durable controls
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-run
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-status
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-inspect <case-uuid>
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-update <case-uuid> --force
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-rebuild
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research-retry <job-uuid>
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research benchmark list
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research inspect-replay <replay-run-uuid>
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py research metrics --scope comparison
+docker compose exec worker /app/.venv/bin/python cli.py research-run
+docker compose exec worker /app/.venv/bin/python cli.py research-status
+docker compose exec worker /app/.venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research-update <case-uuid> --force
+docker compose exec worker /app/.venv/bin/python cli.py research-rebuild
+docker compose exec worker /app/.venv/bin/python cli.py research-retry <job-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark list
+docker compose exec worker /app/.venv/bin/python cli.py research inspect-replay <replay-run-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research metrics --scope comparison
 
-# Collector, queue, and connectivity state
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py status
-docker compose exec orchestrator /app/orchestrator/.venv/bin/python cli.py health
+# Queue and worker state
+curl http://127.0.0.1:8000/api/jobs/status
+docker compose exec worker /app/.venv/bin/python -m roles check worker
 
 # Logs
-docker compose logs -f api orchestrator
+docker compose logs -f web worker
 ```
 
 The dashboard quality page is authoritative for operator-facing freshness,
@@ -384,13 +346,15 @@ default while preserving them for explicit audit queries.
 
 ## Backup and Upgrade
 
-Back up both named volumes before a material upgrade:
+Back up both persistent volumes before a material upgrade:
 
 - database volume (`pgdata`)
-- private state volume (`platform_state`)
+- private state volume (`operatorstate`)
 
-Apply migrations before starting analytical workloads. Existing installations
-are expected to retain historical opinions and previous snapshots across
-migrations. Never replace the private state volume with repository `state/`
-files; that directory is only a legacy migration input.
+`db/schema.sql` is the sole schema definition and initializes only a fresh
+PostgreSQL volume. This clean-cutover runtime does not include an application
+migration service or compatibility loader. Schema-changing upgrades therefore
+require a fresh volume or an explicitly reviewed database change performed
+outside the application. Never replace the private state volume with loose
+root-level state files; only complete versioned snapshots are supported.
 

@@ -21,8 +21,15 @@ THEME_STATUSES = ("active", "paused", "retired")
 THESIS_STATUSES = ("candidate", "active", "paused", "closed")
 ENTITY_TYPES = ("industry", "company", "symbol", "macro_series")
 EVIDENCE_TYPES = (
-    "macro_series", "market_data", "market_events", "econ_events",
-    "story_cluster", "opinion", "atom", "filing_delta", "document",
+    "macro_series",
+    "market_data",
+    "market_events",
+    "econ_events",
+    "story_cluster",
+    "opinion",
+    "atom",
+    "filing_delta",
+    "document",
 )
 RELATIONSHIPS = ("supports", "contradicts", "context", "invalidation")
 CATALYST_STATES = ("pending", "confirmed", "missed", "expired")
@@ -96,7 +103,9 @@ def _weight(value: Any) -> float:
     return max(0.0, min(1.0, result))
 
 
-def _entity_event_filters(entities: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
+def _entity_event_filters(
+    entities: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], list[str]]:
     values: list[str] = []
     for entity in entities:
         if entity_id := str(entity.get("entity_id") or "").strip():
@@ -108,7 +117,9 @@ def _entity_event_filters(entities: Sequence[Mapping[str, Any]]) -> tuple[list[s
     return countries, keywords
 
 
-def upsert_holdings(session: Any, holdings: list[Mapping[str, Any]] | None = None) -> int:
+def upsert_holdings(
+    session: Any, holdings: list[Mapping[str, Any]] | None = None
+) -> int:
     """Upsert portfolio holdings keyed by symbol; weights are clamped to [0, 1]."""
     if holdings is None:
         holdings = []
@@ -120,15 +131,22 @@ def upsert_holdings(session: Any, holdings: list[Mapping[str, Any]] | None = Non
         source = str(item.get("source") or "manual").strip().lower()
         if source not in HOLDING_SOURCES:
             raise ValueError(f"unsupported source:{source[:32]}")
-        rows.append({
-            "symbol": symbol, "company": _text(item.get("company"), 200),
-            "sector": _text(item.get("sector"), 100), "country": _text(item.get("country"), 100),
-            "currency": _text(item.get("currency"), 10), "weight": _weight(item.get("weight", 0.0)),
-            "theme_tags": _string_list(item.get("theme_tags"), "theme_tags", 50, 100),
-            "rate_sensitivity": _text(item.get("rate_sensitivity"), 100),
-            "commodity_sensitivity": _text(item.get("commodity_sensitivity"), 100),
-            "source": source,
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "company": _text(item.get("company"), 200),
+                "sector": _text(item.get("sector"), 100),
+                "country": _text(item.get("country"), 100),
+                "currency": _text(item.get("currency"), 10),
+                "weight": _weight(item.get("weight", 0.0)),
+                "theme_tags": _string_list(
+                    item.get("theme_tags"), "theme_tags", 50, 100
+                ),
+                "rate_sensitivity": _text(item.get("rate_sensitivity"), 100),
+                "commodity_sensitivity": _text(item.get("commodity_sensitivity"), 100),
+                "source": source,
+            }
+        )
     if not rows:
         return 0
     session.execute(
@@ -153,49 +171,63 @@ def upsert_holdings(session: Any, holdings: list[Mapping[str, Any]] | None = Non
 
 def portfolio_context(session: Any) -> dict[str, Any]:
     """Bounded portfolio aggregation: exposures, catalysts, review schedule."""
-    def _exposure(column: str) -> list[dict[str, Any]]:
-        return result_rows(session.execute(
-            text(
-                f"SELECT {column} AS bucket, SUM(weight) AS exposure, COUNT(*) AS holdings "
-                f"FROM portfolio_holdings WHERE weight > 0 GROUP BY bucket "
-                f"ORDER BY exposure DESC, bucket LIMIT :limit"
-            ),
-            {"limit": _MAX_EXPOSURES},
-        ))
 
-    total = result_first(session.execute(
-        text("SELECT COALESCE(SUM(weight), 0) AS total FROM portfolio_holdings LIMIT 1"), {}
-    ))
-    themes = result_rows(session.execute(
-        text(
-            """SELECT t.name AS theme, SUM(h.weight) AS exposure, COUNT(*) AS holdings
+    def _exposure(column: str) -> list[dict[str, Any]]:
+        return result_rows(
+            session.execute(
+                text(
+                    f"SELECT {column} AS bucket, SUM(weight) AS exposure, COUNT(*) AS holdings "
+                    f"FROM portfolio_holdings WHERE weight > 0 GROUP BY bucket "
+                    f"ORDER BY exposure DESC, bucket LIMIT :limit"
+                ),
+                {"limit": _MAX_EXPOSURES},
+            )
+        )
+
+    total = result_first(
+        session.execute(
+            text(
+                "SELECT COALESCE(SUM(weight), 0) AS total FROM portfolio_holdings LIMIT 1"
+            ),
+            {},
+        )
+    )
+    themes = result_rows(
+        session.execute(
+            text(
+                """SELECT t.name AS theme, SUM(h.weight) AS exposure, COUNT(*) AS holdings
                FROM portfolio_holdings h
                JOIN LATERAL unnest(h.theme_tags) AS tags(tag) ON TRUE
                JOIN investment_themes t ON t.name = tags.tag
                WHERE h.weight > 0 GROUP BY t.name ORDER BY exposure DESC, t.name LIMIT :limit"""
-        ),
-        {"limit": _MAX_EXPOSURES},
-    ))
-    catalysts = result_rows(session.execute(
-        text(
-            """SELECT c.id, c.description, c.expected_at, c.state, th.theme_id, th.company, th.symbol
+            ),
+            {"limit": _MAX_EXPOSURES},
+        )
+    )
+    catalysts = result_rows(
+        session.execute(
+            text(
+                """SELECT c.id, c.description, c.expected_at, c.state, th.theme_id, th.company, th.symbol
                FROM investment_catalysts c JOIN investment_theses th ON th.id = c.thesis_id
                WHERE c.state = 'pending' ORDER BY c.expected_at NULLS LAST, c.created_at DESC, c.id
                LIMIT :limit"""
-        ),
-        {"limit": _MAX_REVIEW},
-    ))
-    review_schedule = result_rows(session.execute(
-        text(
-            """SELECT 'thesis' AS kind, id, claim AS title, review_at, status, created_at
+            ),
+            {"limit": _MAX_REVIEW},
+        )
+    )
+    review_schedule = result_rows(
+        session.execute(
+            text(
+                """SELECT 'thesis' AS kind, id, claim AS title, review_at, status, created_at
                FROM investment_theses WHERE review_at IS NOT NULL
                UNION ALL
                SELECT 'theme' AS kind, id, name AS title, review_at, status, created_at
                FROM investment_themes WHERE review_at IS NOT NULL
                ORDER BY review_at NULLS LAST, created_at DESC, kind, id LIMIT :limit"""
-        ),
-        {"limit": _MAX_REVIEW},
-    ))
+            ),
+            {"limit": _MAX_REVIEW},
+        )
+    )
     return {
         "total_weight": total["total"] if total else 0.0,
         "sectors": _exposure("sector"),
@@ -210,106 +242,128 @@ def portfolio_context(session: Any) -> dict[str, Any]:
 def list_themes(session: Any, limit: int = 50) -> list[dict[str, Any]]:
     """Bounded theme list with entity and active-thesis counts."""
     bounded = _bounded(limit, 50, _MAX_LIST_THEMES)
-    return result_rows(session.execute(
-        text(
-            """SELECT t.id, t.name, t.definition, t.horizon, t.status, t.review_at,
+    return result_rows(
+        session.execute(
+            text(
+                """SELECT t.id, t.name, t.definition, t.horizon, t.status, t.review_at,
                       t.confidence, t.created_at, t.updated_at,
                       (SELECT COUNT(*) FROM investment_theme_entities e WHERE e.theme_id = t.id) AS entity_count,
                       (SELECT COUNT(*) FROM investment_theses th
                        WHERE th.theme_id = t.id AND th.status = 'active') AS active_thesis_count
                FROM investment_themes t ORDER BY t.created_at DESC, t.name LIMIT :limit"""
-        ),
-        {"limit": bounded},
-    ))
+            ),
+            {"limit": bounded},
+        )
+    )
 
 
 def get_theme(session: Any, theme_id: str) -> dict[str, Any] | None:
     """Theme detail: entities, theses, atoms, indicators, and upcoming events."""
     theme_id = _uuid(theme_id, "theme_id")
-    theme = result_first(session.execute(
-        text(
-            """SELECT id, name, definition, horizon, macro_drivers, key_indicators, status,
+    theme = result_first(
+        session.execute(
+            text(
+                """SELECT id, name, definition, horizon, macro_drivers, key_indicators, status,
                       review_at, invalidation_conditions, confidence, confidence_components,
                       created_at, updated_at FROM investment_themes WHERE id = CAST(:id AS UUID) LIMIT 1"""
-        ),
-        {"id": theme_id},
-    ))
+            ),
+            {"id": theme_id},
+        )
+    )
     if theme is None:
         return None
-    entities = result_rows(session.execute(
-        text(
-            """SELECT entity_type, entity_id, display_name, created_at
+    entities = result_rows(
+        session.execute(
+            text(
+                """SELECT entity_type, entity_id, display_name, created_at
                FROM investment_theme_entities WHERE theme_id = CAST(:id AS UUID)
                ORDER BY entity_type, entity_id LIMIT :limit"""
-        ),
-        {"id": theme_id, "limit": _MAX_THEME_ENTITIES},
-    ))
-    theses = result_rows(session.execute(
-        text(
-            """SELECT id, theme_id, company, symbol, claim, variant_perception, status,
+            ),
+            {"id": theme_id, "limit": _MAX_THEME_ENTITIES},
+        )
+    )
+    theses = result_rows(
+        session.execute(
+            text(
+                """SELECT id, theme_id, company, symbol, claim, variant_perception, status,
                       horizon, review_at, confidence, created_at, updated_at
                FROM investment_theses WHERE theme_id = CAST(:id AS UUID)
                ORDER BY created_at DESC, id LIMIT :limit"""
-        ),
-        {"id": theme_id, "limit": _MAX_THEME_THESES},
-    ))
+            ),
+            {"id": theme_id, "limit": _MAX_THEME_THESES},
+        )
+    )
     for thesis in theses:
         thesis_id = str(thesis["id"])
-        thesis["latest_version"] = result_first(session.execute(
-            text(
-                """SELECT version, claim, variant_perception, confidence, rationale, changed_by, created_at
+        thesis["latest_version"] = result_first(
+            session.execute(
+                text(
+                    """SELECT version, claim, variant_perception, confidence, rationale, changed_by, created_at
                    FROM investment_thesis_versions WHERE thesis_id = CAST(:id AS UUID)
                    ORDER BY version DESC LIMIT 1"""
-            ),
-            {"id": thesis_id},
-        ))
-        thesis["evidence_counts"] = result_rows(session.execute(
-            text(
-                """SELECT relationship, COUNT(*) AS count FROM investment_thesis_evidence
+                ),
+                {"id": thesis_id},
+            )
+        )
+        thesis["evidence_counts"] = result_rows(
+            session.execute(
+                text(
+                    """SELECT relationship, COUNT(*) AS count FROM investment_thesis_evidence
                    WHERE thesis_id = CAST(:id AS UUID) GROUP BY relationship ORDER BY relationship LIMIT 10"""
-            ),
-            {"id": thesis_id},
-        ))
-        thesis["catalysts"] = result_rows(session.execute(
-            text(
-                """SELECT id, description, expected_at, state, created_at FROM investment_catalysts
+                ),
+                {"id": thesis_id},
+            )
+        )
+        thesis["catalysts"] = result_rows(
+            session.execute(
+                text(
+                    """SELECT id, description, expected_at, state, created_at FROM investment_catalysts
                    WHERE thesis_id = CAST(:id AS UUID) ORDER BY expected_at NULLS LAST, created_at DESC, id
                    LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
-        ))
-        thesis["risks"] = result_rows(session.execute(
-            text(
-                """SELECT id, description, kind, severity, created_at FROM investment_risks
+                ),
+                {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
+            )
+        )
+        thesis["risks"] = result_rows(
+            session.execute(
+                text(
+                    """SELECT id, description, kind, severity, created_at FROM investment_risks
                    WHERE thesis_id = CAST(:id AS UUID) ORDER BY created_at DESC, id LIMIT :limit"""
-            ),
-            {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
-        ))
+                ),
+                {"id": thesis_id, "limit": _MAX_THESIS_CHILDREN},
+            )
+        )
     theme["entities"] = entities
     theme["theses"] = theses
-    theme["atoms"] = result_rows(session.execute(
-        text(
-            """SELECT DISTINCT a.id, a.claim, a.confidence, a.status, a.valid_from, v.thesis_id, v.relationship
+    theme["atoms"] = result_rows(
+        session.execute(
+            text(
+                """SELECT DISTINCT a.id, a.claim, a.confidence, a.status, a.valid_from, v.thesis_id, v.relationship
                FROM investment_thesis_evidence v
                JOIN investment_theses th ON th.id = v.thesis_id
                JOIN analysis_atoms a ON a.id::text = v.evidence_id
                WHERE th.theme_id = CAST(:id AS UUID) AND v.evidence_type = 'atom'
                  AND v.relationship IN ('supports', 'contradicts')
                ORDER BY a.valid_from DESC, a.id LIMIT :limit"""
-        ),
-        {"id": theme_id, "limit": _MAX_ATOMS},
-    ))
-    indicator_ids = [str(v)[:64] for v in (theme.get("key_indicators") or [])][:_MAX_INDICATORS]
+            ),
+            {"id": theme_id, "limit": _MAX_ATOMS},
+        )
+    )
+    indicator_ids = [str(v)[:64] for v in (theme.get("key_indicators") or [])][
+        :_MAX_INDICATORS
+    ]
     theme["key_indicator_values"] = []
     if indicator_ids:
-        theme["key_indicator_values"] = result_rows(session.execute(
-            text(
-                """SELECT DISTINCT ON (series_id) series_id, observed_at, value, released_at
+        theme["key_indicator_values"] = result_rows(
+            session.execute(
+                text(
+                    """SELECT DISTINCT ON (series_id) series_id, observed_at, value, released_at
                    FROM macro_series WHERE series_id = ANY(:series_ids)
                    ORDER BY series_id, observed_at DESC LIMIT :limit"""
-            ),
-            {"series_ids": indicator_ids, "limit": _MAX_INDICATORS},
-        ))
+                ),
+                {"series_ids": indicator_ids, "limit": _MAX_INDICATORS},
+            )
+        )
     countries, keywords = _entity_event_filters(entities)
     conditions = ["scheduled_at >= :now"]
     params: dict[str, Any] = {"now": datetime.now(UTC), "limit": _MAX_EVENTS}
@@ -319,14 +373,16 @@ def get_theme(session: Any, theme_id: str) -> dict[str, Any] | None:
     if keywords:
         conditions.append("event_name ILIKE ANY(:keywords)")
         params["keywords"] = keywords
-    theme["upcoming_events"] = result_rows(session.execute(
-        text(
-            f"SELECT event_id, event_name, country, scheduled_at, impact_level, "
-            f"consensus, previous, actual FROM econ_events WHERE {' AND '.join(conditions)} "
-            f"ORDER BY scheduled_at, event_id LIMIT :limit"
-        ),
-        params,
-    ))
+    theme["upcoming_events"] = result_rows(
+        session.execute(
+            text(
+                f"SELECT event_id, event_name, country, scheduled_at, impact_level, "
+                f"consensus, previous, actual FROM econ_events WHERE {' AND '.join(conditions)} "
+                f"ORDER BY scheduled_at, event_id LIMIT :limit"
+            ),
+            params,
+        )
+    )
     return theme
 
 

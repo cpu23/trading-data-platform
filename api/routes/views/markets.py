@@ -4,18 +4,16 @@ Owns the authenticated ``/markets`` page and every market-specific panel:
 cross-asset context, upcoming catalysts, macro-release cards, full
 regime/history, macro indicators/charts, and the full economic calendar.
 
-Canonical partial URLs are ``/partials/markets/...``; the legacy
-``/partials/dashboard/...`` and historical ``/partials/...`` URLs remain
-registered as aliases on the very same handlers, so no implementation is
-duplicated.  All data comes from the existing bounded readers
-(``routes.json.*`` and ``routes.views.cockpit_panels``); no SQL or transform
-is copied here.
+Canonical partial URLs are under ``/partials/markets``. All data comes from
+the existing bounded readers (``routes.json.*`` and
+``routes.views.cockpit_panels``); no SQL or transform is copied here.
 """
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
+from staleness import get_staleness_config, is_stale
 
 import config as app_config
 from routes.json.events import get_events_upcoming_data, get_macro_release_cards_data
@@ -28,7 +26,6 @@ from routes.views.market_events import (
     parse_iso,
     with_event_display,
 )
-from staleness import get_staleness_config, is_stale
 
 router = APIRouter()
 
@@ -97,9 +94,7 @@ def _primary_timezone(config: dict) -> ZoneInfo:
     return ZoneInfo(tz_name)
 
 
-# ---------------------------------------------------------------------------
-# Economic-calendar event shaping (shared by the full calendar and the asset
-# drawer compatibility partial on the dashboard).
+# Economic-calendar event shaping shared by the calendar and asset drawer.
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +196,6 @@ def markets_page(request: Request):
 
 
 @router.get("/partials/markets/cross-asset")
-@router.get("/partials/dashboard/cross-asset")
 def partial_markets_cross_asset(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
@@ -211,13 +205,11 @@ def partial_markets_cross_asset(request: Request):
         {
             "request": request,
             "cross_asset": load_cross_asset(config),
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
 
 @router.get("/partials/markets/catalysts")
-@router.get("/partials/dashboard/catalysts")
 def partial_markets_catalysts(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
@@ -227,18 +219,18 @@ def partial_markets_catalysts(request: Request):
         {
             "request": request,
             "catalysts": load_catalysts(config),
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
 
 @router.get("/partials/markets/macro-releases")
-@router.get("/partials/dashboard/macro-releases")
 def partial_markets_macro_releases(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
     try:
-        releases = get_macro_release_cards_data(config=config, limit=MACRO_RELEASE_LIMIT)
+        releases = get_macro_release_cards_data(
+            config=config, limit=MACRO_RELEASE_LIMIT
+        )
     except Exception:
         releases = {"cards": [], "error": "Release cards unavailable."}
     return templates.TemplateResponse(
@@ -247,13 +239,11 @@ def partial_markets_macro_releases(request: Request):
         {
             "request": request,
             "macro_releases": releases,
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
 
 @router.get("/partials/markets/regime")
-@router.get("/partials/regime")
 def partial_markets_regime(request: Request):
     templates = _get_templates(request)
     regime = {}
@@ -278,7 +268,6 @@ def partial_markets_regime(request: Request):
 
 
 @router.get("/partials/markets/indicators")
-@router.get("/partials/indicators")
 def partial_markets_indicators(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)
@@ -330,7 +319,6 @@ def partial_markets_indicators(request: Request):
 
 
 @router.get("/partials/markets/events")
-@router.get("/partials/events")
 def partial_markets_events(request: Request):
     config = app_config.load_config()
     templates = _get_templates(request)

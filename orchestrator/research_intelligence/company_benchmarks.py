@@ -32,9 +32,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+import investment_service
 import yaml
 
-import investment_service
 from research_intelligence.contracts import canonical_fingerprint
 
 SCHEMA_VERSION = "company_benchmark_v1"
@@ -198,10 +198,7 @@ def _freeze(value: Any) -> Any:
     """
     if isinstance(value, Mapping):
         return MappingProxyType(
-            {
-                key: _freeze(item)
-                for key, item in copy.deepcopy(dict(value)).items()
-            }
+            {key: _freeze(item) for key, item in copy.deepcopy(dict(value)).items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
@@ -278,9 +275,7 @@ def _text(value: Any, field: str, maximum: int) -> str:
     if not cleaned:
         raise ValueError(f"company benchmark {field} is required")
     if len(cleaned) > maximum:
-        raise ValueError(
-            f"company benchmark {field} exceeds {maximum} characters"
-        )
+        raise ValueError(f"company benchmark {field} exceeds {maximum} characters")
     return cleaned
 
 
@@ -312,9 +307,7 @@ def _aware_datetime(value: Any, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _pit_timestamp(
-    value: Any, path: str, *, required: bool = False
-) -> datetime | None:
+def _pit_timestamp(value: Any, path: str, *, required: bool = False) -> datetime | None:
     """Parse an embedded PIT timestamp; ``None`` only when absent-allowed.
 
     With ``required=True`` a missing (``None``), blank, or unparseable
@@ -404,7 +397,9 @@ def _scan_producer_value(value: Any, as_of: datetime, *, depth: int, path: str) 
         raise ValueError(f"{path}: producer payload nests too deeply")
     if isinstance(value, Mapping):
         if len(value) > _MAX_CONTAINER_ITEMS:
-            raise ValueError(f"{path}: producer object exceeds {_MAX_CONTAINER_ITEMS} keys")
+            raise ValueError(
+                f"{path}: producer object exceeds {_MAX_CONTAINER_ITEMS} keys"
+            )
         for key, item in value.items():
             child = f"{path}.{key}"
             key_text = str(key)
@@ -447,14 +442,18 @@ def _scan_producer_value(value: Any, as_of: datetime, *, depth: int, path: str) 
         return
     if isinstance(value, (list, tuple)):
         if len(value) > _MAX_CONTAINER_ITEMS:
-            raise ValueError(f"{path}: producer list exceeds {_MAX_CONTAINER_ITEMS} items")
+            raise ValueError(
+                f"{path}: producer list exceeds {_MAX_CONTAINER_ITEMS} items"
+            )
         for index, item in enumerate(value):
             _scan_producer_value(item, as_of, depth=depth + 1, path=f"{path}[{index}]")
 
 
 def _news_items(value: Any, *, as_of: datetime) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list) or len(value) > _MAX_NEWS_ITEMS:
-        raise ValueError(f"company benchmark news_items must contain up to {_MAX_NEWS_ITEMS} rows")
+        raise ValueError(
+            f"company benchmark news_items must contain up to {_MAX_NEWS_ITEMS} rows"
+        )
     items: list[Mapping[str, Any]] = []
     for index, item in enumerate(value):
         frozen = _frozen_mapping(item, "news_items[]")
@@ -471,13 +470,17 @@ def _news_items(value: Any, *, as_of: datetime) -> tuple[Mapping[str, Any], ...]
 
 def _strings(value: Any, field: str, *, limit: int, width: int) -> tuple[str, ...]:
     if not isinstance(value, list) or len(value) > limit:
-        raise ValueError(f"company benchmark {field} must be a list of at most {limit} strings")
+        raise ValueError(
+            f"company benchmark {field} must be a list of at most {limit} strings"
+        )
     return tuple(_text(item, field, width) for item in value)
 
 
 def _rows(value: Any, field: str, *, limit: int) -> tuple[Any, ...]:
     if not isinstance(value, list) or len(value) > limit:
-        raise ValueError(f"company benchmark {field} must be a list of at most {limit} rows")
+        raise ValueError(
+            f"company benchmark {field} must be a list of at most {limit} rows"
+        )
     rows: list[Any] = []
     for item in value:
         if isinstance(item, Mapping):
@@ -488,10 +491,7 @@ def _rows(value: Any, field: str, *, limit: int) -> tuple[Any, ...]:
 
 
 def _aliases(value: Any, field: str) -> tuple[str, ...]:
-    if (
-        not isinstance(value, list)
-        or not 1 <= len(value) <= _MAX_ALIAS_ITEMS
-    ):
+    if not isinstance(value, list) or not 1 <= len(value) <= _MAX_ALIAS_ITEMS:
         raise ValueError(
             f"company benchmark {field} must be a list of 1..{_MAX_ALIAS_ITEMS} strings"
         )
@@ -520,13 +520,17 @@ def _forbidden_value(value: Any) -> int | float | str:
 
 def _hindsight(value: Any, *, as_of: datetime) -> tuple[ForbiddenCompanyClaim, ...]:
     if not isinstance(value, list) or len(value) > 50:
-        raise ValueError("company benchmark forbidden_hindsight must contain up to 50 rows")
+        raise ValueError(
+            "company benchmark forbidden_hindsight must contain up to 50 rows"
+        )
     rows: list[ForbiddenCompanyClaim] = []
     seen: set[str] = set()
     for item in value:
         if not isinstance(item, Mapping) or set(item) != _FORBIDDEN_CLAIM_KEYS:
             raise ValueError("forbidden company claim row is invalid")
-        claim_id = _text(item.get("claim_id"), "forbidden_hindsight.claim_id", _MAX_CLAIM_ID_CHARS)
+        claim_id = _text(
+            item.get("claim_id"), "forbidden_hindsight.claim_id", _MAX_CLAIM_ID_CHARS
+        )
         if claim_id in seen:
             raise ValueError(f"duplicate forbidden company claim_id '{claim_id}'")
         seen.add(claim_id)
@@ -535,9 +539,7 @@ def _hindsight(value: Any, *, as_of: datetime) -> tuple[ForbiddenCompanyClaim, .
                 claim_id=claim_id,
                 metric_aliases=_aliases(item.get("metric_aliases"), "metric_aliases"),
                 value=_forbidden_value(item.get("value")),
-                period_aliases=_aliases(
-                    item.get("period_aliases"), "period_aliases"
-                ),
+                period_aliases=_aliases(item.get("period_aliases"), "period_aliases"),
                 available_after=_aware_datetime(
                     item.get("available_after"), "forbidden_hindsight.available_after"
                 ),
@@ -595,8 +597,12 @@ def _producer_case(raw: Any, source_path: str) -> ProducerCase:
         as_of=as_of,
         document=document,
         excerpt=excerpt_text,
-        deterministic_current=_frozen_mapping(raw.get("deterministic_current"), "deterministic_current"),
-        deterministic_prior=_frozen_mapping(raw.get("deterministic_prior"), "deterministic_prior"),
+        deterministic_current=_frozen_mapping(
+            raw.get("deterministic_current"), "deterministic_current"
+        ),
+        deterministic_prior=_frozen_mapping(
+            raw.get("deterministic_prior"), "deterministic_prior"
+        ),
         market_inputs=_frozen_mapping(raw.get("market_inputs"), "market_inputs"),
         prior_facts=_frozen_mapping(raw.get("prior_facts"), "prior_facts"),
         previous_state=(
@@ -654,9 +660,9 @@ def canonical_producer_fingerprint(producer: ProducerCase) -> str:
     return canonical_fingerprint(canonical_producer_fingerprint_payload(producer))
 
 
-
-
-def _evaluator_case(raw: Any, producer: ProducerCase, source_path: str) -> EvaluatorCase:
+def _evaluator_case(
+    raw: Any, producer: ProducerCase, source_path: str
+) -> EvaluatorCase:
     if not isinstance(raw, Mapping) or set(raw) != _EVALUATOR_KEYS:
         raise ValueError("company evaluator case has unexpected or missing fields")
     if raw.get("schema_version") != SCHEMA_VERSION:
@@ -671,7 +677,9 @@ def _evaluator_case(raw: Any, producer: ProducerCase, source_path: str) -> Evalu
     ):
         raise ValueError("evaluator producer_fingerprint must be SHA-256 hex")
     if producer_fingerprint != producer.fingerprint:
-        raise ValueError("evaluator producer_fingerprint does not match the producer case")
+        raise ValueError(
+            "evaluator producer_fingerprint does not match the producer case"
+        )
     return EvaluatorCase(
         schema_version=raw.get("schema_version"),
         case_id=producer.case_id,
@@ -683,7 +691,9 @@ def _evaluator_case(raw: Any, producer: ProducerCase, source_path: str) -> Evalu
             limit=50,
             width=500,
         ),
-        deterministic_checks=_rows(raw.get("deterministic_checks"), "deterministic_checks", limit=100),
+        deterministic_checks=_rows(
+            raw.get("deterministic_checks"), "deterministic_checks", limit=100
+        ),
         strongest_counter_thesis=_text(
             raw.get("strongest_counter_thesis"), "strongest_counter_thesis", 4_000
         ),
@@ -713,9 +723,8 @@ def load_producer_case(path: str | Path | Mapping[str, Any]) -> ProducerCase:
             asserted = path["fingerprint"]
             raw = {key: value for key, value in path.items() if key != "fingerprint"}
             producer = _producer_case(raw, "")
-            if (
-                not isinstance(asserted, str)
-                or not hmac.compare_digest(producer.fingerprint, asserted)
+            if not isinstance(asserted, str) or not hmac.compare_digest(
+                producer.fingerprint, asserted
             ):
                 raise ValueError(
                     "company run producer envelope fingerprint does not match its contents"
@@ -766,10 +775,14 @@ def recorded_executor_output(
     frozen_provenance: Mapping[str, Any] = MappingProxyType({})
     if provenance is not None:
         if not isinstance(provenance, Mapping) or len(provenance) > 32:
-            raise ValueError("recorded executor provenance must be an object of at most 32 keys")
+            raise ValueError(
+                "recorded executor provenance must be an object of at most 32 keys"
+            )
         for key, value in provenance.items():
             if not isinstance(key, str) or len(key) > 80:
-                raise ValueError("recorded executor provenance keys must be short strings")
+                raise ValueError(
+                    "recorded executor provenance keys must be short strings"
+                )
             if not isinstance(value, (str, bool, int, float)) and value is not None:
                 raise ValueError("recorded executor provenance values must be scalars")
             if isinstance(value, str) and len(value) > 300:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from logging_config import get_logger
+
 from sources.news_result import NewsCollectionResult
 from sources.news_storage import (
     atomic_write_json,

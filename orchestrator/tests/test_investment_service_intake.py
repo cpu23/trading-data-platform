@@ -16,13 +16,12 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import investment_service as service
 from investment_service_support import (
     sec_directory_fake_request,
     sec_index_page,
     session_context,
 )
-
-import investment_service as service
 
 
 class InvestmentIntakeTests(unittest.TestCase):
@@ -824,7 +823,7 @@ class InvestmentIntakeTests(unittest.TestCase):
         enqueued = SimpleNamespace(inserted=True, job=fake_job)
         with (
             patch("investment_service.get_session") as get_session,
-            patch("analysis_jobs.enqueue_job", return_value=enqueued) as enqueue,
+            patch("jobs.enqueue_job", return_value=enqueued) as enqueue,
         ):
             session = MagicMock()
             get_session.return_value = session_context(session)
@@ -1489,5 +1488,5 @@ class InvestmentIntakeTests(unittest.TestCase):
         self.assertEqual(params["extracted_text"], "")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

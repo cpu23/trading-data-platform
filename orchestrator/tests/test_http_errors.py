@@ -192,7 +192,9 @@ class SafeHTTPErrorTests(unittest.TestCase):
     def test_status_code_from_response_when_exception_carries_it(self):
         request = httpx.Request("GET", "https://example.test/x")
         response = httpx.Response(503, request=request, content=b"")
-        exc = httpx.HTTPStatusError("503 Service Unavailable", request=request, response=response)
+        exc = httpx.HTTPStatusError(
+            "503 Service Unavailable", request=request, response=response
+        )
         safe = safe_http_error(exc)
         self.assertEqual(safe.status_code, 503)
 

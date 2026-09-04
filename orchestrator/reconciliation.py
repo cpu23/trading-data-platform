@@ -62,14 +62,13 @@ def reconcile_event_pipeline(config: Any) -> dict[str, Any]:
         "jobs_reconciled": 0,
         "snapshots_reconciled": 0,
         "freshness_reclassified": 0,
-        "ui_events_expired": 0,
         "reaction_windows_backfilled": 0,
         "story_confirmations_backfilled": 0,
         "atoms_expired": 0,
         "errors": [],
     }
     try:
-        from analysis_jobs import reconcile_jobs
+        from jobs import reconcile_jobs
 
         with get_session(config) as session:
             repaired = reconcile_jobs(
@@ -78,7 +77,7 @@ def reconcile_event_pipeline(config: Any) -> dict[str, Any]:
             )
             result["jobs_reconciled"] = _count(repaired)
     except Exception as exc:
-        result["errors"].append("analysis_jobs:" + type(exc).__name__)
+        result["errors"].append("jobs:" + type(exc).__name__)
     try:
         from section_snapshots import reconcile_snapshots
 
@@ -132,17 +131,6 @@ def reconcile_event_pipeline(config: Any) -> dict[str, Any]:
             result["story_confirmations_backfilled"] = _count(repaired)
     except Exception as exc:
         result["errors"].append("story_confirmations:" + type(exc).__name__)
-    try:
-        from ui_events import delete_expired_ui_events
-
-        with get_session(config) as session:
-            expired = delete_expired_ui_events(
-                session,
-                limit=_limit(settings, "max_cleanup_ui_events", 100),
-            )
-            result["ui_events_expired"] = _count(expired)
-    except Exception as exc:
-        result["errors"].append("ui_events:" + type(exc).__name__)
     try:
         from atoms import expire_atoms
 

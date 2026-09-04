@@ -32,6 +32,7 @@ class EvidenceType(StrEnum):
     INVESTMENT_ANALYSIS = "investment_analysis"
     SOURCE_CLAIM = "source_claim"
 
+
 _DEDICATED_REFERENCE_FIELDS = frozenset(
     {
         "source_evidence_id",
@@ -89,13 +90,13 @@ class DriverDirection(StrEnum):
     UNKNOWN = "unknown"
 
 
-
 class FactorState(StrEnum):
     RISING = "rising"
     FALLING = "falling"
     STABLE = "stable"
     MIXED = "mixed"
     UNKNOWN = "unknown"
+
 
 class Strength(StrEnum):
     LOW = "low"
@@ -156,7 +157,10 @@ def canonical_fingerprint(value: Any) -> str:
 
 def clean_payload(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: clean_payload(getattr(value, item.name)) for item in fields(value)}
+        return {
+            item.name: clean_payload(getattr(value, item.name))
+            for item in fields(value)
+        }
     if isinstance(value, datetime):
         normalized = value if value.tzinfo else value.replace(tzinfo=UTC)
         return normalized.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -453,10 +457,15 @@ class MarketDriverDraft:
     confidence_rationale: str
 
 
-def evidence_catalog(evidence: Sequence[NormalizedEvidence]) -> dict[str, NormalizedEvidence]:
+def evidence_catalog(
+    evidence: Sequence[NormalizedEvidence],
+) -> dict[str, NormalizedEvidence]:
     catalog: dict[str, NormalizedEvidence] = {}
     for item in evidence:
-        if item.ref in catalog and catalog[item.ref].content_fingerprint != item.content_fingerprint:
+        if (
+            item.ref in catalog
+            and catalog[item.ref].content_fingerprint != item.content_fingerprint
+        ):
             raise ValueError(f"conflicting evidence identity: {item.ref}")
         catalog[item.ref] = item
     return catalog
@@ -475,6 +484,7 @@ def validate_evidence_references(
         if reference not in resolved:
             resolved.append(reference)
     return tuple(resolved)
+
 
 def reject_embedded_evidence_references(value: Any) -> None:
     """Require model citations to use validated, dedicated reference fields."""

@@ -599,16 +599,10 @@ def build_macro_synthesis(signals: list[dict]) -> dict:
         "euro_credit": _single_domain(
             by_id, "ECB:CREDIT_NFC", "expanding", "contracting"
         ),
-        "euro_inflation": _single_domain(
-            by_id, "ECB:HICP_YOY", "heating", "cooling"
-        ),
-        "euro_labor": _single_domain(
-            by_id, "ECB:UNEMP", "weakening", "strengthening"
-        ),
+        "euro_inflation": _single_domain(by_id, "ECB:HICP_YOY", "heating", "cooling"),
+        "euro_labor": _single_domain(by_id, "ECB:UNEMP", "weakening", "strengthening"),
         "uk_growth": _single_domain(by_id, "OECD:CLI_GB", "strengthening", "weakening"),
-        "uk_inflation": _single_domain(
-            by_id, "OECD:CPI_GB_YOY", "heating", "cooling"
-        ),
+        "uk_inflation": _single_domain(by_id, "OECD:CPI_GB_YOY", "heating", "cooling"),
         "uk_labor": _single_domain(
             by_id, "OECD:UNEMP_GB", "weakening", "strengthening"
         ),

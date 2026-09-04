@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import investment_service as service  # noqa: E402
 from company_benchmark_support import (  # noqa: E402
     BAD_FIRST_PASS,
     EXCERPT,
@@ -33,8 +34,6 @@ from company_benchmark_support import (  # noqa: E402
     relationship_producer_raw,
     write_yaml,
 )
-
-import investment_service as service  # noqa: E402
 from research_intelligence import company_artifacts as artifacts  # noqa: E402
 from research_intelligence import company_benchmarks as cb  # noqa: E402
 from research_intelligence import company_judging as judging  # noqa: E402
@@ -77,12 +76,16 @@ class CompanyRunArtifactTests(unittest.TestCase):
         overrides.setdefault("case_id", producer.case_id.lower())
         return cb.load_evaluator_case(
             write_yaml(
-                self.directory, "evaluator.yaml", evaluator_raw(producer.fingerprint, **overrides)
+                self.directory,
+                "evaluator.yaml",
+                evaluator_raw(producer.fingerprint, **overrides),
             ),
             producer=producer,
         )
 
-    def _attempt(self, content, *, identity, accepted=True, repair_prompt=None, index=0):
+    def _attempt(
+        self, content, *, identity, accepted=True, repair_prompt=None, index=0
+    ):
         provenance = dict(identity)
         if accepted:
             provenance["model"] = "recorded-model-final"
@@ -98,9 +101,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
             provenance=provenance,
         )
 
-    def _judge_records(
-        self, producer, evaluator, finalized, blind_salt=None
-    ):
+    def _judge_records(self, producer, evaluator, finalized, blind_salt=None):
         """Three raw judge responses with distinct independent identities."""
         requests = judging.build_blind_judge_requests(
             producer,
@@ -134,7 +135,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         request = cb.prepare_company_run(case)
         attempts = [
             self._attempt(
-                BAD_FIRST_PASS, identity=identity, accepted=False,
+                BAD_FIRST_PASS,
+                identity=identity,
+                accepted=False,
                 repair_prompt=REPAIR_PROMPT,
             ),
             self._attempt(
@@ -263,7 +266,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         # Manifest-last semantics are observable: without the manifest the
         # directory is an incomplete run even though all payloads exist.
         (root / artifacts.MANIFEST_NAME).unlink()
-        self.assertEqual({entry.name for entry in root.iterdir()}, artifacts._PAYLOAD_FILES)
+        self.assertEqual(
+            {entry.name for entry in root.iterdir()}, artifacts._PAYLOAD_FILES
+        )
         self.assertFalse(artifacts.is_complete_company_run(root))
 
     def test_manifest_records_digests_identities_and_stage_versions(self):
@@ -278,14 +283,20 @@ class CompanyRunArtifactTests(unittest.TestCase):
             self.assertEqual(spec["sha256"], hashlib.sha256(blob).hexdigest())
             self.assertEqual(spec["bytes"], len(blob))
         self.assertEqual(manifest["case_id"], components["producer"].case_id)
-        self.assertEqual(manifest["fixture_version"], components["producer"].fixture_version)
-        self.assertEqual(manifest["producer_fingerprint"], components["producer"].fingerprint)
+        self.assertEqual(
+            manifest["fixture_version"], components["producer"].fixture_version
+        )
+        self.assertEqual(
+            manifest["producer_fingerprint"], components["producer"].fingerprint
+        )
         # The blind salt itself never lands in the artifact; only its
         # commitment does — a DOMAIN-SEPARATED digest over the exact salt
         # bytes, not a bare sha256(salt). Byte-only replay must still be
         # possible: the post-judging salt disclosure file carries the salt,
         # and the verifier recomputes this commitment from it.
-        self.assertNotIn(self.BLIND_SALT.encode("utf-8"), (root / "manifest.json").read_bytes())
+        self.assertNotIn(
+            self.BLIND_SALT.encode("utf-8"), (root / "manifest.json").read_bytes()
+        )
         self.assertEqual(
             manifest["blind_salt_commitment"],
             artifacts._salt_commitment(self.BLIND_SALT.encode("utf-8")),
@@ -300,10 +311,15 @@ class CompanyRunArtifactTests(unittest.TestCase):
         disclosed = json.loads((root / "blind_salt.json").read_text(encoding="utf-8"))
         self.assertEqual(disclosed, {"salt_hex": self.BLIND_SALT.encode("utf-8").hex()})
         disclosed_salt = bytes.fromhex(disclosed["salt_hex"])
-        self.assertEqual(artifacts._salt_commitment(disclosed_salt), manifest["blind_salt_commitment"])
+        self.assertEqual(
+            artifacts._salt_commitment(disclosed_salt),
+            manifest["blind_salt_commitment"],
+        )
         # The raw salt string must not appear anywhere, even hex-encoded in
         # the disclosure file; the disclosure is for post-judging replay.
-        self.assertNotIn(self.BLIND_SALT.encode("utf-8"), (root / "blind_salt.json").read_bytes())
+        self.assertNotIn(
+            self.BLIND_SALT.encode("utf-8"), (root / "blind_salt.json").read_bytes()
+        )
         rebuilt = judging.build_blind_judge_requests(
             components["producer"],
             components["evaluator"],
@@ -321,22 +337,23 @@ class CompanyRunArtifactTests(unittest.TestCase):
         )
         self.assertEqual(manifest["git_commit"], "0f1e2d3c4b5a")
         self.assertFalse(manifest["git_dirty"])
-        self.assertEqual(manifest["created_at"], datetime(2026, 4, 1, tzinfo=UTC).isoformat())
+        self.assertEqual(
+            manifest["created_at"], datetime(2026, 4, 1, tzinfo=UTC).isoformat()
+        )
         self.assertEqual(manifest["executor"], EXECUTOR_IDENTITY)
         self.assertEqual(
             manifest["prompt_stage"]["prompt_version"], judging.PROMPT_VERSION
         )
-        self.assertEqual(
-            manifest["prompt_stage"]["schema_name"], judging.SCHEMA_NAME
-        )
-
+        self.assertEqual(manifest["prompt_stage"]["schema_name"], judging.SCHEMA_NAME)
 
     def test_stored_components_match_their_sources_exactly(self):
         components = self._run()
         root = self._write(self.directory / "run", components)
         manifest = self._read(root, artifacts.MANIFEST_NAME)
         producer_blob = self._read(root, "producer.json")
-        self.assertEqual(producer_blob["fingerprint"], components["producer"].fingerprint)
+        self.assertEqual(
+            producer_blob["fingerprint"], components["producer"].fingerprint
+        )
         self.assertEqual(producer_blob["excerpt"], EXCERPT)
         request_blob = self._read(root, "request.json")
         self.assertEqual(request_blob["fingerprint"], components["request"].fingerprint)
@@ -345,9 +362,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
             "investment_report_narrative_v7",
         )
         expected_request_blob = json.loads(
-            artifacts._canonical_json(
-                artifacts._request_payload(components["request"])
-            )
+            artifacts._canonical_json(artifacts._request_payload(components["request"]))
         )
         self.assertEqual(
             request_blob["relationship_facts"],
@@ -398,16 +413,16 @@ class CompanyRunArtifactTests(unittest.TestCase):
             [entry["role"] for entry in judge_requests_blob],
             list(judging.JUDGE_ROLES),
         )
-        for request, stored in zip(
-            rebuilt_requests, judge_requests_blob, strict=True
-        ):
+        for request, stored in zip(rebuilt_requests, judge_requests_blob, strict=True):
             # The stored prompt is the exact recomputed dispatch text; the
             # canonical digest covers it and is never echoed inside it.
             self.assertEqual(stored["prompt"], request.prompt)
             self.assertEqual(stored["fingerprint"], request.fingerprint)
             self.assertNotIn(stored["fingerprint"], stored["prompt"])
             self.assertIn(stored["response_binding"], stored["prompt"])
-        self.assertEqual({entry["role"] for entry in judge_requests_blob}, set(judging.JUDGE_ROLES))
+        self.assertEqual(
+            {entry["role"] for entry in judge_requests_blob}, set(judging.JUDGE_ROLES)
+        )
         judge_results_blob = self._read(root, "judge_results.json")["results"]
         self.assertEqual(len(judge_results_blob), 3)
         for request, record, stored in zip(
@@ -420,13 +435,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
             self.assertIn(parsed.role, judging.JUDGE_ROLES)
             # The canonical request digest persists on the manifest; the
             # stored result carries its response binding instead.
-            self.assertIn(
-                request.fingerprint, manifest["judge_request_fingerprints"]
-            )
+            self.assertIn(request.fingerprint, manifest["judge_request_fingerprints"])
             self.assertEqual(stored["role"], parsed.role)
-            self.assertEqual(
-                stored["response_binding"], parsed.response_binding
-            )
+            self.assertEqual(stored["response_binding"], parsed.response_binding)
             self.assertNotIn("fingerprint", stored)
             # Verbatim raw bytes plus the per-judge execution identity are
             # stored beside the parsed verdict.
@@ -439,30 +450,29 @@ class CompanyRunArtifactTests(unittest.TestCase):
         defects_blob = self._read(root, "defect_log.json")
         total_defects = sum(
             len(judging.parse_judge_result(r, rec["raw_json"]).concrete_defects)
-            for r, rec in zip(rebuilt_requests, components["judge_records"], strict=True)
+            for r, rec in zip(
+                rebuilt_requests, components["judge_records"], strict=True
+            )
         )
         self.assertEqual(len(defects_blob["judge_defects"]), total_defects)
         stage_blob = self._read(root, "stage_config.json")
         self.assertEqual(stage_blob["executor"], EXECUTOR_IDENTITY)
 
-
     def test_existing_output_path_fails_without_touching_bytes(self):
         first = self._write(self.directory / "run")
-        before = {
-            path.name: path.read_bytes() for path in sorted(first.iterdir())
-        }
+        before = {path.name: path.read_bytes() for path in sorted(first.iterdir())}
         with self.assertRaises(FileExistsError):
             self._write(first)
-        after = {
-            path.name: path.read_bytes() for path in sorted(first.iterdir())
-        }
+        after = {path.name: path.read_bytes() for path in sorted(first.iterdir())}
         self.assertEqual(before, after)
 
     def test_tampering_breaks_completeness(self):
         root = self._write(self.directory / "run")
         payload_path = root / "stage_config.json"
         original_blob = payload_path.read_bytes()
-        payload_path.write_bytes(original_blob.replace(b"recorded-model", b"other-model"))
+        payload_path.write_bytes(
+            original_blob.replace(b"recorded-model", b"other-model")
+        )
         self.assertFalse(artifacts.is_complete_company_run(root))
         payload_path.write_bytes(original_blob)
         extra = root / "extra.json"
@@ -547,7 +557,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         # finalized output; the rejected first pass never feeds finalization.
         finalized_blob = self._read(root, "finalized_output.json")
         self.assertNotEqual(finalized_blob.get("analysis"), BAD_FIRST_PASS)
-        self.assertEqual(finalized_blob["analysis"]["summary"], narrative_payload()["summary"])
+        self.assertEqual(
+            finalized_blob["analysis"]["summary"], narrative_payload()["summary"]
+        )
 
     def test_replay_rejects_reforged_noncontiguous_attempt_indices(self):
         root = self._write(self.directory / "noncontiguous-attempts")
@@ -588,9 +600,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
     def test_replay_rejects_reforged_transplanted_attempt_executor(self):
         root = self._write(self.directory / "transplanted-attempt-executor")
         payload = self._read(root, "attempts.json")
-        payload["attempts"][0]["provenance"]["execution_id"] = (
-            OTHER_EXECUTOR_IDENTITY["execution_id"]
-        )
+        payload["attempts"][0]["provenance"]["execution_id"] = OTHER_EXECUTOR_IDENTITY[
+            "execution_id"
+        ]
         self._reforge_payload(root, "attempts.json", payload)
         self.assertFalse(artifacts.is_complete_company_run(root))
 
@@ -598,7 +610,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         root = self._write(self.directory / "legacy-no-attempt-session")
         payload = self._read(root, "attempts.json")
         self.assertTrue(
-            all("session_id" not in entry["provenance"] for entry in payload["attempts"])
+            all(
+                "session_id" not in entry["provenance"] for entry in payload["attempts"]
+            )
         )
         self.assertTrue(artifacts.is_complete_company_run(root))
 
@@ -626,7 +640,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
             {"extra_key": "not allowed"},
         ]
         for overrides in rejections:
-
             with self.subTest(overrides=overrides):
                 stage_config = {
                     "executor": dict(EXECUTOR_IDENTITY),
@@ -648,9 +661,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
         ):
             with self.subTest(stage_config=stage_config):
                 with self.assertRaises(ValueError):
-                    self._write(
-                        destination, components, stage_config=stage_config
-                    )
+                    self._write(destination, components, stage_config=stage_config)
                 self.assertFalse(destination.exists())
 
     def test_evaluator_leakage_into_payloads_is_rejected(self):
@@ -667,7 +678,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         )
         poisoned_raw = dict(producer_raw(), document=poisoned_document)
         with self.assertRaises(ValueError) as ctx:
-            cb.load_producer_case(write_yaml(self.directory, "poison.yaml", poisoned_raw))
+            cb.load_producer_case(
+                write_yaml(self.directory, "poison.yaml", poisoned_raw)
+            )
         self.assertIn("evaluator-only field", str(ctx.exception))
 
     def _manifest_identity_keys(self, root):
@@ -676,7 +689,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
         identity = dict(manifest)
         identity.pop("files")
         return sorted(identity)
-
 
     def test_manifest_identity_schema_is_exact_and_cross_checked(self):
         components = self._run()
@@ -842,9 +854,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
 
         stored_request = self._read(root, "request.json")
         expected_request = json.loads(
-            artifacts._canonical_json(
-                artifacts._request_payload(components["request"])
-            )
+            artifacts._canonical_json(artifacts._request_payload(components["request"]))
         )
         self.assertEqual(
             stored_request["relationship_facts"],
@@ -858,13 +868,16 @@ class CompanyRunArtifactTests(unittest.TestCase):
         relationship = components["request"].material_relationships[0]
         expected_numeric_claims = []
         for fact_index, ref in enumerate(relationship["required_facts"]):
-            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
-            fact = components["request"].relationship_facts.get(ref["fact_path"]) or components["request"].relationship_facts[fact_key]
+            fact_key = ref["fact_path"].removeprefix(
+                "deterministic_current.relationship_facts."
+            )
+            fact = (
+                components["request"].relationship_facts.get(ref["fact_path"])
+                or components["request"].relationship_facts[fact_key]
+            )
             expected_numeric_claims.append(
                 {
-                    "claim_id": (
-                        f"relationship-0-fact-{fact_index}-observation"
-                    ),
+                    "claim_id": (f"relationship-0-fact-{fact_index}-observation"),
                     "path": "$.relationship_reconciliations[0].observation",
                     "value": fact["value"],
                     "metric": fact["metric_label"],
@@ -876,8 +889,13 @@ class CompanyRunArtifactTests(unittest.TestCase):
                 }
             )
         for fact_index, ref in enumerate(relationship["required_facts"][:1]):
-            fact_key = ref["fact_path"].removeprefix("deterministic_current.relationship_facts.")
-            fact = components["request"].relationship_facts.get(ref["fact_path"]) or components["request"].relationship_facts[fact_key]
+            fact_key = ref["fact_path"].removeprefix(
+                "deterministic_current.relationship_facts."
+            )
+            fact = (
+                components["request"].relationship_facts.get(ref["fact_path"])
+                or components["request"].relationship_facts[fact_key]
+            )
             expected_numeric_claims.append(
                 {
                     "claim_id": f"relationship-summary-{fact_index + 1}",
@@ -912,10 +930,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
         self.assertNotIn(reconciliation["uncertainty"], accepted_payload["summary"])
         self.assertEqual(
             reconciliation["summary_fact_paths"],
-            [
-                ref["fact_path"]
-                for ref in relationship["required_facts"][:1]
-            ],
+            [ref["fact_path"] for ref in relationship["required_facts"][:1]],
         )
         replayed_producer = artifacts._producer_envelope(
             self._read(root, "producer.json")
@@ -923,9 +938,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
         replayed_request = cb.prepare_company_run(replayed_producer)
         self.assertEqual(
             json.loads(
-                artifacts._canonical_json(
-                    artifacts._request_payload(replayed_request)
-                )
+                artifacts._canonical_json(artifacts._request_payload(replayed_request))
             ),
             stored_request,
         )
@@ -959,11 +972,13 @@ class CompanyRunArtifactTests(unittest.TestCase):
                 self.assertFalse(replayed.passed)
                 self.assertTrue(
                     any(
-                        failure.code in {"numeric_claim_invalid_row", "numeric_claim_duplicate"}
+                        failure.code
+                        in {"numeric_claim_invalid_row", "numeric_claim_duplicate"}
                         for failure in replayed.failures
                     ),
                     replayed.failures,
                 )
+
     def test_replay_rejects_reforged_stale_relationship_response(self):
         root = self._write(
             self.directory / "stale-relationship-response",
@@ -1017,16 +1032,19 @@ class CompanyRunArtifactTests(unittest.TestCase):
         # evaluator and judge records coherently yields a valid, self-
         # consistent run that must be ACCEPTED (content-derived identity).
         coherent_destination = self.directory / "rubric-coherent"
-        self._write(coherent_destination, {
-            **components,
-            "evaluator": drifted_evaluator,
-            "judge_records": _judge_round_for(
-                components["producer"],
-                drifted_evaluator,
-                components["finalized"],
-                components["blind_salt"],
-            )[2],
-        })
+        self._write(
+            coherent_destination,
+            {
+                **components,
+                "evaluator": drifted_evaluator,
+                "judge_records": _judge_round_for(
+                    components["producer"],
+                    drifted_evaluator,
+                    components["finalized"],
+                    components["blind_salt"],
+                )[2],
+            },
+        )
         self.assertTrue(artifacts.is_complete_company_run(coherent_destination))
 
         # The actual drift attack: substitute ONLY the drifted evaluator
@@ -1041,15 +1059,18 @@ class CompanyRunArtifactTests(unittest.TestCase):
         )
         self.assertFalse(destination.exists())
 
-
     def test_trusted_rebuild_rejects_one_byte_finalized_output_change(self):
         components = self._run()
         destination = self.directory / "output-drift"
         payload = narrative_payload()
         payload["summary"] = "Demand durable; supply tight."
         drifted_content = json.dumps(payload)
-        recorded = cb.recorded_executor_output(drifted_content, {"model": "recorded-model"})
-        drifted_finalized = cb.finalize_recorded_company_run(recorded, components["producer"])
+        recorded = cb.recorded_executor_output(
+            drifted_content, {"model": "recorded-model"}
+        )
+        drifted_finalized = cb.finalize_recorded_company_run(
+            recorded, components["producer"]
+        )
         _forged_requests, _forged_results, forged_records = _judge_round_for(
             components["producer"],
             components["evaluator"],
@@ -1088,7 +1109,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
             self._write(destination, mixed)
         self.assertFalse(destination.exists())
 
-
     def test_prompt_cannot_disclose_or_substitute_producer_identity(self):
         case = self._load_case(producer_raw())
         evaluator = self._load_evaluator(case)
@@ -1106,7 +1126,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
             packet_json = request.prompt.split("<case_packet", 1)[1]
             self.assertNotIn("forbidden_hindsight", packet_json)
             self.assertNotIn("later_outcomes", packet_json)
-
 
     def test_stored_prompts_match_their_trusted_recomputation(self):
         components = self._run()
@@ -1146,7 +1165,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
             self._write(destination, {**components, "judge_records": poisoned})
         self.assertFalse(destination.exists())
 
-
     def test_writer_reparses_verbatim_raw_response_with_blank_rationale(self):
         components = self._run()
         destination = self.directory / "blank-rationale"
@@ -1160,7 +1178,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         for index, record in enumerate(records):
             if index == 1:
                 payload = judge_payload(requests[index])
-                payload["dimension_scores"][judging.JUDGE_DIMENSIONS[4]]["rationale"] = ""
+                payload["dimension_scores"][judging.JUDGE_DIMENSIONS[4]][
+                    "rationale"
+                ] = ""
                 poisoned.append({**record, "raw_json": json.dumps(payload)})
             else:
                 poisoned.append(record)
@@ -1212,7 +1232,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
             components["finalized"],
             self.BLIND_SALT,
         )
-        duplicated = [dict(record, execution_id="shared-judge-execution") for record in records]
+        duplicated = [
+            dict(record, execution_id="shared-judge-execution") for record in records
+        ]
         with self.assertRaises(ValueError):
             self._write(destination, {**components, "judge_records": duplicated})
         self.assertFalse(destination.exists())
@@ -1226,7 +1248,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
             components["finalized"],
             self.BLIND_SALT,
         )
-        duplicated = [dict(record, session_id="shared-judge-session") for record in records]
+        duplicated = [
+            dict(record, session_id="shared-judge-session") for record in records
+        ]
         with self.assertRaises(ValueError):
             self._write(destination, {**components, "judge_records": duplicated})
         self.assertFalse(destination.exists())
@@ -1288,9 +1312,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
         self._reforge_payload(root, "judge_results.json", payload)
         self.assertFalse(artifacts.is_complete_company_run(root))
 
-        poisoned_records = [
-            dict(record) for record in components["judge_records"]
-        ]
+        poisoned_records = [dict(record) for record in components["judge_records"]]
         poisoned_records[0]["session_id"] = EXECUTOR_IDENTITY["execution_id"]
         destination = self.directory / "producer-execution-reuse-publication"
         with self.assertRaises(ValueError):
@@ -1312,18 +1334,14 @@ class CompanyRunArtifactTests(unittest.TestCase):
         ]
         components = {**components, "attempts": session_attempts}
 
-        root = self._write(
-            self.directory / "producer-session-reuse-replay", components
-        )
+        root = self._write(self.directory / "producer-session-reuse-replay", components)
         self.assertTrue(artifacts.is_complete_company_run(root))
         payload = self._read(root, "judge_results.json")
         payload["results"][0]["execution_id"] = producer_session
         self._reforge_payload(root, "judge_results.json", payload)
         self.assertFalse(artifacts.is_complete_company_run(root))
 
-        poisoned_records = [
-            dict(record) for record in components["judge_records"]
-        ]
+        poisoned_records = [dict(record) for record in components["judge_records"]]
         poisoned_records[0]["execution_id"] = producer_session
         destination = self.directory / "producer-session-reuse-publication"
         with self.assertRaises(ValueError):
@@ -1376,7 +1394,6 @@ class CompanyRunArtifactTests(unittest.TestCase):
             self.assertNotEqual(entry["session_id"], producer_execution)
             self.assertEqual(set(entry["judge_provenance"]), set())
 
-
     def test_wrong_token_or_role_in_a_judge_record_is_rejected(self):
         components = self._run()
         destination = self.directory / "wrong-token"
@@ -1419,7 +1436,9 @@ class CompanyRunArtifactTests(unittest.TestCase):
         )
         self.assertFalse(destination.exists())
 
-    def test_fingerprint_swap_of_same_shape_is_rejected_even_with_matching_fixture(self):
+    def test_fingerprint_swap_of_same_shape_is_rejected_even_with_matching_fixture(
+        self,
+    ):
         components = self._run()
         destination = self.directory / "digest-shape-swap"
         swapped_case = self._with_fingerprint(components["producer"], "b" * 64)
@@ -1432,15 +1451,12 @@ class CompanyRunArtifactTests(unittest.TestCase):
         case = self._load_case(raw)
         # The stored identity is the derived canonical digest over the
         # normalized fixture content — not an independent persisted value.
-        self.assertEqual(
-            case.fingerprint, cb.canonical_producer_fingerprint(case)
-        )
+        self.assertEqual(case.fingerprint, cb.canonical_producer_fingerprint(case))
         self.assertEqual(
             case.fingerprint,
             canonical_fingerprint(cb.canonical_producer_fingerprint_payload(case)),
         )
         self.assertRegex(case.fingerprint, r"[a-f0-9]{64}")
-
 
     def test_loaded_case_fingerprint_survives_no_arbitrary_rebind(self):
         case = self._load_case(producer_raw())
@@ -1449,9 +1465,10 @@ class CompanyRunArtifactTests(unittest.TestCase):
         # rebound fingerprint can never reach publication.
         self.assertNotEqual(replaced.fingerprint, case.fingerprint)
         with self.assertRaises(ValueError):
-            self._write(self.directory / "rebind", {**self._run(), "producer": replaced})
+            self._write(
+                self.directory / "rebind", {**self._run(), "producer": replaced}
+            )
         self.assertFalse((self.directory / "rebind").exists())
-
 
     def test_second_run_components_carry_their_own_derived_identity(self):
         second = self._second_run()
@@ -1496,9 +1513,7 @@ class CompanyRunArtifactTests(unittest.TestCase):
         # Byte-only replay uses the POST-JUDGING disclosed salt file: the
         # exact salt bytes are sufficient to recompute every judge request
         # without any session state.
-        disclosed = json.loads(
-            (root / "blind_salt.json").read_text(encoding="utf-8")
-        )
+        disclosed = json.loads((root / "blind_salt.json").read_text(encoding="utf-8"))
         replay_salt = bytes.fromhex(disclosed["salt_hex"])
         self.assertNotIn(replay_salt, (root / artifacts.MANIFEST_NAME).read_bytes())
         rebuilt_requests = judging.build_blind_judge_requests(
@@ -1603,18 +1618,14 @@ class NumericLedgerArtifactRoundTripTests(unittest.TestCase):
         )
         # Keep every other gate green by design: the qualitative evidence
         # quote sits inside this fixture excerpt too.
-        payload["qualitative"]["ai_demand"]["evidence"] = (
-            "revenue was $64.7 billion"
-        )
+        payload["qualitative"]["ai_demand"]["evidence"] = "revenue was $64.7 billion"
         payload["numeric_claims"] = [cls._claim_row()]
         return payload
 
     def _load_case(self):
         raw = producer_raw()
         raw["excerpt"] = _LEDGER_EXCERPT
-        return cb.load_producer_case(
-            write_yaml(self.directory, "producer.yaml", raw)
-        )
+        return cb.load_producer_case(write_yaml(self.directory, "producer.yaml", raw))
 
     def _evaluator_for(self, case):
         return cb.load_evaluator_case(
@@ -1676,11 +1687,11 @@ class NumericLedgerArtifactRoundTripTests(unittest.TestCase):
         with self.assertRaises(service.InvestmentValidationError) as raised:
             cb.finalize_recorded_company_run(recorded, case)
 
-        self.assertEqual(
-            raised.exception.category, service.VALIDATION_JSON_SCHEMA
-        )
+        self.assertEqual(raised.exception.category, service.VALIDATION_JSON_SCHEMA)
         self.assertTrue(
-            any("value: must be a finite number" in p for p in raised.exception.problems),
+            any(
+                "value: must be a finite number" in p for p in raised.exception.problems
+            ),
             raised.exception.problems,
         )
 

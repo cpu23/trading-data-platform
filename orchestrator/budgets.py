@@ -23,6 +23,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from logging_config import get_logger
 from sqlalchemy import text
 
 from contracts.budgets import (
@@ -32,7 +33,6 @@ from contracts.budgets import (
     utc_day_bounds,
 )
 from db import get_session
-from logging_config import get_logger
 
 logger = get_logger("budgets")
 # Mirrors llm_client.DEFAULT_STAGE_TIMEOUT_SECONDS without importing it
@@ -43,6 +43,8 @@ _DEFAULT_STAGE_TIMEOUT_SECONDS = 90.0
 _REQUEST_DEADLINE_SLACK_SECONDS = 30.0
 _TRUSTED_MANUAL_AUTHORIZATION = object()
 _BUDGET_PERMIT = object()
+
+
 def _known_free_model(model: str | None) -> bool:
     """True when the model slug is a known-free variant.
 
@@ -216,7 +218,9 @@ def _reserve_budget_quota(
             },
         ).fetchone()
         spent = coerce_finite_number(row._mapping.get("spent_usd"), "budget spent")
-        reserved = coerce_finite_number(row._mapping.get("reserved_usd"), "budget reserved")
+        reserved = coerce_finite_number(
+            row._mapping.get("reserved_usd"), "budget reserved"
+        )
         if estimate_usd > 0 and spent + reserved + estimate_usd > cap:
             raise BudgetExceeded(spent + reserved, cap, processor=processor)
         inserted = active_session.execute(
@@ -278,6 +282,7 @@ def reserve_budget_quota(
         now=now,
         session=session,
     )
+
 
 def get_today_spend(config: dict, *, now: datetime | None = None) -> tuple[float, int]:
     today_start, tomorrow_start = utc_day_bounds(now)
@@ -434,9 +439,7 @@ def enforce_budget(
         )
         raise BudgetUnavailable(processor=processor) from None
     try:
-        estimate_usd, ttl_seconds = _reservation_policy(
-            config, processor, model=model
-        )
+        estimate_usd, ttl_seconds = _reservation_policy(config, processor, model=model)
         reservation_id = _reserve_budget_quota(
             config,
             processor,
@@ -581,9 +584,7 @@ def retain_budget_reservation(
         return False
 
 
-def expire_abandoned_reservations(
-    config: dict, *, now: datetime | None = None
-) -> int:
+def expire_abandoned_reservations(config: dict, *, now: datetime | None = None) -> int:
     """Sweep reservations whose TTL lapsed while still active.
 
     Expired reservations are already excluded from admission by the active-sum

@@ -13,13 +13,12 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from budgets import BudgetBlock, BudgetContext
 from errors import InvalidSourceData, PersistenceError, classify_error
 from llm_client import LLMStageFailure
 from logging_config import get_logger
 from processors.base import canonical_fingerprint
+from sqlalchemy import text
 
 logger = get_logger("orchestrator.processor_execution")
 
@@ -755,9 +754,7 @@ def _consume_budget_override(
                     correlation_id=correlation_id,
                 )
                 return None
-        override = (
-            summary.get("budget_override") if isinstance(summary, dict) else None
-        )
+        override = summary.get("budget_override") if isinstance(summary, dict) else None
         if not isinstance(override, dict) or override.get("requested") is not True:
             return None
         if override.get("consumed_at"):
@@ -780,17 +777,13 @@ def _consume_budget_override(
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at <= current:
-            logger.warning(
-                "budget_override_expired", correlation_id=correlation_id
-            )
+            logger.warning("budget_override_expired", correlation_id=correlation_id)
             return None
         effective_run_kind = (
             run_kind if run_kind is not None else mapping.get("run_kind")
         )
         effective_component = (
-            component
-            if component is not None
-            else mapping.get("requested_component")
+            component if component is not None else mapping.get("requested_component")
         )
         if override.get("run_kind") != effective_run_kind:
             logger.warning(

@@ -15,12 +15,12 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
+from api_db import query_many, query_one
+from api_logging import get_logger
 from fastapi import APIRouter, HTTPException, Request
 from starlette.requests import Request as StarletteRequest
 
 import config as app_config
-from db import query_many, query_one
-from logging_config import get_logger
 from routes.json.atoms import load_atom_context
 from routes.json.events import get_events_upcoming_data
 from routes.json.macro import get_macro_dashboard
@@ -974,7 +974,6 @@ def partial_watchlist_grid(
         {
             "request": request,
             "grid": data,
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 

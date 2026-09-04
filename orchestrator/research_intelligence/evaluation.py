@@ -84,7 +84,9 @@ def _case_metrics(case: ReplayCaseResult) -> dict[str, Any]:
     counters = (case.payload.get("adversarial") or {}).get("counterevidence", [])
     requests = list(case.payload.get("data_requests", []))
     supported_edges = [
-        edge for edge in edges if edge.get("epistemic_state") in {"observed", "supported"}
+        edge
+        for edge in edges
+        if edge.get("epistemic_state") in {"observed", "supported"}
     ]
     hypothesis_edges = [
         edge for edge in edges if edge.get("epistemic_state") == "hypothesis"
@@ -198,7 +200,9 @@ def benchmark_lifecycle_timeline(
         first_at = row.get("first_at")
         latest = row.get("latest_replay_at")
         if isinstance(latest, datetime):
-            latest_replay_at = max(latest_replay_at, latest) if latest_replay_at else latest
+            latest_replay_at = (
+                max(latest_replay_at, latest) if latest_replay_at else latest
+            )
         if milestone is None or not isinstance(first_at, datetime):
             continue
         fingerprint = str(row.get("semantic_fingerprint") or "")
@@ -288,8 +292,7 @@ def _research_quality_metrics(
         1 for item in execution.stage_metrics if item.get("repair_required")
     )
     attempt_count = sum(
-        max(1, int(item.get("attempt_count") or 0))
-        for item in execution.stage_metrics
+        max(1, int(item.get("attempt_count") or 0)) for item in execution.stage_metrics
     )
     error_details = " ".join(
         str(item.get("detail") or "") for item in execution.errors
@@ -334,8 +337,7 @@ def _research_quality_metrics(
             "evidence_type_count": len(evidence_types),
             "supporting_edge_count": supported_edges,
             "contradicting_evidence_count": sum(
-                int(item.get("counterevidence_count") or 0)
-                for item in case_metrics
+                int(item.get("counterevidence_count") or 0) for item in case_metrics
             ),
             "unknown_dimension_rate": (
                 unknown_dimensions / dimension_total if dimension_total else None
@@ -358,8 +360,7 @@ def _research_quality_metrics(
             ),
             "average_maximum_depth": (
                 statistics.fmean(
-                    int(item.get("maximum_graph_depth") or 0)
-                    for item in case_metrics
+                    int(item.get("maximum_graph_depth") or 0) for item in case_metrics
                 )
                 if case_metrics
                 else 0.0
@@ -371,8 +372,7 @@ def _research_quality_metrics(
         },
         "value_capture": {
             "node_count": sum(
-                int(item.get("value_capture_node_count") or 0)
-                for item in case_metrics
+                int(item.get("value_capture_node_count") or 0) for item in case_metrics
             ),
             "supported_dimension_count": known_dimensions,
             "unknown_dimension_count": unknown_dimensions,
@@ -397,16 +397,13 @@ def _research_quality_metrics(
         },
         "operations": {
             "tokens_input": sum(
-                int(item.get("tokens_input") or 0)
-                for item in execution.stage_metrics
+                int(item.get("tokens_input") or 0) for item in execution.stage_metrics
             ),
             "tokens_output": sum(
-                int(item.get("tokens_output") or 0)
-                for item in execution.stage_metrics
+                int(item.get("tokens_output") or 0) for item in execution.stage_metrics
             ),
             "latency_ms": sum(
-                int(item.get("duration_ms") or 0)
-                for item in execution.stage_metrics
+                int(item.get("duration_ms") or 0) for item in execution.stage_metrics
             ),
             "cost_usd": execution.cost_usd,
         },
@@ -433,6 +430,7 @@ def build_benchmark_scorecard(
             return datetime.fromisoformat(str(value))
         except (TypeError, ValueError):
             return None
+
     corpus = _case_corpus(cases)
     expected_count, expected_matched, expected_missed = _coverage(
         episode.expected_developments, corpus
@@ -450,15 +448,11 @@ def build_benchmark_scorecard(
     has_ready = any(
         case.lifecycle_state in {"research_ready", "mature"} for case in cases
     )
-    proposition_count = sum(
-        1 for case in cases if case.case_is_economic_proposition
-    )
+    proposition_count = sum(1 for case in cases if case.case_is_economic_proposition)
     edges = sum(item["edge_count"] for item in case_metrics)
     supported_edges = sum(item["supported_edge_count"] for item in case_metrics)
     hypothesis_edges = sum(item["hypothesis_edge_count"] for item in case_metrics)
-    counter_hypotheses = sum(
-        item["counter_hypothesis_count"] for item in case_metrics
-    )
+    counter_hypotheses = sum(item["counter_hypothesis_count"] for item in case_metrics)
     value_nodes = sum(item["value_capture_node_count"] for item in case_metrics)
     known_dimensions = sum(
         item["value_capture_dimensions_known"] for item in case_metrics
@@ -505,11 +499,11 @@ def build_benchmark_scorecard(
         for item in episode.evidence
         if item.available_at > execution.replay_as_of
     }
-    leaked_refs = sorted(
-        reference for reference in future_refs if reference in corpus
-    )
+    leaked_refs = sorted(reference for reference in future_refs if reference in corpus)
     if is_noise:
-        discovery_status = "pass" if not cases else ("partial" if not has_ready else "fail")
+        discovery_status = (
+            "pass" if not cases else ("partial" if not has_ready else "fail")
+        )
         discovery_rationale = (
             "The repeated topical language did not become a research-ready case."
             if not has_ready
@@ -517,7 +511,9 @@ def build_benchmark_scorecard(
         )
     else:
         ratio = expected_count / expected_total if expected_total else 1.0
-        discovery_status = "pass" if cases and ratio >= 0.5 else ("partial" if cases else "fail")
+        discovery_status = (
+            "pass" if cases and ratio >= 0.5 else ("partial" if cases else "fail")
+        )
         discovery_rationale = (
             "The run formed at least one economic case and covered the expected development."
             if discovery_status == "pass"
@@ -543,11 +539,7 @@ def build_benchmark_scorecard(
         else "fail"
     )
     counter_status = (
-        "not_applicable"
-        if not cases
-        else "pass"
-        if counters
-        else "partial"
+        "not_applicable" if not cases else "pass" if counters else "partial"
     )
     unknown_status = (
         "not_applicable"
@@ -584,7 +576,8 @@ def build_benchmark_scorecard(
     )
     specificity_status = (
         "pass"
-        if (is_noise and not has_ready) or (not is_noise and proposition_count == len(cases))
+        if (is_noise and not has_ready)
+        or (not is_noise and proposition_count == len(cases))
         else "fail"
     )
     dimensions = {
@@ -668,7 +661,9 @@ def build_benchmark_scorecard(
             unknown_dimensions=unknown_dimensions,
         ),
         "evidence_quality": _dimension(
-            "pass" if cases and all(case.source_diversity >= 2 for case in cases) else "partial",
+            "pass"
+            if cases and all(case.source_diversity >= 2 for case in cases)
+            else "partial",
             "Strict validators reject unknown citations; this dimension measures remaining breadth.",
             case_source_diversities=[case.source_diversity for case in cases],
             future_evidence_excluded=execution.audit.get("future_evidence_excluded", 0),
@@ -729,9 +724,7 @@ def build_benchmark_scorecard(
             for case, metrics in zip(cases, case_metrics, strict=True)
         },
         "run_metrics": {
-            "quality": _research_quality_metrics(
-                execution, case_metrics, timeline
-            ),
+            "quality": _research_quality_metrics(execution, case_metrics, timeline),
             **dict(execution.deterministic_metrics),
             "model_cost_usd": execution.cost_usd,
             "tokens_input": sum(
@@ -841,14 +834,19 @@ def compare_replay_runs(
     if left_run_id not in by_id or right_run_id not in by_id:
         raise ValueError("replay run not found")
     left, right = by_id[left_run_id], by_id[right_run_id]
-    if left["deterministic_input_fingerprint"] != right["deterministic_input_fingerprint"]:
+    if (
+        left["deterministic_input_fingerprint"]
+        != right["deterministic_input_fingerprint"]
+    ):
         raise ValueError("replay comparisons require identical deterministic inputs")
 
     def stage_totals(row: Mapping[str, Any]) -> dict[str, int | float]:
         stages = row.get("stage_metrics") or []
         return {
             "tokens_input": sum(int(item.get("tokens_input") or 0) for item in stages),
-            "tokens_output": sum(int(item.get("tokens_output") or 0) for item in stages),
+            "tokens_output": sum(
+                int(item.get("tokens_output") or 0) for item in stages
+            ),
             "latency_ms": sum(int(item.get("duration_ms") or 0) for item in stages),
             "cost_usd": float(row.get("cost_usd") or 0),
         }
@@ -884,9 +882,7 @@ def compare_replay_runs(
         ),
         "left_run_id": left_run_id,
         "right_run_id": right_run_id,
-        "deterministic_input_fingerprint": (
-            left["deterministic_input_fingerprint"]
-        ),
+        "deterministic_input_fingerprint": (left["deterministic_input_fingerprint"]),
         "variant_fingerprints": {
             "left": left["variant_fingerprint"],
             "right": right["variant_fingerprint"],
@@ -910,10 +906,7 @@ def compare_replay_runs(
         "resource_usage": {
             "left": left_totals,
             "right": right_totals,
-            "delta": {
-                key: right_totals[key] - left_totals[key]
-                for key in left_totals
-            },
+            "delta": {key: right_totals[key] - left_totals[key] for key in left_totals},
         },
     }
     session.execute(
@@ -937,8 +930,6 @@ def compare_replay_runs(
         },
     )
     return comparison
-
-
 
 
 def persist_live_case_cohorts(

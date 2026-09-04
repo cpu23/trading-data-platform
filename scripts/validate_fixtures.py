@@ -35,7 +35,9 @@ def main() -> None:
     if "api_key" in seed.lower() or "password" in seed.lower():
         raise SystemExit("demo fixture must not contain credentials")
 
-    print(f"validated {len(YAML_FILES)} YAML files and deterministic demo fixture markers")
+    print(
+        f"validated {len(YAML_FILES)} YAML files and deterministic demo fixture markers"
+    )
 
 
 if __name__ == "__main__":

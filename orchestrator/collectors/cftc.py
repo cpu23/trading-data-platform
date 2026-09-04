@@ -1,12 +1,13 @@
 import time
 from datetime import UTC, date, datetime, timedelta
 
-from collectors.base import CollectionResult, CollectorNoData, CollectorSetupRequired
 from errors import ERROR_CLASS_UNKNOWN, InvalidSourceData, classify_error
 from http_client import make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectionResult, CollectorNoData, CollectorSetupRequired
 
 logger = get_logger("collector.cftc")
 

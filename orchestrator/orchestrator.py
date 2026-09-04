@@ -37,7 +37,6 @@ from cycle_planning import (
     _run_full_cycle_impl,
     aggregate_stage_statuses,
 )
-from db import get_session, insert_records, upsert_records
 from errors import (
     BudgetDenied,
     InvalidSourceData,
@@ -82,6 +81,8 @@ from run_lifecycle import (
     start_run,
     update_run_progress,
 )
+
+from db import get_session, insert_records, upsert_records
 
 logger = get_logger("orchestrator")
 

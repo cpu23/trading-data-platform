@@ -339,9 +339,7 @@ def _event_time(event: Any) -> datetime | None:
 
 
 def _reaction_settings(config: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    settings = (
-        config.get("reaction_windows", {}) if isinstance(config, Mapping) else {}
-    )
+    settings = config.get("reaction_windows", {}) if isinstance(config, Mapping) else {}
     return settings if isinstance(settings, Mapping) else {}
 
 
@@ -472,8 +470,6 @@ def classify_reaction_state(prices: Sequence[Any], baseline_price: Any = None) -
     return "reversal" if signs[0] != signs[-1] else "mixed"
 
 
-
-
 def _price(row: Mapping[str, Any]) -> float | None:
     value = row.get("close")
     return _finite_number(value if value is not None else row.get("open"))
@@ -487,10 +483,12 @@ def _baseline_row(
     event_at: datetime,
 ) -> dict[str, Any] | None:
     """Most recent row strictly before the event (direct latest, unbounded)."""
-    rows = result_rows(session.execute(
-        _BASELINE_SQL,
-        {"symbol": symbol, "timeframe": timeframe, "event_at": event_at},
-    ))
+    rows = result_rows(
+        session.execute(
+            _BASELINE_SQL,
+            {"symbol": symbol, "timeframe": timeframe, "event_at": event_at},
+        )
+    )
     return rows[0] if rows else None
 
 
@@ -523,10 +521,17 @@ def _target_row(
     upper: datetime,
 ) -> dict[str, Any] | None:
     """First row at or after the target within the tolerance bound."""
-    rows = result_rows(session.execute(
-        _TARGET_SQL,
-        {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "upper": upper},
-    ))
+    rows = result_rows(
+        session.execute(
+            _TARGET_SQL,
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "target_at": target_at,
+                "upper": upper,
+            },
+        )
+    )
     return rows[0] if rows else None
 
 
@@ -543,10 +548,17 @@ def _eos_target_row(
     Never selects a post-close tick: the venue close was computed by the
     calendar and the bound is a plain wall-clock ``target_at - tolerance``.
     """
-    rows = result_rows(session.execute(
-        _EOS_TARGET_SQL,
-        {"symbol": symbol, "timeframe": timeframe, "target_at": target_at, "lower": lower},
-    ))
+    rows = result_rows(
+        session.execute(
+            _EOS_TARGET_SQL,
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "target_at": target_at,
+                "lower": lower,
+            },
+        )
+    )
     return rows[0] if rows else None
 
 
@@ -564,16 +576,18 @@ def _pre_rows(
     One (last) sample per ``bucket_seconds`` bucket across the full lookback,
     so the result spans lower..event bounded by ~_VOLATILITY_SAMPLE_LIMIT
     buckets regardless of tick density."""
-    return result_rows(session.execute(
-        _PRE_SQL,
-        {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "lower": lower,
-            "event_at": event_at,
-            "bucket_seconds": max(1, int(bucket_seconds)),
-        },
-    ))
+    return result_rows(
+        session.execute(
+            _PRE_SQL,
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "lower": lower,
+                "event_at": event_at,
+                "bucket_seconds": max(1, int(bucket_seconds)),
+            },
+        )
+    )
 
 
 def _classify_path_state(
@@ -587,16 +601,18 @@ def _classify_path_state(
 ) -> str:
     """Classify the post-event path against the baseline in SQL (exact
     classifier semantics over the full interval; no row cap)."""
-    rows = result_rows(session.execute(
-        _PATH_STATE_SQL,
-        {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "lower": lower,
-            "upper": upper,
-            "baseline": baseline_price,
-        },
-    ))
+    rows = result_rows(
+        session.execute(
+            _PATH_STATE_SQL,
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "lower": lower,
+                "upper": upper,
+                "baseline": baseline_price,
+            },
+        )
+    )
     if not rows:
         return "mixed"
     first = rows[0].get("first_sign")
@@ -753,9 +769,7 @@ def _initial_record(
     event_id = _event_value(event, "event_id", _event_value(event, "id"))
     target_at = horizon_target(event_at, horizon, config, symbol=entry["symbol"])
     baseline_price = _price(baseline_row) if baseline_row else None
-    baseline_at = (
-        _timestamp(baseline_row.get("timestamp")) if baseline_row else None
-    )
+    baseline_at = _timestamp(baseline_row.get("timestamp")) if baseline_row else None
     missing_reason = (
         "future_window"
         if target_at > now
@@ -929,19 +943,13 @@ def _resolve_window(
         _MAX_LOOKBACK_MINUTES,
         max(
             1,
-            _finite_number(
-                settings.get("volatility_lookback_minutes", 24 * 60)
-            )
+            _finite_number(settings.get("volatility_lookback_minutes", 24 * 60))
             or 24 * 60,
         ),
     )
-    configured_tolerance = _finite_number(
-        settings.get("target_tolerance_minutes", 5)
-    )
+    configured_tolerance = _finite_number(settings.get("target_tolerance_minutes", 5))
     tolerance = (
-        5
-        if configured_tolerance is None
-        else min(1440, max(0, configured_tolerance))
+        5 if configured_tolerance is None else min(1440, max(0, configured_tolerance))
     )
     tolerance_delta = timedelta(minutes=tolerance)
     volatility_lower = calendar.backward(event_at, volatility_lookback)
@@ -1025,9 +1033,7 @@ def _resolve_window(
         # policy; keep it for audit but leave the window unresolved.
         stale = {
             "max_age_minutes": lookback,
-            "age_minutes": int(
-                (event_at - baseline_at).total_seconds() // 60
-            ),
+            "age_minutes": int((event_at - baseline_at).total_seconds() // 60),
             "baseline_at": _json_value(baseline_at),
         }
         stale_provenance = dict(provenance)
@@ -1054,9 +1060,7 @@ def _resolve_window(
     horizon_minutes = _HORIZON_MINUTES.get(horizon)
     # The pairing horizon is the actual event_at -> target_at interval (for
     # end_of_session this is the real session duration, not a nominal 1m).
-    horizon_seconds = max(
-        1, int(math.ceil((target_at - event_at).total_seconds()))
-    )
+    horizon_seconds = max(1, int(math.ceil((target_at - event_at).total_seconds())))
     volatility, volatility_meta = _realized_volatility(
         pre_rows,
         horizon_seconds=horizon_seconds,
@@ -1200,16 +1204,18 @@ def recompute_reaction_windows(
         if legacy_only
         else ""
     )
-    rows = result_rows(session.execute(
-        text(
-            """SELECT id,event_id,instrument_symbol,timeframe,horizon,event_at,target_at,baseline_at,baseline_price,target_price,observed_at,observed_price,expected_direction,sensitivity,reaction_state,missing_data_reason,provenance
+    rows = result_rows(
+        session.execute(
+            text(
+                """SELECT id,event_id,instrument_symbol,timeframe,horizon,event_at,target_at,baseline_at,baseline_price,target_price,observed_at,observed_price,expected_direction,sensitivity,reaction_state,missing_data_reason,provenance
             FROM event_reaction_windows
             WHERE (:event_id IS NULL OR event_id=:event_id)"""
-            + legacy_filter
-            + " ORDER BY target_at NULLS FIRST,id LIMIT :limit"
-        ),
-        {"event_id": event_id, "limit": bounded},
-    ))
+                + legacy_filter
+                + " ORDER BY target_at NULLS FIRST,id LIMIT :limit"
+            ),
+            {"event_id": event_id, "limit": bounded},
+        )
+    )
     completed = unresolved = 0
     for row in rows:
         event_at = _timestamp(row.get("event_at"))

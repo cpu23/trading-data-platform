@@ -3,7 +3,6 @@ from datetime import UTC
 from unittest.mock import Mock, patch
 
 import httpx
-
 from collectors import get_all_collectors, get_collector
 from collectors.oanda import OandaCollector
 from price_stream import QuoteStream

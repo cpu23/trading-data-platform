@@ -3,10 +3,10 @@
 import hashlib
 from contextlib import contextmanager
 
+from logging_config import get_logger
 from sqlalchemy import text
 
 from db import get_session
-from logging_config import get_logger
 
 logger = get_logger("orchestrator.locks")
 

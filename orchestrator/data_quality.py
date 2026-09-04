@@ -11,10 +11,10 @@ import statistics
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 
+from logging_config import get_logger
 from sqlalchemy import text
 
 from db import get_session
-from logging_config import get_logger
 
 logger = get_logger("data_quality")
 
@@ -300,8 +300,7 @@ def check_gaps(
         gaps = [missing.isoformat() for missing in sorted(expected - present_dates)]
     elif frequency == "weekly":
         present_periods = {
-            observed - timedelta(days=observed.weekday())
-            for observed in present_dates
+            observed - timedelta(days=observed.weekday()) for observed in present_dates
         }
         cursor = min(present_periods)
         end = max(present_periods)
@@ -314,7 +313,9 @@ def check_gaps(
             for missing in sorted(expected_periods - present_periods)
         ]
     elif frequency == "monthly":
-        present_periods = {(observed.year, observed.month) for observed in present_dates}
+        present_periods = {
+            (observed.year, observed.month) for observed in present_dates
+        }
         cursor_year, cursor_month = min(present_periods)
         end = max(present_periods)
         expected_periods: set[tuple[int, int]] = set()
@@ -690,13 +691,20 @@ def readiness_critical_checks(config: dict, required: set[str]) -> set[str]:
     on a not-yet-run schedule.
     """
     readiness = config.get("readiness", {}) if isinstance(config, Mapping) else {}
-    configured = readiness.get("data_quality_checks", []) if isinstance(readiness, Mapping) else []
+    configured = (
+        readiness.get("data_quality_checks", [])
+        if isinstance(readiness, Mapping)
+        else []
+    )
     if not configured:
         return set()
     return {
         check_id
         for check_id in required
-        if any(check_id == entry or check_id.startswith(f"{entry}_") for entry in configured)
+        if any(
+            check_id == entry or check_id.startswith(f"{entry}_")
+            for entry in configured
+        )
     }
 
 

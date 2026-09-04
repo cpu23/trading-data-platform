@@ -5,9 +5,8 @@ import logging
 import sys
 import unittest
 
+import api_logging as logging_config
 import structlog
-
-import logging_config
 
 
 class ApiLoggingRedactionTests(unittest.TestCase):

@@ -102,18 +102,12 @@ from thesis_scoring import (
 
 # Tournament roles, in deterministic pipeline order.
 ROLES = (
-    "evidence_extractor",
     "fundamental",
-    "expectations_revisions",
-    "macro_regime",
-    "supply_chain",
-    "flow_options_positioning",
     "contrarian",
-    "editor",
 )
 
 # Bounded pipeline inputs.
-MAX_RAW_CANDIDATES = 256
+MAX_RAW_CANDIDATES = 64
 MAX_PER_ROLE = 32
 MAX_PROMOTED = 64
 MAX_SUPPLIED_EVIDENCE = 512
@@ -498,26 +492,6 @@ class TournamentResult:
 
 ROLE_SPECS: Mapping[str, Mapping[str, str]] = MappingProxyType(
     {
-        "evidence_extractor": {
-            "title": "Evidence Extractor",
-            "mission": (
-                "Extract atomic, falsifiable claims that are directly "
-                "supported by the supplied evidence. Stay faithful to source "
-                "content; do not extrapolate beyond what the cited evidence "
-                "states."
-            ),
-            "focus": (
-                "Each candidate states one causal or directional proposition "
-                "whose mechanism is visible in the cited evidence. Cite every "
-                "supplied piece of evidence that bears on the claim; mark "
-                "anything material that is not supplied as missing evidence."
-            ),
-            "constraint": (
-                "Prefer short-horizon, low-synthesis claims. Leave "
-                "fundamental, macro, and flow interpretation to the other "
-                "roles; your added value is fidelity to the evidence."
-            ),
-        },
         "fundamental": {
             "title": "Fundamental Analyst",
             "mission": (
@@ -537,77 +511,6 @@ ROLE_SPECS: Mapping[str, Mapping[str, str]] = MappingProxyType(
                 "unknown and belong in missing_evidence."
             ),
         },
-        "expectations_revisions": {
-            "title": "Expectations and Revisions Analyst",
-            "mission": (
-                "Produce theses driven by consensus expectations and "
-                "revisions: estimates, guidance, forecast deltas, and "
-                "surprise potential."
-            ),
-            "focus": (
-                "State what the consensus currently embeds, how the supplied "
-                "evidence shows that embedding to be stale or wrong, and the "
-                "revision path the evidence implies."
-            ),
-            "constraint": (
-                "Describe consensus only from the supplied evidence; never "
-                "recite market folklore without a supplied source. A stale "
-                "consensus without a catalyst is not a thesis."
-            ),
-        },
-        "macro_regime": {
-            "title": "Macro and Regime Analyst",
-            "mission": (
-                "Transmit macro regime and policy conditions (rates, "
-                "inflation, liquidity, growth) into instrument-level "
-                "direction."
-            ),
-            "focus": (
-                "Trace the transmission mechanism from the macro observation "
-                "to the subject, and keep second-order effects explicit."
-            ),
-            "constraint": (
-                "Cite the macro evidence that anchors the regime call. The "
-                "horizon must match the regime's expected persistence; do "
-                "not claim persistence the evidence does not support."
-            ),
-        },
-        "supply_chain": {
-            "title": "Supply-Chain and Second-Order Analyst",
-            "mission": (
-                "Produce supply-chain and second-order theses: bottlenecks, "
-                "inventory, capacity, lead times, and propagation to "
-                "downstream subjects."
-            ),
-            "focus": (
-                "Identify which node of the chain the supplied evidence "
-                "describes and which downstream subjects the condition "
-                "propagates to, with the mechanism of propagation."
-            ),
-            "constraint": (
-                "Never assume propagation the evidence does not support; "
-                "mark unobserved propagation steps as missing evidence "
-                "rather than asserting them."
-            ),
-        },
-        "flow_options_positioning": {
-            "title": "Flow, Options, and Positioning Analyst",
-            "mission": (
-                "Produce theses from positioning, flows, options market "
-                "structure, and crowding: who is positioned where, and what "
-                "breaks the position."
-            ),
-            "focus": (
-                "Describe the positioning the market currently embeds, the "
-                "variant view on how crowded or one-sided it is, and the "
-                "catalyst that would force repricing."
-            ),
-            "constraint": (
-                "Positioning and flow claims must trace to the supplied "
-                "evidence; never invent open interest, flow, or positioning "
-                "figures."
-            ),
-        },
         "contrarian": {
             "title": "Contrarian",
             "mission": (
@@ -624,25 +527,6 @@ ROLE_SPECS: Mapping[str, Mapping[str, str]] = MappingProxyType(
                 "Opposing candidates are preserved by the tournament: a bull "
                 "and a bear candidate on the same subject are distinct and "
                 "must not be weakened or flattened into one."
-            ),
-        },
-        "editor": {
-            "title": "Editor",
-            "mission": (
-                "Consolidate the candidate set: emit the minimal complete set "
-                "of distinct theses the supplied evidence supports, with "
-                "crisp claims and complete fields."
-            ),
-            "focus": (
-                "Merge redundant phrasing into one atomic claim per distinct "
-                "(subject, direction, horizon, mechanism); keep competing "
-                "directions separate; make sure every field of every emitted "
-                "candidate is explicit."
-            ),
-            "constraint": (
-                "You may reorganize and sharpen candidates but never add "
-                "evidence: citation sets must be drawn only from the supplied "
-                "refs, and repeated agreement between roles adds no evidence."
             ),
         },
     }

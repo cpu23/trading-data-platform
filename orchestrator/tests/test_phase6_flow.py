@@ -63,7 +63,7 @@ class PhaseSixNewsEventTests(unittest.TestCase):
 
 
 class StoryJobRoutingTests(unittest.TestCase):
-    @patch("analysis_jobs.enqueue_job")
+    @patch("jobs.enqueue_job")
     def test_repeated_coverage_republishes_story_snapshot_only(self, enqueue):
         enqueue.side_effect = lambda _session, **kwargs: kwargs
         assignment = SimpleNamespace(
@@ -82,7 +82,7 @@ class StoryJobRoutingTests(unittest.TestCase):
             [job["job_type"] for job in jobs], ["publish_story_clusters_snapshot"]
         )
 
-    @patch("analysis_jobs.enqueue_job")
+    @patch("jobs.enqueue_job")
     def test_material_story_schedules_bounded_confirmation_milestones(self, enqueue):
         enqueue.side_effect = lambda _session, **kwargs: kwargs
         assignment = SimpleNamespace(

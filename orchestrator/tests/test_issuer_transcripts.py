@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collectors.issuer_transcripts import IssuerTranscriptsCollector
+
 from contracts.runtime_config import CollectorConfig
 
 
@@ -137,9 +138,7 @@ class RuntimeConfigMappingTests(unittest.TestCase):
 class IssuerTranscriptDiscoveryTests(unittest.TestCase):
     @patch("collectors.issuer_transcripts.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
-    def test_html_page_yields_deterministic_text_transcript(
-        self, _dns, request
-    ):
+    def test_html_page_yields_deterministic_text_transcript(self, _dns, request):
         request.side_effect = [
             _response(HTML_PAGE),
             _response(TRANSCRIPT_PAGE),
@@ -162,9 +161,7 @@ class IssuerTranscriptDiscoveryTests(unittest.TestCase):
 
     @patch("collectors.issuer_transcripts.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)
-    def test_feed_discovery_parses_rss_items(
-        self, _dns, request
-    ):
+    def test_feed_discovery_parses_rss_items(self, _dns, request):
         request.side_effect = [
             _response(RSS_FEED, content_type="application/rss+xml"),
             _response(TRANSCRIPT_PAGE),

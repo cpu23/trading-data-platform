@@ -13,8 +13,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
 )
@@ -117,7 +115,6 @@ def bucket_row(minutes_ago, close):
 def build_app():
     from fastapi import FastAPI
     from fastapi.templating import Jinja2Templates
-
     from routes.views.watchlist_grid import router
 
     app = FastAPI()
@@ -152,8 +149,9 @@ class WatchlistGridQueryTests(unittest.TestCase):
         self.assertNotIn("secret sql", str(payload))
 
     def test_runtime_config_watchlist_models_resolve_dashboard_symbols(self):
-        from contracts.runtime_config import WatchlistConfig
         from routes.views.watchlist_grid import load_watchlist_grid
+
+        from contracts.runtime_config import WatchlistConfig
 
         config = {
             "watchlist": WatchlistConfig.model_validate(
@@ -177,9 +175,7 @@ class WatchlistGridQueryTests(unittest.TestCase):
         ):
             payload = load_watchlist_grid(config)
 
-        self.assertEqual(
-            {row["symbol"] for row in payload["rows"]}, {"EURUSD", "SPY"}
-        )
+        self.assertEqual({row["symbol"] for row in payload["rows"]}, {"EURUSD", "SPY"})
 
     def test_grid_renders_one_row_per_symbol_with_moves_and_vol(self):
         from routes.views.watchlist_grid import load_watchlist_grid
@@ -553,35 +549,11 @@ class WatchlistGridRouteTests(unittest.TestCase):
         self.assertIn("No operator notes yet", response.text)
         self.assertIn('data-chart="asset-intraday"', response.text)
 
-    def test_grid_partial_has_sse_identity_and_market_refresh_contract(self):
+    def test_grid_partial_uses_shared_polling_heartbeat(self):
         from fastapi.testclient import TestClient
 
         app = build_app()
         market_rows = [market_row("EURUSD")]
-        live_config = dict(WATCHLIST_CONFIG)
-        live_config["event_pipeline"] = {"sse": {"enabled": True}}
-        with (
-            patch(
-                "routes.views.watchlist_grid.app_config.load_config",
-                return_value=live_config,
-            ),
-            patch(
-                "routes.views.watchlist_grid.query_many",
-                side_effect=[market_rows, [], []],
-            ),
-            patch(
-                "routes.views.watchlist_grid.load_atom_context",
-                return_value={"atoms": []},
-            ),
-        ):
-            live = TestClient(app).get("/partials/dashboard/watchlist-grid")
-        self.assertIn('data-live-section="watchlist"', live.text)
-        self.assertIn('data-live-event="watchlist_changed"', live.text)
-        self.assertIn('data-live-url="/partials/dashboard/watchlist-grid"', live.text)
-        # SSE sections declare only data-live attributes: no self-fetch and
-        # no marketRefresh/poll trigger on the section.
-        self.assertNotIn('hx-get="/partials/dashboard/watchlist-grid"', live.text)
-        self.assertNotIn("hx-trigger", live.text)
         with (
             patch(
                 "routes.views.watchlist_grid.app_config.load_config",
@@ -596,12 +568,14 @@ class WatchlistGridRouteTests(unittest.TestCase):
                 return_value={"atoms": []},
             ),
         ):
-            polling = TestClient(app).get("/partials/dashboard/watchlist-grid")
-        # Non-SSE refresh is the shared marketRefresh heartbeat, never a poll.
-        self.assertIn('hx-get="/partials/dashboard/watchlist-grid"', polling.text)
-        self.assertIn('hx-trigger="marketRefresh from:body"', polling.text)
-        self.assertNotIn("every 90s", polling.text)
-        self.assertNotIn('data-live-section="watchlist"', polling.text)
+            response = TestClient(app).get("/partials/dashboard/watchlist-grid")
+        self.assertIn(
+            'hx-get="/partials/dashboard/watchlist-grid"',
+            response.text,
+        )
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
+        self.assertNotIn("every 90s", response.text)
+        self.assertNotIn("data-live-section", response.text)
 
     def test_grid_renders_one_row_per_symbol_with_keyboard_asset_buttons(self):
         from fastapi.testclient import TestClient
@@ -636,7 +610,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         # Semantic table headings: caption plus scope'd column/row headers.
         self.assertIn('<caption class="sr-only">', response.text)
         self.assertEqual(response.text.count('scope="col"'), 8)
-        self.assertEqual(response.text.count("scope=\"row\""), 2)
+        self.assertEqual(response.text.count('scope="row"'), 2)
         # Each row control is a native button (keyboard-operable) targeting
         # the single shared drawer panel.
         self.assertEqual(response.text.count('type="button"'), 2)
@@ -689,27 +663,6 @@ class WatchlistGridRouteTests(unittest.TestCase):
         self.assertIn("@media (max-width: 640px)", css)
         self.assertIn("attr(data-label)", css)
         self.assertIn(".watchlist-grid-section table { min-width: 0; }", css)
-
-
-class WatchlistGridAuthTests(unittest.TestCase):
-    def test_dashboard_partials_require_auth(self):
-        from fastapi import Depends, FastAPI
-        from fastapi.templating import Jinja2Templates
-        from fastapi.testclient import TestClient
-
-        from auth import verify_credentials
-        from routes.views.watchlist_grid import router
-
-        app = FastAPI(dependencies=[Depends(verify_credentials)])
-        app.state.templates = Jinja2Templates(directory=API_ROOT / "templates")
-        app.include_router(router)
-        client = TestClient(app)
-        self.assertEqual(
-            client.get("/partials/dashboard/watchlist-grid").status_code, 401
-        )
-        self.assertEqual(
-            client.get("/partials/dashboard/asset/EURUSD").status_code, 401
-        )
 
 
 if __name__ == "__main__":

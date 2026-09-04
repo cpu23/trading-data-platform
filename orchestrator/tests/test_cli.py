@@ -1,9 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from click.testing import CliRunner
-
 from cli import cli
+from click.testing import CliRunner
 
 
 class CollectorCliTests(unittest.TestCase):

@@ -1,10 +1,7 @@
 <section class="section news-section story-monitor-compact" id="news-section"
-         {% if live_updates_enabled %}data-live-section="news_clusters"
-         data-live-event="section_changed"
-         data-live-url="/partials/dashboard/news"{% else %}
          hx-get="/partials/dashboard/news"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label">Canonical stories</span>
     <a class="quiet-link news-generated" href="/news">Open story monitor</a>

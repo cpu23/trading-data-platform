@@ -40,11 +40,12 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import PurePosixPath
 
-from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import ResponseBodyTooLarge, make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectorNoData, CollectorSetupRequired
 
 logger = get_logger("collector.public_positioning")
 
@@ -363,7 +364,9 @@ class SecForm4Collector:
                     max_response_bytes=max_submissions_bytes,
                 )
             except ResponseBodyTooLarge as exc:
-                raise ValueError("SEC submissions payload exceeds configured bound") from exc
+                raise ValueError(
+                    "SEC submissions payload exceeds configured bound"
+                ) from exc
             response.raise_for_status()
             if _size_exceeds(response, max_submissions_bytes):
                 raise ValueError("SEC submissions payload exceeds configured bound")
@@ -929,7 +932,9 @@ class FinraShortVolumeCollector:
                         max_response_bytes=max_file_bytes,
                     )
                 except ResponseBodyTooLarge as exc:
-                    raise ValueError("FINRA file exceeds configured size bound") from exc
+                    raise ValueError(
+                        "FINRA file exceeds configured size bound"
+                    ) from exc
                 if response.status_code == 404:
                     # Non-trading days and not-yet-published files carry no
                     # data; absence is a valid empty outcome, not a failure.

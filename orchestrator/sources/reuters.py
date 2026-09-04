@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from http_client import get_shared_client, make_request
 from logging_config import get_logger
+
 from sources.news_result import NewsCollectionResult, NewsPublication
 from sources.news_storage import atomic_write_json, read_json
 

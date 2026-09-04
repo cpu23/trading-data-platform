@@ -5,7 +5,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
-
 from budgets import (
     BudgetBlock,
     BudgetContext,
@@ -170,10 +169,9 @@ def resolve_model(
 
     Precedence: an explicit call argument (bounded benchmark/research
     overrides only), then ``llm.models.default`` (the single source of
-    truth — every processor inherits it), then the pinned default.  Per-
-    processor selectors and legacy ``llm.default_model`` are unsupported:
-    frozen config validation rejects them and setup_state promotes any
-    legacy default.
+    truth — every processor inherits it), then the pinned default. The
+    frozen config schema rejects per-processor selectors and
+    ``llm.default_model``.
     """
     if model:
         return model

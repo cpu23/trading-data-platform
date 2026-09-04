@@ -16,8 +16,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "DEPLOYMENT_MODE": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
@@ -349,7 +347,6 @@ def theme_context():
     }
 
 
-
 class ResearchLoaderTests(unittest.TestCase):
     def test_load_research_index_fail_soft_on_database_error(self):
         from routes.views.research import load_research_index
@@ -456,7 +453,6 @@ class ResearchRouteTests(unittest.TestCase):
     def _app(self):
         from fastapi import FastAPI
         from fastapi.templating import Jinja2Templates
-
         from routes.views.research import router
 
         app = FastAPI()
@@ -470,25 +466,12 @@ class ResearchRouteTests(unittest.TestCase):
         return TestClient(self._app())
 
     def test_research_evaluation_helpers_survive_api_budget_import(self):
-        import budgets  # noqa: F401
+        import api_budgets as budgets  # noqa: F401
         from routes.views import research as view_research
 
         self.assertIsNotNone(view_research._research_queries)
         self.assertIsNotNone(view_research._list_benchmarks)
         self.assertIsNotNone(view_research._live_case_cohorts)
-    def test_pages_require_auth(self):
-        from fastapi.testclient import TestClient
-
-        from main import app
-
-        client = TestClient(app)
-        with patch("routes.views.research.load_research_index") as loader:
-            self.assertEqual(client.get("/research").status_code, 401)
-            self.assertEqual(client.get("/research/theses").status_code, 401)
-            self.assertEqual(
-                client.get(f"/research/theses/{THESIS_ID}").status_code, 401
-            )
-        loader.assert_not_called()
 
     def test_index_renders_funnel_steps_in_order(self):
         client = self._client()

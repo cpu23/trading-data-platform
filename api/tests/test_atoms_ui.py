@@ -14,8 +14,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "DEPLOYMENT_MODE": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
@@ -96,16 +94,9 @@ def serialized_history():
 class AtomApiTests(unittest.TestCase):
     def _client(self):
         from fastapi.testclient import TestClient
-
         from main import app
 
         return TestClient(app)
-
-    def test_requires_auth(self):
-        client = self._client()
-        with patch("routes.json.atoms.query_many") as query:
-            self.assertEqual(client.get("/api/analysis/atoms").status_code, 401)
-        query.assert_not_called()
 
     def test_invalid_subject_rejected_before_database_access(self):
         client = self._client()
@@ -165,7 +156,6 @@ class ClaimHistoryPartialTests(unittest.TestCase):
     def _app(self):
         from fastapi import FastAPI
         from fastapi.templating import Jinja2Templates
-
         from routes.views.operations import router
 
         app = FastAPI()

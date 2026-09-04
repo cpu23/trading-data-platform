@@ -51,12 +51,9 @@
   {{ change_feed_rows(feed) }}
 {% else %}
 <section class="section change-feed-section" id="change-feed" aria-labelledby="change-feed-title"
-         {% if live_updates_enabled %}data-live-section="change_feed"
-         data-live-event="section_changed"
-         data-live-url="/partials/news/change-feed"{% else %}
          hx-get="/partials/news/change-feed"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label" id="change-feed-title" role="heading" aria-level="2">Change feed</span>
     {% if news_page %}

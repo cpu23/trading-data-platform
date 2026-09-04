@@ -41,8 +41,20 @@ class TestNumericClaimDomains(unittest.TestCase):
 
     def test_duplicate_claim_ids_rejected(self) -> None:
         claims = [
-            {"claim_id": "c1", "value": 10, "metric": "rev", "period": "2024", "currency": "USD"},
-            {"claim_id": "c1", "value": 20, "metric": "ebit", "period": "2024", "currency": "USD"},
+            {
+                "claim_id": "c1",
+                "value": 10,
+                "metric": "rev",
+                "period": "2024",
+                "currency": "USD",
+            },
+            {
+                "claim_id": "c1",
+                "value": 20,
+                "metric": "ebit",
+                "period": "2024",
+                "currency": "USD",
+            },
         ]
         problems = validate_numeric_claim_rows(claims)
         self.assertTrue(any("duplicate claim_id 'c1'" in p for p in problems))
@@ -50,15 +62,31 @@ class TestNumericClaimDomains(unittest.TestCase):
     def test_blank_and_missing_claim_ids_rejected(self) -> None:
         claims = [
             {"value": 10, "metric": "rev", "period": "2024", "currency": "USD"},
-            {"claim_id": "   ", "value": 20, "metric": "ebit", "period": "2024", "currency": "USD"},
+            {
+                "claim_id": "   ",
+                "value": 20,
+                "metric": "ebit",
+                "period": "2024",
+                "currency": "USD",
+            },
         ]
         problems = validate_numeric_claim_rows(claims)
-        self.assertIn("$.numeric_claims[0].claim_id: must be a nonblank string", problems)
-        self.assertIn("$.numeric_claims[1].claim_id: must be a nonblank string", problems)
+        self.assertIn(
+            "$.numeric_claims[0].claim_id: must be a nonblank string", problems
+        )
+        self.assertIn(
+            "$.numeric_claims[1].claim_id: must be a nonblank string", problems
+        )
 
     def test_more_than_40_claims_rejected(self) -> None:
         claims = [
-            {"claim_id": f"c_{i}", "value": i, "metric": "m", "period": "2024", "currency": "USD"}
+            {
+                "claim_id": f"c_{i}",
+                "value": i,
+                "metric": "m",
+                "period": "2024",
+                "currency": "USD",
+            }
             for i in range(41)
         ]
         problems = validate_numeric_claim_rows(claims)

@@ -11,13 +11,13 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import httpx
+from logging_config import get_logger
 
 from contracts.outbound_security import (
     parse_origin,
     resolve_redirect_url,
 )
 from contracts.outbound_transport import PublicOnlyHTTPTransport
-from logging_config import get_logger
 
 logger = get_logger("http_client")
 

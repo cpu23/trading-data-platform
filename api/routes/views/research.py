@@ -11,11 +11,10 @@ import math
 from datetime import UTC, datetime
 from uuid import UUID
 
+from api_db import get_session, query_many, query_one
 from fastapi import APIRouter, HTTPException, Request
 
-import orchestrator_imports  # noqa: F401
 from config import load_config
-from db import get_session, query_many, query_one
 
 try:
     from research_intelligence import queries as _research_queries
@@ -599,9 +598,7 @@ def research_evaluation_page(request: Request):
                         if isinstance(stage, dict) and stage.get("model")
                     }
                 )
-                run["variant_short"] = str(
-                    run.get("variant_fingerprint") or ""
-                )[:10]
+                run["variant_short"] = str(run.get("variant_fingerprint") or "")[:10]
             payload["replays"] = replays
             payload["comparisons"] = _research_queries.list_quality_metrics(
                 session, metric_scope="comparison", limit=10
@@ -643,6 +640,38 @@ def research_thesis_page(request: Request, thesis_id: str):
     )
 
 
+@router.get("/research/theses/review")
+@router.get("/research/proposals")
+@router.get("/research/review-queue")
+def research_review_queue_page(request: Request):
+    """Render the bounded thesis proposal review queue shell."""
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_theses.html",
+        {"request": request, "view": "review_queue"},
+    )
+
+
+@router.get("/research/theses/proposals/{proposal_id}")
+@router.get("/research/proposals/{proposal_id}")
+def research_proposal_page(request: Request, proposal_id: str):
+    """Render one proposal dossier for review queue inspection."""
+    try:
+        normalized = str(UUID(proposal_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=404, detail="Proposal not found") from exc
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "research_thesis.html",
+        {
+            "request": request,
+            "thesis_id": normalized,
+            "proposal_id": normalized,
+            "is_proposal": True,
+        },
+    )
+
+
 @router.get("/research/cases/{case_id}")
 def research_case_page(request: Request, case_id: str):
     try:
@@ -654,12 +683,8 @@ def research_case_page(request: Request, case_id: str):
         if _research_queries is None:
             raise RuntimeError("research intelligence helpers unavailable")
         with get_session(config) as session:
-            payload = _research_queries.get_case(
-                session, normalized, detail_limit=150
-            )
-            history = _research_queries.case_history(
-                session, normalized, limit=20
-            )
+            payload = _research_queries.get_case(session, normalized, detail_limit=150)
+            history = _research_queries.case_history(session, normalized, limit=20)
     except Exception:
         payload, history = {"status": "unavailable", "case": None}, []
     if payload is None:

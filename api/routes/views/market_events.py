@@ -1,10 +1,7 @@
 """Shared economic-calendar event shaping for market surfaces.
 
-Owned jointly by the full economic calendar (``routes.views.markets``) and
-the asset drawer compatibility partial (``routes.views.dashboard``): ISO
-timestamp parsing, stale-reason formatting, and asset/event matching for
-watchlist symbols.  Neither consumer imports private helpers from the other;
-this module is the single home for these transforms (no duplication).
+Shared by the economic calendar and asset drawer: ISO timestamp parsing,
+stale-reason formatting, and asset/event matching for watchlist symbols.
 """
 
 from datetime import UTC, datetime
@@ -106,9 +103,7 @@ def _event_exposure_key(event: dict) -> str | None:
     return currency or country or None
 
 
-def matched_asset_events(
-    symbol: str, events: list[dict], limit: int = 6
-) -> list[dict]:
+def matched_asset_events(symbol: str, events: list[dict], limit: int = 6) -> list[dict]:
     rules = ASSET_EVENT_RULES.get((symbol or "").upper(), {})
     matches = sorted(
         [event for event in events if _event_matches_asset(symbol, event)],

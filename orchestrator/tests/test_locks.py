@@ -185,8 +185,9 @@ class CommonExecutionLockTests(unittest.TestCase):
         self.assertIn(("enter", "collector:fred", ("cycle",)), entries)
 
     def test_direct_conflict_finalizes_owned_lifecycle_and_surfaces(self):
-        import orchestrator
         from locks import RunConflict
+
+        import orchestrator
 
         with (
             patch.object(orchestrator, "accept_run"),

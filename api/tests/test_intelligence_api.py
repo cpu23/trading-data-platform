@@ -54,12 +54,12 @@ class IntelligenceApiTests(unittest.TestCase):
                 "correlation_id": None,
                 "data_inputs": {},
             },
-            {"processor": "market_intelligence"},
+            {"processor": "briefing"},
         ]
         result = evidence.get_evidence(opinion_id)
         processing_sql = query_one.call_args_list[1].args[0]
         self.assertIn("ANY(COALESCE(output_ids", processing_sql)
-        self.assertEqual(result["processing"]["processor"], "market_intelligence")
+        self.assertEqual(result["processing"]["processor"], "briefing")
 
     @patch("routes.json.evidence.load_config", return_value={})
     @patch("routes.json.evidence.query_many")

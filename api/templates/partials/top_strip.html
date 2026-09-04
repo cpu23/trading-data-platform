@@ -1,10 +1,7 @@
 <section class="section top-strip-section" id="top-strip" aria-labelledby="top-strip-title"
-         {% if live_updates_enabled %}data-live-section="top_strip"
-         data-live-event="section_changed"
-         data-live-url="/partials/dashboard/top-strip"{% else %}
          hx-get="/partials/dashboard/top-strip"
          hx-trigger="marketRefresh from:body"
-         hx-swap="outerHTML"{% endif %}>
+         hx-swap="outerHTML">
   <div class="section-heading">
     <span class="label" id="top-strip-title">Session snapshot</span>
   </div>

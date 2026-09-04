@@ -93,9 +93,15 @@ class ReplayAudit:
     def include(self, item: NormalizedEvidence) -> None:
         self.evidence_included += 1
         timestamp = item.available_at
-        if self.earliest_included_evidence_at is None or timestamp < self.earliest_included_evidence_at:
+        if (
+            self.earliest_included_evidence_at is None
+            or timestamp < self.earliest_included_evidence_at
+        ):
             self.earliest_included_evidence_at = timestamp
-        if self.latest_included_evidence_at is None or timestamp > self.latest_included_evidence_at:
+        if (
+            self.latest_included_evidence_at is None
+            or timestamp > self.latest_included_evidence_at
+        ):
             self.latest_included_evidence_at = timestamp
         self._evidence_fingerprints.add(item.content_fingerprint)
 
@@ -342,10 +348,14 @@ class ResearchContext:
                     key = str(raw_key)
                     child_path = f"{path}.{key}" if path else key
                     if key in _BENCHMARK_ONLY_KEYS:
-                        problems.append(f"benchmark evaluator field entered {stage}: {child_path}")
+                        problems.append(
+                            f"benchmark evaluator field entered {stage}: {child_path}"
+                        )
                     if key in _TIMESTAMP_KEYS:
                         if (parsed := _utc(child)) is not None and parsed > self.as_of:
-                            problems.append(f"future timestamp entered {stage}: {child_path}")
+                            problems.append(
+                                f"future timestamp entered {stage}: {child_path}"
+                            )
                     if key in _REFERENCE_KEYS:
                         refs = child if isinstance(child, list) else [child]
                         for reference in refs:

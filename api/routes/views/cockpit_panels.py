@@ -1,16 +1,8 @@
-"""Cockpit panels compatibility data layer: cross-asset, catalysts, delta.
+"""Model-free market cockpit data loaders.
 
-Every loader in this module is model-free: data comes from bounded SQL or
-from the existing ``routes.json`` readers (``get_briefing_latest``).  Each
-sub-fetch is isolated in its own ``try/except`` so one unavailable source degrades only its own field/panel
-and never the whole partial.  No SQL text or exception detail is ever
-surfaced to the client.
-
-The dashboard compact top strip lives in ``routes.views.dashboard_strip`` and
-the change feed lives in ``routes.views.news``; this module keeps the compat
-partial surfaces (``/partials/dashboard/cross-asset``,
-``/partials/dashboard/catalysts``, ``/partials/dashboard/briefing-delta``)
-and the loaders behind them.
+Data comes from bounded SQL or existing JSON readers. Each sub-fetch is
+isolated so one unavailable source degrades only its own panel; stored SQL
+errors and provider diagnostics are never surfaced to the client.
 """
 
 from __future__ import annotations
@@ -21,10 +13,9 @@ import math
 import re
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Request
+from api_db import query_many
+from fastapi import APIRouter
 
-import config as app_config
-from db import query_many
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import COUNTRY_TO_CURRENCY
 from routes.views.asset_rules import ASSET_EVENT_RULES
@@ -901,21 +892,3 @@ def load_briefing_delta(config: dict, latest=_MISSING) -> dict:
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-@router.get("/partials/dashboard/briefing-delta")
-def partial_briefing_delta(request: Request):
-    config = app_config.load_config()
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "partials/briefing_delta.html",
-        {
-            "request": request,
-            "briefing_delta": load_briefing_delta(config),
-        },
-    )

@@ -48,6 +48,7 @@ from research_intelligence.contracts import canonical_fingerprint
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps heavy imports out
     from investment_service import InvestmentFinalizedAnalysis
+
     from research_intelligence.company_benchmarks import (
         EvaluatorCase,
         ProducerCase,
@@ -233,13 +234,8 @@ def parse_score_value(value: Any) -> float:
         raise ValueError("score must be a finite number") from None
     if not exact.is_finite():
         raise ValueError("score must be a finite number")
-    if (
-        exact < _score_decimal(SCORE_MINIMUM)
-        or exact > _score_decimal(SCORE_MAXIMUM)
-    ):
-        raise ValueError(
-            f"score must be between {SCORE_MINIMUM} and {SCORE_MAXIMUM}"
-        )
+    if exact < _score_decimal(SCORE_MINIMUM) or exact > _score_decimal(SCORE_MAXIMUM):
+        raise ValueError(f"score must be between {SCORE_MINIMUM} and {SCORE_MAXIMUM}")
     steps_from_minimum = (exact - _score_decimal(SCORE_MINIMUM)) / _SCORE_STEP
     if steps_from_minimum != steps_from_minimum.to_integral_value():
         raise ValueError(
@@ -266,9 +262,7 @@ def _meets_minimum(score: float, minimum: float) -> bool:
 
 def _reject_nonfinite_json_constant(token: str) -> Any:
     """Reject NaN/Infinity JSON constants instead of parsing them to floats."""
-    raise ValueError(
-        f"non-finite JSON number {token!r} is not a valid judge response"
-    )
+    raise ValueError(f"non-finite JSON number {token!r} is not a valid judge response")
 
 
 def _text(value: Any, field: str, maximum: int) -> str:
@@ -354,6 +348,7 @@ def _role_token(salt: bytes, producer_fingerprint: str, role: str) -> str:
     ).hexdigest()
     return digest[:_TOKEN_LENGTH]
 
+
 def _shuffled_roles(salt: bytes) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -404,8 +399,7 @@ def _case_material(
                 else getattr(document, "document_type", "")
             ),
             "company_name": (
-                document.get("company")
-                or document.get("company_name", "")
+                document.get("company") or document.get("company_name", "")
                 if isinstance(document, Mapping)
                 else getattr(document, "company", getattr(document, "company_name", ""))
             ),
@@ -477,8 +471,7 @@ def _judge_response_schema() -> dict[str, Any]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        dimension: dimension_item
-                        for dimension in JUDGE_DIMENSIONS
+                        dimension: dimension_item for dimension in JUDGE_DIMENSIONS
                     },
                     "required": list(JUDGE_DIMENSIONS),
                 },
@@ -540,10 +533,7 @@ def _judge_prompt(role: str, schema_json: str) -> str:
             "SCORING CONTRACT",
             "Score every one of these ten dimensions:",
             *_SCORE_GRID_RULES,
-            *[
-                f"- {dimension}"
-                for dimension in JUDGE_DIMENSIONS
-            ],
+            *[f"- {dimension}" for dimension in JUDGE_DIMENSIONS],
             "Rules:",
             "- A nonblank written rationale is REQUIRED for every one of "
             "the ten dimension scores — no exceptions, including scores of "
@@ -561,7 +551,7 @@ def _judge_prompt(role: str, schema_json: str) -> str:
             "- severe_regression: set true only if a defect would materially "
             "mislead a decision-maker; when true, severe_regression_reason "
             "is REQUIRED.",
-            '- If required material is missing or unreadable so that fair '
+            "- If required material is missing or unreadable so that fair "
             'scoring is impossible, set "abstained": true with a concrete '
             '"abstention_reason" instead of guessing. Otherwise set '
             '"abstained": false.',
@@ -572,8 +562,8 @@ def _judge_prompt(role: str, schema_json: str) -> str:
             "Reply with exactly ONE JSON object that validates against this "
             "schema (strict; no additional properties anywhere):",
             schema_json,
-            "Set \"role\", \"token\", \"prompt_version\", and "
-            "\"response_binding\" to EXACTLY these values:",
+            'Set "role", "token", "prompt_version", and '
+            '"response_binding" to EXACTLY these values:',
             f"role={role}",
             "token={token}",
             "prompt_version=" + PROMPT_VERSION,
@@ -606,7 +596,6 @@ class BlindJudgeRequest:
         _required_producer_fingerprint(self.producer_fingerprint)
         _required_binding(self.response_binding)
 
-
     def packet(self) -> dict[str, Any]:
         """Executor-ready payload: prompt plus a defensive schema copy."""
         return {
@@ -629,7 +618,6 @@ class BlindJudgeRequest:
             "response_binding": self.response_binding,
             "producer_fingerprint": self.producer_fingerprint,
         }
-
 
     @classmethod
     def with_frozen_schema(
@@ -659,9 +647,6 @@ class BlindJudgeRequest:
             response_binding=response_binding,
             producer_fingerprint=producer_fingerprint,
         )
-
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -747,8 +732,7 @@ def build_blind_judge_requests(
             prompt_template=prompt_template,
         )
         prompt = (
-            prompt_template
-            .replace("{token}", token)
+            prompt_template.replace("{token}", token)
             .replace("{response_binding}", response_binding)
             .replace("{as_of}", producer.as_of.isoformat())
             .replace("{packet_json}", packet_json)
@@ -781,6 +765,7 @@ def build_blind_judge_requests(
         )
     return tuple(requests)
 
+
 def parse_judge_result(
     request: BlindJudgeRequest, raw_json: str | Mapping[str, Any]
 ) -> JudgeResult:
@@ -806,7 +791,9 @@ def parse_judge_result(
                 parse_constant=_reject_nonfinite_json_constant,
             )
         except (TypeError, ValueError) as error:
-            raise ValueError(f"blind judge response is not valid JSON: {error}") from error
+            raise ValueError(
+                f"blind judge response is not valid JSON: {error}"
+            ) from error
     elif isinstance(raw_json, Mapping):
         parsed = raw_json
     else:
@@ -831,7 +818,9 @@ def parse_judge_result(
     if parsed["token"] != request.token:
         raise ValueError("blind judge response token does not match the request")
     if parsed["prompt_version"] != request.prompt_version:
-        raise ValueError("blind judge response prompt_version does not match the request")
+        raise ValueError(
+            "blind judge response prompt_version does not match the request"
+        )
 
     overall = parsed["overall"]
     if isinstance(overall, bool):
@@ -845,7 +834,9 @@ def parse_judge_result(
     if not isinstance(dimension_scores, Mapping):
         raise ValueError("blind judge dimension_scores must be an object")
     if set(dimension_scores) != set(JUDGE_DIMENSIONS):
-        raise ValueError("blind judge dimension_scores has unexpected or missing dimensions")
+        raise ValueError(
+            "blind judge dimension_scores has unexpected or missing dimensions"
+        )
     scores: list[JudgeScore] = []
     for dimension in JUDGE_DIMENSIONS:
         entry = dimension_scores[dimension]
@@ -867,7 +858,9 @@ def parse_judge_result(
 
     defects_raw = parsed["concrete_defects"]
     if not isinstance(defects_raw, list) or len(defects_raw) > _MAX_DEFECTS:
-        raise ValueError(f"blind judge concrete_defects must be a list of at most {_MAX_DEFECTS}")
+        raise ValueError(
+            f"blind judge concrete_defects must be a list of at most {_MAX_DEFECTS}"
+        )
     defects: list[str] = []
     for index, defect in enumerate(defects_raw):
         if not isinstance(defect, str):
@@ -886,7 +879,9 @@ def parse_judge_result(
     severe_regression = parsed["severe_regression"]
     if not isinstance(severe_regression, bool):
         raise ValueError("blind judge severe_regression must be a boolean")
-    severe_reason = _optional_text(parsed["severe_regression_reason"], _MAX_REASON_CHARS)
+    severe_reason = _optional_text(
+        parsed["severe_regression_reason"], _MAX_REASON_CHARS
+    )
     if severe_regression and not defects:
         raise ValueError("severe_regression=true requires concrete defect evidence")
 
@@ -1000,9 +995,7 @@ def _gate_outcome(
     collections all refuse passage; well-formed failure entries are still
     surfaced as evidence.
     """
-    summaries = _gate_report_summaries(
-        _gate_report_field(hard_gate_report, "failures")
-    )
+    summaries = _gate_report_summaries(_gate_report_field(hard_gate_report, "failures"))
     if summaries is None:
         return False, ()
     passed = _gate_report_field(hard_gate_report, "passed")
@@ -1025,7 +1018,11 @@ class PanelCriterion:
     detail: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"criterion": self.criterion, "passed": self.passed, "detail": self.detail}
+        return {
+            "criterion": self.criterion,
+            "passed": self.passed,
+            "detail": self.detail,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,9 +1058,7 @@ class JudgePanelReport:
             "criteria": [criterion.to_dict() for criterion in self.criteria],
             "severe_regression_roles": list(self.severe_regression_roles),
             "abstained_roles": list(self.abstained_roles),
-            "gate_failures": [
-                failure.to_dict() for failure in self.gate_failures
-            ],
+            "gate_failures": [failure.to_dict() for failure in self.gate_failures],
             "producer_fingerprint": self.producer_fingerprint,
         }
 
@@ -1145,7 +1140,6 @@ def aggregate_judge_panel(
     )
     abstained_roles = tuple(role for role in JUDGE_ROLES if matched[role].abstained)
 
-
     gates_passed, gate_failures = _gate_outcome(hard_gate_report)
     report_fingerprint = _gate_report_field(hard_gate_report, "producer_fingerprint")
     if report_fingerprint != producer_fingerprint:
@@ -1173,16 +1167,12 @@ def aggregate_judge_panel(
         ),
     ]
 
-    weakest_dimension = min(
-        JUDGE_DIMENSIONS, key=lambda name: dimension_medians[name]
-    )
+    weakest_dimension = min(JUDGE_DIMENSIONS, key=lambda name: dimension_medians[name])
     criteria.append(
         PanelCriterion(
             criterion="all_dimension_medians",
             passed=all(
-                _meets_minimum(
-                    dimension_medians[name], DIMENSION_MEDIAN_MINIMUM
-                )
+                _meets_minimum(dimension_medians[name], DIMENSION_MEDIAN_MINIMUM)
                 for name in JUDGE_DIMENSIONS
             ),
             detail=(
@@ -1238,17 +1228,12 @@ def aggregate_judge_panel(
         )
     )
 
-
-    weakest_minimum = min(
-        JUDGE_DIMENSIONS, key=lambda name: dimension_minima[name]
-    )
+    weakest_minimum = min(JUDGE_DIMENSIONS, key=lambda name: dimension_minima[name])
     criteria.append(
         PanelCriterion(
             criterion="core_dimension_judge_floor",
             passed=all(
-                _meets_minimum(
-                    dimension_minima[name], CORE_DIMENSION_JUDGE_FLOOR
-                )
+                _meets_minimum(dimension_minima[name], CORE_DIMENSION_JUDGE_FLOOR)
                 for name in JUDGE_DIMENSIONS
             ),
             detail=(

@@ -7,11 +7,12 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from db import WriteResult
 from llm_client import LLMValidationError
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
 from processors.macro_regime import MacroRegimeProcessor
+
+from db import WriteResult
 
 PROMPT_SENTINEL = "PRIVATE-PROMPT-SENTINEL-8"
 RAW_SENTINEL = "RAW-MODEL-SENTINEL-8"

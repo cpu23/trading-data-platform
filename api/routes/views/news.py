@@ -4,10 +4,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from api_db import query_many
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from config import live_updates_enabled, load_config
-from db import query_many
+from config import load_config
 from routes.views.cockpit_panels import direction, json_obj, pct_display
 from routes.views.dashboard_strip import iso, time_display
 
@@ -335,10 +335,8 @@ def load_source_states(config: dict) -> list[dict]:
     return states
 
 
-
-
 # ---------------------------------------------------------------------------
-# Change feed (owned by News; the legacy dashboard URL is an alias below)
+# Change feed
 # ---------------------------------------------------------------------------
 
 CHANGE_FEED_MAX_LIMIT = 50
@@ -602,23 +600,15 @@ def load_change_feed(
 
 
 @router.get("/partials/news/change-feed")
-@router.get("/partials/dashboard/change-feed")
 def partial_news_change_feed(
     request: Request,
     before: str | None = Query(default=None),
     before_id: str | None = Query(default=None, max_length=36),
     limit: int = Query(default=30, ge=1, le=CHANGE_FEED_MAX_LIMIT),
 ):
-    """Canonical continuous material change feed partial for /news.
-
-    The legacy ``/partials/dashboard/change-feed`` URL is an alias on this
-    same handler: it renders the same partial in dashboard wording (no
-    ``news_page``), so both surfaces keep their exact contracts.
-    """
+    """Return the canonical continuous material change feed for /news."""
     config = load_config()
-    feed = load_change_feed(
-        config, before=before, before_id=before_id, limit=limit
-    )
+    feed = load_change_feed(config, before=before, before_id=before_id, limit=limit)
     return request.app.state.templates.TemplateResponse(
         request,
         "partials/change_feed.html",
@@ -627,7 +617,6 @@ def partial_news_change_feed(
             "feed": feed,
             "append": before is not None,
             "news_page": request.url.path == "/partials/news/change-feed",
-            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 

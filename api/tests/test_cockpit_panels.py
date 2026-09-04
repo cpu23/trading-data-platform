@@ -13,8 +13,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
 )
@@ -59,15 +57,13 @@ CONFIG = {
             },
         ]
     },
-    "event_pipeline": {"sse": {"enabled": True}},
 }
 
 
 def make_app(auth=False):
+    from auth import verify_credentials
     from fastapi import Depends, FastAPI
     from fastapi.templating import Jinja2Templates
-
-    from auth import verify_credentials
     from routes.views.cockpit_panels import router
     from routes.views.markets import router as markets_router
 
@@ -412,9 +408,8 @@ class BriefingDeltaTests(unittest.TestCase):
         self.assertEqual(payload["bullets"], ["Section: interpretation"])
 
     def test_missing_briefing_is_fail_soft(self):
-        from fastapi import HTTPException
-
         import routes.views.cockpit_panels as cockpit_panels
+        from fastapi import HTTPException
 
         with (
             patch(
@@ -451,7 +446,7 @@ class RouteTests(unittest.TestCase):
             patch("routes.views.markets.load_cross_asset", return_value=payload),
             patch("routes.views.markets.app_config.load_config", return_value={}),
         ):
-            response = client.get("/partials/dashboard/cross-asset")
+            response = client.get("/partials/markets/cross-asset")
         self.assertNotIn("data-panel-key", response.text)
         self.assertNotIn("Yield curve", response.text)
         self.assertIn("No cross-asset data available.", response.text)
@@ -491,7 +486,7 @@ class RouteTests(unittest.TestCase):
             patch("routes.views.markets.load_cross_asset", return_value=payload),
             patch("routes.views.markets.app_config.load_config", return_value={}),
         ):
-            response = client.get("/partials/dashboard/cross-asset")
+            response = client.get("/partials/markets/cross-asset")
         self.assertIn('data-panel-key="commodity_impulse"', response.text)
         self.assertIn("+0.50%", response.text)
         self.assertNotIn("Session heat map", response.text)
@@ -513,44 +508,20 @@ class RouteTests(unittest.TestCase):
                 }
             ],
         }
-        with (
-            patch("routes.views.markets.load_catalysts", return_value=payload),
-            patch(
-                "routes.views.markets.app_config.load_config",
-                return_value={"event_pipeline": {"sse": {"enabled": True}}},
-            ),
+        with patch(
+            "routes.views.markets.load_catalysts",
+            return_value=payload,
         ):
-            response = client.get("/partials/dashboard/catalysts")
+            response = client.get("/partials/markets/catalysts")
         self.assertIn("FOMC decision", response.text)
         self.assertIn("in 3h 0m", response.text)
         self.assertIn("DXY", response.text)
-        self.assertIn('data-live-url="/partials/markets/catalysts"', response.text)
-        self.assertIn('data-live-section="catalysts"', response.text)
-        self.assertNotIn("hx-trigger=", response.text)
-
-    def test_briefing_delta_route_renders(self):
-        from fastapi.testclient import TestClient
-
-        app = make_app()
-        client = TestClient(app)
-        payload = {
-            "available": True,
-            "latest_date": "2026-08-06",
-            "bullets": ["Changed section: interpretation"],
-            "atoms": [{"claim_type": "market", "count": 3}],
-        }
-        with (
-            patch(
-                "routes.views.cockpit_panels.load_briefing_delta", return_value=payload
-            ),
-            patch(
-                "routes.views.cockpit_panels.app_config.load_config", return_value={}
-            ),
-        ):
-            response = client.get("/partials/dashboard/briefing-delta")
-        self.assertIn("Changed section: interpretation", response.text)
-        self.assertIn("market", response.text)
-        self.assertIn("3", response.text)
+        self.assertIn(
+            'hx-get="/partials/markets/catalysts"',
+            response.text,
+        )
+        self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
+        self.assertNotIn("data-live-section", response.text)
 
 
 if __name__ == "__main__":

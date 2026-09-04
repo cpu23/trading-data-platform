@@ -10,11 +10,11 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
+from investment_news import classify_news_item, published_timestamp
+from investment_universe import top_us_uk_eu_companies
 from sqlalchemy import text
 
 from db import get_session
-from investment_news import classify_news_item, published_timestamp
-from investment_universe import top_us_uk_eu_companies
 
 _REPORT_UPSERT = text(
     """
@@ -177,7 +177,9 @@ def upsert_report_observation(
                     "summary": analysis.get("summary"),
                     "thesis": analysis.get("thesis"),
                     "counter_thesis": analysis.get("counter_thesis"),
-                    "materiality_assessment": analysis.get("materiality_assessment") or facts.get("materiality_assessment") or {},
+                    "materiality_assessment": analysis.get("materiality_assessment")
+                    or facts.get("materiality_assessment")
+                    or {},
                     "qualitative": facts.get("qualitative", {}),
                     "drivers": analysis.get("drivers", []),
                     "catalysts": analysis.get("catalysts", []),

@@ -200,8 +200,7 @@ def _atm_selection(
     at_strike = [
         c
         for c in with_iv
-        if c["strike"] == atm["strike"]
-        and c["option_type"] in {"call", "put"}
+        if c["strike"] == atm["strike"] and c["option_type"] in {"call", "put"}
     ]
     by_side = {c["option_type"]: c["implied_volatility"] for c in at_strike}
     sources = sorted(by_side)
@@ -292,9 +291,7 @@ def _analyze_expiry(
 ) -> dict[str, Any]:
     expiration = contracts[0]["expiration"]
     dte = (expiration - as_of).days
-    volume, volume_complete, open_interest, oi_complete = _expiry_totals(
-        contracts
-    )
+    volume, volume_complete, open_interest, oi_complete = _expiry_totals(contracts)
     n_calls = sum(1 for c in contracts if c["option_type"] == "call")
     n_puts = sum(1 for c in contracts if c["option_type"] == "put")
 
@@ -354,9 +351,7 @@ def _analyze_expiry(
     else:
         entry["implied_move_reason"] = straddle_reason
     if dte > 0:
-        entry["iv_move_pct"] = (
-            atm["iv"] * math.sqrt(dte / 365.0) * 100.0
-        )
+        entry["iv_move_pct"] = atm["iv"] * math.sqrt(dte / 365.0) * 100.0
     entry["put_call_skew"] = _put_call_skew(
         contracts,
         underlying_price,
@@ -382,9 +377,7 @@ def _analyze_unusualness(
     """
     result: dict[str, Any] = {
         "state": STATE_INSUFFICIENT_HISTORY,
-        "reason": (
-            f"need_at_least_{min_history_snapshots}_prior_snapshots"
-        ),
+        "reason": (f"need_at_least_{min_history_snapshots}_prior_snapshots"),
         "available_history_snapshots": len(history_groups),
         "volume_percentile": None,
         "open_interest_percentile": None,
@@ -400,9 +393,7 @@ def _analyze_unusualness(
     def _group_total(rows: Sequence[Mapping[str, Any]], field: str) -> float | None:
         values = [
             value
-            for value in (
-                _optional_number(row.get(field), field) for row in rows
-            )
+            for value in (_optional_number(row.get(field), field) for row in rows)
             if value is not None
         ]
         return sum(values) if values else None
@@ -422,7 +413,10 @@ def _analyze_unusualness(
         for group in history_groups
         if (value := _group_total(group, "open_interest")) is not None
     ]
-    if len(volume_history) < min_history_snapshots or len(oi_history) < min_history_snapshots:
+    if (
+        len(volume_history) < min_history_snapshots
+        or len(oi_history) < min_history_snapshots
+    ):
         result["reason"] = "history_snapshot_totals_incomplete"
         return result
 
@@ -483,8 +477,7 @@ def analyze_chain(
             for captured_at, history_rows in time_groups.items():
                 existing = target.setdefault(captured_at, [])
                 seen_keys = {
-                    (row.get("symbol"), row.get("contract_symbol"))
-                    for row in existing
+                    (row.get("symbol"), row.get("contract_symbol")) for row in existing
                 }
                 for row in history_rows:
                     key = (row.get("symbol"), row.get("contract_symbol"))
@@ -560,18 +553,14 @@ def analyze_chain(
             term_structure_state = STATE_INSUFFICIENT_HISTORY
             term_structure_reason = "need_at_least_two_expiries_with_atm_iv"
 
-        volume, volume_complete, open_interest, oi_complete = _expiry_totals(
-            contracts
-        )
+        volume, volume_complete, open_interest, oi_complete = _expiry_totals(contracts)
         ok_expiries = [entry for entry in expiries if entry["state"] == STATE_OK]
         if ok_expiries:
             symbol_state = STATE_OK
             symbol_reason = None
         else:
             symbol_state = STATE_INSUFFICIENT_DATA
-            symbol_reason = (
-                expiries[0]["reason"] if expiries else "no_contracts"
-            )
+            symbol_reason = expiries[0]["reason"] if expiries else "no_contracts"
 
         source_timestamp = None
         for row in current_rows:
@@ -599,9 +588,7 @@ def analyze_chain(
                 "volume_complete": volume_complete,
                 "oi_complete": oi_complete,
                 "n_contracts": len(contracts),
-                "n_calls": sum(
-                    1 for c in contracts if c["option_type"] == "call"
-                ),
+                "n_calls": sum(1 for c in contracts if c["option_type"] == "call"),
                 "n_puts": sum(1 for c in contracts if c["option_type"] == "put"),
             },
             "unusualness": _analyze_unusualness(

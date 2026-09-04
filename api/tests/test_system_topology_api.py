@@ -1,108 +1,71 @@
-"""Behavioral tests for bounded, truthful system topology assembly."""
+"""Behavioral tests for the three-service system topology."""
 
-import sys
 import unittest
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from topology import build_system_topology  # noqa: E402
-
-NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
-
-
-def _row_for(sql: str):
-    if "FROM research_questions" in sql:
-        return {
-            "question_backlog": 4,
-            "question_last_activity": NOW,
-            "active_work_orders": 1,
-            "work_order_last_activity": NOW,
-            "recent_effects": 3,
-            "effect_last_activity": NOW,
-            "active_skills": 5,
-            "available_source_capabilities": 4,
-            "capability_last_activity": NOW,
-        }
-    if "FROM analysis_jobs" in sql:
-        return {
-            "active_jobs": 2,
-            "job_last_activity": NOW,
-            "active_planner_jobs": 1,
-            "planner_last_activity": NOW,
-            "running_collections": 1,
-            "collection_last_activity": NOW,
-            "scheduler_live": 1,
-            "scheduler_last_activity": NOW,
-            "worker_live": 1,
-            "worker_last_activity": NOW,
-            "quote_live": 1,
-            "quote_last_activity": NOW,
-        }
-    if "events_24h" in sql:
-        return {
-            "events_24h": 10,
-            "event_last_activity": NOW,
-            "pending_outbox": 1,
-            "outbox_last_activity": NOW,
-            "recent_ui_invalidations": 2,
-            "ui_invalidation_last_activity": NOW,
-        }
-    raise AssertionError(f"unexpected topology query: {sql}")
+from topology import build_system_topology, unavailable_system_topology
 
 
 class SystemTopologyApiTests(unittest.TestCase):
-    @patch("topology.app_config.load_config", return_value={})
-    @patch("topology.query_one", side_effect=lambda sql, **_kwargs: _row_for(sql))
-    def test_full_topology_is_bounded_linked_and_uses_persisted_activity(
-        self, query_one, _config
-    ):
-        topology = build_system_topology()
+    def test_topology_contains_exact_runtime_services(self):
+        now = datetime.now(UTC)
+
+        def rows(sql, **_kwargs):
+            if "FROM jobs" in sql:
+                return {"active_jobs": 4, "last_job_at": now}
+            if "FROM role_heartbeats" in sql:
+                return {"status": "running", "last_heartbeat_at": now}
+            raise AssertionError(sql)
+
+        with patch("topology.query_one", side_effect=rows):
+            topology = build_system_topology()
+
         self.assertEqual(topology.status, "available")
-        self.assertLessEqual(len(topology.nodes), 64)
-        self.assertLessEqual(len(topology.edges), 128)
-        by_id = {node.id: node for node in topology.nodes}
-        self.assertEqual(by_id["research-planner"].status, "active")
-        self.assertEqual(by_id["research-skills"].bounded_count, 5)
-        self.assertEqual(by_id["postgresql"].status, "healthy")
-        self.assertEqual(query_one.call_count, 3)
-        self.assertTrue(
-            all(edge.source in by_id and edge.target in by_id for edge in topology.edges)
+        self.assertEqual(
+            {node.id for node in topology.nodes}, {"postgres", "web", "worker"}
         )
+        self.assertEqual(
+            {(edge.source, edge.target) for edge in topology.edges},
+            {("web", "postgres"), ("worker", "postgres")},
+        )
+        worker = next(node for node in topology.nodes if node.id == "worker")
+        self.assertEqual(worker.status, "healthy")
+        self.assertEqual(worker.bounded_count, 4)
 
-    @patch("topology.app_config.load_config", return_value={})
-    @patch("topology.query_one")
-    def test_one_query_failure_is_partial_without_hiding_other_layers(
-        self, query_one, _config
-    ):
-        def partial(sql, **_kwargs):
-            if "FROM research_questions" in sql:
-                raise RuntimeError("private database detail")
-            return _row_for(sql)
+    def test_stale_worker_heartbeat_is_truthful(self):
+        now = datetime.now(UTC)
 
-        query_one.side_effect = partial
-        topology = build_system_topology()
-        by_id = {node.id: node for node in topology.nodes}
+        def rows(sql, **_kwargs):
+            if "FROM jobs" in sql:
+                return {"active_jobs": 0, "last_job_at": None}
+            return {
+                "status": "running",
+                "last_heartbeat_at": now - timedelta(minutes=2),
+            }
+
+        with patch("topology.query_one", side_effect=rows):
+            topology = build_system_topology()
+
+        worker = next(node for node in topology.nodes if node.id == "worker")
+        self.assertEqual(worker.status, "stale")
+        self.assertEqual(worker.staleness_reason, "worker heartbeat is stale")
+
+    def test_database_failure_is_partial_and_redacted(self):
+        with patch("topology.query_one", side_effect=RuntimeError("private")):
+            topology = build_system_topology()
+
         self.assertEqual(topology.status, "partial")
-        self.assertEqual(topology.unavailable_components, ["research"])
-        self.assertEqual(by_id["research-questions"].status, "unavailable")
-        self.assertEqual(by_id["research-planner"].status, "active")
-        self.assertEqual(by_id["collectors"].status, "active")
-        self.assertEqual(by_id["postgresql"].status, "degraded")
-        self.assertNotIn("private", topology.summary)
+        self.assertEqual(topology.unavailable_components, ["postgres", "worker"])
+        postgres = next(node for node in topology.nodes if node.id == "postgres")
+        self.assertEqual(postgres.status, "unavailable")
+        self.assertNotIn("private", topology.model_dump_json())
 
-    @patch("topology.app_config.load_config", return_value={})
-    @patch("topology.query_one", side_effect=RuntimeError("database unavailable"))
-    def test_total_database_failure_never_claims_storage_is_healthy(
-        self, _query_one, _config
-    ):
-        topology = build_system_topology()
-        by_id = {node.id: node for node in topology.nodes}
-        self.assertEqual(topology.status, "partial")
-        self.assertEqual(by_id["postgresql"].status, "unavailable")
-        self.assertEqual(by_id["api"].status, "unknown")
+    def test_unavailable_fallback_has_no_invented_nodes(self):
+        topology = unavailable_system_topology()
+        self.assertEqual(topology.status, "unavailable")
+        self.assertEqual(topology.nodes, [])
+        self.assertEqual(topology.edges, [])
 
 
 if __name__ == "__main__":

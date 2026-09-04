@@ -4,11 +4,12 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
 
-from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
 from http_errors import safe_error_message, scrub_url
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectorNoData, CollectorSetupRequired
 
 logger = get_logger("collector.central_banks")
 
@@ -33,7 +34,9 @@ class CentralBanksCollector:
         for feed in feeds:
             feed_label = scrub_url(feed.get("url", ""))
             try:
-                feed_url = _validated_feed_url(feed, config["collectors"]["central_banks"])
+                feed_url = _validated_feed_url(
+                    feed, config["collectors"]["central_banks"]
+                )
                 response = make_request(
                     "GET",
                     feed_url,

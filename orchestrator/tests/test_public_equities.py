@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import db
 from collectors.public_equities import (
     DEFAULT_CHART_URL,
     DEFAULT_USER_AGENT,
@@ -14,6 +13,8 @@ from collectors.public_equities import (
     PublicEquitiesCollector,
     corporate_action_id,
 )
+
+import db
 from contracts.runtime_config import CollectorConfig
 
 REGULAR_MARKET_TIME = 1715212800  # 2024-05-09 00:00:00 UTC

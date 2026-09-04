@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import unittest
 from datetime import UTC, date, datetime, time, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 from reaction_windows import (
@@ -125,9 +123,7 @@ class _Session:
                     candidates = [
                         row
                         for row in rows
-                        if params["lower"]
-                        <= row["timestamp"]
-                        <= params["target_at"]
+                        if params["lower"] <= row["timestamp"] <= params["target_at"]
                     ]
                 candidates.sort(key=lambda row: row["timestamp"], reverse=True)
                 return _Result(candidates[:1])
@@ -148,9 +144,7 @@ class _Session:
                         or row["timestamp"] > best[bucket]["timestamp"]
                     ):
                         best[bucket] = row
-                return _Result(
-                    sorted(best.values(), key=lambda row: row["timestamp"])
-                )
+                return _Result(sorted(best.values(), key=lambda row: row["timestamp"]))
             if "ORDER BY timestamp ASC LIMIT 1" in sql:
                 target_at = params["target_at"]
                 upper = params["upper"]
@@ -161,7 +155,9 @@ class _Session:
                 return _Result(candidates[:1])
             selected = rows
             if params.get("lower") is not None:
-                selected = [row for row in selected if params["lower"] <= row["timestamp"]]
+                selected = [
+                    row for row in selected if params["lower"] <= row["timestamp"]
+                ]
             if "event_at" in params:
                 selected = [
                     row for row in selected if row["timestamp"] < params["event_at"]
@@ -281,7 +277,11 @@ class ReactionPersistenceTests(unittest.TestCase):
 
     def test_initialize_persists_calendar_aware_baseline_offset(self):
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=30), "close": 100.0, "source": "oanda"}
+            {
+                "timestamp": self.event_at - timedelta(minutes=30),
+                "close": 100.0,
+                "source": "oanda",
+            }
         ]
         session = _Session(market=market)
         initialize_reaction_windows(session, self.event, self.config, now=self.event_at)
@@ -337,7 +337,11 @@ class ReactionPersistenceTests(unittest.TestCase):
         ]
         market = [
             # Pre-event sample strictly before the event.
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
             # Exact-event row must NOT be selected as baseline.
             {"timestamp": self.event_at, "close": 101.0, "source": "oanda"},
             {"timestamp": target_at, "close": 99.0, "source": "oanda"},
@@ -359,7 +363,9 @@ class ReactionPersistenceTests(unittest.TestCase):
             if "UPDATE event_reaction_windows" in sql
         ]
         self.assertEqual(len(updates), 1)
-        self.assertEqual(updates[-1]["baseline_at"], self.event_at - timedelta(minutes=1))
+        self.assertEqual(
+            updates[-1]["baseline_at"], self.event_at - timedelta(minutes=1)
+        )
         self.assertEqual(updates[-1]["baseline_offset_seconds"], -60)
         # Target offset is relative to target_at; observed exactly at target.
         self.assertEqual(updates[-1]["target_offset_seconds"], 0)
@@ -402,14 +408,22 @@ class ReactionPersistenceTests(unittest.TestCase):
         market = []
         # Dense pre-event ticks at 10-second spacing (last at 11:59:50).
         for index in range(12):
-            ts = self.event_at - timedelta(minutes=1, seconds=50) + timedelta(seconds=10 * index)
-            market.append({"timestamp": ts, "close": 100.0 + index * 0.1, "source": "oanda"})
+            ts = (
+                self.event_at
+                - timedelta(minutes=1, seconds=50)
+                + timedelta(seconds=10 * index)
+            )
+            market.append(
+                {"timestamp": ts, "close": 100.0 + index * 0.1, "source": "oanda"}
+            )
         # Exact-event row: must be excluded from baseline selection.
         market.append({"timestamp": self.event_at, "close": 999.0, "source": "oanda"})
         # Dense post-event ticks; first at/after target_at is 12:01:00.
         for index in range(10):
             ts = target_at + timedelta(seconds=10 * index)
-            market.append({"timestamp": ts, "close": 105.0 + index * 0.1, "source": "oanda"})
+            market.append(
+                {"timestamp": ts, "close": 105.0 + index * 0.1, "source": "oanda"}
+            )
         session = _Session(pending=pending, market=market)
         summary = backfill_reaction_windows(
             session, self.config, now=target_at + timedelta(minutes=1)
@@ -421,9 +435,7 @@ class ReactionPersistenceTests(unittest.TestCase):
             if "UPDATE event_reaction_windows" in sql
         ][0]
         # Baseline is the last tick strictly before the event, not the 999 row.
-        self.assertEqual(
-            updates["baseline_at"], self.event_at - timedelta(seconds=10)
-        )
+        self.assertEqual(updates["baseline_at"], self.event_at - timedelta(seconds=10))
         self.assertEqual(updates["baseline_price"], 101.0)
         self.assertEqual(updates["observed_at"], target_at)
         self.assertEqual(updates["target_price"], 105.0)
@@ -454,9 +466,17 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
             # Exactly at the tolerance bound (target_at + 5 minutes).
-            {"timestamp": target_at + timedelta(minutes=5), "close": 101.0, "source": "oanda"},
+            {
+                "timestamp": target_at + timedelta(minutes=5),
+                "close": 101.0,
+                "source": "oanda",
+            },
         ]
         session = _Session(pending=pending, market=market)
         summary = backfill_reaction_windows(
@@ -497,9 +517,17 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
             # One second beyond the tolerance bound: out of scope.
-            {"timestamp": target_at + timedelta(minutes=5, seconds=1), "close": 101.0, "source": "oanda"},
+            {
+                "timestamp": target_at + timedelta(minutes=5, seconds=1),
+                "close": 101.0,
+                "source": "oanda",
+            },
         ]
         session = _Session(pending=pending, market=market)
         summary = backfill_reaction_windows(
@@ -548,12 +576,12 @@ class ReactionPersistenceTests(unittest.TestCase):
         self.assertEqual(
             sum(1 for params in inserts if params["timeframe"] == "PRICE"), 6
         )
-        self.assertEqual(
-            sum(1 for params in inserts if params["timeframe"] == "5m"), 6
-        )
+        self.assertEqual(sum(1 for params in inserts if params["timeframe"] == "5m"), 6)
         # Distinct timeframes share no identity: a repeat cycle conflicts only
         # on the full (event_id, symbol, timeframe, horizon) key.
-        again = initialize_reaction_windows(session, self.event, config, now=self.event_at)
+        again = initialize_reaction_windows(
+            session, self.event, config, now=self.event_at
+        )
         self.assertEqual(again["created"], 0)
         self.assertEqual(again["existing"], 12)
 
@@ -620,10 +648,9 @@ class ReactionPersistenceTests(unittest.TestCase):
         # 0.1%/0.2%).
         expected_returns = [0.1 if index % 2 == 0 else 0.2 for index in range(23)]
         expected_mean = sum(expected_returns) / len(expected_returns)
-        expected_variance = (
-            sum((value - expected_mean) ** 2 for value in expected_returns)
-            / len(expected_returns)
-        )
+        expected_variance = sum(
+            (value - expected_mean) ** 2 for value in expected_returns
+        ) / len(expected_returns)
         expected_volatility = math.sqrt(expected_variance)
         self.assertAlmostEqual(
             updates["volatility_adjusted_move"],
@@ -677,8 +704,10 @@ class ReactionPersistenceTests(unittest.TestCase):
         market = []
         for block in range(5):
             for offset in offsets:
-                ts = self.event_at - timedelta(minutes=25) + timedelta(
-                    minutes=block * 5 + offset
+                ts = (
+                    self.event_at
+                    - timedelta(minutes=25)
+                    + timedelta(minutes=block * 5 + offset)
                 )
                 market.append({"timestamp": ts, "close": price, "source": "oanda"})
             if block < 4:
@@ -706,10 +735,9 @@ class ReactionPersistenceTests(unittest.TestCase):
         # start exactly 5 minutes later).
         expected_returns = [0.1 if index % 2 == 0 else 0.2 for index in range(4)]
         expected_mean = sum(expected_returns) / len(expected_returns)
-        expected_variance = (
-            sum((value - expected_mean) ** 2 for value in expected_returns)
-            / len(expected_returns)
-        )
+        expected_variance = sum(
+            (value - expected_mean) ** 2 for value in expected_returns
+        ) / len(expected_returns)
         expected_volatility = math.sqrt(expected_variance)
         self.assertAlmostEqual(
             updates["volatility_adjusted_move"],
@@ -751,7 +779,9 @@ class ReactionPersistenceTests(unittest.TestCase):
         ]
         market = []
         for index in range(2500):
-            ts = self.event_at - timedelta(seconds=25000) + timedelta(seconds=10 * index)
+            ts = (
+                self.event_at - timedelta(seconds=25000) + timedelta(seconds=10 * index)
+            )
             market.append(
                 {"timestamp": ts, "close": 100.0 + index * 0.001, "source": "oanda"}
             )
@@ -872,10 +902,9 @@ class ReactionPersistenceTests(unittest.TestCase):
         # Four 1h returns alternating 0.1%/0.2% -> population std 0.05.
         expected_returns = [0.1 if index % 2 == 0 else 0.2 for index in range(4)]
         expected_mean = sum(expected_returns) / len(expected_returns)
-        expected_variance = (
-            sum((value - expected_mean) ** 2 for value in expected_returns)
-            / len(expected_returns)
-        )
+        expected_variance = sum(
+            (value - expected_mean) ** 2 for value in expected_returns
+        ) / len(expected_returns)
         expected_volatility = math.sqrt(expected_variance)
         baseline = [
             row
@@ -986,10 +1015,9 @@ class ReactionPersistenceTests(unittest.TestCase):
         percentage = (target / baseline - 1.0) * 100.0
         expected_returns = [0.1 if index % 2 == 0 else 0.2 for index in range(23)]
         expected_mean = sum(expected_returns) / len(expected_returns)
-        expected_variance = (
-            sum((value - expected_mean) ** 2 for value in expected_returns)
-            / len(expected_returns)
-        )
+        expected_variance = sum(
+            (value - expected_mean) ** 2 for value in expected_returns
+        ) / len(expected_returns)
         expected_volatility = math.sqrt(expected_variance)
         self.assertAlmostEqual(
             updates["volatility_adjusted_move"],
@@ -1083,13 +1111,25 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=2), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=2),
+                "close": 100.0,
+                "source": "oanda",
+            },
             # Would win the DESC baseline scan without the finite predicate.
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": float("nan"), "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": float("nan"),
+                "source": "oanda",
+            },
             {"timestamp": self.event_at, "close": float("inf"), "source": "oanda"},
             # Would win the ASC target scan without the finite predicate.
             {"timestamp": target_at, "close": float("nan"), "source": "oanda"},
-            {"timestamp": target_at + timedelta(seconds=10), "close": 99.0, "source": "oanda"},
+            {
+                "timestamp": target_at + timedelta(seconds=10),
+                "close": 99.0,
+                "source": "oanda",
+            },
         ]
         session = _Session(pending=pending, market=market)
         summary = backfill_reaction_windows(
@@ -1142,9 +1182,17 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": datetime(2026, 8, 6, 11, 0, tzinfo=UTC), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": datetime(2026, 8, 6, 11, 0, tzinfo=UTC),
+                "close": 100.0,
+                "source": "oanda",
+            },
             # Final pre-close observation within the eos backward tolerance.
-            {"timestamp": datetime(2026, 8, 7, 20, 59, tzinfo=UTC), "close": 99.0, "source": "oanda"},
+            {
+                "timestamp": datetime(2026, 8, 7, 20, 59, tzinfo=UTC),
+                "close": 99.0,
+                "source": "oanda",
+            },
         ]
         session = _Session(pending=pending, market=market)
         summary = recompute_reaction_windows(
@@ -1158,7 +1206,9 @@ class ReactionPersistenceTests(unittest.TestCase):
             if "UPDATE event_reaction_windows" in sql
         ][0]
         self.assertEqual(updates["target_at"], expected_target)
-        self.assertEqual(updates["observed_at"], datetime(2026, 8, 7, 20, 59, tzinfo=UTC))
+        self.assertEqual(
+            updates["observed_at"], datetime(2026, 8, 7, 20, 59, tzinfo=UTC)
+        )
         # Baseline Thu 11:00 vs event Thu 12:00 -> -3600s; the observed sample
         # is 60s before the weekly close (negative target offset).
         self.assertEqual(updates["baseline_offset_seconds"], -3600)
@@ -1215,9 +1265,7 @@ class ReactionPersistenceTests(unittest.TestCase):
         stale = provenance["stale_baseline"]
         self.assertEqual(stale["max_age_minutes"], 120)
         self.assertEqual(stale["age_minutes"], 180)
-        self.assertEqual(
-            datetime.fromisoformat(stale["baseline_at"]), stale_at
-        )
+        self.assertEqual(datetime.fromisoformat(stale["baseline_at"]), stale_at)
 
     def test_fresh_baseline_within_lookback_resolves(self):
         target_at = self.event_at + timedelta(minutes=1)
@@ -1243,7 +1291,11 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=90), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=90),
+                "close": 100.0,
+                "source": "oanda",
+            },
             {"timestamp": target_at, "close": 99.0, "source": "oanda"},
         ]
         session = _Session(pending=pending, market=market)
@@ -1287,9 +1339,21 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
-            {"timestamp": target_at - timedelta(minutes=1), "close": 99.0, "source": "oanda"},
-            {"timestamp": target_at + timedelta(minutes=1), "close": 98.0, "source": "oanda"},
+            {
+                "timestamp": event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
+            {
+                "timestamp": target_at - timedelta(minutes=1),
+                "close": 99.0,
+                "source": "oanda",
+            },
+            {
+                "timestamp": target_at + timedelta(minutes=1),
+                "close": 98.0,
+                "source": "oanda",
+            },
         ]
         session = _Session(pending=pending, market=market)
         summary = backfill_reaction_windows(
@@ -1342,7 +1406,11 @@ class ReactionPersistenceTests(unittest.TestCase):
             market = [
                 # Baseline sits outside the eos backward tolerance band
                 # ([20:55, 21:00]) so only the Monday tick could satisfy it.
-                {"timestamp": event_at - timedelta(minutes=8), "close": 100.0, "source": "oanda"},
+                {
+                    "timestamp": event_at - timedelta(minutes=8),
+                    "close": 100.0,
+                    "source": "oanda",
+                },
                 {"timestamp": monday, "close": 99.0, "source": "oanda"},
             ]
             session = _Session(pending=pending, market=market)
@@ -1385,7 +1453,11 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(milliseconds=400), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(milliseconds=400),
+                "close": 100.0,
+                "source": "oanda",
+            },
             {"timestamp": target_at, "close": 99.0, "source": "oanda"},
         ]
         session = _Session(pending=pending, market=market)
@@ -1399,7 +1471,9 @@ class ReactionPersistenceTests(unittest.TestCase):
             if "UPDATE event_reaction_windows" in sql
         ][0]
         self.assertEqual(updates["baseline_offset_seconds"], -1)
-        self.assertEqual(updates["baseline_at"], self.event_at - timedelta(milliseconds=400))
+        self.assertEqual(
+            updates["baseline_at"], self.event_at - timedelta(milliseconds=400)
+        )
         self.assertIsNone(updates["missing_data_reason"])
 
     def test_irregular_cadence_prefers_first_at_or_after_target(self):
@@ -1408,10 +1482,26 @@ class ReactionPersistenceTests(unittest.TestCase):
         t0 = self.event_at - timedelta(minutes=30)
         rows = [
             {"timestamp": t0, "close": 100.0, "source": "oanda"},
-            {"timestamp": t0 + timedelta(seconds=299), "close": 101.0, "source": "oanda"},
-            {"timestamp": t0 + timedelta(seconds=305), "close": 102.0, "source": "oanda"},
-            {"timestamp": t0 + timedelta(seconds=604), "close": 103.0, "source": "oanda"},
-            {"timestamp": t0 + timedelta(seconds=610), "close": 105.0, "source": "oanda"},
+            {
+                "timestamp": t0 + timedelta(seconds=299),
+                "close": 101.0,
+                "source": "oanda",
+            },
+            {
+                "timestamp": t0 + timedelta(seconds=305),
+                "close": 102.0,
+                "source": "oanda",
+            },
+            {
+                "timestamp": t0 + timedelta(seconds=604),
+                "close": 103.0,
+                "source": "oanda",
+            },
+            {
+                "timestamp": t0 + timedelta(seconds=610),
+                "close": 105.0,
+                "source": "oanda",
+            },
         ]
         vol, meta = _realized_volatility(
             rows,
@@ -1530,7 +1620,11 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"}
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            }
         ]
         # 900 path ticks: first half above baseline, second half below.
         for index in range(900):
@@ -1594,7 +1688,11 @@ class ReactionPersistenceTests(unittest.TestCase):
             }
         ]
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
             {"timestamp": target_at, "close": 99.0, "source": "oanda"},
         ]
         session = _Session(pending=pending, market=market)
@@ -1608,9 +1706,7 @@ class ReactionPersistenceTests(unittest.TestCase):
             if "FROM market_data" in sql and "SELECT" in sql
         ]
         self.assertTrue(market_calls)
-        self.assertTrue(
-            all(params["timeframe"] == "1m" for params in market_calls)
-        )
+        self.assertTrue(all(params["timeframe"] == "1m" for params in market_calls))
         provenance = json.loads(
             [
                 params
@@ -1645,7 +1741,11 @@ class ReactionPersistenceTests(unittest.TestCase):
         current_row["id"] = 22
         current_row["volatility_version"] = 2  # already v2: not legacy
         market = [
-            {"timestamp": self.event_at - timedelta(minutes=1), "close": 100.0, "source": "oanda"},
+            {
+                "timestamp": self.event_at - timedelta(minutes=1),
+                "close": 100.0,
+                "source": "oanda",
+            },
             {"timestamp": target_at, "close": 99.0, "source": "oanda"},
         ]
         session = _Session(pending=[legacy_row, current_row], market=market)
@@ -1698,15 +1798,27 @@ class VenueCalendarTests(unittest.TestCase):
         self.assertEqual(calendar.name, "fx_24x5")
         self.assertTrue(calendar.rule.weekly)
         # Sunday 17:00 America/New_York open (21:00 UTC in EDT summer).
-        self.assertFalse(calendar.is_open(datetime(2026, 8, 9, 20, 0, tzinfo=UTC)))  # 16:00 EDT
-        self.assertTrue(calendar.is_open(datetime(2026, 8, 9, 23, 0, tzinfo=UTC)))  # 19:00 EDT
+        self.assertFalse(
+            calendar.is_open(datetime(2026, 8, 9, 20, 0, tzinfo=UTC))
+        )  # 16:00 EDT
+        self.assertTrue(
+            calendar.is_open(datetime(2026, 8, 9, 23, 0, tzinfo=UTC))
+        )  # 19:00 EDT
         # Continuous weekdays: no daily 3-hour close (22:00 UTC is open).
-        self.assertTrue(calendar.is_open(datetime(2026, 8, 10, 22, 0, tzinfo=UTC)))  # Mon 18:00 EDT
+        self.assertTrue(
+            calendar.is_open(datetime(2026, 8, 10, 22, 0, tzinfo=UTC))
+        )  # Mon 18:00 EDT
         # Friday 17:00 America/New_York close (21:00 UTC in EDT summer).
-        self.assertTrue(calendar.is_open(datetime(2026, 8, 14, 16, 0, tzinfo=UTC)))  # Fri 12:00 EDT
-        self.assertFalse(calendar.is_open(datetime(2026, 8, 14, 23, 0, tzinfo=UTC)))  # Fri 19:00 EDT
+        self.assertTrue(
+            calendar.is_open(datetime(2026, 8, 14, 16, 0, tzinfo=UTC))
+        )  # Fri 12:00 EDT
+        self.assertFalse(
+            calendar.is_open(datetime(2026, 8, 14, 23, 0, tzinfo=UTC))
+        )  # Fri 19:00 EDT
         # Weekend closed.
-        self.assertFalse(calendar.is_open(datetime(2026, 8, 15, 12, 0, tzinfo=UTC)))  # Saturday
+        self.assertFalse(
+            calendar.is_open(datetime(2026, 8, 15, 12, 0, tzinfo=UTC))
+        )  # Saturday
         # Rewinding from an exact midnight slice boundary consumes the
         # contiguous prior slice instead of looping on the same timestamp.
         self.assertEqual(
@@ -1798,9 +1910,7 @@ class VenueCalendarTests(unittest.TestCase):
         # 2025 reference dates.
         self.assertFalse(calendar.is_trading_day(date(2025, 4, 18)))  # Good Friday
         self.assertFalse(calendar.is_trading_day(date(2025, 11, 27)))  # Thanksgiving
-        self.assertEqual(
-            calendar.rule.early_closes[date(2025, 11, 28)], time(13, 0)
-        )
+        self.assertEqual(calendar.rule.early_closes[date(2025, 11, 28)], time(13, 0))
 
     def test_lse_and_xetra_holidays(self):
         lse = venue_for_symbol("UK100", self.config)
@@ -1859,7 +1969,9 @@ class VenueCalendarTests(unittest.TestCase):
         # 2002 Golden Jubilee: May Day moved to Jun 3, extra holiday Jun 4.
         self.assertFalse(calendar.is_trading_day(date(2002, 6, 3)))
         self.assertFalse(calendar.is_trading_day(date(2002, 6, 4)))
-        self.assertTrue(calendar.is_trading_day(date(2002, 5, 6)))  # original first Monday
+        self.assertTrue(
+            calendar.is_trading_day(date(2002, 5, 6))
+        )  # original first Monday
         # 2012 Diamond Jubilee: moved to Jun 4/5.
         self.assertFalse(calendar.is_trading_day(date(2012, 6, 4)))
         self.assertFalse(calendar.is_trading_day(date(2012, 6, 5)))
@@ -1973,9 +2085,7 @@ class VenueCalendarTests(unittest.TestCase):
         self.assertEqual(index_policy.venue, "nyse")
         self.assertEqual(index_policy.session_open, time(10, 0))
         self.assertEqual(index_policy.session_close, time(15, 30))
-        self.assertFalse(
-            index_policy.to_metadata()["session_open"] == "09:30:00"
-        )
+        self.assertFalse(index_policy.to_metadata()["session_open"] == "09:30:00")
         # Bare-name shorthand: venue with defaulted policy fields.
         lse_policy = instrument_policy_for("UK100", config, default_timeframe="PRICE")
         self.assertEqual(lse_policy.venue, "lse")
@@ -2007,7 +2117,11 @@ class VenueCalendarTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             venue_for_symbol(
                 "EURUSD",
-                {"reaction_windows": {"calendars": {"instruments": {"EURUSD": "nysee"}}}},
+                {
+                    "reaction_windows": {
+                        "calendars": {"instruments": {"EURUSD": "nysee"}}
+                    }
+                },
             )
         with self.assertRaises(ValueError):
             venue_for_symbol(
@@ -2034,7 +2148,10 @@ class VenueCalendarTests(unittest.TestCase):
                     "reaction_windows": {
                         "calendars": {
                             "instruments": {
-                                "EURUSD": {"venue": "fx_24x5", "exchange_calendar": "lse_"}
+                                "EURUSD": {
+                                    "venue": "fx_24x5",
+                                    "exchange_calendar": "lse_",
+                                }
                             }
                         }
                     }
@@ -2140,9 +2257,7 @@ class VenueCalendarTests(unittest.TestCase):
                 }
             }
         }
-        self.assertEqual(
-            venue_for_symbol("EURUSD", lax).rule.weekdays, (0, 1, 2, 3, 4)
-        )
+        self.assertEqual(venue_for_symbol("EURUSD", lax).rule.weekdays, (0, 1, 2, 3, 4))
 
     def test_calendar_walk_fail_closed_on_exhaustion(self):
         from venue_calendar import CalendarBoundError
@@ -2228,9 +2343,7 @@ class VenueCalendarTests(unittest.TestCase):
     def test_calendar_scope_and_fail_fast(self):
         calendar = venue_for_symbol("SP500", self.config)
         metadata = calendar.session_metadata()
-        self.assertTrue(
-            metadata["holiday_scope"].startswith("builtin_rules:1990-")
-        )
+        self.assertTrue(metadata["holiday_scope"].startswith("builtin_rules:1990-"))
         self.assertEqual(
             metadata["closure_policy"]["one_off_closures_audited_through"], 2026
         )
@@ -2253,161 +2366,6 @@ class VenueCalendarTests(unittest.TestCase):
                     }
                 },
             )
-
-
-@unittest.skipUnless(
-    os.environ.get("TEST_DATABASE_URL"),
-    "requires TEST_DATABASE_URL for PostgreSQL integration",
-)
-class ReactionWindowMigrationIntegrationTests(unittest.TestCase):
-    """Migration 044 integration: deterministic per-identity dedupe and the
-    timeframe-scoped unique constraint, verified against a real PostgreSQL.
-
-    Distinct timeframes must all survive; only rows sharing the full
-    (event_id, instrument_symbol, timeframe, horizon) identity are deduped,
-    keeping the most recently updated row (ties: greatest id)."""
-
-    MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
-
-    def setUp(self):
-        import psycopg2
-
-        self.connection = psycopg2.connect(os.environ["TEST_DATABASE_URL"])
-        self.connection.autocommit = False
-
-    def tearDown(self):
-        self.connection.rollback()
-        self.connection.close()
-
-    def test_migration_044_preserves_deterministic_winner(self):
-        import psycopg2
-
-        with self.connection.cursor() as cursor:
-            # Earlier PostgreSQL integration modules provision the full schema.
-            # Replace their tables transactionally so this legacy-migration
-            # scenario remains isolated regardless of discovery order.
-            cursor.execute("DROP TABLE IF EXISTS market_events CASCADE")
-            cursor.execute("CREATE TABLE market_events (id UUID PRIMARY KEY)")
-            migration_031 = (
-                self.MIGRATIONS_DIR / "031_event_reaction_windows.sql"
-            ).read_text()
-            cursor.execute(migration_031)
-            # Simulate legacy rows inserted before the unique constraint
-            # existed: distinct timeframes (all legitimately kept) plus a
-            # duplicate of the PRICE identity (deduped deterministically).
-            cursor.execute(
-                "ALTER TABLE event_reaction_windows "
-                "DROP CONSTRAINT event_reaction_windows_identity_unique"
-            )
-            event_id = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
-            event_at = "2026-08-06T12:00:00+00:00"
-            cursor.execute(
-                """INSERT INTO event_reaction_windows
-                   (event_id, instrument_symbol, timeframe, horizon, event_at,
-                    target_at, baseline_at, observed_at, volatility_adjusted_move)
-                   VALUES (%s, 'EURUSD', 'PRICE', '1m', %s, %s, %s, %s, 0.5),
-                          (%s, 'EURUSD', '5m', '1m', %s, %s, %s, %s, 0.5),
-                          (%s, 'EURUSD', '15m', '1m', %s, %s, %s, %s, 0.5),
-                          (%s, 'EURUSD', 'PRICE', '1m', %s, %s, %s, %s, 0.5),
-                          (%s, 'USDJPY', 'PRICE', '1m', %s, %s, %s, %s, NULL)""",
-                (
-                    event_id,
-                    event_at,
-                    "2026-08-06T12:10:00+00:00",
-                    "2026-08-06T11:59:00+00:00",
-                    "2026-08-06T12:06:00+00:00",
-                    event_id,
-                    event_at,
-                    "2026-08-06T12:10:00+00:00",
-                    "2026-08-06T11:59:00+00:00",
-                    "2026-08-06T12:06:00+00:00",
-                    event_id,
-                    event_at,
-                    "2026-08-06T12:10:00+00:00",
-                    "2026-08-06T11:59:00+00:00",
-                    "2026-08-06T12:06:00+00:00",
-                    event_id,
-                    event_at,
-                    "2026-08-06T12:10:00+00:00",
-                    "2026-08-06T11:59:00+00:00",
-                    "2026-08-06T12:06:00+00:00",
-                    event_id,
-                    event_at,
-                    "2026-08-06T12:10:00+00:00",
-                    "2026-08-06T11:59:59.600000+00:00",  # subsecond pre-event
-                    "2026-08-06T12:06:00+00:00",
-                ),
-            )
-            # The original PRICE row is the most recently updated: it must be
-            # the deterministic winner over its duplicate.
-            cursor.execute(
-                """UPDATE event_reaction_windows SET updated_at = NOW() + INTERVAL '1 minute'
-                   WHERE id = (SELECT MIN(id) FROM event_reaction_windows
-                               WHERE event_id = %s AND instrument_symbol = 'EURUSD'
-                                 AND timeframe = 'PRICE' AND horizon = '1m')""",
-                (event_id,),
-            )
-            migration_044 = (
-                self.MIGRATIONS_DIR / "044_reaction_window_calendar_identity.sql"
-            ).read_text()
-            cursor.execute(migration_044)
-            cursor.execute(
-                """SELECT timeframe, baseline_offset_seconds, target_offset_seconds
-                   FROM event_reaction_windows
-                   WHERE event_id = %s AND instrument_symbol = 'EURUSD' AND horizon = '1m'
-                   ORDER BY timeframe""",
-                (event_id,),
-            )
-            survivors = cursor.fetchall()
-            # Three distinct timeframes survive; the PRICE duplicate is gone.
-            self.assertEqual([row[0] for row in survivors], ["15m", "5m", "PRICE"])
-            price = next(row for row in survivors if row[0] == "PRICE")
-            # Offsets backfilled: baseline relative to event_at (strictly
-            # negative); target relative to target_at (12:06 vs 12:10, so a
-            # negative value is legal and preserved).
-            self.assertEqual(price[1], -60)
-            self.assertEqual(price[2], -240)
-            # Legacy volatility labeling: rows with an adjusted metric carry
-            # volatility_version = 1 (legacy_per_bar provenance), while the
-            # metric-less USDJPY row stays NULL.
-            cursor.execute(
-                """SELECT volatility_version, provenance
-                   FROM event_reaction_windows
-                   WHERE event_id = %s AND instrument_symbol = 'EURUSD'
-                     AND timeframe = 'PRICE' AND horizon = '1m'""",
-                (event_id,),
-            )
-            labeled = cursor.fetchone()
-            self.assertEqual(labeled[0], 1)
-            self.assertEqual(labeled[1]["volatility"]["version"], 1)
-            self.assertEqual(labeled[1]["volatility"]["method"], "legacy_per_bar")
-            cursor.execute(
-                """SELECT volatility_version, provenance, baseline_offset_seconds
-                   FROM event_reaction_windows
-                   WHERE event_id = %s AND instrument_symbol = 'USDJPY'""",
-                (event_id,),
-            )
-            unlabeled = cursor.fetchone()
-            self.assertIsNone(unlabeled[0])
-            self.assertNotIn("volatility", unlabeled[1])
-            # A strictly pre-event subsecond baseline (event - 0.4s) floors to
-            # -1 second: the <0 sign check can never be violated by rounding.
-            self.assertEqual(unlabeled[2], -1)
-            # The new identity admits a timeframe not seen before.
-            cursor.execute(
-                """INSERT INTO event_reaction_windows
-                   (event_id, instrument_symbol, timeframe, horizon, event_at, target_at)
-                   VALUES (%s, 'EURUSD', '30m', '1m', %s, %s)""",
-                (event_id, event_at, "2026-08-06T12:10:00+00:00"),
-            )
-            # The full (event, symbol, timeframe, horizon) key is enforced.
-            with self.assertRaises(psycopg2.errors.UniqueViolation):
-                cursor.execute(
-                    """INSERT INTO event_reaction_windows
-                       (event_id, instrument_symbol, timeframe, horizon, event_at, target_at)
-                       VALUES (%s, 'EURUSD', 'PRICE', '1m', %s, %s)""",
-                    (event_id, event_at, "2026-08-06T12:10:00+00:00"),
-                )
 
 
 if __name__ == "__main__":

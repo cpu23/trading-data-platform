@@ -269,9 +269,7 @@ def _close_returns(
     epoch = datetime.min.replace(tzinfo=UTC)
     returns: dict[datetime, float] = {}
     previous: float | None = None
-    for row in sorted(
-        rows, key=lambda item: _utc(item.get("timestamp")) or epoch
-    ):
+    for row in sorted(rows, key=lambda item: _utc(item.get("timestamp")) or epoch):
         timestamp = _utc(row.get("timestamp"))
         close = _finite(row.get("close"))
         if timestamp is None or close is None:
@@ -331,9 +329,7 @@ def basket_breadth(
     """
     if members is not None:
         member_set = set(members)
-        changes = {
-            name: value for name, value in changes.items() if name in member_set
-        }
+        changes = {name: value for name, value in changes.items() if name in member_set}
     clean = {
         name: value
         for name, value in ((name, _finite(value)) for name, value in changes.items())
@@ -436,17 +432,17 @@ def volatility_state_change(
 
 
 def volatility_level(
-    value: Any, *, threshold: float = 0.0, name: str = "volatility", reason: str | None = None
+    value: Any,
+    *,
+    threshold: float = 0.0,
+    name: str = "volatility",
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Classify the current realized-volatility level against a threshold."""
     value_finite = _finite(value)
     if value_finite is None:
         return _metric(f"{name}_unknown", reason or "missing_data")
-    label = (
-        f"{name}_high"
-        if abs(value_finite) >= abs(threshold)
-        else f"{name}_normal"
-    )
+    label = f"{name}_high" if abs(value_finite) >= abs(threshold) else f"{name}_normal"
     return _metric(label, volatility=value_finite)
 
 
@@ -470,9 +466,7 @@ def correlation_level(
         metric = _metric(f"{name}_unknown", reason or "missing_data")
     else:
         label = (
-            f"{name}_high"
-            if abs(value_finite) >= abs(threshold)
-            else f"{name}_normal"
+            f"{name}_high" if abs(value_finite) >= abs(threshold) else f"{name}_normal"
         )
         metric = _metric(label, correlation=value_finite)
     if pairs is not None:
@@ -502,7 +496,8 @@ def _row_mapping(row: Any) -> dict[str, Any]:
 def _usable_ohlc(row: Mapping[str, Any]) -> bool:
     """A row is usable only when open/high/low/close are all finite."""
     return all(
-        _finite(row.get(field)) is not None for field in ("open", "high", "low", "close")
+        _finite(row.get(field)) is not None
+        for field in ("open", "high", "low", "close")
     )
 
 
@@ -848,9 +843,7 @@ def compute_feature_snapshot(
             "as_of": parsed_as_of.isoformat(),
             "features": {"last": _metric(reason="invalid_symbol")},
             "unavailable": {"symbol": "invalid_symbol"},
-            "provenance": _provenance(
-                source_event_id, lookback, 0, 0, config_issues
-            ),
+            "provenance": _provenance(source_event_id, lookback, 0, 0, config_issues),
         }
     clean_symbols = [clean_symbol]
     for candidate in symbols or ():

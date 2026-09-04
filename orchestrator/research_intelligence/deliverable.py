@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.contracts import (
     NormalizedEvidence,
     evidence_catalog,
@@ -96,7 +97,9 @@ def _text(value: Any, maximum: int, field: str, required: bool = False) -> str |
     return cleaned[:maximum] if cleaned else None
 
 
-def _bullet(raw: Any, catalog: Mapping[str, NormalizedEvidence], field: str) -> EvidenceBullet:
+def _bullet(
+    raw: Any, catalog: Mapping[str, NormalizedEvidence], field: str
+) -> EvidenceBullet:
     if not isinstance(raw, Mapping) or set(raw) != {"text", "evidence_ids"}:
         raise ValueError(f"{field} keys are invalid")
     text = _text(raw.get("text"), 700, field, required=True)
@@ -189,7 +192,9 @@ def validate_deliverable_output(
                 node_key=node_key,
                 node_name=_text(raw.get("node_name"), 200, "node_name", required=True),
                 text=_text(raw.get("text"), 600, "potential capture", required=True),
-                evidence_ids=validate_evidence_references(raw.get("evidence_ids"), catalog),
+                evidence_ids=validate_evidence_references(
+                    raw.get("evidence_ids"), catalog
+                ),
             )
         )
     evidence_for = _bullets(output.get("evidence_for"), catalog, "evidence_for", 20)

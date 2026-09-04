@@ -135,8 +135,6 @@ def _json(value: Any) -> str:
     )
 
 
-
-
 def normalize_title(value: Any) -> str:
     """Normalize a title without destroying the public display value."""
     text_value = str(value or "").strip().casefold()
@@ -453,15 +451,17 @@ def cluster_news_story(
     values = _story_values(event)
     settings = _settings(config)
     current = _timestamp(now, datetime.now(UTC)) or datetime.now(UTC)
-    existing = result_first(session.execute(
-        text("""SELECT c.* FROM story_cluster_members m
+    existing = result_first(
+        session.execute(
+            text("""SELECT c.* FROM story_cluster_members m
     JOIN story_clusters c ON c.id = m.cluster_id
     WHERE m.source = :source AND m.source_item_id = :source_item_id LIMIT 1"""),
-        {
-            "source": values["source"],
-            "source_item_id": values["source_item_id"],
-        },
-    ))
+            {
+                "source": values["source"],
+                "source_item_id": values["source_item_id"],
+            },
+        )
+    )
     if existing is not None:
         return StoryAssignment(
             existing["id"],
@@ -482,17 +482,19 @@ def cluster_news_story(
     except (TypeError, ValueError, OverflowError):
         window_hours, candidate_limit = 72, 100
     window = timedelta(hours=window_hours)
-    candidates = result_rows(session.execute(
-        text("""SELECT id, canonical_key, title, summary, state, lane,
+    candidates = result_rows(
+        session.execute(
+            text("""SELECT id, canonical_key, title, summary, state, lane,
     first_seen_at, last_seen_at, last_material_change_at, importance, novelty,
     confidence, entities, markets, source_count, version, change_summary, clustering_reason
     FROM story_clusters WHERE last_seen_at >= :cutoff AND state <> 'closed'
     ORDER BY last_seen_at DESC, id DESC LIMIT :candidate_limit"""),
-        {
-            "cutoff": values["published_at"] - window,
-            "candidate_limit": candidate_limit,
-        },
-    ))
+            {
+                "cutoff": values["published_at"] - window,
+                "candidate_limit": candidate_limit,
+            },
+        )
+    )
     ranked = [
         (*_candidate_score(values, candidate, current, window), candidate)
         for candidate in candidates
@@ -506,8 +508,9 @@ def cluster_news_story(
         confidence = round(source_score * 0.8, 12)
         lane = _lane(values, confidence, 1, settings)
         reason = {"decision": "new_cluster", "threshold": threshold, "components": {}}
-        cluster = result_first(session.execute(
-            text("""INSERT INTO story_clusters
+        cluster = result_first(
+            session.execute(
+                text("""INSERT INTO story_clusters
         (canonical_key, title, summary, state, lane, first_seen_at, last_seen_at,
          last_material_change_at, importance, novelty, confidence, entities, markets,
          source_count, version, change_summary, clustering_reason)
@@ -516,24 +519,26 @@ def cluster_news_story(
          CAST(:markets AS JSONB), 1, 1, :change_summary, CAST(:reason AS JSONB))
         ON CONFLICT (canonical_key) DO UPDATE SET last_seen_at = GREATEST(story_clusters.last_seen_at, EXCLUDED.last_seen_at)
         RETURNING *"""),
-            {
-                "canonical_key": _canonical_key(values),
-                "title": values["title"],
-                "summary": values["summary"],
-                "lane": lane,
-                "seen": values["published_at"],
-                "importance": values["importance"],
-                "confidence": confidence,
-                "entities": _json(values["entities"]),
-                "markets": _json(values["markets"]),
-                "change_summary": "Initial report",
-                "reason": _json(reason),
-            },
-        ))
+                {
+                    "canonical_key": _canonical_key(values),
+                    "title": values["title"],
+                    "summary": values["summary"],
+                    "lane": lane,
+                    "seen": values["published_at"],
+                    "importance": values["importance"],
+                    "confidence": confidence,
+                    "entities": _json(values["entities"]),
+                    "markets": _json(values["markets"]),
+                    "change_summary": "Initial report",
+                    "reason": _json(reason),
+                },
+            )
+        )
         if cluster is None:
             raise RuntimeError("story cluster insert returned no row")
-        member = result_first(session.execute(
-            text("""INSERT INTO story_cluster_members
+        member = result_first(
+            session.execute(
+                text("""INSERT INTO story_cluster_members
         (cluster_id, market_event_id, source, source_item_id, source_label, title,
          summary, url, published_at, similarity_score, contribution_type,
          materially_changed, clustering_reason, entities, markets)
@@ -541,21 +546,22 @@ def cluster_news_story(
          :title, :summary, :url, :published_at, 1.0, 'origin', TRUE,
          CAST(:reason AS JSONB), CAST(:entities AS JSONB), CAST(:markets AS JSONB))
         ON CONFLICT (source, source_item_id) DO NOTHING RETURNING id"""),
-            {
-                "cluster_id": cluster["id"],
-                "event_id": values["event_id"],
-                "source": values["source"],
-                "source_item_id": values["source_item_id"],
-                "source_label": values["source_label"],
-                "title": values["title"],
-                "summary": values["summary"],
-                "url": values["url"],
-                "published_at": values["published_at"],
-                "reason": _json(reason),
-                "entities": _json(values["entities"]),
-                "markets": _json(values["markets"]),
-            },
-        ))
+                {
+                    "cluster_id": cluster["id"],
+                    "event_id": values["event_id"],
+                    "source": values["source"],
+                    "source_item_id": values["source_item_id"],
+                    "source_label": values["source_label"],
+                    "title": values["title"],
+                    "summary": values["summary"],
+                    "url": values["url"],
+                    "published_at": values["published_at"],
+                    "reason": _json(reason),
+                    "entities": _json(values["entities"]),
+                    "markets": _json(values["markets"]),
+                },
+            )
+        )
         member_id = member.get("id") if member else None
         _insert_version(
             session, cluster, member_id, None, "origin", "Initial report", current
@@ -572,11 +578,13 @@ def cluster_news_story(
         )
 
     similarity, components, cluster = selected
-    source_rows = result_rows(session.execute(
-        text("""SELECT DISTINCT source FROM story_cluster_members
+    source_rows = result_rows(
+        session.execute(
+            text("""SELECT DISTINCT source FROM story_cluster_members
     WHERE cluster_id = :cluster_id ORDER BY source LIMIT 100"""),
-        {"cluster_id": cluster["id"]},
-    ))
+            {"cluster_id": cluster["id"]},
+        )
+    )
     existing_sources = {str(row["source"]) for row in source_rows}
     new_source = values["source"] not in existing_sources
     old_tokens, new_tokens = (
@@ -605,8 +613,9 @@ def cluster_news_story(
         "new_entities": sorted(new_entities),
         "new_markets": sorted(new_markets),
     }
-    member = result_first(session.execute(
-        text("""INSERT INTO story_cluster_members
+    member = result_first(
+        session.execute(
+            text("""INSERT INTO story_cluster_members
     (cluster_id, market_event_id, source, source_item_id, source_label, title,
      summary, url, published_at, similarity_score, contribution_type,
      materially_changed, clustering_reason, entities, markets)
@@ -614,24 +623,25 @@ def cluster_news_story(
      :title, :summary, :url, :published_at, :similarity, :contribution,
      :material, CAST(:reason AS JSONB), CAST(:entities AS JSONB), CAST(:markets AS JSONB))
     ON CONFLICT (source, source_item_id) DO NOTHING RETURNING id"""),
-        {
-            "cluster_id": cluster["id"],
-            "event_id": values["event_id"],
-            "source": values["source"],
-            "source_item_id": values["source_item_id"],
-            "source_label": values["source_label"],
-            "title": values["title"],
-            "summary": values["summary"],
-            "url": values["url"],
-            "published_at": values["published_at"],
-            "similarity": similarity,
-            "contribution": contribution,
-            "material": materially_changed,
-            "reason": _json(reason),
-            "entities": _json(values["entities"]),
-            "markets": _json(values["markets"]),
-        },
-    ))
+            {
+                "cluster_id": cluster["id"],
+                "event_id": values["event_id"],
+                "source": values["source"],
+                "source_item_id": values["source_item_id"],
+                "source_label": values["source_label"],
+                "title": values["title"],
+                "summary": values["summary"],
+                "url": values["url"],
+                "published_at": values["published_at"],
+                "similarity": similarity,
+                "contribution": contribution,
+                "material": materially_changed,
+                "reason": _json(reason),
+                "entities": _json(values["entities"]),
+                "markets": _json(values["markets"]),
+            },
+        )
+    )
     if member is None:
         return StoryAssignment(
             cluster["id"],
@@ -713,8 +723,9 @@ def cluster_news_story(
         if new_source
         else "Material facts updated"
     )
-    updated = result_first(session.execute(
-        text("""UPDATE story_clusters SET
+    updated = result_first(
+        session.execute(
+            text("""UPDATE story_clusters SET
     title = :title, summary = :summary_text, state = :state, lane = :lane,
     last_seen_at = GREATEST(last_seen_at, :seen), last_material_change_at = :now,
     importance = GREATEST(importance, :importance), novelty = :novelty,
@@ -723,29 +734,30 @@ def cluster_news_story(
     version = version + 1, change_summary = :change_summary,
     clustering_reason = CAST(:reason AS JSONB), updated_at = :now
     WHERE id = :id RETURNING *"""),
-        {
-            "title": values["title"]
-            if contribution in {"material_update", "contradiction"}
-            else cluster["title"],
-            "summary_text": values["summary"]
-            if contribution in {"material_update", "contradiction"}
-            and values["summary"]
-            else cluster.get("summary"),
-            "state": state,
-            "lane": lane,
-            "seen": values["published_at"],
-            "now": current,
-            "importance": values["importance"],
-            "novelty": round(max(0.1, fact_novelty), 12),
-            "confidence": confidence,
-            "entities": _json(merged_entities),
-            "markets": _json(merged_markets),
-            "source_count": source_count,
-            "change_summary": summary,
-            "reason": _json(reason),
-            "id": cluster["id"],
-        },
-    ))
+            {
+                "title": values["title"]
+                if contribution in {"material_update", "contradiction"}
+                else cluster["title"],
+                "summary_text": values["summary"]
+                if contribution in {"material_update", "contradiction"}
+                and values["summary"]
+                else cluster.get("summary"),
+                "state": state,
+                "lane": lane,
+                "seen": values["published_at"],
+                "now": current,
+                "importance": values["importance"],
+                "novelty": round(max(0.1, fact_novelty), 12),
+                "confidence": confidence,
+                "entities": _json(merged_entities),
+                "markets": _json(merged_markets),
+                "source_count": source_count,
+                "change_summary": summary,
+                "reason": _json(reason),
+                "id": cluster["id"],
+            },
+        )
+    )
     if updated is None:
         raise RuntimeError("story cluster update returned no row")
     _insert_version(
@@ -771,19 +783,21 @@ def list_story_clusters(
     normalized_lane = str(lane).strip().lower() if lane else None
     if normalized_lane is not None and normalized_lane not in _LANES:
         raise ValueError("unsupported story lane")
-    rows = result_rows(session.execute(
-        text("""SELECT id, canonical_key, title, summary, state, lane,
+    rows = result_rows(
+        session.execute(
+            text("""SELECT id, canonical_key, title, summary, state, lane,
     first_seen_at, last_seen_at, last_material_change_at, importance, novelty,
     confidence, entities, markets, source_count, version, change_summary,
     clustering_reason, created_at, updated_at FROM story_clusters
     WHERE (:lane IS NULL OR lane = :lane)
     ORDER BY last_material_change_at DESC, id DESC LIMIT :limit OFFSET :offset"""),
-        {
-            "lane": normalized_lane,
-            "limit": bounded_limit,
-            "offset": bounded_offset,
-        },
-    ))
+            {
+                "lane": normalized_lane,
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+            },
+        )
+    )
     return rows
 
 

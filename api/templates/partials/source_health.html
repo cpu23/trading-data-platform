@@ -1,7 +1,7 @@
-<section aria-labelledby="source-state-title"{% if live_updates_enabled %}
-         data-live-section="source_health"
-         data-live-event="source_health_changed"
-         data-live-url="/partials/operations/source-health"{% endif %}>
+<section aria-labelledby="source-state-title"
+         hx-get="/partials/operations/source-health"
+         hx-trigger="marketRefresh from:body"
+         hx-swap="outerHTML">
   <h2 id="source-state-title">Source &amp; scheduler state</h2>
   {% if not source_state.available %}<p role="status">Unavailable</p>
   {% elif not source_state.components %}<p>No source or scheduler state yet</p>

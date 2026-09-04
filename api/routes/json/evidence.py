@@ -1,9 +1,9 @@
 import json
 
+from api_db import query_many, query_one
 from fastapi import APIRouter, HTTPException
 
 from config import load_config
-from db import query_many, query_one
 
 router = APIRouter()
 
@@ -98,7 +98,6 @@ def get_evidence(opinion_id: str):
                    created_at
             FROM generation_attempts
             WHERE correlation_id = :correlation_id
-              AND processor = 'market_intelligence'
             ORDER BY created_at, stage, attempt_number
             """,
             {"correlation_id": correlation_id},

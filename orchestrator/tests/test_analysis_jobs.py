@@ -11,24 +11,25 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis_job_handlers import route_job
-from analysis_jobs import (
+from errors import sanitize_error
+from job_worker import AnalysisJobWorker
+from jobs import (
     AnalysisJob,
     enqueue_job,
     retry_job,
     succeed_job,
     terminal_fail_job,
 )
+from research_intelligence.operations import (
+    enqueue_research_job,
+    retry_research_job,
+)
+
 from contracts.runtime_config import (
     AppConfig,
     DatabaseConfig,
     LlmConfig,
     ResearchIntelligenceConfig,
-)
-from errors import sanitize_error
-from job_worker import AnalysisJobWorker
-from research_intelligence.operations import (
-    enqueue_research_job,
-    retry_research_job,
 )
 
 
@@ -136,6 +137,7 @@ class AnalysisJobRepositoryTests(unittest.TestCase):
         self.assertEqual(sanitize_error(RuntimeError("token=secret")), "RuntimeError")
         self.assertEqual(sanitize_error("password=secret"), "password=[REDACTED]")
         self.assertIsNone(sanitize_error(None))
+
 
 class AnalysisJobWorkerTests(unittest.TestCase):
     def test_disabled_configuration_does_not_open_a_session(self):

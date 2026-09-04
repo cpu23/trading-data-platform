@@ -3,11 +3,12 @@ import io
 import time
 from datetime import UTC, datetime
 
-from collectors.base import CollectorNoData, CollectorSetupRequired
 from http_client import make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectorNoData, CollectorSetupRequired
 
 logger = get_logger("collector.official_macro")
 

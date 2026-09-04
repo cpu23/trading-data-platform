@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import investment_service as service  # noqa: E402
 from company_benchmark_support import (  # noqa: E402
     EXCERPT,
     NEWS_ITEM,
@@ -26,8 +27,6 @@ from company_benchmark_support import (  # noqa: E402
     producer_raw,
     write_yaml,
 )
-
-import investment_service as service  # noqa: E402
 from research_intelligence import company_benchmarks as cb  # noqa: E402
 from research_intelligence.contracts import canonical_fingerprint  # noqa: E402
 
@@ -258,7 +257,13 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             },
         )
         self.assertIn("evidence", catalyst["properties"])
-        for legacy_key in ("risk", "catalyst", "description", "probability", "timeframe"):
+        for legacy_key in (
+            "risk",
+            "catalyst",
+            "description",
+            "probability",
+            "timeframe",
+        ):
             self.assertNotIn(legacy_key, risk["properties"])
             self.assertNotIn(legacy_key, catalyst["properties"])
 
@@ -330,7 +335,6 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             result.analysis["news_context"][0]["title"], NEWS_ITEM["title"]
         )
 
-
     def test_recorded_quarterly_fcf_replay_stays_ineligible_after_public_revaluation(
         self,
     ):
@@ -356,9 +360,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         replayed = cb.finalize_recorded_company_run(recorded, case)
 
         self.assertEqual(replayed.analysis["metrics"]["fcf"]["value"], 120)
-        self.assertEqual(
-            replayed.analysis["metrics"]["fcf"]["period"], "FY2025-Q3"
-        )
+        self.assertEqual(replayed.analysis["metrics"]["fcf"]["period"], "FY2025-Q3")
         dcf = replayed.analysis["valuation"]["dcf"]
         self.assertEqual(dcf["status"], "enterprise_value_only")
         self.assertIsNone(dcf.get("reason"))
@@ -370,9 +372,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         self.assertEqual(dcf["sensitivity"]["status"], "enterprise_value_only")
         self.assertNotEqual(dcf["sensitivity"]["wacc_terminal_grid"], [])
         self.assertTrue(dcf["sensitivity"]["drivers"])
-        self.assertIsNotNone(
-            dcf["sensitivity"]["range"]["enterprise_value_min"]
-        )
+        self.assertIsNotNone(dcf["sensitivity"]["range"]["enterprise_value_min"])
 
         now = datetime.now(UTC)
         public_payload = dict(
@@ -393,9 +393,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         self.assertIsNotNone(public_dcf["enterprise_value"])
         self.assertEqual(public_dcf["sensitivity"]["status"], "enterprise_value_only")
         self.assertNotEqual(public_dcf["sensitivity"]["wacc_terminal_grid"], [])
-        self.assertIsNotNone(
-            public_dcf["sensitivity"]["range"]["enterprise_value_min"]
-        )
+        self.assertIsNotNone(public_dcf["sensitivity"]["range"]["enterprise_value_min"])
 
     def test_recorded_annual_and_ttm_fcf_replays_produce_valuation_outputs(self):
         def reported_metric(value, period, unit="usd_millions"):
@@ -428,9 +426,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
                         "terminal_growth": 0.03,
                     },
                 )
-                recorded = cb.recorded_executor_output(
-                    json.dumps(narrative_payload())
-                )
+                recorded = cb.recorded_executor_output(json.dumps(narrative_payload()))
 
                 replayed = cb.finalize_recorded_company_run(recorded, producer)
 
@@ -465,9 +461,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             MappingProxyType,
         )
         payload = narrative_payload()
-        payload["summary"] = (
-            "Free cash flow was $13.9 billion in FY2024 Q4."
-        )
+        payload["summary"] = "Free cash flow was $13.9 billion in FY2024 Q4."
         payload["numeric_claims"] = [
             {
                 "claim_id": "missing_free_cash_flow",
@@ -486,11 +480,11 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
         with self.assertRaises(service.InvestmentValidationError) as raised:
             cb.finalize_recorded_company_run(recorded, case)
 
-        self.assertEqual(
-            raised.exception.category, service.VALIDATION_JSON_SCHEMA
-        )
+        self.assertEqual(raised.exception.category, service.VALIDATION_JSON_SCHEMA)
         self.assertTrue(
-            any("value: must be a finite number" in p for p in raised.exception.problems),
+            any(
+                "value: must be a finite number" in p for p in raised.exception.problems
+            ),
             raised.exception.problems,
         )
 
@@ -506,9 +500,7 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
             }
         )
         payload = narrative_payload()
-        payload["summary"] = (
-            "Operating cash flow was $13.9 billion in FY2024 Q4."
-        )
+        payload["summary"] = "Operating cash flow was $13.9 billion in FY2024 Q4."
         row = {
             "claim_id": "operating_cash_flow",
             "path": "summary",
@@ -532,26 +524,27 @@ class CompanyBenchmarkSeamTests(unittest.TestCase):
 
     def test_cash_paid_for_property_cannot_ground_operating_cash_flow(self):
         cash_paid_quote = (
-            "Cash paid for property and equipment was $13.9 billion in "
-            "FY2024 Q4"
+            "Cash paid for property and equipment was $13.9 billion in FY2024 Q4"
         )
-        producer = self._load_producer(
-            excerpt=f"{EXCERPT} {cash_paid_quote}."
-        )
+        producer = self._load_producer(excerpt=f"{EXCERPT} {cash_paid_quote}.")
         payload = narrative_payload()
-        payload["qualitative"]["ai_demand"]["evidence"] = "ungrounded fabricated evidence"
+        payload["qualitative"]["ai_demand"]["evidence"] = (
+            "ungrounded fabricated evidence"
+        )
         recorded = cb.recorded_executor_output(json.dumps(payload))
 
         with self.assertRaises(service.InvestmentValidationError) as raised:
             cb.finalize_recorded_company_run(recorded, producer)
 
-        self.assertEqual(
-            raised.exception.category, service.VALIDATION_JSON_SCHEMA
-        )
+        self.assertEqual(raised.exception.category, service.VALIDATION_JSON_SCHEMA)
         self.assertTrue(
-            any("qualitative.ai_demand: evidence is not grounded" in p for p in raised.exception.problems),
+            any(
+                "qualitative.ai_demand: evidence is not grounded" in p
+                for p in raised.exception.problems
+            ),
             raised.exception.problems,
         )
+
     def test_fingerprint_is_derived_and_case_stays_frozen(self):
         case = self._load_producer()
         self.assertEqual(
@@ -579,9 +572,7 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
     def _load_producer(self, **overrides):
         raw = producer_raw()
         raw.update(overrides)
-        return cb.load_producer_case(
-            write_yaml(self.directory, "producer.yaml", raw)
-        )
+        return cb.load_producer_case(write_yaml(self.directory, "producer.yaml", raw))
 
     def _load_evaluator(self, producer, **overrides):
         raw = evaluator_raw(producer.fingerprint, **overrides)
@@ -616,7 +607,10 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
             ("prior_facts", producer.prior_facts),
             ("extraction", producer.extraction),
             ("news_items", producer.news_items),
-            ("expected_material_observations", evaluator.expected_material_observations),
+            (
+                "expected_material_observations",
+                evaluator.expected_material_observations,
+            ),
             ("deterministic_checks", evaluator.deterministic_checks),
             ("known_traps", evaluator.known_traps),
             ("later_outcomes", evaluator.later_outcomes),
@@ -631,9 +625,7 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
                     attempts += 1
                 self.assertGreaterEqual(attempts, 1)
         self.assertIsInstance(producer.news_items[0], MappingProxyType)
-        self.assertIsInstance(
-            evaluator.deterministic_checks[0], MappingProxyType
-        )
+        self.assertIsInstance(evaluator.deterministic_checks[0], MappingProxyType)
         with self.assertRaises(FrozenInstanceError):
             evaluator.forbidden_hindsight[0].value = 21
 
@@ -678,11 +670,7 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
                 "must parse",
             ),
             (
-                {
-                    "deterministic_current": {
-                        "revenue": {"value": 10, "checked_at": ""}
-                    }
-                },
+                {"deterministic_current": {"revenue": {"value": 10, "checked_at": ""}}},
                 "producer.deterministic_current.revenue.checked_at",
                 "must parse",
             ),
@@ -715,11 +703,7 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
                 "timezone-aware",
             ),
             (
-                {
-                    "prior_facts": {
-                        "guidance": {"valid_from": "2026-04-02T00:00:00Z"}
-                    }
-                },
+                {"prior_facts": {"guidance": {"valid_from": "2026-04-02T00:00:00Z"}}},
                 "producer.prior_facts.guidance.valid_from",
                 "after as_of",
             ),
@@ -815,15 +799,27 @@ class CompanyBenchmarkImmutabilityTests(unittest.TestCase):
         rejections = [
             (
                 "equal to as_of",
-                dict(valid_row, claim_id="row_equal", available_after="2026-03-31T00:00:00Z"),
+                dict(
+                    valid_row,
+                    claim_id="row_equal",
+                    available_after="2026-03-31T00:00:00Z",
+                ),
             ),
             (
                 "earlier than as_of",
-                dict(valid_row, claim_id="row_before", available_after="2026-03-30T23:59:59Z"),
+                dict(
+                    valid_row,
+                    claim_id="row_before",
+                    available_after="2026-03-30T23:59:59Z",
+                ),
             ),
             (
                 "equal to as_of in another zone",
-                dict(valid_row, claim_id="row_offset", available_after="2026-03-31T03:00:00+03:00"),
+                dict(
+                    valid_row,
+                    claim_id="row_offset",
+                    available_after="2026-03-31T03:00:00+03:00",
+                ),
             ),
         ]
         for label, row in rejections:
@@ -887,10 +883,30 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
             "not-a-timestamp",
             "must parse as a timezone-aware timestamp",
         ),
-        ("extraction", "transcript_created_at", "2026-03-18T09:00:00", "must be timezone-aware"),
-        ("market_inputs", "event_ended_at", "", "must parse as a timezone-aware timestamp"),
-        ("deterministic_current", "observed_at", None, "present point-in-time timestamp field"),
-        ("prior_facts", "checked_at", ["2026-03-11"], "must parse as a timezone-aware timestamp"),
+        (
+            "extraction",
+            "transcript_created_at",
+            "2026-03-18T09:00:00",
+            "must be timezone-aware",
+        ),
+        (
+            "market_inputs",
+            "event_ended_at",
+            "",
+            "must parse as a timezone-aware timestamp",
+        ),
+        (
+            "deterministic_current",
+            "observed_at",
+            None,
+            "present point-in-time timestamp field",
+        ),
+        (
+            "prior_facts",
+            "checked_at",
+            ["2026-03-11"],
+            "must parse as a timezone-aware timestamp",
+        ),
     )
 
     UNKNOWN_TIMESTAMP_LIKE_ROWS = (
@@ -928,7 +944,9 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
                     node = node[step]
                 self.assertEqual(node, value)
 
-    def test_future_source_availability_or_provenance_times_are_rejected_by_exact_path(self):
+    def test_future_source_availability_or_provenance_times_are_rejected_by_exact_path(
+        self,
+    ):
         for container, path, value in self.DECLARED_FUTURE_ROWS:
             with self.subTest(path=path):
                 with self.assertRaises(ValueError) as ctx:
@@ -962,7 +980,9 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
         self.assertEqual(webcast["event_ended_at"], "2026-03-19T21:30:00Z")
         self.assertEqual(webcast["transcript_created_at"], "2026-03-20T09:00:00Z")
 
-        accepted = self._load(_put("document", "press_kit.first_look.release_date", "2026-01-15"))
+        accepted = self._load(
+            _put("document", "press_kit.first_look.release_date", "2026-01-15")
+        )
         self.assertEqual(
             cb.plain_copy(accepted.document)["press_kit"]["first_look"]["release_date"],
             "2026-01-15",
@@ -999,7 +1019,9 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._load(with_release_list)
         message = str(ctx.exception)
-        self.assertIn("producer.prior_facts.guidance.releases[1].announced_date", message)
+        self.assertIn(
+            "producer.prior_facts.guidance.releases[1].announced_date", message
+        )
         self.assertIn("after as_of", message)
 
     def test_unknown_timestamp_like_keys_are_rejected_even_with_harmless_values(self):
@@ -1019,9 +1041,7 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
 
         with self.assertRaises(ValueError) as ctx:
             self._load(with_nested_mystery)
-        self.assertIn(
-            "producer.document.provenance.mystery_at", str(ctx.exception)
-        )
+        self.assertIn("producer.document.provenance.mystery_at", str(ctx.exception))
         self.assertIn("undeclared timestamp-like field", str(ctx.exception))
 
         # The suffix rule must stay narrow: non-temporal keys that merely
@@ -1038,7 +1058,9 @@ class ProducerCaseTemporalKeyTests(unittest.TestCase):
         )
 
     def test_forecast_reference_periods_may_exceed_as_of_but_still_must_parse(self):
-        case = self._load(_put("prior_facts", "guidance_window", dict(self.FORECAST_WINDOW)))
+        case = self._load(
+            _put("prior_facts", "guidance_window", dict(self.FORECAST_WINDOW))
+        )
         window = cb.plain_copy(case.prior_facts)["guidance_window"]
         self.assertEqual(
             window,

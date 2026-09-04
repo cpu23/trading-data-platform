@@ -1,9 +1,9 @@
 {% set topology_status = topology.status if topology else 'unavailable' %}
 <section class="system-topology-section" id="system-topology" aria-labelledby="system-topology-title" tabindex="-1"{% if not topology or topology_status == 'unavailable' %} aria-describedby="system-topology-unavailable-message"{% elif not topology.nodes %} aria-describedby="system-topology-empty-message"{% endif %}
-         data-system-topology="" data-topology-status="{{ topology_status }}"{% if live_updates_enabled %}
-         data-live-section="system_topology"
-         data-live-event="system_topology_changed"
-         data-live-url="/partials/operations/system-topology"{% endif %}>
+         data-system-topology="" data-topology-status="{{ topology_status }}"
+         hx-get="/partials/operations/system-topology"
+         hx-trigger="marketRefresh from:body"
+         hx-swap="outerHTML">
   <header class="section-heading system-topology-heading">
     <h2 id="system-topology-title">System topology</h2>
     <span class="system-topology-state status-{{ topology_status }}">{{ topology_status | replace('_', ' ') | title }}</span>

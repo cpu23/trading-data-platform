@@ -96,8 +96,6 @@ def _bounded_text(value: Any, maximum: int) -> str | None:
     return text_value[:maximum] if text_value else None
 
 
-
-
 def _settings(config: Any) -> Mapping[str, Any]:
     if not isinstance(config, Mapping):
         return {}
@@ -182,7 +180,9 @@ def _resolve_evidence_row(
             "WHERE opinion_id = CAST(:id AS UUID) LIMIT 1"
         ),
     }
-    return result_first(session.execute(text(queries[evidence_type]), {"id": evidence_id}))
+    return result_first(
+        session.execute(text(queries[evidence_type]), {"id": evidence_id})
+    )
 
 
 def publish_atom(
@@ -217,17 +217,20 @@ def publish_atom(
     prior = None
     supersedes = atom.get("supersedes_atom_id")
     if supersedes is not None:
-        prior = result_first(session.execute(
-            text(
-                "SELECT id, status FROM analysis_atoms WHERE id = CAST(:id AS UUID) LIMIT 1"
-            ),
-            {"id": str(supersedes)},
-        ))
+        prior = result_first(
+            session.execute(
+                text(
+                    "SELECT id, status FROM analysis_atoms WHERE id = CAST(:id AS UUID) LIMIT 1"
+                ),
+                {"id": str(supersedes)},
+            )
+        )
         if prior is None:
             raise ValueError("superseded atom does not exist")
-    inserted = result_first(session.execute(
-        text(
-            """INSERT INTO analysis_atoms
+    inserted = result_first(
+        session.execute(
+            text(
+                """INSERT INTO analysis_atoms
         (subject_type, subject_id, claim_type, claim, observation_text,
          interpretation_text, scenario_text, unknowns, affected_assets,
          time_horizon, confidence, confidence_components, valid_from,
@@ -244,55 +247,56 @@ def publish_atom(
          :prompt_version, :model_slug, CAST(:generation_attempt_id AS UUID),
          :input_fingerprint, :published_at)
         ON CONFLICT DO NOTHING RETURNING *"""
-        ),
-        {
-            "subject_type": subject_type,
-            "subject_id": subject_id,
-            "claim_type": claim_type,
-            "claim": claim,
-            "observation_text": _bounded_text(atom.get("observation_text"), 4000),
-            "interpretation_text": _bounded_text(
-                atom.get("interpretation_text"), 4000
             ),
-            "scenario_text": _bounded_text(atom.get("scenario_text"), 4000),
-            "unknowns": [
-                str(item).strip()[:200]
-                for item in (atom.get("unknowns") or [])[:20]
-                if str(item).strip()
-            ],
-            "affected_assets": _json_text(
-                [
-                    str(item).strip()[:32]
-                    for item in (atom.get("affected_assets") or [])[:50]
+            {
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "claim_type": claim_type,
+                "claim": claim,
+                "observation_text": _bounded_text(atom.get("observation_text"), 4000),
+                "interpretation_text": _bounded_text(
+                    atom.get("interpretation_text"), 4000
+                ),
+                "scenario_text": _bounded_text(atom.get("scenario_text"), 4000),
+                "unknowns": [
+                    str(item).strip()[:200]
+                    for item in (atom.get("unknowns") or [])[:20]
                     if str(item).strip()
-                ]
-            ),
-            "time_horizon": _bounded_text(atom.get("time_horizon"), 40)
-            or "unspecified",
-            "confidence": confidence,
-            "confidence_components": _json_text(
-                dict(atom.get("confidence_components") or {})
-            ),
-            "valid_from": valid_from,
-            "expires_at": expires_at,
-            "carry_forward": bool(atom.get("carry_forward", False)),
-            "invalidation_conditions": _json_text(
-                [
-                    str(item).strip()[:500]
-                    for item in (atom.get("invalidation_conditions") or [])[:20]
-                    if str(item).strip()
-                ]
-            ),
-            "status": status,
-            "supersedes_atom_id": str(prior["id"]) if prior else None,
-            "source_event_id": atom.get("source_event_id"),
-            "prompt_version": _bounded_text(atom.get("prompt_version"), 80),
-            "model_slug": _bounded_text(atom.get("model_slug"), 120),
-            "generation_attempt_id": atom.get("generation_attempt_id"),
-            "input_fingerprint": fingerprint,
-            "published_at": current if status == "published" else None,
-        },
-    ))
+                ],
+                "affected_assets": _json_text(
+                    [
+                        str(item).strip()[:32]
+                        for item in (atom.get("affected_assets") or [])[:50]
+                        if str(item).strip()
+                    ]
+                ),
+                "time_horizon": _bounded_text(atom.get("time_horizon"), 40)
+                or "unspecified",
+                "confidence": confidence,
+                "confidence_components": _json_text(
+                    dict(atom.get("confidence_components") or {})
+                ),
+                "valid_from": valid_from,
+                "expires_at": expires_at,
+                "carry_forward": bool(atom.get("carry_forward", False)),
+                "invalidation_conditions": _json_text(
+                    [
+                        str(item).strip()[:500]
+                        for item in (atom.get("invalidation_conditions") or [])[:20]
+                        if str(item).strip()
+                    ]
+                ),
+                "status": status,
+                "supersedes_atom_id": str(prior["id"]) if prior else None,
+                "source_event_id": atom.get("source_event_id"),
+                "prompt_version": _bounded_text(atom.get("prompt_version"), 80),
+                "model_slug": _bounded_text(atom.get("model_slug"), 120),
+                "generation_attempt_id": atom.get("generation_attempt_id"),
+                "input_fingerprint": fingerprint,
+                "published_at": current if status == "published" else None,
+            },
+        )
+    )
     if inserted is None:
         return {"status": "duplicate", "atom_id": None, "evidence": 0}
     for item in resolved:
@@ -334,13 +338,15 @@ def expire_atoms(session: Any, config: Any = None, now: Any = None) -> dict[str,
 
     def expire(where: str, params: dict[str, Any]) -> int:
         nonlocal expired
-        rows = result_rows(session.execute(
-            text(
-                f"SELECT id FROM analysis_atoms WHERE {where} "
-                "ORDER BY valid_from DESC LIMIT :limit"
-            ),
-            {**params, "limit": limit},
-        ))
+        rows = result_rows(
+            session.execute(
+                text(
+                    f"SELECT id FROM analysis_atoms WHERE {where} "
+                    "ORDER BY valid_from DESC LIMIT :limit"
+                ),
+                {**params, "limit": limit},
+            )
+        )
         for row in rows:
             session.execute(
                 text(
@@ -383,9 +389,10 @@ def current_atoms(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     bounded = max(1, min(_MAX_LIST, int(limit)))
-    return result_rows(session.execute(
-        text(
-            """SELECT a.*, e.evidence FROM analysis_atoms a
+    return result_rows(
+        session.execute(
+            text(
+                """SELECT a.*, e.evidence FROM analysis_atoms a
         LEFT JOIN LATERAL (
           SELECT jsonb_agg(to_jsonb(evidence_row)) AS evidence
           FROM (
@@ -401,13 +408,14 @@ def current_atoms(
           AND (:subject_type IS NULL OR a.subject_type = :subject_type)
           AND (:subject_id IS NULL OR a.subject_id = :subject_id)
         ORDER BY a.valid_from DESC, a.id DESC LIMIT :limit"""
-        ),
-        {
-            "subject_type": subject_type,
-            "subject_id": subject_id,
-            "limit": bounded,
-        },
-    ))
+            ),
+            {
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "limit": bounded,
+            },
+        )
+    )
 
 
 def atom_history(
@@ -415,22 +423,24 @@ def atom_history(
 ) -> list[dict[str, Any]]:
     """Bounded audit history including superseded and expired atoms."""
     bounded = max(1, min(_MAX_LIST, int(limit)))
-    return result_rows(session.execute(
-        text(
-            """SELECT id, subject_type, subject_id, claim_type, claim, status,
+    return result_rows(
+        session.execute(
+            text(
+                """SELECT id, subject_type, subject_id, claim_type, claim, status,
             confidence, valid_from, expires_at, supersedes_atom_id,
             source_event_id, model_slug, prompt_version, input_fingerprint,
             created_at, published_at, updated_at
             FROM analysis_atoms
             WHERE subject_type = :subject_type AND subject_id = :subject_id
             ORDER BY valid_from DESC, created_at DESC LIMIT :limit"""
-        ),
-        {
-            "subject_type": subject_type,
-            "subject_id": subject_id,
-            "limit": bounded,
-        },
-    ))
+            ),
+            {
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "limit": bounded,
+            },
+        )
+    )
 
 
 def assemble_atom_context(

@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.config import ResearchSettings
 from research_intelligence.contracts import (
     CandidateGroup,
@@ -371,7 +372,9 @@ def semantic_case_fingerprint(
     normalized_label = normalize_case_label(label)
     if not normalized_label:
         raise ValueError("case label has no meaningful terms")
-    entity_keys = sorted(f"{item.entity_type}:{item.normalized_key}" for item in entities)
+    entity_keys = sorted(
+        f"{item.entity_type}:{item.normalized_key}" for item in entities
+    )
     industry_keys = sorted(normalize_case_label(item) for item in industries if item)
     return canonical_fingerprint(
         {
@@ -414,8 +417,13 @@ def _source_names(item: NormalizedEvidence) -> set[str]:
     names = {item.source_name.casefold()}
     provenance_names = item.provenance.get("source_names")
     if isinstance(provenance_names, list):
-        names.update(str(name).strip().casefold() for name in provenance_names if str(name).strip())
+        names.update(
+            str(name).strip().casefold()
+            for name in provenance_names
+            if str(name).strip()
+        )
     return names
+
 
 def _evidence_origin(item: NormalizedEvidence) -> str:
     if item.evidence_type == "source_claim":
@@ -423,6 +431,7 @@ def _evidence_origin(item: NormalizedEvidence) -> str:
         if isinstance(origin, str) and origin.strip():
             return origin.strip()
     return item.ref
+
 
 def _story_block_key(item: NormalizedEvidence) -> str | None:
     story_id: Any = None
@@ -461,14 +470,13 @@ def _candidate_terms(evidence: Sequence[NormalizedEvidence]) -> set[str]:
     document_frequency: Counter[str] = Counter()
     for values in terms_by_origin.values():
         document_frequency.update(values)
-    return {
-        token
-        for token, count in document_frequency.most_common(120)
-        if count >= 2
-    }
+    return {token for token, count in document_frequency.most_common(120) if count >= 2}
+
 
 def _phrases(value: Any) -> tuple[str, ...]:
-    tokens = tuple(token for token in _tokens(value) if token not in _BLOCKING_STOPWORDS)
+    tokens = tuple(
+        token for token in _tokens(value) if token not in _BLOCKING_STOPWORDS
+    )
     return tuple(
         f"{left}-{right}"
         for left, right in zip(tokens, tokens[1:], strict=False)
@@ -486,9 +494,7 @@ def _candidate_phrases(evidence: Sequence[NormalizedEvidence]) -> set[str]:
     for values in phrases_by_origin.values():
         document_frequency.update(values)
     return {
-        phrase
-        for phrase, count in document_frequency.most_common(120)
-        if count >= 2
+        phrase for phrase, count in document_frequency.most_common(120) if count >= 2
     }
 
 
@@ -612,7 +618,9 @@ def build_candidate_groups(
     return tuple(selected[: max(1, min(cap, 300))])
 
 
-def candidate_metrics(group: CandidateGroup, now: datetime | None = None) -> dict[str, Any]:
+def candidate_metrics(
+    group: CandidateGroup, now: datetime | None = None
+) -> dict[str, Any]:
     effective_now = now or datetime.now(UTC)
     if effective_now.tzinfo is None:
         effective_now = effective_now.replace(tzinfo=UTC)
@@ -637,7 +645,9 @@ def _text(value: Any, maximum: int, field: str, required: bool = False) -> str |
     return cleaned[:maximum] if cleaned else None
 
 
-def _strings(value: Any, maximum: int, field: str, entry_limit: int = 300) -> tuple[str, ...]:
+def _strings(
+    value: Any, maximum: int, field: str, entry_limit: int = 300
+) -> tuple[str, ...]:
     if not isinstance(value, list) or len(value) > maximum:
         raise ValueError(f"{field} must be an array of at most {maximum} items")
     output: list[str] = []
@@ -718,19 +728,27 @@ def validate_pattern_output(
     if not isinstance(output, Mapping) or set(output) != _PATTERN_KEYS:
         raise ValueError("pattern output keys do not match the strict contract")
     reject_embedded_evidence_references(output)
-    if not isinstance(output.get("abstained"), bool) or not isinstance(output.get("coherent"), bool):
+    if not isinstance(output.get("abstained"), bool) or not isinstance(
+        output.get("coherent"), bool
+    ):
         raise ValueError("pattern flags must be boolean")
     if output["abstained"] or not output["coherent"]:
         return None
     catalog = evidence_catalog(group.evidence)
-    supporting = validate_evidence_references(output.get("supporting_evidence_ids"), catalog)
-    contradicting = validate_evidence_references(output.get("contradicting_evidence_ids"), catalog)
+    supporting = validate_evidence_references(
+        output.get("supporting_evidence_ids"), catalog
+    )
+    contradicting = validate_evidence_references(
+        output.get("contradicting_evidence_ids"), catalog
+    )
     context = validate_evidence_references(output.get("context_evidence_ids"), catalog)
     if not supporting:
         raise ValueError("a coherent pattern requires supporting evidence")
     label = _text(output.get("label"), 160, "label", required=True)
     definition = _text(output.get("definition"), 1_000, "definition", required=True)
-    what_changed = _text(output.get("what_changed"), 1_000, "what_changed", required=True)
+    what_changed = _text(
+        output.get("what_changed"), 1_000, "what_changed", required=True
+    )
     case_type = str(output.get("case_type") or "").strip().casefold()
     if case_type not in {item.value for item in CaseType}:
         raise ValueError("case type is invalid")
@@ -748,21 +766,29 @@ def validate_pattern_output(
         if not isinstance(raw, Mapping) or set(raw) != {"entity_type", "name"}:
             raise ValueError("pattern entity keys are invalid")
         entity = normalize_entity(raw.get("entity_type"), raw.get("name"))
-        if supplied_entity_keys and (entity.entity_type, entity.normalized_key) not in supplied_entity_keys:
+        if (
+            supplied_entity_keys
+            and (entity.entity_type, entity.normalized_key) not in supplied_entity_keys
+        ):
             raise ValueError(f"unsupported entity invention: {entity.display_name}")
         if entity not in entities:
             entities.append(entity)
     industries = _strings(output.get("industries"), 20, "industries", 160)
     supplied_industries = {normalize_case_label(item) for item in group.industries}
     for industry in industries:
-        if supplied_industries and normalize_case_label(industry) not in supplied_industries:
+        if (
+            supplied_industries
+            and normalize_case_label(industry) not in supplied_industries
+        ):
             raise ValueError(f"unsupported industry invention: {industry}")
     macro_drivers = _strings(output.get("macro_drivers"), 20, "macro_drivers")
     missing = _strings(output.get("missing_information"), 30, "missing_information")
     aliases = _strings(output.get("aliases"), 20, "aliases", 160)
     importance, _ = _validate_importance(output.get("importance"))
     rationale_raw = output.get("importance_rationale")
-    if not isinstance(rationale_raw, Mapping) or set(rationale_raw) != set(_IMPORTANCE_DIMENSIONS):
+    if not isinstance(rationale_raw, Mapping) or set(rationale_raw) != set(
+        _IMPORTANCE_DIMENSIONS
+    ):
         raise ValueError("importance rationale does not match the strict contract")
     rationale = {
         key: _text(rationale_raw.get(key), 400, f"importance_rationale.{key}") or ""
@@ -770,7 +796,9 @@ def validate_pattern_output(
     }
     policy_findings = scan_prohibited_language(output)
     if policy_findings:
-        raise ValueError(f"research output violates advisory policy: {policy_findings[0]}")
+        raise ValueError(
+            f"research output violates advisory policy: {policy_findings[0]}"
+        )
     reject_unsupported_numeric_text(
         {
             "label": label,
@@ -785,7 +813,9 @@ def validate_pattern_output(
         label, definition, what_changed
     )
     if not proposition:
-        raise ValueError(f"candidate is not an economic proposition: {proposition_rationale}")
+        raise ValueError(
+            f"candidate is not an economic proposition: {proposition_rationale}"
+        )
     return PatternAssessment(
         label=label,
         definition=definition,

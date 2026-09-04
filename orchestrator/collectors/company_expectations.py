@@ -20,12 +20,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
-
-from collectors.base import CollectionResult, elapsed_ms
 from errors import InvalidSourceData, TransientSourceError, classify_error
 from http_client import ResponseBodyTooLarge, make_request
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectionResult, elapsed_ms
 
 logger = get_logger("collector.company_expectations")
 

@@ -77,9 +77,7 @@ def logs_page(
     component: str = Query(
         default="", pattern=r"^[A-Za-z0-9_.-]{0,100}$", max_length=100
     ),
-    status: str = Query(
-        default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50
-    ),
+    status: str = Query(default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50),
     range: str = Query(default="", pattern=r"^(?:|24h|7d)$", max_length=3),
     correlation_id: str = Query(
         default="", pattern=r"^[A-Za-z0-9_.:-]{0,200}$", max_length=200
@@ -117,9 +115,7 @@ def partial_logs(
     component: str = Query(
         default="", pattern=r"^[A-Za-z0-9_.-]{0,100}$", max_length=100
     ),
-    status: str = Query(
-        default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50
-    ),
+    status: str = Query(default="", pattern=r"^[A-Za-z0-9_-]{0,50}$", max_length=50),
     range: str = Query(default="", pattern=r"^(?:|24h|7d)$", max_length=3),
     correlation_id: str = Query(
         default="", pattern=r"^[A-Za-z0-9_.:-]{0,200}$", max_length=200

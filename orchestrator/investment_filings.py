@@ -15,9 +15,6 @@ from datetime import date, timedelta
 from pathlib import PurePath
 from urllib.parse import urlsplit
 
-from sqlalchemy import text
-
-from db import get_session
 from filing_deltas import compute_filing_delta
 from http_client import ResponseBodyTooLarge, get_shared_client, make_request
 from http_errors import safe_error_message
@@ -29,6 +26,9 @@ from investment_service import (
 )
 from investment_universe import top_us_uk_eu_companies
 from logging_config import get_logger
+from sqlalchemy import text
+
+from db import get_session
 
 logger = get_logger("investment.filings")
 

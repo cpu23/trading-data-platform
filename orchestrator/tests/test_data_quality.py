@@ -577,9 +577,7 @@ class DataQualityTests(unittest.TestCase):
         self.assertEqual(len(result.get("gaps", [])), 0)
 
     @patch("data_quality.get_session")
-    def test_monthly_gap_check_uses_month_periods_not_calendar_days(
-        self, get_session
-    ):
+    def test_monthly_gap_check_uses_month_periods_not_calendar_days(self, get_session):
         from data_quality import check_gaps
 
         now = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -605,9 +603,7 @@ class DataQualityTests(unittest.TestCase):
         self.assertEqual(result["gaps"], [])
 
     @patch("data_quality.get_session")
-    def test_monthly_gap_check_finds_only_missing_internal_month(
-        self, get_session
-    ):
+    def test_monthly_gap_check_finds_only_missing_internal_month(self, get_session):
         from data_quality import check_gaps
 
         now = datetime(2026, 8, 9, 12, tzinfo=UTC)

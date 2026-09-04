@@ -11,10 +11,9 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from errors import classify_error
 from logging_config import get_logger
+from sqlalchemy import text
 
 logger = get_logger("orchestrator.run_lifecycle")
 
@@ -251,8 +250,7 @@ def finish_run_in_session(
             "UPDATE cycle_runs SET status = :status, result_status = :result_status, "
             "summary = " + _jsonb_expr(session) + ", completed_at = :completed_at, "
             "heartbeat_at = :completed_at, error_message = :error_message "
-            f"WHERE correlation_id = :cid AND status IN {allowed_from}"
-            + owner_clause
+            f"WHERE correlation_id = :cid AND status IN {allowed_from}" + owner_clause
         ),
         {
             "cid": correlation_id,

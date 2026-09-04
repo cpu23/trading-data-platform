@@ -269,12 +269,12 @@ dimension changes separately from token, latency, and cost deltas.
 Operate and inspect with:
 
 ```bash
-docker compose exec orchestrator .venv/bin/python cli.py research benchmark list
-docker compose exec orchestrator .venv/bin/python cli.py research benchmark run <episode-id> --comparison-group baseline
-docker compose exec orchestrator .venv/bin/python cli.py research benchmark compare <left-run-uuid> <right-run-uuid>
-docker compose exec orchestrator .venv/bin/python cli.py research benchmark annotate <run-uuid> --overall-label partial --dimension causal_quality=pass --annotated-by operator
-docker compose exec orchestrator .venv/bin/python cli.py research inspect-replay <run-uuid>
-docker compose exec orchestrator .venv/bin/python cli.py research metrics --scope comparison
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark list
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark run <episode-id> --comparison-group baseline
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark compare <left-run-uuid> <right-run-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research benchmark annotate <run-uuid> --overall-label partial --dimension causal_quality=pass --annotated-by operator
+docker compose exec worker /app/.venv/bin/python cli.py research inspect-replay <run-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research metrics --scope comparison
 ```
 
 Authenticated JSON routes expose bounded replay runs, details, metrics,
@@ -313,20 +313,20 @@ commit; the durable worker/session boundary owns transactions.
 Inspect with:
 
 ```bash
-# In the orchestrator container
-docker compose exec orchestrator .venv/bin/python cli.py research-run
-docker compose exec orchestrator .venv/bin/python cli.py research-status
-docker compose exec orchestrator .venv/bin/python cli.py research-inspect <case-uuid>
-docker compose exec orchestrator .venv/bin/python cli.py research-update <case-uuid> --force
-docker compose exec orchestrator .venv/bin/python cli.py research-rebuild
-docker compose exec orchestrator .venv/bin/python cli.py research-retry <job-uuid>
+# In the worker container
+docker compose exec worker /app/.venv/bin/python cli.py research-run
+docker compose exec worker /app/.venv/bin/python cli.py research-status
+docker compose exec worker /app/.venv/bin/python cli.py research-inspect <case-uuid>
+docker compose exec worker /app/.venv/bin/python cli.py research-update <case-uuid> --force
+docker compose exec worker /app/.venv/bin/python cli.py research-rebuild
+docker compose exec worker /app/.venv/bin/python cli.py research-retry <job-uuid>
 
-# Authenticated public API; use the host port configured by Compose
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" http://127.0.0.1:8000/api/research/cases
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" http://127.0.0.1:8000/api/research/cases/<case-uuid>
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" http://127.0.0.1:8000/api/research/cases/<case-uuid>/history
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" 'http://127.0.0.1:8000/api/research/drivers?changed_only=true'
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" http://127.0.0.1:8000/api/research/status
+# Authenticated public API; use the signed session cookie from the browser
+curl --cookie "market_session=$MARKET_SESSION" http://127.0.0.1:8000/api/research/cases
+curl --cookie "market_session=$MARKET_SESSION" http://127.0.0.1:8000/api/research/cases/<case-uuid>
+curl --cookie "market_session=$MARKET_SESSION" http://127.0.0.1:8000/api/research/cases/<case-uuid>/history
+curl --cookie "market_session=$MARKET_SESSION" 'http://127.0.0.1:8000/api/research/drivers?changed_only=true'
+curl --cookie "market_session=$MARKET_SESSION" http://127.0.0.1:8000/api/research/status
 ```
 
 Model-triggering POST controls are model-budget gated. Browser-originated

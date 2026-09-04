@@ -4,9 +4,8 @@ import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-import httpx
-
 import http_client
+import httpx
 import investment_filings as filings
 
 
@@ -378,7 +377,9 @@ class CompaniesHouseDiscoveryTests(unittest.TestCase):
 
     @patch("investment_filings.make_request")
     @patch("investment_filings.get_shared_client")
-    def test_downloads_zip_when_it_is_the_only_resource(self, mock_client, mock_request):
+    def test_downloads_zip_when_it_is_the_only_resource(
+        self, mock_client, mock_request
+    ):
         metadata_response = MagicMock()
         metadata_response.json.return_value = {
             "resources": {
@@ -497,11 +498,7 @@ class CompaniesHouseDocumentRedirectTests(unittest.TestCase):
             if request.url.path == "/document/company-accounts-1":
                 return httpx.Response(
                     200,
-                    json={
-                        "resources": {
-                            "application/pdf": {"content_length": 1000}
-                        }
-                    },
+                    json={"resources": {"application/pdf": {"content_length": 1000}}},
                     request=request,
                 )
             return httpx.Response(
@@ -533,19 +530,13 @@ class CompaniesHouseDocumentRedirectTests(unittest.TestCase):
             if request.url.path == "/document/company-accounts-1":
                 return httpx.Response(
                     200,
-                    json={
-                        "resources": {
-                            "application/pdf": {"content_length": 1000}
-                        }
-                    },
+                    json={"resources": {"application/pdf": {"content_length": 1000}}},
                     request=request,
                 )
             if request.url.path == "/document/company-accounts-1/content":
                 return httpx.Response(
                     302,
-                    headers={
-                        "location": "/document/company-accounts-1/content-final"
-                    },
+                    headers={"location": "/document/company-accounts-1/content-final"},
                     content=b"",
                     request=request,
                 )
@@ -581,16 +572,15 @@ class CompaniesHouseDocumentRedirectTests(unittest.TestCase):
 
         def handler(request):
             requested.append(
-                (request.url.host + request.url.path, request.headers.get("authorization"))
+                (
+                    request.url.host + request.url.path,
+                    request.headers.get("authorization"),
+                )
             )
             if request.url.path == "/document/company-accounts-1":
                 return httpx.Response(
                     200,
-                    json={
-                        "resources": {
-                            "application/pdf": {"content_length": 1000}
-                        }
-                    },
+                    json={"resources": {"application/pdf": {"content_length": 1000}}},
                     request=request,
                 )
             if request.url.host == "evil.example.test":
@@ -696,9 +686,7 @@ class OpenDartDiscoveryTests(unittest.TestCase):
             results = filings._fetch_opendart_list(secret, "00126380", "20260101")
 
         self.assertEqual(results, [])
-        self.assertEqual(
-            mock_logger.warning.call_args.args[0], "opendart_list_failed"
-        )
+        self.assertEqual(mock_logger.warning.call_args.args[0], "opendart_list_failed")
         error = mock_logger.warning.call_args.kwargs["error"]
         self.assertNotIn(secret, error)
         self.assertNotIn("crtfc_key", error)

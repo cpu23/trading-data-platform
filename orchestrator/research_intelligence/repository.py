@@ -50,8 +50,6 @@ class SnapshotMutation:
     changed: bool
 
 
-
-
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -70,11 +68,14 @@ def _uuid(value: Any) -> str:
         raise ValueError("invalid UUID") from None
 
 
-def find_case_match_rows(session: Any, limit: int = _MAX_CASE_MATCHES) -> list[dict[str, Any]]:
+def find_case_match_rows(
+    session: Any, limit: int = _MAX_CASE_MATCHES
+) -> list[dict[str, Any]]:
     bounded = max(1, min(int(limit), _MAX_CASE_MATCHES))
-    return result_rows(session.execute(
-        text(
-            """
+    return result_rows(
+        session.execute(
+            text(
+                """
             SELECT c.id, c.semantic_fingerprint, c.title, c.definition,
                    c.input_fingerprint, c.lifecycle_state, c.current_version,
                    c.last_evidence_at,
@@ -114,12 +115,15 @@ def find_case_match_rows(session: Any, limit: int = _MAX_CASE_MATCHES) -> list[d
             ORDER BY c.last_evidence_at DESC, c.id
             LIMIT :limit
             """
-        ),
-        {"limit": bounded},
-    ))
+            ),
+            {"limit": bounded},
+        )
+    )
 
 
-def _case_input_fingerprint(assessment: PatternAssessment, evidence_fingerprint: str) -> str:
+def _case_input_fingerprint(
+    assessment: PatternAssessment, evidence_fingerprint: str
+) -> str:
     return canonical_fingerprint(
         {
             "pattern": {
@@ -138,10 +142,12 @@ def _case_input_fingerprint(assessment: PatternAssessment, evidence_fingerprint:
 
 
 def _case_row(session: Any, case_id: str) -> dict[str, Any] | None:
-    return result_first(session.execute(
-        text("SELECT * FROM research_cases WHERE id = :case_id LIMIT 1"),
-        {"case_id": case_id},
-    ))
+    return result_first(
+        session.execute(
+            text("SELECT * FROM research_cases WHERE id = :case_id LIMIT 1"),
+            {"case_id": case_id},
+        )
+    )
 
 
 def _attach_case_aliases(
@@ -149,7 +155,9 @@ def _attach_case_aliases(
 ) -> None:
     for alias in aliases[:30]:
         normalized = "-".join(
-            token for token in str(alias).casefold().replace("_", "-").split("-") if token
+            token
+            for token in str(alias).casefold().replace("_", "-").split("-")
+            if token
         )[:200]
         if not normalized:
             continue
@@ -178,8 +186,12 @@ def _attach_case_evidence(
     evidence: Sequence[NormalizedEvidence],
 ) -> None:
     relationships: dict[str, str] = {}
-    relationships.update({ref: "supports" for ref in assessment.supporting_evidence_ids})
-    relationships.update({ref: "contradicts" for ref in assessment.contradicting_evidence_ids})
+    relationships.update(
+        {ref: "supports" for ref in assessment.supporting_evidence_ids}
+    )
+    relationships.update(
+        {ref: "contradicts" for ref in assessment.contradicting_evidence_ids}
+    )
     relationships.update({ref: "context" for ref in assessment.context_evidence_ids})
     for item in evidence[:100]:
         relationship = relationships.get(item.ref, "context")
@@ -271,12 +283,14 @@ def upsert_case(
     if matched_case is not None and matched_case.get("id"):
         existing = _case_row(session, _uuid(matched_case["id"]))
     if existing is None:
-        existing = result_first(session.execute(
-            text(
-                "SELECT * FROM research_cases WHERE semantic_fingerprint = :fingerprint LIMIT 1"
-            ),
-            {"fingerprint": assessment.semantic_fingerprint},
-        ))
+        existing = result_first(
+            session.execute(
+                text(
+                    "SELECT * FROM research_cases WHERE semantic_fingerprint = :fingerprint LIMIT 1"
+                ),
+                {"fingerprint": assessment.semantic_fingerprint},
+            )
+        )
     created = existing is None
     first_seen = min(item.source_timestamp for item in evidence)
     last_evidence = max(item.source_timestamp for item in evidence)
@@ -300,9 +314,10 @@ def upsert_case(
         "now": effective_now,
     }
     if created:
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO research_cases (
                     semantic_fingerprint, title, definition, horizon,
                     case_type, lifecycle_state, origin,
@@ -324,16 +339,19 @@ def upsert_case(
                 ) ON CONFLICT (semantic_fingerprint) DO NOTHING
                 RETURNING id
                 """
-            ),
-            params,
-        ))
-        if inserted is None:
-            existing = result_first(session.execute(
-                text(
-                    "SELECT * FROM research_cases WHERE semantic_fingerprint = :fingerprint LIMIT 1"
                 ),
-                {"fingerprint": assessment.semantic_fingerprint},
-            ))
+                params,
+            )
+        )
+        if inserted is None:
+            existing = result_first(
+                session.execute(
+                    text(
+                        "SELECT * FROM research_cases WHERE semantic_fingerprint = :fingerprint LIMIT 1"
+                    ),
+                    {"fingerprint": assessment.semantic_fingerprint},
+                )
+            )
             created = False
         else:
             existing = {"id": inserted["id"], "input_fingerprint": None, "title": None}
@@ -387,9 +405,10 @@ def upsert_case(
 
 def load_case_stats(session: Any, case_id: str) -> CaseStats:
     parsed = _uuid(case_id)
-    row = result_first(session.execute(
-        text(
-            """
+    row = result_first(
+        session.execute(
+            text(
+                """
             SELECT c.first_seen_at, c.last_evidence_at,
                    COUNT(DISTINCT (e.evidence_type, e.evidence_id)) AS evidence_count,
                    COUNT(DISTINCT e.source_name) AS source_diversity,
@@ -411,9 +430,10 @@ def load_case_stats(session: Any, case_id: str) -> CaseStats:
             WHERE c.id = :case_id
             GROUP BY c.id
             """
-        ),
-        {"case_id": parsed},
-    ))
+            ),
+            {"case_id": parsed},
+        )
+    )
     if row is None:
         raise ValueError("research case not found")
     first_seen = _utc(row.get("first_seen_at"))
@@ -452,30 +472,39 @@ def persist_causal_edges(
             to_key=edge.to_key,
         )
         active_fingerprints.add(fingerprint)
-        current = result_first(session.execute(
-            text(
-                """
+        current = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id, input_fingerprint FROM research_causal_edges
                 WHERE case_id = :case_id AND edge_fingerprint = :fingerprint
                   AND superseded_at IS NULL LIMIT 1
                 """
-            ),
-            {"case_id": parsed_case, "fingerprint": fingerprint},
-        ))
+                ),
+                {"case_id": parsed_case, "fingerprint": fingerprint},
+            )
+        )
         input_fingerprint = provenance.input_fingerprint or canonical_fingerprint(
-            {"edge": fingerprint, "evidence": edge.evidence_ids, "mechanism": edge.mechanism}
+            {
+                "edge": fingerprint,
+                "evidence": edge.evidence_ids,
+                "mechanism": edge.mechanism,
+            }
         )
         if current and current.get("input_fingerprint") == input_fingerprint:
             inserted_ids.append(str(current["id"]))
             continue
         if current:
             session.execute(
-                text("UPDATE research_causal_edges SET superseded_at = :now WHERE id = :id"),
+                text(
+                    "UPDATE research_causal_edges SET superseded_at = :now WHERE id = :id"
+                ),
                 {"now": now, "id": current["id"]},
             )
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO research_causal_edges (
                     case_id, edge_fingerprint, from_type, from_key, from_name,
                     relationship, to_type, to_key, to_name, mechanism,
@@ -492,31 +521,32 @@ def persist_causal_edges(
                     :prompt_version, :generation_attempt_id
                 ) RETURNING id
                 """
-            ),
-            {
-                "case_id": parsed_case,
-                "edge_fingerprint": fingerprint,
-                "from_type": edge.from_type,
-                "from_key": edge.from_key,
-                "from_name": edge.from_name,
-                "relationship": edge.relationship,
-                "to_type": edge.to_type,
-                "to_key": edge.to_key,
-                "to_name": edge.to_name,
-                "mechanism": edge.mechanism,
-                "epistemic_state": edge.epistemic_state,
-                "confidence": edge.confidence,
-                "missing_evidence": list(edge.missing_evidence),
-                "break_conditions": list(edge.break_conditions),
-                "depth": edge.depth,
-                "valid_from": edge.valid_from,
-                "valid_to": edge.valid_to,
-                "input_fingerprint": input_fingerprint,
-                "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version,
-                "generation_attempt_id": provenance.generation_attempt_id,
-            },
-        ))
+                ),
+                {
+                    "case_id": parsed_case,
+                    "edge_fingerprint": fingerprint,
+                    "from_type": edge.from_type,
+                    "from_key": edge.from_key,
+                    "from_name": edge.from_name,
+                    "relationship": edge.relationship,
+                    "to_type": edge.to_type,
+                    "to_key": edge.to_key,
+                    "to_name": edge.to_name,
+                    "mechanism": edge.mechanism,
+                    "epistemic_state": edge.epistemic_state,
+                    "confidence": edge.confidence,
+                    "missing_evidence": list(edge.missing_evidence),
+                    "break_conditions": list(edge.break_conditions),
+                    "depth": edge.depth,
+                    "valid_from": edge.valid_from,
+                    "valid_to": edge.valid_to,
+                    "input_fingerprint": input_fingerprint,
+                    "model_slug": provenance.model_slug,
+                    "prompt_version": provenance.prompt_version,
+                    "generation_attempt_id": provenance.generation_attempt_id,
+                },
+            )
+        )
         if inserted is None:
             raise RuntimeError("causal edge insert did not return an identity")
         edge_id = str(inserted["id"])
@@ -540,15 +570,17 @@ def persist_causal_edges(
                     "excerpt": item.bounded_excerpt,
                 },
             )
-    current_edges = result_rows(session.execute(
-        text(
-            """
+    current_edges = result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, edge_fingerprint FROM research_causal_edges
             WHERE case_id = :case_id AND superseded_at IS NULL
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     for row in current_edges:
         if row.get("edge_fingerprint") not in active_fingerprints:
             session.execute(
@@ -588,16 +620,18 @@ def persist_value_capture(
                 "evidence": assessment.evidence_ids,
             }
         )
-        current = result_first(session.execute(
-            text(
-                """
+        current = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id, input_fingerprint FROM research_value_capture_assessments
                 WHERE case_id = :case_id AND node_type = :node_type
                   AND node_key = :node_key AND superseded_at IS NULL LIMIT 1
                 """
-            ),
-            identity,
-        ))
+                ),
+                identity,
+            )
+        )
         if current and current.get("input_fingerprint") == input_fingerprint:
             nodes.append((assessment.node_type, assessment.node_key))
             continue
@@ -608,9 +642,10 @@ def persist_value_capture(
                 ),
                 {"now": now, "id": current["id"]},
             )
-        inserted = result_first(session.execute(
-            text(
-                f"""
+        inserted = result_first(
+            session.execute(
+                text(
+                    f"""
                 INSERT INTO research_value_capture_assessments (
                     case_id, node_type, node_key, node_name,
                     {dimension_columns}, assessment_rationale, unknowns,
@@ -623,19 +658,20 @@ def persist_value_capture(
                     :prompt_version, :generation_attempt_id
                 ) RETURNING id
                 """
-            ),
-            {
-                **identity,
-                "node_name": assessment.node_name,
-                **dict(assessment.dimensions),
-                "assessment_rationale": _json(dict(assessment.rationale)),
-                "unknowns": list(assessment.unknowns),
-                "input_fingerprint": input_fingerprint,
-                "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version,
-                "generation_attempt_id": provenance.generation_attempt_id,
-            },
-        ))
+                ),
+                {
+                    **identity,
+                    "node_name": assessment.node_name,
+                    **dict(assessment.dimensions),
+                    "assessment_rationale": _json(dict(assessment.rationale)),
+                    "unknowns": list(assessment.unknowns),
+                    "input_fingerprint": input_fingerprint,
+                    "model_slug": provenance.model_slug,
+                    "prompt_version": provenance.prompt_version,
+                    "generation_attempt_id": provenance.generation_attempt_id,
+                },
+            )
+        )
         if inserted is None:
             raise RuntimeError("value-capture insert did not return an identity")
         assessment_id = str(inserted["id"])
@@ -658,16 +694,18 @@ def persist_value_capture(
                 },
             )
         nodes.append((assessment.node_type, assessment.node_key))
-    current_assessments = result_rows(session.execute(
-        text(
-            """
+    current_assessments = result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, node_type, node_key
             FROM research_value_capture_assessments
             WHERE case_id = :case_id AND superseded_at IS NULL
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     for row in current_assessments:
         if (row.get("node_type"), row.get("node_key")) not in active_nodes:
             session.execute(
@@ -697,17 +735,19 @@ def ensure_hypothesis_data_requests(
             to_type=edge.to_type,
             to_key=edge.to_key,
         )
-        current = result_first(session.execute(
-            text(
-                """
+        current = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id FROM research_causal_edges
                 WHERE case_id = :case_id AND edge_fingerprint = :fingerprint
                   AND superseded_at IS NULL
                 LIMIT 1
                 """
-            ),
-            {"case_id": parsed_case, "fingerprint": fingerprint},
-        ))
+                ),
+                {"case_id": parsed_case, "fingerprint": fingerprint},
+            )
+        )
         if current is None:
             continue
         if edge.epistemic_state != "hypothesis":
@@ -799,9 +839,10 @@ def ensure_hypothesis_data_requests(
         )
         created += max(0, int(getattr(result, "rowcount", 0) or 0))
 
-    open_requests = result_rows(session.execute(
-        text(
-            """
+    open_requests = result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, subject, requested_evidence_type, created_at,
                    minimum_independent_sources
             FROM research_data_requests
@@ -812,9 +853,10 @@ def ensure_hypothesis_data_requests(
             ORDER BY created_at, id
             LIMIT 100
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     for request in open_requests:
         requested_type = str(request.get("requested_evidence_type") or "")
         subject = str(request.get("subject") or "")
@@ -823,13 +865,14 @@ def ensure_hypothesis_data_requests(
             if item.available_at <= created_at:
                 continue
             data_types = item.structured_fields.get("research_data_types")
-            typed_match = (
-                isinstance(data_types, list) and requested_type in data_types
+            typed_match = isinstance(data_types, list) and requested_type in data_types
+            semantic_match = (
+                token_similarity(
+                    subject,
+                    f"{item.title} {item.bounded_excerpt or ''}",
+                )
+                >= 0.35
             )
-            semantic_match = token_similarity(
-                subject,
-                f"{item.title} {item.bounded_excerpt or ''}",
-            ) >= 0.35
             if not typed_match and not semantic_match:
                 continue
             result = session.execute(
@@ -885,18 +928,20 @@ def ensure_hypothesis_data_requests(
 
 def unresolved_material_hypotheses(session: Any, case_id: str) -> int:
     parsed_case = _uuid(case_id)
-    row = result_first(session.execute(
-        text(
-            """
+    row = result_first(
+        session.execute(
+            text(
+                """
             SELECT COUNT(*) AS count
             FROM research_causal_edges AS e
             WHERE e.case_id = :case_id
               AND e.superseded_at IS NULL
               AND e.epistemic_state = 'hypothesis'
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     return int(row.get("count") or 0) if row else 0
 
 
@@ -914,21 +959,24 @@ def persist_adversarial(
     for counter in assessment.counterevidence[:50]:
         edge_id = None
         if counter.edge_fingerprint:
-            edge = result_first(session.execute(
-                text(
-                    """
+            edge = result_first(
+                session.execute(
+                    text(
+                        """
                     SELECT id FROM research_causal_edges
                     WHERE case_id = :case_id AND edge_fingerprint = :fingerprint
                       AND superseded_at IS NULL LIMIT 1
                     """
-                ),
-                {"case_id": parsed_case, "fingerprint": counter.edge_fingerprint},
-            ))
+                    ),
+                    {"case_id": parsed_case, "fingerprint": counter.edge_fingerprint},
+                )
+            )
             edge_id = edge.get("id") if edge else None
         first_item = catalog[counter.evidence_ids[0]] if counter.evidence_ids else None
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO research_counterevidence (
                     case_id, counter_fingerprint, kind, statement,
                     epistemic_state, evidence_type, evidence_id, edge_id,
@@ -942,35 +990,41 @@ def persist_adversarial(
                 ) ON CONFLICT (case_id, counter_fingerprint) DO NOTHING
                 RETURNING id
                 """
-            ),
-            {
-                "case_id": parsed_case,
-                "counter_fingerprint": counter.counter_fingerprint,
-                "kind": counter.kind,
-                "statement": counter.statement,
-                "epistemic_state": counter.epistemic_state,
-                "evidence_type": first_item.evidence_type if first_item else None,
-                "evidence_id": first_item.evidence_id if first_item else None,
-                "edge_id": edge_id,
-                "rationale": counter.rationale,
-                "input_fingerprint": provenance.input_fingerprint
-                or counter.counter_fingerprint,
-                "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version,
-                "generation_attempt_id": provenance.generation_attempt_id,
-            },
-        ))
+                ),
+                {
+                    "case_id": parsed_case,
+                    "counter_fingerprint": counter.counter_fingerprint,
+                    "kind": counter.kind,
+                    "statement": counter.statement,
+                    "epistemic_state": counter.epistemic_state,
+                    "evidence_type": first_item.evidence_type if first_item else None,
+                    "evidence_id": first_item.evidence_id if first_item else None,
+                    "edge_id": edge_id,
+                    "rationale": counter.rationale,
+                    "input_fingerprint": provenance.input_fingerprint
+                    or counter.counter_fingerprint,
+                    "model_slug": provenance.model_slug,
+                    "prompt_version": provenance.prompt_version,
+                    "generation_attempt_id": provenance.generation_attempt_id,
+                },
+            )
+        )
         if inserted is None:
-            inserted = result_first(session.execute(
-                text(
-                    """
+            inserted = result_first(
+                session.execute(
+                    text(
+                        """
                     SELECT id FROM research_counterevidence
                     WHERE case_id = :case_id AND counter_fingerprint = :fingerprint
                     LIMIT 1
                     """
-                ),
-                {"case_id": parsed_case, "fingerprint": counter.counter_fingerprint},
-            ))
+                    ),
+                    {
+                        "case_id": parsed_case,
+                        "fingerprint": counter.counter_fingerprint,
+                    },
+                )
+            )
         if inserted is None:
             continue
         counter_id = str(inserted["id"])
@@ -996,19 +1050,21 @@ def persist_adversarial(
             )
     weakest_edge_id = None
     if assessment.weakest_edge_fingerprint:
-        weakest = result_first(session.execute(
-            text(
-                """
+        weakest = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id FROM research_causal_edges
                 WHERE case_id = :case_id AND edge_fingerprint = :fingerprint
                   AND superseded_at IS NULL LIMIT 1
                 """
-            ),
-            {
-                "case_id": parsed_case,
-                "fingerprint": assessment.weakest_edge_fingerprint,
-            },
-        ))
+                ),
+                {
+                    "case_id": parsed_case,
+                    "fingerprint": assessment.weakest_edge_fingerprint,
+                },
+            )
+        )
         weakest_edge_id = weakest.get("id") if weakest else None
     for request in assessment.data_requests[:50]:
         result = session.execute(
@@ -1075,30 +1131,35 @@ def publish_case_snapshot(
     correlation_id: str | None,
 ) -> SnapshotMutation:
     parsed_case = _uuid(case_id)
-    existing = result_first(session.execute(
-        text(
-            """
+    existing = result_first(
+        session.execute(
+            text(
+                """
             SELECT id, version FROM research_case_snapshots
             WHERE case_id = :case_id AND input_fingerprint = :input_fingerprint
             LIMIT 1
             """
-        ),
-        {"case_id": parsed_case, "input_fingerprint": input_fingerprint},
-    ))
+            ),
+            {"case_id": parsed_case, "input_fingerprint": input_fingerprint},
+        )
+    )
     if existing:
         return SnapshotMutation(str(existing["id"]), int(existing["version"]), False)
-    case = result_first(session.execute(
-        text(
-            "SELECT current_version FROM research_cases WHERE id = :case_id FOR UPDATE"
-        ),
-        {"case_id": parsed_case},
-    ))
+    case = result_first(
+        session.execute(
+            text(
+                "SELECT current_version FROM research_cases WHERE id = :case_id FOR UPDATE"
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     if case is None:
         raise ValueError("research case not found")
     version = int(case.get("current_version") or 0) + 1
-    inserted = result_first(session.execute(
-        text(
-            """
+    inserted = result_first(
+        session.execute(
+            text(
+                """
             INSERT INTO research_case_snapshots (
                 case_id, version, input_fingerprint, lifecycle_state,
                 change_summary, payload, model_slug, prompt_version,
@@ -1109,20 +1170,21 @@ def publish_case_snapshot(
                 :prompt_version, :generation_attempt_id, :correlation_id
             ) RETURNING id
             """
-        ),
-        {
-            "case_id": parsed_case,
-            "version": version,
-            "input_fingerprint": input_fingerprint,
-            "lifecycle_state": lifecycle_state,
-            "change_summary": change_summary[:500],
-            "payload": _json(dict(payload)),
-            "model_slug": provenance.model_slug,
-            "prompt_version": provenance.prompt_version,
-            "generation_attempt_id": provenance.generation_attempt_id,
-            "correlation_id": correlation_id,
-        },
-    ))
+            ),
+            {
+                "case_id": parsed_case,
+                "version": version,
+                "input_fingerprint": input_fingerprint,
+                "lifecycle_state": lifecycle_state,
+                "change_summary": change_summary[:500],
+                "payload": _json(dict(payload)),
+                "model_slug": provenance.model_slug,
+                "prompt_version": provenance.prompt_version,
+                "generation_attempt_id": provenance.generation_attempt_id,
+                "correlation_id": correlation_id,
+            },
+        )
+    )
     if inserted is None:
         raise RuntimeError("case snapshot insert did not return an identity")
     session.execute(
@@ -1154,9 +1216,10 @@ def refresh_case_lifecycles(
     """Apply inactivity and evidence thresholds to active cases without model work."""
     effective_now = _utc(now)
     bounded = max(1, min(int(limit), 1_000))
-    rows = result_rows(session.execute(
-        text(
-            """
+    rows = result_rows(
+        session.execute(
+            text(
+                """
             SELECT c.id, c.lifecycle_state, c.first_seen_at,
                    c.last_evidence_at, c.input_fingerprint,
                    (SELECT COUNT(DISTINCT (e.evidence_type, e.evidence_id))
@@ -1199,9 +1262,10 @@ def refresh_case_lifecycles(
             ORDER BY c.last_evidence_at ASC, c.id
             LIMIT :limit
             """
-        ),
-        {"limit": bounded},
-    ))
+            ),
+            {"limit": bounded},
+        )
+    )
     transitions: list[dict[str, Any]] = []
     for row in rows:
         case_id = _uuid(row.get("id"))
@@ -1219,9 +1283,7 @@ def refresh_case_lifecycles(
             last_evidence_at=last_evidence,
         )
         current = str(row.get("lifecycle_state") or "candidate")
-        target = next_lifecycle_state(
-            current, stats, settings, now=effective_now
-        ).value
+        target = next_lifecycle_state(current, stats, settings, now=effective_now).value
         if row.get("has_unresolved_hypothesis") and target in {
             "research_ready",
             "mature",
@@ -1313,9 +1375,7 @@ def persist_economic_factors(
                         {
                             "target": item.target,
                             "direction": item.direction,
-                            "mechanism": " ".join(
-                                item.mechanism.split()
-                            ).casefold(),
+                            "mechanism": " ".join(item.mechanism.split()).casefold(),
                             "invalidation_conditions": sorted(
                                 " ".join(value.split()).casefold()
                                 for value in item.invalidation_conditions
@@ -1327,16 +1387,18 @@ def persist_economic_factors(
                 ),
             }
         )
-        current = result_first(session.execute(
-            text(
-                """
+        current = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id, input_fingerprint FROM research_economic_factors
                 WHERE factor_key = :factor_key AND superseded_at IS NULL
                 LIMIT 1
                 """
-            ),
-            {"factor_key": factor.factor_key},
-        ))
+                ),
+                {"factor_key": factor.factor_key},
+            )
+        )
         if current and current.get("input_fingerprint") == input_fingerprint:
             factor_ids[factor.factor_key] = str(current["id"])
             continue
@@ -1351,9 +1413,10 @@ def persist_economic_factors(
                 ),
                 {"now": now, "id": current["id"]},
             )
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO research_economic_factors (
                     factor_key, factor_label, state, strength, horizon,
                     mechanism, invalidation_conditions, confidence,
@@ -1366,25 +1429,26 @@ def persist_economic_factors(
                     :prompt_version, :generation_attempt_id, :valid_from
                 ) RETURNING id
                 """
-            ),
-            {
-                "factor_key": factor.factor_key,
-                "factor_label": factor.factor_label,
-                "state": factor.state,
-                "strength": factor.strength,
-                "horizon": factor.horizon,
-                "mechanism": factor.mechanism,
-                "invalidation_conditions": list(factor.invalidation_conditions),
-                "confidence": factor.confidence,
-                "confidence_rationale": factor.confidence_rationale,
-                "input_fingerprint": input_fingerprint,
-                "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version
-                or "macro_transmission_v3",
-                "generation_attempt_id": provenance.generation_attempt_id,
-                "valid_from": now,
-            },
-        ))
+                ),
+                {
+                    "factor_key": factor.factor_key,
+                    "factor_label": factor.factor_label,
+                    "state": factor.state,
+                    "strength": factor.strength,
+                    "horizon": factor.horizon,
+                    "mechanism": factor.mechanism,
+                    "invalidation_conditions": list(factor.invalidation_conditions),
+                    "confidence": factor.confidence,
+                    "confidence_rationale": factor.confidence_rationale,
+                    "input_fingerprint": input_fingerprint,
+                    "model_slug": provenance.model_slug,
+                    "prompt_version": provenance.prompt_version
+                    or "macro_transmission_v3",
+                    "generation_attempt_id": provenance.generation_attempt_id,
+                    "valid_from": now,
+                },
+            )
+        )
         if inserted is None:
             raise RuntimeError("economic factor insert did not return an identity")
         factor_id = str(inserted["id"])
@@ -1437,9 +1501,10 @@ def persist_economic_factors(
 
 def current_market_drivers(session: Any, limit: int = 100) -> list[dict[str, Any]]:
     bounded = max(1, min(int(limit), 200))
-    rows = result_rows(session.execute(
-        text(
-            """
+    rows = result_rows(
+        session.execute(
+            text(
+                """
             SELECT d.*,
                    f.factor_label AS factor_label,
                    f.state AS factor_state,
@@ -1459,9 +1524,10 @@ def current_market_drivers(session: Any, limit: int = 100) -> list[dict[str, Any
             ORDER BY d.changed_since_prior DESC, d.target, d.driver_key
             LIMIT :limit
             """
-        ),
-        {"limit": bounded},
-    ))
+            ),
+            {"limit": bounded},
+        )
+    )
     return rows
 
 
@@ -1476,19 +1542,19 @@ def persist_market_drivers(
     changed = 0
     now = datetime.now(UTC)
     for driver in drivers[:200]:
-        current = result_first(session.execute(
-            text(
-                """
+        current = result_first(
+            session.execute(
+                text(
+                    """
                 SELECT id, input_fingerprint FROM research_market_drivers
                 WHERE target = :target AND driver_key = :driver_key
                   AND superseded_at IS NULL LIMIT 1
                 """
-            ),
-            {"target": driver.target, "driver_key": driver.driver_key},
-        ))
-        linked_factor_id = (
-            factor_ids.get(driver.driver_key) if factor_ids else None
+                ),
+                {"target": driver.target, "driver_key": driver.driver_key},
+            )
         )
+        linked_factor_id = factor_ids.get(driver.driver_key) if factor_ids else None
         input_fingerprint = canonical_fingerprint(
             {
                 "target": driver.target,
@@ -1514,12 +1580,15 @@ def persist_market_drivers(
             continue
         if current:
             session.execute(
-                text("UPDATE research_market_drivers SET superseded_at = :now WHERE id = :id"),
+                text(
+                    "UPDATE research_market_drivers SET superseded_at = :now WHERE id = :id"
+                ),
                 {"now": now, "id": current["id"]},
             )
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO research_market_drivers (
                     target, driver_key, driver_label, direction, strength,
                     horizon, mechanism, changed_since_prior,
@@ -1536,28 +1605,29 @@ def persist_market_drivers(
                     :factor_id
                 ) RETURNING id
                 """
-            ),
-            {
-                "target": driver.target,
-                "driver_key": driver.driver_key,
-                "driver_label": driver.driver_label,
-                "direction": driver.direction,
-                "strength": driver.strength,
-                "horizon": driver.horizon,
-                "mechanism": driver.mechanism,
-                "changed_since_prior": True,
-                "invalidation_conditions": list(driver.invalidation_conditions),
-                "confidence": driver.confidence,
-                "confidence_rationale": driver.confidence_rationale,
-                "input_fingerprint": input_fingerprint,
-                "model_slug": provenance.model_slug,
-                "prompt_version": provenance.prompt_version
-                or "macro_transmission_v3",
-                "generation_attempt_id": provenance.generation_attempt_id,
-                "valid_from": now,
-                "factor_id": linked_factor_id,
-            },
-        ))
+                ),
+                {
+                    "target": driver.target,
+                    "driver_key": driver.driver_key,
+                    "driver_label": driver.driver_label,
+                    "direction": driver.direction,
+                    "strength": driver.strength,
+                    "horizon": driver.horizon,
+                    "mechanism": driver.mechanism,
+                    "changed_since_prior": True,
+                    "invalidation_conditions": list(driver.invalidation_conditions),
+                    "confidence": driver.confidence,
+                    "confidence_rationale": driver.confidence_rationale,
+                    "input_fingerprint": input_fingerprint,
+                    "model_slug": provenance.model_slug,
+                    "prompt_version": provenance.prompt_version
+                    or "macro_transmission_v3",
+                    "generation_attempt_id": provenance.generation_attempt_id,
+                    "valid_from": now,
+                    "factor_id": linked_factor_id,
+                },
+            )
+        )
         if inserted is None:
             raise RuntimeError("market driver insert did not return an identity")
         driver_id = str(inserted["id"])
@@ -1591,31 +1661,39 @@ def promote_case_to_theme(
     similarity_threshold: float = 0.72,
 ) -> dict[str, Any] | None:
     parsed_case = _uuid(case_id)
-    case = result_first(session.execute(
-        text(
-            """
+    case = result_first(
+        session.execute(
+            text(
+                """
             SELECT c.*, s.payload
             FROM research_cases c
             LEFT JOIN research_case_snapshots s
               ON s.case_id = c.id AND s.version = c.current_version
             WHERE c.id = :case_id LIMIT 1
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     if case is None or case.get("lifecycle_state") not in {"research_ready", "mature"}:
         return None
-    existing = result_first(session.execute(
-        text("SELECT id, name, origin, source_case_id FROM investment_themes WHERE source_case_id = :case_id LIMIT 1"),
-        {"case_id": parsed_case},
-    ))
+    existing = result_first(
+        session.execute(
+            text(
+                "SELECT id, name, origin, source_case_id FROM investment_themes WHERE source_case_id = :case_id LIMIT 1"
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     if existing:
         return {"theme_id": str(existing["id"]), "created": False, "matched": True}
-    themes = result_rows(session.execute(
-        text(
-            "SELECT id, name, origin, source_case_id FROM investment_themes ORDER BY updated_at DESC LIMIT 100"
+    themes = result_rows(
+        session.execute(
+            text(
+                "SELECT id, name, origin, source_case_id FROM investment_themes ORDER BY updated_at DESC LIMIT 100"
+            )
         )
-    ))
+    )
     match = None
     best = 0.0
     for theme in themes:
@@ -1647,9 +1725,10 @@ def promote_case_to_theme(
         )
         theme_id, created = str(match["id"]), False
     else:
-        inserted = result_first(session.execute(
-            text(
-                """
+        inserted = result_first(
+            session.execute(
+                text(
+                    """
                 INSERT INTO investment_themes (
                     name, definition, horizon, macro_drivers,
                     invalidation_conditions, status, origin, source_case_id,
@@ -1661,36 +1740,41 @@ def promote_case_to_theme(
                     CAST(:discovery_provenance AS JSONB)
                 ) ON CONFLICT (name) DO NOTHING RETURNING id
                 """
-            ),
-            {
-                "name": case["title"],
-                "definition": case["definition"],
-                "horizon": case["horizon"],
-                "macro_drivers": list(payload.get("macro_drivers") or []),
-                "invalidation_conditions": _json(
-                    payload.get("invalidation_conditions") or []
                 ),
-                "source_case_id": parsed_case,
-                "discovery_provenance": _json(provenance),
-            },
-        ))
+                {
+                    "name": case["title"],
+                    "definition": case["definition"],
+                    "horizon": case["horizon"],
+                    "macro_drivers": list(payload.get("macro_drivers") or []),
+                    "invalidation_conditions": _json(
+                        payload.get("invalidation_conditions") or []
+                    ),
+                    "source_case_id": parsed_case,
+                    "discovery_provenance": _json(provenance),
+                },
+            )
+        )
         if inserted is None:
-            inserted = result_first(session.execute(
-                text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
-                {"name": case["title"]},
-            ))
+            inserted = result_first(
+                session.execute(
+                    text("SELECT id FROM investment_themes WHERE name = :name LIMIT 1"),
+                    {"name": case["title"]},
+                )
+            )
         if inserted is None:
             raise RuntimeError("theme promotion did not return an identity")
         theme_id, created = str(inserted["id"]), True
-    entities = result_rows(session.execute(
-        text(
-            """
+    entities = result_rows(
+        session.execute(
+            text(
+                """
             SELECT entity_type, normalized_key, display_name
             FROM research_case_entities WHERE case_id = :case_id LIMIT 100
             """
-        ),
-        {"case_id": parsed_case},
-    ))
+            ),
+            {"case_id": parsed_case},
+        )
+    )
     type_map = {"company": "company", "industry": "industry", "symbol": "symbol"}
     for entity in entities:
         theme_type = type_map.get(entity.get("entity_type"))

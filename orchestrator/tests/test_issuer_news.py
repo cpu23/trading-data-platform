@@ -18,10 +18,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx
-
 from collectors.base import CollectorSetupRequired
 from collectors.issuer_news import IssuerNewsCollector
-from contracts.runtime_config import CollectorConfig
 from sources.issuer_feed import (
     FeedFetch,
     FeedHTTPError,
@@ -39,6 +37,8 @@ from sources.issuer_feed import (
     parse_feed_items,
     parse_sec_edgar_title,
 )
+
+from contracts.runtime_config import CollectorConfig
 
 
 def _public_dns(host, port, *args, **kwargs):

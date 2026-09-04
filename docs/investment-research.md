@@ -451,32 +451,6 @@ cap. Durable job leasing, heartbeats, retries, deduplication,
 generation-attempt telemetry, and fail-soft source/role isolation use the same
 operational contracts as the rest of the platform.
 
-## Incremental autonomous research maintenance
-
-The autonomous research control plane turns the desk's accepted missing
-evidence, falsification requirements, stale dependencies, unconfirmed
-catalysts, matured forecasts and relevant source events into durable atomic
-questions. A deterministic value-of-information planner selects only bounded
-work under shared cost and runtime ceilings; unknown priority inputs remain
-explicit blockers.
-
-Selected questions execute through the existing `analysis_jobs` lease and
-recovery machinery using an exact immutable skill version. Initial production
-skills cover filing guidance deltas, issuer-specific peer read-through,
-positioning divergence, targeted challenge and forecast resolution. Every
-completion records evidence use, actual cost and runtime, before/after state
-fingerprints, a material effect or a justified no-op, and source/skill
-attribution. Only affected thesis or forecast state is recomputed.
-
-Forecast outcomes remain append-only and contribute to calibration and
-skill/source scorecards. Feedback may influence later operator-approved
-prioritization or promotion decisions; it never rewrites production formulas,
-auto-switches models or changes portfolio state.
-
-See [Autonomous Research Control Plane](autonomous-research-control-plane.md)
-for the complete lifecycle, point-in-time, budget, recovery and source
-capability contracts.
-
 ## Operations
 
 Check the read paths:

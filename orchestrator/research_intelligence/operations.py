@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from jobs import enqueue_job
 from sqlalchemy import text
 
-from analysis_jobs import enqueue_job
 from contracts.runtime_config import AppConfig
 from db import get_session
 from orchestrator import accept_run, finalize_run_safely, start_run
@@ -156,7 +156,7 @@ def retry_research_job(config: AppConfig, job_id: str) -> dict[str, Any]:
             text(
                 """
                 SELECT id, job_type, state, payload, correlation_id
-                FROM analysis_jobs WHERE id = :job_id LIMIT 1
+                FROM jobs WHERE id = :job_id LIMIT 1
                 """
             ),
             {"job_id": parsed_job},
@@ -167,7 +167,7 @@ def retry_research_job(config: AppConfig, job_id: str) -> dict[str, Any]:
             raise ValueError("research job not found")
         if job.get("state") == "failed_retryable":
             session.execute(
-                text("UPDATE analysis_jobs SET not_before = NOW() WHERE id = :job_id"),
+                text("UPDATE jobs SET not_before = NOW() WHERE id = :job_id"),
                 {"job_id": parsed_job},
             )
             return {

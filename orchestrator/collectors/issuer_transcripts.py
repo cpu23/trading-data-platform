@@ -62,14 +62,14 @@ from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
-
-from collectors.base import CollectorNoData, CollectorSetupRequired
-from contracts.outbound_security import OutboundSecurityError, resolve_redirect_url
 from errors import InvalidSourceData
 from http_client import ResponseBodyTooLarge, make_request
 from http_errors import safe_error_message
 from logging_config import get_logger
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectorNoData, CollectorSetupRequired
+from contracts.outbound_security import OutboundSecurityError, resolve_redirect_url
 
 logger = get_logger("collector.issuer_transcripts")
 
@@ -213,7 +213,9 @@ def _parse_published(raw: str | None) -> datetime | None:
 
 def _feed_link(item: ElementTree.Element) -> str:
     for child in item:
-        tag = child.tag.split("}")[-1].lower() if "}" in child.tag else child.tag.lower()
+        tag = (
+            child.tag.split("}")[-1].lower() if "}" in child.tag else child.tag.lower()
+        )
         if tag == "link":
             href = child.attrib.get("href")
             if href and str(href).strip():
@@ -245,7 +247,11 @@ def _parse_feed(page_bytes: bytes, page_url: str) -> list[dict]:
         title = ""
         published_raw = None
         for child in item:
-            tag = child.tag.split("}")[-1].lower() if "}" in child.tag else child.tag.lower()
+            tag = (
+                child.tag.split("}")[-1].lower()
+                if "}" in child.tag
+                else child.tag.lower()
+            )
             if tag == "title" and child.text:
                 title = child.text.strip()
             elif tag in ("pubdate", "published", "updated", "date") and child.text:
@@ -477,16 +483,22 @@ def _fetch_bounded(
                 f"payload from {current_url} exceeded {max_bytes} bytes"
             ) from exc
         except Exception as exc:
-            raise InvalidSourceData(f"failed to fetch {current_url}: {_safe_error(exc)}") from exc
+            raise InvalidSourceData(
+                f"failed to fetch {current_url}: {_safe_error(exc)}"
+            ) from exc
 
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("location")
             if not location:
-                raise InvalidSourceData(f"redirect without Location header from {current_url}")
+                raise InvalidSourceData(
+                    f"redirect without Location header from {current_url}"
+                )
             try:
                 current_url = resolve_redirect_url(current_url, location)
             except OutboundSecurityError as exc:
-                raise InvalidSourceData(f"redirect target rejected: {_safe_error(exc)}") from exc
+                raise InvalidSourceData(
+                    f"redirect target rejected: {_safe_error(exc)}"
+                ) from exc
             continue
 
         if response.status_code != 200:
@@ -531,7 +543,11 @@ class IssuerTranscriptsCollector:
             except Exception as exc:  # noqa: BLE001
                 failures.append(
                     {
-                        "institution": str(issuer.get("institution") or issuer.get("ticker") or "unknown"),
+                        "institution": str(
+                            issuer.get("institution")
+                            or issuer.get("ticker")
+                            or "unknown"
+                        ),
                         "error": _safe_error(exc),
                     }
                 )

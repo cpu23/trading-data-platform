@@ -105,9 +105,7 @@ CONTRADICTION_HIGH_THRESHOLD = 0.5
 # Domain vocabularies.
 STATES = ("intact", "threatened", "breached")
 PRIORITY_LEVELS = ("critical", "high", "medium", "low")
-PRIORITY_RANK = MappingProxyType(
-    {"critical": 0, "high": 1, "medium": 2, "low": 3}
-)
+PRIORITY_RANK = MappingProxyType({"critical": 0, "high": 1, "medium": 2, "low": 3})
 DIRECTIONS = ("long", "short", "neutral")
 CONDITION_KINDS = ("numeric", "date")
 CONDITION_OPERATORS = (">=", ">", "<=", "<", "==", "!=")
@@ -234,7 +232,9 @@ class ThesisCondition:
             )
         else:
             threshold_value = _to_date(threshold, "threshold")
-            observed_value = _to_date(observed, "observed") if observed is not None else None
+            observed_value = (
+                _to_date(observed, "observed") if observed is not None else None
+            )
         return cls(
             condition_id=identifier,
             kind=kind_value,
@@ -404,9 +404,7 @@ class CitationFailure:
         assert reason_value is not None
         if reason_value not in CITATION_FAILURE_REASONS:
             raise ValueError("unsupported citation failure reason")
-        identifier = (
-            _bounded_text(claim_id, 240) if claim_id is not None else None
-        )
+        identifier = _bounded_text(claim_id, 240) if claim_id is not None else None
         return cls(
             claim_id=identifier,
             reason=reason_value,
@@ -548,7 +546,9 @@ class FalsificationAudit:
             "contradiction_strength": self.contradiction_strength,
             "contradiction_count": self.contradiction_count,
             "required_data": [item.to_dict() for item in self.required_data],
-            "valuation": self.valuation.to_dict() if self.valuation is not None else None,
+            "valuation": self.valuation.to_dict()
+            if self.valuation is not None
+            else None,
             "breached": self.breached,
         }
 
@@ -625,10 +625,10 @@ class ChallengeDecision:
                 failure.to_dict() for failure in self.citation_failures
             ],
             "required_data": [item.to_dict() for item in self.required_data],
-            "valuation": self.valuation.to_dict() if self.valuation is not None else None,
-            "runner_findings": [
-                finding.to_dict() for finding in self.runner_findings
-            ],
+            "valuation": self.valuation.to_dict()
+            if self.valuation is not None
+            else None,
+            "runner_findings": [finding.to_dict() for finding in self.runner_findings],
             "runner_failed": self.runner_failed,
             "runner_error": self.runner_error,
             "recommended_priority": self.recommended_priority,
@@ -698,9 +698,7 @@ def audit_falsification(
     contradiction_count = score.contradiction_count
 
     invalidation_ids = tuple(
-        signal.evidence_id
-        for signal in unique
-        if signal.relationship == "invalidation"
+        signal.evidence_id for signal in unique if signal.relationship == "invalidation"
     )
 
     required: list[RequiredData] = []
@@ -715,10 +713,7 @@ def audit_falsification(
     breached_condition_ids: list[str] = []
     for condition in snapshot.conditions:
         if condition.observed is None:
-            if (
-                condition.kind == "date"
-                and reference.date() > condition.threshold
-            ):
+            if condition.kind == "date" and reference.date() > condition.threshold:
                 required.append(
                     RequiredData.create(
                         kind="date_observation",
@@ -747,8 +742,7 @@ def audit_falsification(
             RequiredData.create(
                 kind="freshness",
                 detail=(
-                    f"evidence older than {STALE_EVIDENCE_HORIZON.days} days "
-                    "at as_of"
+                    f"evidence older than {STALE_EVIDENCE_HORIZON.days} days at as_of"
                 ),
                 refs=list(stale_ids),
             )
@@ -975,10 +969,7 @@ def derive_priority(
     if state == "breached":
         return "critical"
     if state == "threatened":
-        if (
-            strength >= CONTRADICTION_HIGH_THRESHOLD
-            or citation_failure_count > 0
-        ):
+        if strength >= CONTRADICTION_HIGH_THRESHOLD or citation_failure_count > 0:
             return "high"
         return "medium"
     return "low"

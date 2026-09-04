@@ -4,17 +4,14 @@ import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-import httpx
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ["DASHBOARD_USER"] = "test"
-os.environ["DASHBOARD_PASSWORD"] = "test"
 
 from routes.json.investment import MAX_DOCUMENT_BYTES  # noqa: E402
 
 os.environ["DEPLOYMENT_MODE"] = "test"
+os.environ["DISABLE_AUTH"] = "true"
 
 MOCK_CONFIG = {
     "logging": {"level": "INFO"},
@@ -59,23 +56,22 @@ class InvestmentApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch("config.load_config", return_value=MOCK_CONFIG):
-            from fastapi.testclient import TestClient
-
             from auth import mint_csrf_token
+            from fastapi.testclient import TestClient
             from main import create_app
 
-        cls.upstream = AsyncMock()
-        cls.upstream.aclose = AsyncMock()
         with patch("main.load_config", return_value=MOCK_CONFIG):
-            cls.app = create_app(
-                orchestrator_client_factory=lambda **kwargs: cls.upstream
-            )
+            cls.app = create_app()
         cls.client = TestClient(cls.app)
         cls.client.__enter__()
+        cls.config_patcher = patch(
+            "routes.json.investment.load_config",
+            return_value=MOCK_CONFIG,
+        )
+        cls.config_patcher.start()
         cls.csrf_token = mint_csrf_token()
         cls.client.cookies.set("csrf-token", cls.csrf_token)
         cls.headers = {
-            "Authorization": "Basic dGVzdDp0ZXN0",
             "Origin": "http://testserver",
             "X-CSRF-Token": cls.csrf_token,
         }
@@ -83,19 +79,12 @@ class InvestmentApiTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
+        cls.config_patcher.stop()
 
-    def setUp(self):
-        self.upstream.reset_mock()
-
-    @staticmethod
-    def response(status, payload, path="/investment/dashboard"):
-        return httpx.Response(
-            status,
-            json=payload,
-            request=httpx.Request("GET", f"http://orchestrator:8000{path}"),
-        )
-
-    def test_dashboard_proxies_shared_orchestrator_client(self):
+    @patch("routes.json.investment.get_investment_dashboard")
+    def test_dashboard_endpoint_calls_investment_dashboard_service(
+        self, mock_get_dashboard
+    ):
         payload = {
             "model": "google/gemini-3.5-flash-lite",
             "regions": [
@@ -125,17 +114,45 @@ class InvestmentApiTests(unittest.TestCase):
             "documents": [],
             "analyses": [],
         }
-        self.upstream.get.return_value = self.response(200, payload)
+        mock_get_dashboard.return_value = payload
 
         result = self.client.get("/api/investment/dashboard", headers=self.headers)
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["model"], "google/gemini-3.5-flash-lite")
         self.assertEqual(result.json()["regions"], payload["regions"])
-        args = self.upstream.get.await_args.args
-        self.assertEqual(args[0], "http://orchestrator:8000/investment/dashboard")
+        mock_get_dashboard.assert_called_once_with(MOCK_CONFIG)
 
-    def test_raw_document_upload_forwards_metadata_and_bytes(self):
+    @patch("routes.json.investment.get_investment_analysis")
+    def test_get_analysis_returns_payload_and_handles_not_found(
+        self, mock_get_analysis
+    ):
+        analysis_id = "22222222-2222-2222-2222-222222222222"
+        mock_get_analysis.return_value = {
+            "analysis_id": analysis_id,
+            "document_id": "11111111-1111-1111-1111-111111111111",
+            "state": {"stage": "accelerating"},
+        }
+
+        result = self.client.get(
+            f"/api/investment/analyses/{analysis_id}", headers=self.headers
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["analysis_id"], analysis_id)
+        mock_get_analysis.assert_called_once_with(MOCK_CONFIG, analysis_id)
+
+        mock_get_analysis.return_value = None
+        result_404 = self.client.get(
+            f"/api/investment/analyses/{analysis_id}", headers=self.headers
+        )
+        self.assertEqual(result_404.status_code, 404)
+        self.assertIn("Investment analysis not found", result_404.json()["detail"])
+
+    @patch("routes.json.investment.enqueue_investment_analysis")
+    @patch("routes.json.investment.store_investment_document_path")
+    def test_raw_document_upload_stores_path_and_optionally_enqueues_analysis(
+        self, mock_store, mock_enqueue
+    ):
         document_id = "11111111-1111-1111-1111-111111111111"
         params = {
             "filename": "report.txt",
@@ -144,24 +161,18 @@ class InvestmentApiTests(unittest.TestCase):
             "region": "ASIA",
             "industry": "DRAM",
             "document_type": "annual_report",
+            "analyze": "true",
         }
         body = b"Annual report financial evidence. " * 8
-        forwarded = []
+        mock_store.return_value = {
+            "document_id": document_id,
+            "status": "ingested",
+        }
+        mock_enqueue.return_value = {
+            "job_id": "job-123",
+            "enqueued_at": "2026-09-04T00:00:00Z",
+        }
 
-        async def consume_and_respond(*args, **kwargs):
-            content = kwargs.get("content")
-            if content is not None:
-                chunks = []
-                async for chunk in content:
-                    chunks.append(chunk)
-                forwarded.append(b"".join(chunks))
-            return self.response(
-                201,
-                {"document_id": document_id, "status": "ingested"},
-                "/investment/documents",
-            )
-
-        self.upstream.post = AsyncMock(side_effect=consume_and_respond)
         result = self.client.post(
             "/api/investment/documents",
             params=params,
@@ -170,12 +181,19 @@ class InvestmentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status_code, 201)
-        kwargs = self.upstream.post.await_args.kwargs
-        self.assertEqual(forwarded, [body])
-        self.assertEqual(kwargs["params"]["company"], "Memory Co")
-        self.assertEqual(kwargs["headers"]["Content-Type"], "text/plain")
+        data = result.json()
+        self.assertEqual(data["document_id"], document_id)
+        self.assertEqual(data["analysis"]["job_id"], "job-123")
+        self.assertTrue(mock_store.called)
+        call_args = mock_store.call_args[0]
+        self.assertEqual(call_args[0], MOCK_CONFIG)
+        self.assertEqual(call_args[1]["company"], "Memory Co")
+        self.assertEqual(call_args[3], "text/plain")
+        self.assertFalse(mock_store.call_args[1].get("extract", True))
+        mock_enqueue.assert_called_once_with(MOCK_CONFIG, document_id)
 
-    def test_declared_oversize_upload_is_rejected_early(self):
+    @patch("routes.json.investment.store_investment_document_path")
+    def test_declared_oversize_upload_is_rejected_early(self, mock_store):
         params = {
             "filename": "report.txt",
             "company": "Memory Co",
@@ -193,9 +211,10 @@ class InvestmentApiTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status_code, 413)
-        self.upstream.post.assert_not_awaited()
+        mock_store.assert_not_called()
 
-    def test_oversized_chunked_upload_rejected_and_spool_cleaned(self):
+    @patch("routes.json.investment.store_investment_document_path")
+    def test_oversized_chunked_upload_rejected_and_spool_cleaned(self, mock_store):
         import asyncio
 
         from httpx import ASGITransport, AsyncClient
@@ -243,9 +262,10 @@ class InvestmentApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 413)
         self.assertEqual(len(created), 1)
         self.assertFalse(os.path.exists(created[0]))
-        self.upstream.post.assert_not_awaited()
+        mock_store.assert_not_called()
 
-    def test_upload_spool_is_cleaned_up_after_forward(self):
+    @patch("routes.json.investment.store_investment_document_path")
+    def test_upload_spool_is_cleaned_up_after_store(self, mock_store):
         import tempfile as _tempfile
 
         document_id = "11111111-1111-1111-1111-111111111111"
@@ -264,13 +284,10 @@ class InvestmentApiTests(unittest.TestCase):
             created.append(handle.name)
             return handle
 
-        self.upstream.post = AsyncMock(
-            return_value=self.response(
-                201,
-                {"document_id": document_id, "status": "ingested"},
-                "/investment/documents",
-            )
-        )
+        mock_store.return_value = {
+            "document_id": document_id,
+            "status": "ingested",
+        }
         with patch(
             "routes.json.investment.tempfile.NamedTemporaryFile",
             side_effect=fake_named_temp,
@@ -286,52 +303,141 @@ class InvestmentApiTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertFalse(os.path.exists(created[0]))
 
-    def test_missing_orchestrator_client_fails_before_any_post(self):
-        """A POST must never be re-sent on a fallback client: with no shared
-        client the request fails closed before any network call."""
-        params = {
-            "filename": "report.txt",
+    @patch("routes.json.investment.store_investment_document_path")
+    def test_upload_document_error_handling(self, mock_store):
+        params = {"filename": "bad.txt"}
+        mock_store.side_effect = ValueError("Invalid document metadata")
+        res_422 = self.client.post(
+            "/api/investment/documents",
+            params=params,
+            content=b"data",
+            headers={**self.headers, "Content-Type": "text/plain"},
+        )
+        self.assertEqual(res_422.status_code, 422)
+
+        mock_store.side_effect = RuntimeError("Storage failed")
+        res_503 = self.client.post(
+            "/api/investment/documents",
+            params=params,
+            content=b"data",
+            headers={**self.headers, "Content-Type": "text/plain"},
+        )
+        self.assertEqual(res_503.status_code, 503)
+
+    @patch(
+        "routes.json.investment.enqueue_investment_analysis",
+        side_effect=RuntimeError("queue down"),
+    )
+    @patch(
+        "routes.json.investment.store_investment_document_path",
+        return_value={"document_id": "11111111-1111-1111-1111-111111111111"},
+    )
+    def test_upload_document_enqueue_failure_returns_503(
+        self, mock_store, mock_enqueue
+    ):
+        params = {"filename": "good.txt", "analyze": "true"}
+        res = self.client.post(
+            "/api/investment/documents",
+            params=params,
+            content=b"data",
+            headers={**self.headers, "Content-Type": "text/plain"},
+        )
+        self.assertEqual(res.status_code, 503)
+        self.assertIn(
+            "Investment analysis could not be scheduled", res.json()["detail"]
+        )
+
+    @patch("routes.json.investment.enqueue_investment_analysis")
+    @patch("routes.json.investment.store_investment_document_url")
+    def test_url_ingestion_success_and_analysis_enqueue(
+        self, mock_store_url, mock_enqueue
+    ):
+        document_id = "11111111-1111-1111-1111-111111111111"
+        mock_store_url.return_value = {
+            "document_id": document_id,
+            "status": "ingested",
+        }
+        mock_enqueue.return_value = {
+            "job_id": "job-456",
+            "enqueued_at": "2026-09-04T00:00:00Z",
+        }
+
+        payload = {
+            "url": "https://example.com/sec/10k.htm",
             "company": "Memory Co",
+            "symbol": "MEM",
+            "region": "ASIA",
+            "industry": "DRAM",
+            "document_type": "annual_report",
+            "analyze": True,
+        }
+        res = self.client.post(
+            "/api/investment/urls",
+            json=payload,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.json()["document_id"], document_id)
+        self.assertEqual(res.json()["analysis"]["job_id"], "job-456")
+        mock_store_url.assert_called_once()
+        mock_enqueue.assert_called_once_with(MOCK_CONFIG, document_id)
+
+    @patch("routes.json.investment.store_investment_document_url")
+    def test_url_ingestion_error_handling(self, mock_store_url):
+        payload = {
+            "url": "https://example.com/sec/10k.htm",
+            "company": "Memory Co",
+            "symbol": "MEM",
             "region": "ASIA",
             "industry": "DRAM",
             "document_type": "annual_report",
         }
-        saved = self.app.state.orchestrator_client
-        try:
-            del self.app.state.orchestrator_client
-            result = self.client.post(
-                "/api/investment/documents",
-                params=params,
-                content=b"small document",
-                headers={**self.headers, "Content-Type": "text/plain"},
-            )
-        finally:
-            self.app.state.orchestrator_client = saved
+        mock_store_url.side_effect = ValueError("Unsupported URL scheme")
+        res_422 = self.client.post(
+            "/api/investment/urls",
+            json=payload,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_422.status_code, 422)
 
-        self.assertEqual(result.status_code, 503)
-        self.upstream.post.assert_not_awaited()
+        mock_store_url.side_effect = ConnectionError("Failed to fetch URL")
+        res_502 = self.client.post(
+            "/api/investment/urls",
+            json=payload,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_502.status_code, 502)
+        self.assertIn(
+            "Investment document could not be fetched", res_502.json()["detail"]
+        )
 
-    def test_analyze_validates_uuid_before_forwarding(self):
+    def test_analyze_validates_uuid(self):
         result = self.client.post(
             "/api/investment/documents/not-a-uuid/analyze",
             json={},
             headers={**self.headers, "Content-Type": "application/json"},
         )
         self.assertEqual(result.status_code, 422)
-        self.upstream.post.assert_not_awaited()
 
-    def test_analysis_forwards_market_inputs_and_returns_published_result(self):
+    def test_analyze_validates_market_inputs_type(self):
+        document_id = "11111111-1111-1111-1111-111111111111"
+        result = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={"market_inputs": "not-a-dict"},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(result.status_code, 422)
+        self.assertIn("market_inputs must be an object", result.json()["detail"])
+
+    @patch("routes.json.investment.analyze_investment_document")
+    def test_analysis_forwards_market_inputs_and_returns_result(self, mock_analyze):
         document_id = "11111111-1111-1111-1111-111111111111"
         analysis_id = "22222222-2222-2222-2222-222222222222"
-        self.upstream.post.return_value = self.response(
-            200,
-            {
-                "analysis_id": analysis_id,
-                "document_id": document_id,
-                "state": {"stage": "accelerating", "score": 11},
-            },
-            f"/investment/documents/{document_id}/analyze",
-        )
+        mock_analyze.return_value = {
+            "analysis_id": analysis_id,
+            "document_id": document_id,
+            "state": {"stage": "accelerating", "score": 11},
+        }
 
         result = self.client.post(
             f"/api/investment/documents/{document_id}/analyze",
@@ -341,12 +447,136 @@ class InvestmentApiTests(unittest.TestCase):
 
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["state"]["stage"], "accelerating")
-        self.assertEqual(
-            self.upstream.post.await_args.kwargs["json"]["market_inputs"][
-                "discount_rate"
-            ],
-            10,
+        mock_analyze.assert_called_once_with(
+            MOCK_CONFIG,
+            document_id,
+            {"market_price": 100, "discount_rate": 10},
         )
+
+    @patch("routes.json.investment.analyze_investment_document")
+    def test_analysis_budget_and_conflict_errors(self, mock_analyze):
+        from budgets import BudgetBlock, BudgetExceeded
+        from investment_service import AnalysisInProgress
+
+        document_id = "11111111-1111-1111-1111-111111111111"
+
+        mock_analyze.side_effect = BudgetExceeded(processor="investment")
+        res_429 = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_429.status_code, 429)
+
+        mock_analyze.side_effect = BudgetBlock(processor="investment")
+        res_503 = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_503.status_code, 503)
+
+        mock_analyze.side_effect = AnalysisInProgress(
+            "Analysis already running for document"
+        )
+        res_409 = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_409.status_code, 409)
+
+        mock_analyze.side_effect = LookupError("Document not found")
+        res_404 = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_404.status_code, 404)
+
+        mock_analyze.side_effect = ValueError("Invalid parameters")
+        res_422 = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_422.status_code, 422)
+
+        mock_analyze.side_effect = RuntimeError("Unexpected failure")
+        res_503_gen = self.client.post(
+            f"/api/investment/documents/{document_id}/analyze",
+            json={},
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_503_gen.status_code, 503)
+
+    @patch("routes.json.investment.get_filing_source_status")
+    def test_filings_status(self, mock_status):
+        mock_status.return_value = {
+            "sec_edgar": {
+                "status": "ok",
+                "last_collected": "2026-09-04T00:00:00Z",
+            },
+        }
+        res = self.client.get("/api/investment/filings/status", headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["sec_edgar"]["status"], "ok")
+        mock_status.assert_called_once_with(MOCK_CONFIG)
+
+    @patch("routes.json.investment.accept_and_enqueue_operation")
+    def test_filings_collect_acceptance_and_conflict(self, mock_accept_enqueue):
+        from datetime import UTC, datetime
+
+        from run_lifecycle import RunAcceptanceConflict
+
+        accepted_time = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
+        mock_accept_enqueue.return_value = (accepted_time, "job-id-123")
+
+        body = {
+            "correlation_id": "33333333-3333-3333-3333-333333333333",
+            "idempotency_key": "idem-key-1",
+            "auto_analyze": True,
+        }
+        res = self.client.post(
+            "/api/investment/filings/collect",
+            json=body,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res.status_code, 202)
+        self.assertEqual(res.json()["job_id"], "33333333-3333-3333-3333-333333333333")
+        self.assertEqual(res.json()["accepted_at"], accepted_time.isoformat())
+        mock_accept_enqueue.assert_called_once_with(
+            MOCK_CONFIG,
+            correlation_id="33333333-3333-3333-3333-333333333333",
+            triggered_by="api",
+            run_kind="filings",
+            requested_component="investment_filings",
+            idempotency_key="idem-key-1",
+            request_summary={"auto_analyze": True},
+            dedupe_key=None,
+            input_fingerprint=None,
+            payload={"auto_analyze": True},
+            priority=100,
+            max_attempts=3,
+        )
+
+        mock_accept_enqueue.side_effect = RunAcceptanceConflict(
+            "Job already in progress"
+        )
+        res_409 = self.client.post(
+            "/api/investment/filings/collect",
+            json=body,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_409.status_code, 409)
+
+        mock_accept_enqueue.side_effect = RuntimeError("Database error")
+        res_503 = self.client.post(
+            "/api/investment/filings/collect",
+            json=body,
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_503.status_code, 503)
 
     def test_investment_page_renders_required_sections(self):
         response = self.client.get("/investment", headers=self.headers)
@@ -375,21 +605,21 @@ class InvestmentApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         page = response.text
 
-        model_narrative_block = page.split(
-            "// --- Model narrative (LLM) ---", 1
-        )[1].split("// --- Risks & watch items", 1)[0]
-        catalyst_renderer = page.split(
-            "function addCatalystsSection", 1
-        )[1].split("function addMaterialitySection", 1)[0]
-        materiality_renderer = page.split(
+        model_narrative_block = page.split("// --- Model narrative (LLM) ---", 1)[
+            1
+        ].split("// --- Risks & watch items", 1)[0]
+        catalyst_renderer = page.split("function addCatalystsSection", 1)[1].split(
             "function addMaterialitySection", 1
-        )[1].split("function addRelationshipReconciliations", 1)[0]
+        )[0]
+        materiality_renderer = page.split("function addMaterialitySection", 1)[1].split(
+            "function addRelationshipReconciliations", 1
+        )[0]
         relationship_renderer = page.split(
             "function addRelationshipReconciliations", 1
         )[1].split("function addSignalsSection", 1)[0]
-        risk_renderer = page.split(
-            "function addRisksSection", 1
-        )[1].split("function addQualitySection", 1)[0]
+        risk_renderer = page.split("function addRisksSection", 1)[1].split(
+            "function addQualitySection", 1
+        )[0]
 
         for token in (
             "a.counter_thesis",
@@ -466,7 +696,10 @@ class InvestmentApiTests(unittest.TestCase):
 
         for renderer, legacy_tokens in (
             (catalyst_renderer, ("c.catalyst", "c.description", "c.timeframe")),
-            (risk_renderer, ("r.risk", "r.description", "r.probability", "r.timeframe")),
+            (
+                risk_renderer,
+                ("r.risk", "r.description", "r.probability", "r.timeframe"),
+            ),
         ):
             for token in legacy_tokens:
                 self.assertNotIn(token, renderer)

@@ -1,77 +1,82 @@
-# ADR 001: Split container runtime topology
+# ADR 001: Three-service runtime topology
 
-- **Status:** Accepted
+- **Status:** Accepted (supersedes the former split-role topology)
 - **Date:** 2026-07-16
+- **Amended:** 2026-09-04
 
 ## Context
 
-The platform has distinct schema-migration, HTTP, scheduling, operation-worker,
-analysis-worker, outbox, and quote-stream lifecycles. A single shell or HTTP
-lifespan that starts more than one role makes one process an accidental
-supervisor, duplicates singleton work under replicas, and can report a
-partially working container as healthy.
+The earlier deployment exposed scheduling, operation work, analysis work,
+outbox publication, quote ingestion, schema migration, and API control as
+separate containers. That topology duplicated configuration and package
+boundaries, required internal HTTP for same-repository calls, and made operators
+reason about multiple queues and heartbeats for one application workflow.
+
+PostgreSQL already provides durable leases and logical-run identity. The work is
+bounded and private to one installation, so separate process ownership does not
+justify the additional runtime surface.
 
 ## Decision
 
-Build one application image and run one foreground role per Compose service:
+Production and demo contain exactly three services:
 
-1. `migrate` waits for PostgreSQL, applies the checksum-verified migration chain, and exits.
-2. `orchestrator` runs only the internal HTTP control API.
-3. `scheduler` acquires durable logical-run identity and enqueues operation jobs; it never executes scheduled work inline.
-4. `worker` claims leased operation and analysis jobs, heartbeats ownership, retries bounded transient failures, and exposes terminal poison-job state.
-5. `outbox` owns transactional-outbox publication.
-6. `quotes` owns the long-running quote stream.
-7. `api` runs the public dashboard and JSON API and is the only application service with a host port.
+1. `postgres` owns PostgreSQL/TimescaleDB and initializes a fresh volume from
+   the authoritative `db/schema.sql`.
+2. `web` owns the public FastAPI JSON API and server-rendered HTMX interface.
+   API handlers call orchestration modules directly in-process; there is no
+   internal control HTTP service or `ORCHESTRATOR_URL`.
+3. `worker` owns scheduling, the canonical durable `jobs` queue, outbox
+   publication, the quote stream, and the deterministic demo publisher.
 
-Docker/Compose owns process supervision. Process ownership is explicit and
-split by role: each long-running container owns exactly one foreground
-process and uses `restart: unless-stopped`; migration uses `restart: "no"`.
-No application process starts, supervises, or restarts another role.
-PostgreSQL leases and durable heartbeats, rather than process-local globals,
-make status and crash recovery visible across replicas.
+`web` and `worker` use the same root dependency lock and application image.
+Docker Compose supervises one foreground process per service. The worker uses
+threads only for its cooperating internal loops and reports one durable
+`worker` heartbeat containing bounded subcomponent detail.
 
-Production and demo use the same role separation. Demo sets
-`DEPLOYMENT_MODE=demo` and `DEMO_MODE=true`, uses disabled provider credentials,
-and reads deterministic local fixtures.
+The browser has one visibility-aware polling heartbeat. There is no SSE route,
+UI invalidation queue, or streaming compatibility path.
 
-## Options considered
-
-### Single shell
-
-A single shell launching API and orchestrator with background `&` and `wait` was rejected. It creates ambiguous signal propagation and can hide one dead child behind another live process.
-
-### s6
-
-s6 would provide real supervision inside one container, but adds a supervisor and lifecycle configuration that are unnecessary when Compose can own one process per service. It was rejected for this platform.
-
-### Split services (chosen)
-
-Split services make independent failure, restart, health, logs, and resource ownership visible to Compose while retaining a shared image and dependency lock inputs.
-
-## Health, restart, and migration ordering
-
-The internal API exposes separate liveness and dependency-aware readiness.
-Role health comes from bounded database-backed heartbeats; a missing or stale
-required scheduler, worker, outbox, or quote role makes readiness fail instead
-of being inferred from process-local threads. Data quality is reported
-separately as healthy, degraded, or unknown. Compose healthchecks are bounded.
-
-## Shared storage
-
-Normal deployment copies code, configuration, prompts, migrations, and
-database bootstrap SQL into immutable images. Named volumes hold only writable
-PostgreSQL data, private operator state, logs, and published News. The API sees
-News read-only. `docker-compose.dev.yml` is the explicit development opt-in for
-source/configuration bind mounts and loopback PostgreSQL publication.
+The repository carries no runtime migration chain. A fresh database is created
+from `db/schema.sql`; a schema-changing deployment must use a fresh volume or an
+explicitly reviewed external database change.
 
 ## Consequences
 
-The API resolves the internal control service through the configured
-`ORCHESTRATOR_URL`; no host can connect directly to that service. Compose
-implementations must support `service_completed_successfully`. One shared
-application image is a deliberate trade-off for identical runtime dependencies
-and a single release identity.
+- One release artifact, configuration schema, queue lifecycle, and worker
+  heartbeat.
+- No service-to-service credentials, URL routing, or control-client failure mode.
+- Readiness depends on PostgreSQL and the current worker heartbeat rather than
+  synthetic health for former roles.
+- Scheduler, jobs, outbox, and quote ingestion restart together. This is an
+  accepted availability tradeoff for substantially lower operational
+  complexity.
+- Scaling the worker horizontally is not a default deployment feature. Durable
+  leases and scheduler leadership still prevent duplicate ownership if an
+  operator deliberately does so.
+- Existing split-topology Compose files and database migration state are not
+  supported compatibility inputs.
+
+## Alternatives rejected
+
+### Split application services
+
+Independent containers provide narrower restarts, but the previous seven
+application lifecycles created more deployment and health complexity than this
+single-installation workload needs.
+
+### Shell supervisor
+
+A shell launching background processes obscures signal propagation and child
+failure. The worker remains one Python process with explicit cancellation and
+health semantics.
+
+### In-container init system
+
+An init system would add another lifecycle abstraction without reducing the
+application's durable state model.
 
 ## Rollback
 
-Rollback is a Compose-only deployment change: pin the prior image and prior Compose files, stop the split stack, and start the previous topology. Database rollback is not automatic; migration compatibility must be assessed before application rollback. Never reintroduce the single shell background-process path as a production workaround.
+Rollback pins the previous complete image and Compose definition. Database
+rollback is never automatic; assess schema compatibility or restore a matching
+backup before starting an older release.

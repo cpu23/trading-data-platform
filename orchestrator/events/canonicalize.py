@@ -90,6 +90,7 @@ def content_hash(value: Any) -> str:
 
 canonical_fingerprint = content_hash
 
+
 def dedupe_key(
     source: str,
     source_event_id: str | None = None,

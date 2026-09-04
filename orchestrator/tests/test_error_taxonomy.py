@@ -1,7 +1,5 @@
 import unittest
 
-from sqlalchemy.exc import SQLAlchemyError
-
 from errors import (
     BudgetDenied,
     InvalidSourceData,
@@ -10,6 +8,7 @@ from errors import (
     classify_error,
     sanitize_error,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 
 class ErrorTaxonomyTests(unittest.TestCase):
@@ -41,20 +40,22 @@ class ErrorTaxonomyTests(unittest.TestCase):
         )
 
     def test_compatibility_facade_exports_lifecycle_conflicts_and_taxonomy(self):
-        import orchestrator
         from run_lifecycle import RunAcceptanceConflict, RunStartConflict
+
+        import orchestrator
 
         self.assertIs(orchestrator.RunAcceptanceConflict, RunAcceptanceConflict)
         self.assertIs(orchestrator.RunStartConflict, RunStartConflict)
         self.assertIs(orchestrator.TransientSourceError, TransientSourceError)
-
 
     def test_sanitize_error_none_returns_none(self):
         self.assertIsNone(sanitize_error(None))
 
     def test_sanitize_error_exceptions_return_safe_type_name(self):
         self.assertEqual(sanitize_error(RuntimeError("token=secret")), "RuntimeError")
-        self.assertEqual(sanitize_error(ValueError("database password=123")), "ValueError")
+        self.assertEqual(
+            sanitize_error(ValueError("database password=123")), "ValueError"
+        )
 
     def test_sanitize_error_normalizes_whitespace_and_control_characters(self):
         self.assertEqual(
@@ -85,6 +86,7 @@ class ErrorTaxonomyTests(unittest.TestCase):
     def test_sanitize_error_empty_string_falls_back_to_error(self):
         self.assertEqual(sanitize_error(""), "error")
         self.assertEqual(sanitize_error("   \n\t   "), "error")
+
 
 if __name__ == "__main__":
     unittest.main()

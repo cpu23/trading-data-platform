@@ -1,5 +1,5 @@
 <section aria-labelledby="since-last-view-title" class="since-last-view" data-since-last-view-marker
-  {% if live_updates_enabled %}data-live-section="since_last_view" data-live-event="section_changed" data-live-url="/partials/dashboard/since-last-view"{% else %}hx-get="/partials/dashboard/since-last-view" hx-trigger="marketRefresh from:body" hx-swap="outerHTML"{% endif %}>
+  hx-get="/partials/dashboard/since-last-view" hx-trigger="marketRefresh from:body" hx-swap="outerHTML">
   <h2 id="since-last-view-title">Since your last view <span class="section-note">deterministic</span></h2>
   {% if not since_last_view.available %}<p role="status">Unavailable</p>
   {% elif not since_last_view.marker %}<p>No last-view marker yet — this summary appears after your first visit.</p>

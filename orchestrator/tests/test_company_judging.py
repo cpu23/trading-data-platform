@@ -29,7 +29,7 @@ parser accepts only responses echoing that exact value and exposes it on the
 result. The canonical request ``fingerprint`` stays a digest over the exact
 request (including its rendered prompt), is never echoed by judges or results,
 and never appears inside the prompt itself.
- """
+"""
 
 import copy
 import hashlib
@@ -323,15 +323,13 @@ def populated_relationship_finalized_analysis() -> Finalized:
             "required_facts": [
                 {
                     "fact_path": (
-                        "deterministic_current.relationship_facts."
-                        "rf_revenue_growth"
+                        "deterministic_current.relationship_facts.rf_revenue_growth"
                     ),
                     "role": "top_line",
                 },
                 {
                     "fact_path": (
-                        "deterministic_current.relationship_facts."
-                        "rf_net_income_growth"
+                        "deterministic_current.relationship_facts.rf_net_income_growth"
                     ),
                     "role": "bottom_line",
                 },
@@ -348,9 +346,7 @@ def populated_relationship_finalized_analysis() -> Finalized:
                 "deterministic_current.relationship_facts.rf_revenue_growth",
                 "deterministic_current.relationship_facts.rf_net_income_growth",
             ],
-            "observation": (
-                "Revenue growth of 12% exceeded net income growth of 9%."
-            ),
+            "observation": ("Revenue growth of 12% exceeded net income growth of 9%."),
             "interpretation": thesis_synthesis,
             "uncertainty": "The excerpt does not explain the growth gap.",
             "summary_synthesis": summary_synthesis,
@@ -363,9 +359,7 @@ def populated_relationship_finalized_analysis() -> Finalized:
     finalized.analysis["summary"] = (
         f"{finalized.analysis['summary']} {summary_synthesis}"
     )
-    finalized.analysis["thesis"] = (
-        f"{finalized.analysis['thesis']} {thesis_synthesis}"
-    )
+    finalized.analysis["thesis"] = f"{finalized.analysis['thesis']} {thesis_synthesis}"
     for material in (finalized.facts, finalized.analysis):
         material["relationship_facts"] = json.loads(json.dumps(relationship_facts))
         material["material_relationships"] = json.loads(
@@ -437,13 +431,34 @@ def invalid_score_values() -> tuple:
     """
     return (
         # Overprecision beyond one decimal place.
-        4.15, 4.05, 4.995, 3.333333, 2.7182818,
+        4.15,
+        4.05,
+        4.995,
+        3.333333,
+        2.7182818,
         # Wrong types: bool is int-shaped, str is JSON-text, rest are junk.
-        True, False, "4.3", "4", None, [4.5], {"score": 4.5}, (4.5,),
+        True,
+        False,
+        "4.3",
+        "4",
+        None,
+        [4.5],
+        {"score": 4.5},
+        (4.5,),
         # Out of range on both sides of the closed interval.
-        0, -1, 100, 0.9, 0.95, -4.5, 5.1, 5.01, 6.0,
+        0,
+        -1,
+        100,
+        0.9,
+        0.95,
+        -4.5,
+        5.1,
+        5.01,
+        6.0,
         # Nonfinite.
-        float("nan"), float("inf"), float("-inf"),
+        float("nan"),
+        float("inf"),
+        float("-inf"),
     )
 
 
@@ -527,9 +542,15 @@ def panel_with_overalls(requests, overalls) -> object:
     ]
     return aggregate_judge_panel(list(requests), results, passing_gate())
 
+
 def gate_with_identity(producer_fingerprint):
     """A well-formed passing hard-gate report stamped with an identity."""
-    return {"passed": True, "failures": [], "producer_fingerprint": producer_fingerprint}
+    return {
+        "passed": True,
+        "failures": [],
+        "producer_fingerprint": producer_fingerprint,
+    }
+
 
 def qualifying_results(requests=None):
     """Three valid top-scoring results: the panel passes every criterion."""
@@ -604,14 +625,26 @@ def malformed_gate_variants():
         {"passed": 1, "failures": [], "producer_fingerprint": PRODUCER_IDENTITY},
         {"passed": None, "failures": [], "producer_fingerprint": PRODUCER_IDENTITY},
         {"failures": [], "producer_fingerprint": PRODUCER_IDENTITY},
-        {"passed": False, "failures": "metric_conflict: revenue",
-         "producer_fingerprint": PRODUCER_IDENTITY},
-        {"passed": False, "failures": {"code": "metric_conflict"},
-         "producer_fingerprint": PRODUCER_IDENTITY},
-        {"passed": False, "failures": [["nested"]],
-         "producer_fingerprint": PRODUCER_IDENTITY},
-        {"passed": False, "failures": [{"severity": "high"}],
-         "producer_fingerprint": PRODUCER_IDENTITY},
+        {
+            "passed": False,
+            "failures": "metric_conflict: revenue",
+            "producer_fingerprint": PRODUCER_IDENTITY,
+        },
+        {
+            "passed": False,
+            "failures": {"code": "metric_conflict"},
+            "producer_fingerprint": PRODUCER_IDENTITY,
+        },
+        {
+            "passed": False,
+            "failures": [["nested"]],
+            "producer_fingerprint": PRODUCER_IDENTITY,
+        },
+        {
+            "passed": False,
+            "failures": [{"severity": "high"}],
+            "producer_fingerprint": PRODUCER_IDENTITY,
+        },
     ]
 
 
@@ -737,9 +770,16 @@ class RequestConstructionTests(unittest.TestCase):
     def test_deterministic_per_salt(self):
         first = build_requests(SALT_A)
         second = build_requests(SALT_A)
-        self.assertEqual([request.role for request in first], [request.role for request in second])
-        self.assertEqual([request.token for request in first], [request.token for request in second])
-        self.assertEqual([request.prompt for request in first], [request.prompt for request in second])
+        self.assertEqual(
+            [request.role for request in first], [request.role for request in second]
+        )
+        self.assertEqual(
+            [request.token for request in first], [request.token for request in second]
+        )
+        self.assertEqual(
+            [request.prompt for request in first],
+            [request.prompt for request in second],
+        )
         self.assertEqual(
             [request.fingerprint for request in first],
             [request.fingerprint for request in second],
@@ -846,9 +886,7 @@ class RequestConstructionTests(unittest.TestCase):
         # Structured forbidden claims never reach the prompt or the packet:
         # neither their ids/aliases nor the claim value appear anywhere.
         for request in requests:
-            combined = request.prompt + json.dumps(
-                request.packet(), sort_keys=True
-            )
+            combined = request.prompt + json.dumps(request.packet(), sort_keys=True)
             self.assertNotIn("capex_q1", combined)
             self.assertNotIn("period_aliases", combined)
             self.assertNotIn("metric_aliases", combined)
@@ -872,9 +910,7 @@ class RequestConstructionTests(unittest.TestCase):
                 self.assertIn(f'"{field}"', prompt)
             self.assertIn("Demand softness could pressure future margins.", prompt)
             self.assertIn("Revenue lands within the guided range", prompt)
-            self.assertIn(
-                "Pricing power erodes as customer budgets compress.", prompt
-            )
+            self.assertIn("Pricing power erodes as customer budgets compress.", prompt)
             for topic in (
                 "forward_guidance",
                 "reported_variance_driver",
@@ -884,6 +920,7 @@ class RequestConstructionTests(unittest.TestCase):
                 self.assertIn(f'"{topic}"', prompt)
             self.assertNotIn('"risk":', prompt)
             self.assertNotIn('"catalyst":', prompt)
+
     def test_packet_is_deep_copied_per_call(self):
         request = build_requests()[0]
         first = request.packet()
@@ -904,26 +941,20 @@ class RequestConstructionTests(unittest.TestCase):
         for request in build_requests():
             self.assertEqual(request.schema_name, SCHEMA_NAME)
             self.assertIsInstance(request.schema, MappingProxyType)
+            self.assertIsInstance(request.schema["properties"], MappingProxyType)
             self.assertIsInstance(
-                request.schema["properties"], MappingProxyType
-            )
-            self.assertIsInstance(
-                request.schema["properties"]["dimension_scores"][
-                    "properties"
-                ],
+                request.schema["properties"]["dimension_scores"]["properties"],
                 MappingProxyType,
             )
-            required = request.schema["properties"]["dimension_scores"][
-                "required"
-            ]
+            required = request.schema["properties"]["dimension_scores"]["required"]
             self.assertIsInstance(required, tuple)
             self.assertEqual(list(required), list(JUDGE_DIMENSIONS))
             with self.assertRaises(TypeError):
                 request.schema["strict"] = True
             with self.assertRaises((TypeError, AttributeError)):
-                request.schema["properties"]["dimension_scores"][
-                    "required"
-                ].append("extra")
+                request.schema["properties"]["dimension_scores"]["required"].append(
+                    "extra"
+                )
 
     def test_packet_and_dict_are_independent_plain_copies(self):
         for request in build_requests():
@@ -936,8 +967,13 @@ class RequestConstructionTests(unittest.TestCase):
             self.assertEqual(
                 set(as_dict),
                 set(packet)
-                | {"role", "token", "prompt_version", "response_binding",
-                   "producer_fingerprint"},
+                | {
+                    "role",
+                    "token",
+                    "prompt_version",
+                    "response_binding",
+                    "producer_fingerprint",
+                },
             )
             # Materialized payloads are plain JSON-native structures.
             self.assertNotIsInstance(packet["schema"], MappingProxyType)
@@ -965,7 +1001,6 @@ class RequestConstructionTests(unittest.TestCase):
             self.assertEqual(request.prompt, prompt_before)
             self.assertEqual(request.fingerprint, fingerprint_before)
             self.assertEqual(request.response_binding, binding_before)
-
 
     def test_dispatch_materialization_never_aliases_stored_request(self):
         baseline = {
@@ -1001,7 +1036,6 @@ class RequestConstructionTests(unittest.TestCase):
             fresh = parse_judge_result(request, valid_payload(request))
             self.assertEqual(fresh.token, request.token)
             self.assertEqual(fresh.response_binding, request.response_binding)
-
 
     def test_prompt_bytes_stable_under_payload_mutation(self):
         requests = build_requests()
@@ -1045,7 +1079,9 @@ class ParseJudgeResultTests(unittest.TestCase):
         self.assertEqual(result.token, self.request.token)
         self.assertEqual(result.response_binding, self.request.response_binding)
         self.assertEqual(result.prompt_version, PROMPT_VERSION)
-        self.assertTrue(all(score.dimension in JUDGE_DIMENSIONS for score in result.scores))
+        self.assertTrue(
+            all(score.dimension in JUDGE_DIMENSIONS for score in result.scores)
+        )
 
     def _assert_rejected(self, mutate):
         payload = valid_payload(self.request)
@@ -1077,13 +1113,15 @@ class ParseJudgeResultTests(unittest.TestCase):
         self.assertEqual(from_string.score_for(JUDGE_DIMENSIONS[3]), 4.8)
         from_mapping = parse_judge_result(self.request, payload)
         self.assertEqual(from_mapping.overall, 4.5)
-        self.assertTrue(
-            all(score.score == 4.8 for score in from_mapping.scores)
-        )
+        self.assertTrue(all(score.score == 4.8 for score in from_mapping.scores))
 
     def test_rejects_out_of_range_overall(self):
-        self._assert_rejected(lambda payload: payload.update({"overall": SCORE_MAXIMUM + 1}))
-        self._assert_rejected(lambda payload: payload.update({"overall": SCORE_MINIMUM - 1}))
+        self._assert_rejected(
+            lambda payload: payload.update({"overall": SCORE_MAXIMUM + 1})
+        )
+        self._assert_rejected(
+            lambda payload: payload.update({"overall": SCORE_MINIMUM - 1})
+        )
 
     def test_rejects_bool_dimension_score(self):
         def mutate(payload):
@@ -1110,7 +1148,9 @@ class ParseJudgeResultTests(unittest.TestCase):
 
     def test_rejects_wrong_prompt_version(self):
         self._assert_rejected(
-            lambda payload: payload.update({"prompt_version": "company_judge_prompt_v0"})
+            lambda payload: payload.update(
+                {"prompt_version": "company_judge_prompt_v0"}
+            )
         )
 
     def test_rejects_wrong_response_binding(self):
@@ -1125,9 +1165,7 @@ class ParseJudgeResultTests(unittest.TestCase):
     def test_rejects_binding_from_another_run_salt(self):
         other_run = build_requests(SALT_B)
         foreign = next(
-            request
-            for request in other_run
-            if request.role == self.request.role
+            request for request in other_run if request.role == self.request.role
         )
         self._assert_rejected(
             lambda payload: payload.update(
@@ -1161,10 +1199,7 @@ class ParseJudgeResultTests(unittest.TestCase):
         # never echoed by the judge inside its own response contract.
         self.assertNotEqual(result.response_binding, self.request.fingerprint)
         self.assertFalse(
-            any(
-                "fingerprint" in name
-                for name in type(result).__dataclass_fields__
-            )
+            any("fingerprint" in name for name in type(result).__dataclass_fields__)
         )
 
     def test_rejects_sub4_dimension_without_rationale(self):
@@ -1337,9 +1372,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
         self.assertEqual(report.overall_median, 4.0)
         for dimension in JUDGE_DIMENSIONS:
             values = sorted(result.score_for(dimension) for result in results)
-            self.assertEqual(
-                report.dimension_medians[dimension], float(values[1])
-            )
+            self.assertEqual(report.dimension_medians[dimension], float(values[1]))
             self.assertEqual(report.dimension_minima[dimension], values[0])
         # Every dimension sees a 4/5 mix across judges: minima are all 4 and
         # medians land on 4.0 or 5.0 depending on parity alignment.
@@ -1440,7 +1473,11 @@ class AggregateJudgePanelTests(unittest.TestCase):
             aggregate_judge_panel(
                 self.requests,
                 self.results,
-                {"passed": True, "failures": [], "producer_fingerprint": OTHER_IDENTITY},
+                {
+                    "passed": True,
+                    "failures": [],
+                    "producer_fingerprint": OTHER_IDENTITY,
+                },
             )
 
     def test_panel_report_serializes_producer_identity(self):
@@ -1534,12 +1571,8 @@ class AggregateJudgePanelTests(unittest.TestCase):
             # Rendered verbatim into the prompt exactly once, and the
             # executor-visible prompt states the same value as the attribute.
             self.assertIn(request.response_binding, request.prompt)
-            self.assertEqual(
-                request.prompt.count(request.response_binding), 1
-            )
-            self.assertEqual(
-                stated_response_binding(request), request.response_binding
-            )
+            self.assertEqual(request.prompt.count(request.response_binding), 1)
+            self.assertEqual(stated_response_binding(request), request.response_binding)
             # The old ambiguous echo never re-enters the response contract.
             self.assertNotIn("fingerprint=", request.prompt)
             self.assertNotIn("fingerprint", request.to_dict())
@@ -1548,12 +1581,8 @@ class AggregateJudgePanelTests(unittest.TestCase):
         alpha = build_requests(SALT_A)
         beta = build_requests(SALT_B)
         for fresh in beta:
-            same_role = next(
-                request for request in alpha if request.role == fresh.role
-            )
-            self.assertNotEqual(
-                fresh.response_binding, same_role.response_binding
-            )
+            same_role = next(request for request in alpha if request.role == fresh.role)
+            self.assertNotEqual(fresh.response_binding, same_role.response_binding)
         # Same inputs reproduce the identical binding byte-for-byte.
         replayed = build_requests(SALT_A)
         self.assertEqual(
@@ -1580,7 +1609,6 @@ class AggregateJudgePanelTests(unittest.TestCase):
                 }
             )
             self.assertEqual(request.fingerprint, recomputed)
-
 
     def test_prompt_or_schema_mutation_moves_fingerprint_but_not_rendered_binding(self):
         # The binding is computed BEFORE rendering, from the packet and the
@@ -1615,9 +1643,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
                     producer_fingerprint=original.producer_fingerprint,
                     **mutation,
                 )
-                self.assertEqual(
-                    tampered.response_binding, original.response_binding
-                )
+                self.assertEqual(tampered.response_binding, original.response_binding)
                 self.assertEqual(tampered.fingerprint, original.fingerprint)
                 # Honest recomputation over the mutated content — exactly
                 # what artifact serialization performs — diverges from the
@@ -1637,24 +1663,18 @@ class AggregateJudgePanelTests(unittest.TestCase):
                 )
                 self.assertNotEqual(recomputed, tampered.fingerprint)
 
-
     def test_to_dict_exposes_identity_and_stays_independent(self):
         for request in build_requests():
             as_dict = request.to_dict()
             self.assertEqual(as_dict["producer_fingerprint"], PRODUCER_IDENTITY)
-            self.assertEqual(
-                as_dict["response_binding"], request.response_binding
-            )
+            self.assertEqual(as_dict["response_binding"], request.response_binding)
             as_dict["producer_fingerprint"] = OTHER_IDENTITY
             as_dict["response_binding"] = "0" * 64
             self.assertEqual(request.producer_fingerprint, PRODUCER_IDENTITY)
-            self.assertEqual(
-                request.response_binding, stated_response_binding(request)
-            )
+            self.assertEqual(request.response_binding, stated_response_binding(request))
             fresh = request.to_dict()
             self.assertEqual(fresh["producer_fingerprint"], PRODUCER_IDENTITY)
             self.assertEqual(fresh["response_binding"], request.response_binding)
-
 
     def test_severe_regression_fails_panel(self):
         flagged = []
@@ -1696,13 +1716,9 @@ class AggregateJudgePanelTests(unittest.TestCase):
     def test_malformed_gate_reports_fail_closed_without_raising(self):
         for variant in malformed_gate_variants():
             with self.subTest(variant=repr(variant)[:60]):
-                report = aggregate_judge_panel(
-                    self.requests, self.results, variant
-                )
+                report = aggregate_judge_panel(self.requests, self.results, variant)
                 self.assertFalse(report.passed)
-                self.assertFalse(
-                    self._criterion(report, "hard_gates_pass").passed
-                )
+                self.assertFalse(self._criterion(report, "hard_gates_pass").passed)
                 for criterion in report.criteria:
                     if criterion.criterion != "hard_gates_pass":
                         self.assertTrue(criterion.passed)
@@ -1714,9 +1730,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
         for variant in (object(), None):
             with self.subTest(variant=repr(variant)[:60]):
                 with self.assertRaises(ValueError):
-                    aggregate_judge_panel(
-                        self.requests, self.results, variant
-                    )
+                    aggregate_judge_panel(self.requests, self.results, variant)
 
     def test_gate_failure_summaries_bounded_and_structural(self):
         report = aggregate_judge_panel(
@@ -1776,9 +1790,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
                 ),
             ),
         )
-        report = aggregate_judge_panel(
-            self.requests, self.results, report_obj
-        )
+        report = aggregate_judge_panel(self.requests, self.results, report_obj)
         self.assertFalse(report.passed)
         self.assertFalse(self._criterion(report, "hard_gates_pass").passed)
         self.assertEqual(len(report.gate_failures), 1)
@@ -1786,9 +1798,7 @@ class AggregateJudgePanelTests(unittest.TestCase):
         self.assertEqual(failure.code, "required_evidence_absent")
         self.assertEqual(failure.severity, "material")
         self.assertEqual(failure.root_category, "filing_evidence")
-        self.assertEqual(
-            failure.path, "facts.qualitative.guidance_up.evidence"
-        )
+        self.assertEqual(failure.path, "facts.qualitative.guidance_up.evidence")
         self.assertIn("not present", failure.evidence)
 
     def test_dataclass_like_gate_report_with_contradictory_flag_fails(self):
@@ -1803,14 +1813,15 @@ class AggregateJudgePanelTests(unittest.TestCase):
             producer_fingerprint=PRODUCER_IDENTITY,
             failures=(object(),),
         )
-        report = aggregate_judge_panel(
-            self.requests, self.results, contradiction
-        )
+        report = aggregate_judge_panel(self.requests, self.results, contradiction)
         self.assertFalse(report.passed)
         self.assertFalse(self._criterion(report, "hard_gates_pass").passed)
         self.assertEqual(len(report.gate_failures), 1)
         self.assertEqual(
-            {key: getattr(report.gate_failures[0], key) for key in ("code", "severity", "root_category")},
+            {
+                key: getattr(report.gate_failures[0], key)
+                for key in ("code", "severity", "root_category")
+            },
             {"code": "unknown", "severity": "unknown", "root_category": "unknown"},
         )
 
@@ -1842,18 +1853,14 @@ class AggregateJudgePanelTests(unittest.TestCase):
         for dimension in JUDGE_DIMENSIONS:
             with self.subTest(dimension=dimension):
                 results = floored_results(self.requests, dimension)
-                report = aggregate_judge_panel(
-                    self.requests, results, passing_gate()
-                )
+                report = aggregate_judge_panel(self.requests, results, passing_gate())
                 self.assertFalse(report.passed)
                 self.assertEqual(report.dimension_medians[dimension], 3.0)
                 self.assertEqual(report.dimension_minima[dimension], 3)
                 self.assertFalse(
                     self._criterion(report, "all_dimension_medians").passed
                 )
-                floor_criterion = self._criterion(
-                    report, "core_dimension_judge_floor"
-                )
+                floor_criterion = self._criterion(report, "core_dimension_judge_floor")
                 self.assertFalse(floor_criterion.passed)
                 self.assertIn(dimension, floor_criterion.detail)
 
@@ -1876,22 +1883,16 @@ class AggregateJudgePanelTests(unittest.TestCase):
                             "summary states a margin the excerpt does not support"
                         ]
                     results.append(parse_judge_result(request, payload))
-                report = aggregate_judge_panel(
-                    self.requests, results, passing_gate()
-                )
+                report = aggregate_judge_panel(self.requests, results, passing_gate())
                 self.assertFalse(report.passed)
                 self.assertEqual(report.dimension_medians[dimension], 5.0)
                 self.assertEqual(report.dimension_minima[dimension], 1)
-                self.assertTrue(
-                    self._criterion(report, "all_dimension_medians").passed
-                )
+                self.assertTrue(self._criterion(report, "all_dimension_medians").passed)
                 if dimension in named:
                     self.assertTrue(
                         self._criterion(report, f"{dimension}_median").passed
                     )
-                floor_criterion = self._criterion(
-                    report, "core_dimension_judge_floor"
-                )
+                floor_criterion = self._criterion(report, "core_dimension_judge_floor")
                 self.assertFalse(floor_criterion.passed)
                 self.assertIn(dimension, floor_criterion.detail)
 
@@ -1903,19 +1904,13 @@ class AggregateJudgePanelTests(unittest.TestCase):
                 results = [
                     parse_judge_result(
                         request,
-                        edge_floor_payload(
-                            request, dimension, 4 if index == 0 else 5
-                        ),
+                        edge_floor_payload(request, dimension, 4 if index == 0 else 5),
                     )
                     for index, request in enumerate(self.requests)
                 ]
-                report = aggregate_judge_panel(
-                    self.requests, results, passing_gate()
-                )
+                report = aggregate_judge_panel(self.requests, results, passing_gate())
                 self.assertEqual(report.dimension_minima[dimension], 4)
-                floor_criterion = self._criterion(
-                    report, "core_dimension_judge_floor"
-                )
+                floor_criterion = self._criterion(report, "core_dimension_judge_floor")
                 self.assertTrue(floor_criterion.passed)
                 self.assertTrue(report.passed)
 
@@ -1937,17 +1932,14 @@ class AggregateJudgePanelTests(unittest.TestCase):
             results.append(parse_judge_result(request, payload))
         report = aggregate_judge_panel(self.requests, results, passing_gate())
         floored_dimensions = {
-            JUDGE_DIMENSIONS[index % len(JUDGE_DIMENSIONS)]
-            for index in range(3)
+            JUDGE_DIMENSIONS[index % len(JUDGE_DIMENSIONS)] for index in range(3)
         }
         for dimension in floored_dimensions:
             self.assertEqual(report.dimension_minima[dimension], 3)
         self.assertTrue(
             all(median == 5.0 for median in report.dimension_medians.values())
         )
-        floor_criterion = self._criterion(
-            report, "core_dimension_judge_floor"
-        )
+        floor_criterion = self._criterion(report, "core_dimension_judge_floor")
         self.assertFalse(floor_criterion.passed)
         self.assertFalse(report.passed)
 
@@ -1977,16 +1969,12 @@ class AggregateJudgePanelTests(unittest.TestCase):
         foreign_request = next(
             request for request in other_run if request.role == target_role
         )
-        foreign = parse_judge_result(
-            foreign_request, valid_payload(foreign_request)
-        )
+        foreign = parse_judge_result(foreign_request, valid_payload(foreign_request))
         mixed = [self.results[0], self.results[1], foreign]
         roles = [result.role for result in mixed]
         self.assertEqual(len(set(roles)), 3)
         self.assertNotEqual(foreign.token, self.requests[2].token)
-        self.assertNotEqual(
-            foreign.response_binding, self.requests[2].response_binding
-        )
+        self.assertNotEqual(foreign.response_binding, self.requests[2].response_binding)
         with self.assertRaises(ValueError):
             aggregate_judge_panel(self.requests, mixed, passing_gate())
 
@@ -2005,7 +1993,6 @@ class AggregateJudgePanelTests(unittest.TestCase):
     def test_wrong_panel_shape_rejected(self):
         with self.assertRaises(ValueError):
             aggregate_judge_panel(self.requests[:2], self.results[:2], passing_gate())
-
 
 
 class FractionalScoreBoundaryTests(unittest.TestCase):
@@ -2029,9 +2016,7 @@ class FractionalScoreBoundaryTests(unittest.TestCase):
                     self.request, scored_payload(self.request, value)
                 )
                 self.assertEqual(result.overall, value)
-                self.assertTrue(
-                    all(score.score == value for score in result.scores)
-                )
+                self.assertTrue(all(score.score == value for score in result.scores))
 
     def test_extreme_grid_values_are_preserved_exactly(self):
         low = parse_judge_result(self.request, scored_payload(self.request, 1.0))
@@ -2076,9 +2061,7 @@ class FractionalScoreBoundaryTests(unittest.TestCase):
         for dimension in JUDGE_DIMENSIONS:
             for value in (4.15, "4.3", True, float("nan"), 5.05, -0.4):
                 with self.subTest(dimension=dimension, value=repr(value)):
-                    self._assert_score_rejected(
-                        self._set_dimension(dimension, value)
-                    )
+                    self._assert_score_rejected(self._set_dimension(dimension, value))
 
     def test_overprecise_literal_in_raw_json_is_not_rounded_onto_grid(self):
         # A raw JSON literal carrying more than one decimal digit must be
@@ -2086,7 +2069,9 @@ class FractionalScoreBoundaryTests(unittest.TestCase):
         # let judges claim scores they did not award.
         payload = valid_payload(self.request)
         payload["overall"] = None
-        raw = json.dumps(payload).replace('"overall": null', '"overall": 4.300000000000000001')
+        raw = json.dumps(payload).replace(
+            '"overall": null', '"overall": 4.300000000000000001'
+        )
         with self.assertRaises(ValueError):
             parse_judge_result(self.request, raw)
 
@@ -2231,9 +2216,7 @@ class FractionalPanelThresholdTests(unittest.TestCase):
         failing = panel_with_scores(self.requests, {name: (3.9, 3.9, 3.9)})
         self.assertEqual(failing.dimension_medians[name], 3.9)
         self.assertFalse(failing.passed)
-        self.assertFalse(
-            self._criterion(failing, "all_dimension_medians").passed
-        )
+        self.assertFalse(self._criterion(failing, "all_dimension_medians").passed)
         floor_criterion = self._criterion(failing, "core_dimension_judge_floor")
         self.assertFalse(floor_criterion.passed)
 
@@ -2288,7 +2271,6 @@ class FractionalPanelThresholdTests(unittest.TestCase):
         )
         self.assertEqual(report.dimension_minima["evidence_selection"], 3.9)
         self.assertIsInstance(report.dimension_minima["evidence_selection"], float)
-
 
 
 if __name__ == "__main__":

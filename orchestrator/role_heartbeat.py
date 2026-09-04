@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import text
 
 DEFAULT_HEARTBEAT_TIMEOUT = timedelta(seconds=12)
-ROLES = ("api", "scheduler", "worker", "outbox", "quotes")
+ROLES = ("worker",)
 
 # Small bounded allowance for writer clocks running slightly ahead; anything
 # further in the future is a clock/row corruption and must NOT count as fresh.

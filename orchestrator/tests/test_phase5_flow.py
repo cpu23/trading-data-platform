@@ -57,7 +57,7 @@ class EventRoutingTests(unittest.TestCase):
         with (
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=CONFIG),
-            patch("analysis_jobs.enqueue_job", return_value=SimpleNamespace()),
+            patch("jobs.enqueue_job", return_value=SimpleNamespace()),
             patch("materiality.assess_event_materiality", return_value=decision),
             patch(
                 "market_state.update_price_features", return_value={"symbol": "EURUSD"}
@@ -67,6 +67,7 @@ class EventRoutingTests(unittest.TestCase):
         update.assert_called_once()
         self.assertEqual(result["market_state"]["symbol"], "EURUSD")
         self.assertNotIn("llm", result)
+
     def test_disabled_market_state_does_not_update_price_features(self):
         from events.routing import initial_handler
 
@@ -86,7 +87,6 @@ class EventRoutingTests(unittest.TestCase):
         update.assert_not_called()
         self.assertNotIn("market_state", result)
 
-
     def test_material_macro_release_gets_t0_and_bounded_stage_jobs(self):
         from events.routing import initial_handler
 
@@ -101,7 +101,7 @@ class EventRoutingTests(unittest.TestCase):
         with (
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=CONFIG),
-            patch("analysis_jobs.enqueue_job", side_effect=capture),
+            patch("jobs.enqueue_job", side_effect=capture),
             patch("materiality.assess_event_materiality", return_value=routed),
             patch(
                 "macro_releases.upsert_macro_release_card", return_value={"stage": "t0"}
@@ -131,7 +131,7 @@ class EventRoutingTests(unittest.TestCase):
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=CONFIG),
             patch(
-                "analysis_jobs.enqueue_job",
+                "jobs.enqueue_job",
                 side_effect=lambda *_args, **kwargs: enqueued.append(kwargs)
                 or SimpleNamespace(),
             ),

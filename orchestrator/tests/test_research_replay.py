@@ -9,15 +9,6 @@ from unittest.mock import MagicMock
 ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
-from contracts.runtime_config import (  # noqa: E402
-    AppConfig,
-    DatabaseConfig,
-    LlmConfig,
-    ResearchDiscoveryConfig,
-    ResearchIntelligenceConfig,
-    ResearchLimitsConfig,
-    ResearchStageConfig,
-)
 from research_intelligence.benchmarks import (  # noqa: E402
     list_benchmarks,
 )
@@ -50,6 +41,16 @@ from research_intelligence.scorecards import (  # noqa: E402
     validate_human_annotations,
 )
 from research_intelligence.service import run_model_stage  # noqa: E402
+
+from contracts.runtime_config import (  # noqa: E402
+    AppConfig,
+    DatabaseConfig,
+    LlmConfig,
+    ResearchDiscoveryConfig,
+    ResearchIntelligenceConfig,
+    ResearchLimitsConfig,
+    ResearchStageConfig,
+)
 
 CUTOFF = datetime(2024, 6, 30, 23, 59, tzinfo=UTC)
 IMPORTANCE_KEYS = (

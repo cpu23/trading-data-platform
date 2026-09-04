@@ -125,8 +125,7 @@ only and does not assert a production SLA:
 python scripts/benchmark_api.py \
   --url http://127.0.0.1:8000/api/investment/dashboard \
   --scenario investment-dashboard \
-  --username "$DASHBOARD_USER" \
-  --password "$DASHBOARD_PASSWORD" \
+  --session-cookie "$MARKET_SESSION" \
   --warm-count 5 \
   --output benchmark-api.json
 ```
@@ -159,7 +158,6 @@ samples.
 The offline gates remain useful for deployment checks:
 
 ```bash
-scripts/test_clean_migrations.sh
 scripts/smoke_test.sh
 api/.venv/bin/python scripts/failure_drills.py --unit-only
 ```
@@ -180,61 +178,7 @@ is effectively unchanged (-0.21%). This is an observed local acceptance result,
 not an SLA. Artifact:
 `artifacts/performance/dashboard-cockpit-20260808.json`.
 
-SSE is intentionally excluded from request-latency samples because it is a
-long-lived connection. Demo smoke separately proves that the deterministic
-publisher inserts a price observation, appends a `watchlist_changed`
-invalidation, and that `/stream` replays that event. The browser then performs
-the normal bounded partial request.
-
-## Autonomous research control plane acceptance — 24 August 2026
-
-The control plane was measured against a clean deterministic demo Compose
-deployment on the same workstation. External collectors and paid model calls
-were disabled. Each route received one cold request followed by 20 sequential
-warm requests through `scripts/benchmark_api.py`.
-
-The historical pre-change Operations baseline above was 4,214 bytes and
-115.67 ms warm median on 17 July 2026. It did not include the topology, control
-plane, or accessible topology summary. The current page deliberately carries a
-bounded 22-node/23-edge topology plus its equivalent text description.
-
-| Route | Cold ms | Warm p50 ms | Warm p95 ms | Response bytes |
-| --- | ---: | ---: | ---: | ---: |
-| Operations `/operations` | 102.312 | 20.452 | 22.098 | 140,338 |
-| Topology JSON `/api/system/topology` | 10.825 | 5.168 | 6.083 | 14,824 |
-| Topology partial `/partials/operations/system-topology` | 19.833 | 10.149 | 13.392 | 134,836 |
-| Control-plane status `/api/research/control-plane/status` | 16.626 | 3.187 | 3.539 | 644 |
-| 100 pending questions `/api/research/questions?limit=100&status=pending` | 12.149 | 4.754 | 5.103 | 103,081 |
-
-The topology JSON warm p95 is below the 250 ms acceptance bound and the
-topology partial warm p95 is below the 300 ms bound. The page and partial
-payloads remain bounded by the topology contract: at most 64 nodes, 128 edges,
-and 22 components/23 edges in this demo. The populated question measurement
-used exactly 100 disposable ledger rows, which is the endpoint's maximum page
-size; request work cannot grow with unbounded ledger history.
-
-`EXPLAIN (ANALYZE, BUFFERS)` on the migrated demo database confirmed index-only
-scans for status-filtered question and work-order pages
-(`idx_research_questions_list_status`,
-`idx_research_work_orders_list_status`). The topology activity probes used
-`idx_analysis_jobs_activity`, `idx_market_events_ingested`,
-`idx_event_outbox_activity`, `idx_ui_events_created`,
-`idx_research_questions_updated`, `idx_research_work_orders_updated`, and
-`idx_research_effects_created`. Observed execution times were 0.014–0.345 ms;
-the empty-ledger list probes were 0.022–0.032 ms.
-
-Artifacts:
-
-- `artifacts/performance/rcp-operations-20260824.json`
-- `artifacts/performance/rcp-system-topology-20260824.json`
-- `artifacts/performance/rcp-system-topology-partial-20260824.json`
-- `artifacts/performance/rcp-control-status-20260824.json`
-- `artifacts/performance/rcp-questions-bounded-20260824.json`
-- `artifacts/performance/rcp-operations-desktop-20260824.webp`
-
-Browser verification used the real `/operations` surface at 1440×900 and
-390×844. It observed no console or page errors, keyboard activation and detail
-focus preservation across an HTMX swap, a manual planner transition to active,
-one centralized 90-second fallback timer before and after swaps, no
-page-horizontal overflow at 390 px, and `animation-name: none` under
-`prefers-reduced-motion: reduce`.
+The browser uses one visibility-aware polling heartbeat rather than a
+long-lived stream. Demo smoke proves that the deterministic publisher inserts a
+price observation and that a `marketRefresh` event performs the normal bounded
+partial requests.

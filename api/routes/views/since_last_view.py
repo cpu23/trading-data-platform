@@ -9,12 +9,12 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from api_db import query_many
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import live_updates_enabled, load_config
-from db import query_many
+from config import load_config
 
 router = APIRouter()
 
@@ -253,7 +253,6 @@ def partial_since_last_view(request: Request):
         {
             "request": request,
             "since_last_view": summary,
-            "live_updates_enabled": live_updates_enabled(config),
         },
     )
 

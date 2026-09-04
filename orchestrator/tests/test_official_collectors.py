@@ -171,8 +171,7 @@ class OfficialCollectorTests(unittest.TestCase):
         password = "SENTINEL-PASSWORD"
         query_secret = "SENTINEL-QUERY-TOKEN"
         raw_feed_url = (
-            f"https://{user}:{password}@example.test/feed"
-            f"?token={query_secret}&lang=en"
+            f"https://{user}:{password}@example.test/feed?token={query_secret}&lang=en"
         )
         config = {
             "collectors": {
@@ -866,9 +865,7 @@ class OfficialCollectorTests(unittest.TestCase):
         self.assertIn("example.test", error)
         log_error = mock_logger.error.call_args.kwargs["error"]
         self.assertNotIn(secret, log_error)
-        self.assertEqual(
-            mock_logger.error.call_args.args[0], "official_series_failed"
-        )
+        self.assertEqual(mock_logger.error.call_args.args[0], "official_series_failed")
 
     @patch("collectors.official_macro.make_request")
     @patch("socket.getaddrinfo", side_effect=_public_dns)

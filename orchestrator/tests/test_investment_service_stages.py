@@ -10,13 +10,12 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import investment_service as service
 from investment_service_support import (
     investment_report_payload,
     metric,
     session_context,
 )
-
-import investment_service as service
 from llm_client import LLMValidationError
 
 
@@ -108,16 +107,18 @@ class InvestmentStagePipelineTests(unittest.TestCase):
 
     def test_exact_typography_quotes_ground_but_edits_do_not(self):
         filing_text = (
-            "Management\u2019s \u201Cdemand remained durable\u201D \u2014 "
+            "Management\u2019s \u201cdemand remained durable\u201d \u2014 "
             "backlog\u00a0held."
         )
         source = self._payload()
         source["qualitative"]["ai_demand"]["present"] = True
         source["qualitative"]["ai_demand"]["evidence"] = (
-            "Management's \"demand remained durable\" - backlog held."
+            'Management\'s "demand remained durable" - backlog held.'
         )
         self.assertEqual(
-            service.investment_evidence_violations(source, excerpt=filing_text, news_items=[]),
+            service.investment_evidence_violations(
+                source, excerpt=filing_text, news_items=[]
+            ),
             [],
         )
 
@@ -167,9 +168,15 @@ class InvestmentStagePipelineTests(unittest.TestCase):
         )
         header_quote = self._payload()
         header_quote["qualitative"]["ai_demand"]["present"] = True
-        header_quote["qualitative"]["ai_demand"]["evidence"] = "[Source characters 0-40]"
+        header_quote["qualitative"]["ai_demand"]["evidence"] = (
+            "[Source characters 0-40]"
+        )
         self.assertEqual(
-            len(service.investment_evidence_violations(header_quote, excerpt=excerpt, news_items=[])),
+            len(
+                service.investment_evidence_violations(
+                    header_quote, excerpt=excerpt, news_items=[]
+                )
+            ),
             1,
         )
 
@@ -181,7 +188,9 @@ class InvestmentStagePipelineTests(unittest.TestCase):
         ungrounded = self._payload()
         ungrounded["qualitative"]["pricing_power"]["present"] = True
         ungrounded["qualitative"]["pricing_power"]["strength"] = "strong"
-        ungrounded["qualitative"]["pricing_power"]["evidence"] = "Margins expanded sharply"
+        ungrounded["qualitative"]["pricing_power"]["evidence"] = (
+            "Margins expanded sharply"
+        )
 
         grounded = self._payload()
         grounded["qualitative"]["pricing_power"]["present"] = True
@@ -201,7 +210,9 @@ class InvestmentStagePipelineTests(unittest.TestCase):
             MagicMock(),
         ]
         stage = MagicMock()
-        stage.policy = SimpleNamespace(model="openai/gpt-5.6-luna", validation_retries=1)
+        stage.policy = SimpleNamespace(
+            model="openai/gpt-5.6-luna", validation_retries=1
+        )
         stage.telemetry = SimpleNamespace(
             tokens_input_total=1200,
             tokens_output_total=500,
@@ -250,7 +261,9 @@ class InvestmentStagePipelineTests(unittest.TestCase):
         claim_session = MagicMock()
         claim_session.execute.return_value.fetchone.return_value = (document_id,)
         stage = MagicMock()
-        stage.policy = SimpleNamespace(model="openai/gpt-5.6-luna", validation_retries=1)
+        stage.policy = SimpleNamespace(
+            model="openai/gpt-5.6-luna", validation_retries=1
+        )
         stage.telemetry = SimpleNamespace(
             tokens_input_total=1200,
             tokens_output_total=500,
@@ -282,7 +295,9 @@ class InvestmentStagePipelineTests(unittest.TestCase):
         document_id = "11111111-1111-1111-1111-111111111111"
         document = self._mock_document(document_id)
         claim_session = MagicMock()
-        claim_session.execute.return_value.fetchone.return_value = None  # Already running
+        claim_session.execute.return_value.fetchone.return_value = (
+            None  # Already running
+        )
 
         with (
             patch.object(service, "_load_document", return_value=document),

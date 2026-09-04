@@ -17,7 +17,6 @@ from collectors.cboe_options import (
     SOURCE_ID,
     CboeOptionsCollector,
 )
-from contracts.runtime_config import CollectorConfig
 from errors import InvalidSourceData, TransientSourceError
 from options_analytics import (
     STATE_INSUFFICIENT_HISTORY,
@@ -25,6 +24,8 @@ from options_analytics import (
     STATE_OK,
     analyze_chain,
 )
+
+from contracts.runtime_config import CollectorConfig
 
 PINNED_CAPTURED_AT = datetime(2026, 8, 14, 21, 5, 0, tzinfo=UTC)
 SOURCE_TIME_UTC = datetime(2026, 8, 14, 20, 58, 53, 163568, tzinfo=UTC)
@@ -692,7 +693,9 @@ class CboeOptionsCollectorTests(unittest.TestCase):
     @patch("collectors.cboe_options._utc_now", return_value=PINNED_CAPTURED_AT)
     @patch("collectors.cboe_options._sleep")
     @patch("collectors.cboe_options.make_request")
-    def test_byte_bound_is_enforced_via_streaming_cap(self, make_request, sleep, utc_now):
+    def test_byte_bound_is_enforced_via_streaming_cap(
+        self, make_request, sleep, utc_now
+    ):
         # The body cap is enforced while the response streams inside
         # make_request; the collector must hand the bound over. A declared
         # Content-Length under the cap is accepted here because the
@@ -716,9 +719,7 @@ class CboeOptionsCollectorTests(unittest.TestCase):
     def test_streaming_oversize_is_reported_as_invalid_source_data(
         self, make_request, sleep, utc_now
     ):
-        request = httpx.Request(
-            "GET", f"{DEFAULT_BASE_URL.rstrip('/')}/SPY.json"
-        )
+        request = httpx.Request("GET", f"{DEFAULT_BASE_URL.rstrip('/')}/SPY.json")
         make_request.side_effect = http_client.ResponseBodyTooLarge(
             "response exceeds 1024 bytes", request=request
         )

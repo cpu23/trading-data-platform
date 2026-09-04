@@ -5,12 +5,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from config_loader import AppConfig
+from logging_config import get_logger
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
-
-from config_loader import AppConfig
-from logging_config import get_logger
 
 logger = get_logger("db")
 

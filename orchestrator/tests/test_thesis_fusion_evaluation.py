@@ -13,6 +13,10 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
+from research_intelligence.contracts import (  # noqa: E402
+    EvidenceSignal,
+    Scenario,
+)
 from support_thesis_fusion import (  # noqa: E402
     LINK_ID,
     NOW,
@@ -20,11 +24,6 @@ from support_thesis_fusion import (  # noqa: E402
     Result,
     Session,
     evidence_row,
-)
-
-from research_intelligence.contracts import (  # noqa: E402
-    EvidenceSignal,
-    Scenario,
 )
 from thesis_fusion import (  # noqa: E402
     append_opportunity_snapshot,
@@ -195,7 +194,6 @@ class OpportunitySnapshotTests(unittest.TestCase):
         self.assertEqual(params["neglect_score"], 0.0)
         self.assertEqual(params["catalyst_score"], 0.0)
         session.commit.assert_not_called()
-
 
 
 class EvaluateThesisTests(unittest.TestCase):
@@ -397,9 +395,7 @@ class EvaluateThesisTests(unittest.TestCase):
                 Result(first={"present": 1}),  # thesis exists
                 Result(
                     rows=[
-                        evidence_row(
-                            evidence_fingerprint=signal.evidence_fingerprint
-                        )
+                        evidence_row(evidence_fingerprint=signal.evidence_fingerprint)
                     ]
                 ),
                 Result(

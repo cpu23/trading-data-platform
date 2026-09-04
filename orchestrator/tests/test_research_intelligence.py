@@ -11,13 +11,6 @@ from uuid import UUID
 ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
 
-from contracts.runtime_config import (  # noqa: E402
-    AppConfig,
-    DatabaseConfig,
-    LlmConfig,
-    ResearchIntelligenceConfig,
-    ResearchLimitsConfig,
-)
 from research_intelligence.adversarial import validate_adversarial_output  # noqa: E402
 from research_intelligence.claims import validate_claim_output  # noqa: E402
 from research_intelligence.config import ResearchSettings  # noqa: E402
@@ -87,6 +80,14 @@ from research_intelligence.service import (  # noqa: E402
 )
 from research_intelligence.value_capture import (
     validate_value_capture_output,  # noqa: E402
+)
+
+from contracts.runtime_config import (  # noqa: E402
+    AppConfig,
+    DatabaseConfig,
+    LlmConfig,
+    ResearchIntelligenceConfig,
+    ResearchLimitsConfig,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"

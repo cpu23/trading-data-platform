@@ -58,19 +58,35 @@ class TestNumericClaimReplay(unittest.TestCase):
         problems = validate_investment_report_payload(payload)
         self.assertTrue(any("value: must be a finite number" in p for p in problems))
         self.assertTrue(any("metric: must be a nonblank string" in p for p in problems))
-        self.assertTrue(any("must have a valid unit or currency" in p for p in problems))
+        self.assertTrue(
+            any("must have a valid unit or currency" in p for p in problems)
+        )
 
     def test_batch_replayed_claims_accumulate_all_row_problems(self) -> None:
         claims = [
-            {"claim_id": "c1", "value": "nan", "metric": "m1", "period": "p1", "unit": "usd"},
-            {"claim_id": "c1", "value": 10, "metric": "m2", "period": "p2", "currency": "USD"},
+            {
+                "claim_id": "c1",
+                "value": "nan",
+                "metric": "m1",
+                "period": "p1",
+                "unit": "usd",
+            },
+            {
+                "claim_id": "c1",
+                "value": 10,
+                "metric": "m2",
+                "period": "p2",
+                "currency": "USD",
+            },
             {"claim_id": "", "value": 20, "metric": "", "period": "", "unit": "bad"},
         ]
         problems = validate_numeric_claim_rows(claims)
         self.assertGreaterEqual(len(problems), 4)
         self.assertTrue(any("duplicate claim_id 'c1'" in p for p in problems))
         self.assertTrue(any("value: must be a finite number" in p for p in problems))
-        self.assertTrue(any("claim_id: must be a nonblank string" in p for p in problems))
+        self.assertTrue(
+            any("claim_id: must be a nonblank string" in p for p in problems)
+        )
 
 
 if __name__ == "__main__":

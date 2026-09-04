@@ -3,13 +3,13 @@ import json
 import re
 from datetime import datetime
 
+from api_db import query_many
+from api_logging import get_logger
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import config as app_config
-from db import query_many
-from logging_config import get_logger
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import get_events_upcoming_data
 from routes.json.settings import timezone_context
@@ -17,7 +17,6 @@ from routes.json.system import get_system_health
 from routes.views.cockpit_panels import load_briefing_delta
 from routes.views.dashboard_strip import load_compact_strip
 from routes.views.market_events import (
-    format_stale_reason,
     matched_asset_events,
     parse_iso,
 )
@@ -86,7 +85,7 @@ def _section_text(value) -> str:
 
 
 def _briefing_sections(briefing: dict | None) -> list[dict]:
-    """Return the three fixed briefing sections with truthful legacy fallbacks."""
+    """Return the three fixed briefing sections."""
     if not briefing:
         return []
     sections = briefing.get("sections", {})
@@ -96,24 +95,6 @@ def _briefing_sections(briefing: dict | None) -> list[dict]:
     what_changed = _section_text(sections.get("what_changed"))
     interpretation = _section_text(sections.get("interpretation"))
     invalidation = _section_text(sections.get("invalidation"))
-
-    if not any((what_changed, interpretation, invalidation)):
-        # Older records predate the fixed three-section contract. Preserve their
-        # decision context under the closest current headings, but never present
-        # an upcoming event as an invalidation condition.
-        what_changed = _section_text(sections.get("today"))
-        interpretation = " ".join(
-            text
-            for text in (
-                _section_text(
-                    sections.get("macro_trend") or sections.get("macro_summary")
-                ),
-                _section_text(
-                    sections.get("this_week") or sections.get("upcoming_events")
-                ),
-            )
-            if text
-        )
 
     unavailable = "Not stated in this briefing."
     return [
@@ -206,7 +187,6 @@ def _data_status(health: dict | None) -> dict:
     }
 
 
-
 router = APIRouter()
 
 
@@ -262,7 +242,6 @@ async def dashboard(request: Request):
         "briefing": briefing,
         "briefing_sections": _briefing_sections(briefing),
         "briefing_delta": briefing_delta,
-        "live_updates_enabled": app_config.live_updates_enabled(config),
         **tz_context,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
@@ -289,7 +268,6 @@ async def partial_header(request: Request):
 
 @router.get("/partials/dashboard/news")
 def partial_news(request: Request):
-    config = app_config.load_config()
     templates = _get_templates(request)
     stories = load_story_context(limit=12)
     return templates.TemplateResponse(
@@ -298,7 +276,6 @@ def partial_news(request: Request):
         {
             "request": request,
             "stories": stories,
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )
 
@@ -368,37 +345,6 @@ def partial_cards_symbol(request: Request, symbol: str):
     )
 
 
-@router.get("/partials/dashboard/watchlist")
-@router.get("/partials/cards")
-def partial_cards(request: Request):
-    config = app_config.load_config()
-    templates = _get_templates(request)
-    briefing = None
-    try:
-        briefing = get_briefing_latest()
-        if briefing and briefing.get("stale") and briefing.get("stale_reason"):
-            briefing = dict(briefing)
-            briefing["stale_reason"] = format_stale_reason(
-                briefing["stale_reason"], "briefing"
-            )
-    except Exception:
-        briefing = None
-    try:
-        price_map = _get_latest_prices(config)
-    except Exception:
-        price_map = {}
-    return templates.TemplateResponse(
-        request,
-        "partials/cards_section.html",
-        {
-            "request": request,
-            "briefing": briefing,
-            "price_map": price_map,
-            "live_updates_enabled": app_config.live_updates_enabled(config),
-        },
-    )
-
-
 @router.get("/partials/briefing")
 def partial_briefing(request: Request):
     templates = _get_templates(request)
@@ -408,7 +354,12 @@ def partial_briefing(request: Request):
         briefing = get_briefing_latest()
     except Exception:
         briefing = None
-    briefing_delta = {"available": False, "bullets": [], "atoms": [], "latest_date": None}
+    briefing_delta = {
+        "available": False,
+        "bullets": [],
+        "atoms": [],
+        "latest_date": None,
+    }
     try:
         briefing_delta = load_briefing_delta(config, latest=briefing)
     except Exception:

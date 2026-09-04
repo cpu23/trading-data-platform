@@ -188,15 +188,11 @@ class MacroTrendTests(unittest.TestCase):
         self.assertEqual(synthesis["domains"]["uk_labor"]["state"], "weakening")
         self.assertEqual(synthesis["domains"]["japan_growth"]["state"], "weakening")
         self.assertEqual(synthesis["domains"]["japan_inflation"]["state"], "heating")
-        self.assertEqual(
-            synthesis["domains"]["japan_labor"]["state"], "strengthening"
-        )
+        self.assertEqual(synthesis["domains"]["japan_labor"]["state"], "strengthening")
         self.assertEqual(
             synthesis["domains"]["japan_money_market_rate"]["state"], "rising"
         )
-        self.assertEqual(
-            synthesis["domains"]["japan_market_rates"]["state"], "rising"
-        )
+        self.assertEqual(synthesis["domains"]["japan_market_rates"]["state"], "rising")
         self.assertTrue(
             any(
                 "Energy-cost channel" in item

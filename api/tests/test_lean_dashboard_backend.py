@@ -27,8 +27,6 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
     }
 )
@@ -42,7 +40,6 @@ AUTH = {"Authorization": "Basic dGVzdDp0ZXN0"}  # test:test
 MOCK_CONFIG = {
     "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
     "dashboard": {"indicators": []},
-    "event_pipeline": {"sse": {"enabled": True}},
 }
 
 COMPACT_STRIP = {
@@ -75,14 +72,18 @@ BRIEFING_DELTA = {
     "atoms": [{"claim_type": "macro", "count": 3}],
 }
 
-SLV = {"available": True, "marker": "2026-08-06T00:00:00+00:00", "sections": [], "counts": {}}
+SLV = {
+    "available": True,
+    "marker": "2026-08-06T00:00:00+00:00",
+    "sections": [],
+    "counts": {},
+}
 
 
 def make_app(*, auth=True, capturing_templates=False):
+    from auth import verify_credentials
     from fastapi import Depends, FastAPI
     from fastapi.templating import Jinja2Templates
-
-    from auth import verify_credentials
     from routes.views.dashboard import router as dashboard_router
     from routes.views.dashboard_strip import router as dashboard_strip_router
     from routes.views.markets import router as markets_router
@@ -113,12 +114,11 @@ class CapturingTemplates:
 
 
 class MarketsPageTests(unittest.TestCase):
-    def test_markets_is_authenticated_and_composes_all_surfaces(self):
+    def test_markets_composes_all_surfaces(self):
         from fastapi.testclient import TestClient
 
         app = make_app()
         client = TestClient(app)
-        self.assertEqual(client.get("/markets").status_code, 401)
         with patch(
             "routes.views.markets.app_config.load_config",
             return_value=MOCK_CONFIG,
@@ -249,37 +249,7 @@ class SlimDashboardTests(unittest.TestCase):
         self.assertFalse(hasattr(dashboard_module, "get_macro_release_cards_data"))
         self.assertFalse(hasattr(dashboard_module, "get_macro_dashboard"))
 
-
         self.assertFalse(hasattr(dashboard_module, "_load_research_intelligence"))
-
-    def test_legacy_briefing_uses_fixed_headings_without_inventing_invalidation(self):
-        from routes.views.dashboard import _briefing_sections
-
-        sections = _briefing_sections(
-            {
-                "sections": {
-                    "macro_trend": "Controlled expansion.",
-                    "today": "Dollar softened after payrolls.",
-                    "this_week": "ECB decision is the next catalyst.",
-                }
-            }
-        )
-
-        self.assertEqual(
-            [section["label"] for section in sections],
-            [
-                "What changed",
-                "Current interpretation",
-                "What would invalidate this",
-            ],
-        )
-        self.assertEqual(sections[0]["body"], "Dollar softened after payrolls.")
-        self.assertEqual(
-            sections[1]["body"],
-            "Controlled expansion. ECB decision is the next catalyst.",
-        )
-        self.assertEqual(sections[2]["body"], "Not stated in this briefing.")
-
 
     def test_slim_dashboard_strip_is_compact_only(self):
         """The strip context never carries price/event/chip/source/budget data."""
@@ -323,26 +293,19 @@ class SlimDashboardTests(unittest.TestCase):
         self.assertIn("regime", strip)
         self.assertIn("next_catalyst", strip)
         self.assertFalse(
-            {"direction_chips", "source_health", "budget", "last_price_update",
-             "last_material_event"} & set(strip.keys())
+            {
+                "direction_chips",
+                "source_health",
+                "budget",
+                "last_price_update",
+                "last_material_event",
+            }
+            & set(strip.keys())
         )
 
 
 class CompactStripRouteTests(unittest.TestCase):
     """/partials/dashboard/top-strip (dashboard_strip router) rendering."""
-
-    def test_top_strip_requires_auth(self):
-        from fastapi.testclient import TestClient
-
-        app = make_app(auth=True)
-        client = TestClient(app)
-        with patch(
-            "routes.views.dashboard_strip.load_compact_strip",
-            return_value=COMPACT_STRIP,
-        ):
-            self.assertEqual(
-                client.get("/partials/dashboard/top-strip").status_code, 401
-            )
 
     def test_top_strip_route_renders_compact_fields(self):
         from fastapi.testclient import TestClient
@@ -371,27 +334,6 @@ class CompactStripRouteTests(unittest.TestCase):
         self.assertIn('hx-trigger="marketRefresh from:body"', response.text)
         self.assertNotIn("data-live-section", response.text)
 
-    def test_top_strip_route_uses_sse_when_enabled(self):
-        from fastapi.testclient import TestClient
-
-        app = make_app()
-        client = TestClient(app)
-        with (
-            patch(
-                "routes.views.dashboard_strip.load_compact_strip",
-                return_value=COMPACT_STRIP,
-            ),
-            patch(
-                "routes.views.dashboard_strip.app_config.load_config",
-                return_value={"event_pipeline": {"sse": {"enabled": True}}},
-            ),
-        ):
-            response = client.get("/partials/dashboard/top-strip", headers=AUTH)
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('data-live-section="top_strip"', response.text)
-        self.assertIn('data-live-event="section_changed"', response.text)
-        self.assertNotIn("hx-trigger=", response.text)
-
     def test_top_strip_fail_soft_shows_unavailable(self):
         from fastapi.testclient import TestClient
 
@@ -412,122 +354,26 @@ class CompactStripRouteTests(unittest.TestCase):
         self.assertIn("Session snapshot unavailable.", response.text)
 
 
-class MarketPartialAliasTests(unittest.TestCase):
-    def _assert_aliases_identical(self, canonical, legacy, patches):
+class RetiredPartialRouteTests(unittest.TestCase):
+    def test_legacy_partial_aliases_are_removed(self):
         from fastapi.testclient import TestClient
 
-        app = make_app()
-        client = TestClient(app)
-        with patch(
-            "routes.views.markets.app_config.load_config",
-            return_value=MOCK_CONFIG,
-        ), patches:
-            canonical_response = client.get(canonical, headers=AUTH)
-            legacy_response = client.get(legacy, headers=AUTH)
-        self.assertEqual(canonical_response.status_code, 200)
-        self.assertEqual(legacy_response.status_code, 200)
-        self.assertEqual(canonical_response.text, legacy_response.text)
-
-    def test_cross_asset_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/cross-asset",
+        client = TestClient(make_app())
+        retired = (
             "/partials/dashboard/cross-asset",
-            patch(
-                "routes.views.markets.load_cross_asset",
-                return_value={"available": False, "panels": []},
-            ),
-        )
-
-    def test_catalysts_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/catalysts",
             "/partials/dashboard/catalysts",
-            patch(
-                "routes.views.markets.load_catalysts",
-                return_value={"available": False, "days": 7, "catalysts": []},
-            ),
-        )
-
-    def test_macro_releases_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/macro-releases",
             "/partials/dashboard/macro-releases",
-            patch(
-                "routes.views.markets.get_macro_release_cards_data",
-                return_value={"cards": []},
-            ),
-        )
-
-    def test_regime_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/regime",
             "/partials/regime",
-            patch(
-                "routes.views.markets.get_regime_current",
-                return_value={"regime": "risk_on", "sub_regime": "growth"},
-            ),
-        )
-
-    def test_indicators_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/indicators",
             "/partials/indicators",
-            patch(
-                "routes.views.markets.get_macro_dashboard",
-                return_value={"indicators": []},
-            ),
-        )
-
-    def test_events_canonical_and_legacy_alias(self):
-        self._assert_aliases_identical(
-            "/partials/markets/events",
             "/partials/events",
-            patch(
-                "routes.views.markets.get_events_upcoming_data",
-                return_value={"events": [], "grouped": {}},
-            ),
+            "/partials/dashboard/change-feed",
+            "/partials/dashboard/briefing-delta",
+            "/partials/cards",
+            "/partials/dashboard/watchlist",
         )
-
-    def test_dashboard_compat_partials_still_serve(self):
-        """Drawer/watchlist/news compatibility URLs keep working unchanged."""
-        from fastapi.testclient import TestClient
-
-        app = make_app()
-        client = TestClient(app)
-        with (
-            patch(
-                "routes.views.dashboard.app_config.load_config",
-                return_value=MOCK_CONFIG,
-            ),
-            patch(
-                "routes.views.dashboard.get_briefing_latest",
-                return_value=BRIEFING,
-            ),
-            patch(
-                "routes.views.dashboard._get_latest_prices",
-                return_value={},
-            ),
-            patch(
-                "routes.views.dashboard.load_story_context",
-                return_value={"status": "empty", "clusters": [], "lanes": {}},
-            ),
-        ):
-            self.assertEqual(
-                client.get("/partials/dashboard/news", headers=AUTH).status_code,
-                200,
-            )
-            self.assertEqual(
-                client.get("/partials/cards", headers=AUTH).status_code,
-                200,
-            )
-            self.assertEqual(
-                client.get("/partials/dashboard/watchlist", headers=AUTH).status_code,
-                200,
-            )
-            self.assertEqual(
-                client.get("/partials/cards/clear", headers=AUTH).status_code,
-                200,
-            )
+        for path in retired:
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path, headers=AUTH).status_code, 404)
 
 
 class MergedBriefingTests(unittest.TestCase):
@@ -587,12 +433,20 @@ class MergedBriefingTests(unittest.TestCase):
             self.assertEqual(context["briefing"], BRIEFING)
             self.assertEqual(
                 [section["label"] for section in context["briefing_sections"]],
-                ["What changed", "Current interpretation", "What would invalidate this"],
+                [
+                    "What changed",
+                    "Current interpretation",
+                    "What would invalidate this",
+                ],
             )
             self.assertEqual(context["briefing_delta"], BRIEFING_DELTA)
-            self.assertEqual(context["briefing_delta"]["bullets"], BRIEFING_DELTA["bullets"])
-            self.assertEqual(context["briefing_delta"]["atoms"], BRIEFING_DELTA["atoms"])
-        self.assertTrue(page_context["live_updates_enabled"])
+            self.assertEqual(
+                context["briefing_delta"]["bullets"], BRIEFING_DELTA["bullets"]
+            )
+            self.assertEqual(
+                context["briefing_delta"]["atoms"], BRIEFING_DELTA["atoms"]
+            )
+        self.assertNotIn("live_updates_enabled", page_context)
         self.assertNotIn("live_updates_enabled", partial_context)
 
 

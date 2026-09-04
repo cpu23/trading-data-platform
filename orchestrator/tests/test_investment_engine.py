@@ -307,7 +307,11 @@ class InvestmentEngineTests(unittest.TestCase):
             ),
             "qualitative": {
                 "ai_demand": {"present": True, "strength": "strong", "evidence": ["e"]},
-                "guidance_up": {"present": True, "strength": "raised", "evidence": ["e"]},
+                "guidance_up": {
+                    "present": True,
+                    "strength": "raised",
+                    "evidence": ["e"],
+                },
             },
         }
         prior = facts(
@@ -416,10 +420,22 @@ class MaterialRelationshipContractTests(unittest.TestCase):
         current = {
             "metrics": {
                 "revenue": {"value": 100.0, "unit": "USDm", "period": "FY2025"},
-                "revenue_growth": {"value": 10.0, "unit": "percent", "period": "FY2025"},
+                "revenue_growth": {
+                    "value": 10.0,
+                    "unit": "percent",
+                    "period": "FY2025",
+                },
                 "net_income": {"value": 20.0, "unit": "USDm", "period": "FY2025"},
-                "net_income_growth": {"value": 15.0, "unit": "percent", "period": "FY2025"},
-                "operating_cash_flow": {"value": 30.0, "unit": "USDm", "period": "FY2025"},
+                "net_income_growth": {
+                    "value": 15.0,
+                    "unit": "percent",
+                    "period": "FY2025",
+                },
+                "operating_cash_flow": {
+                    "value": 30.0,
+                    "unit": "USDm",
+                    "period": "FY2025",
+                },
                 "capex": {"value": 10.0, "unit": "USDm", "period": "FY2025"},
             }
         }

@@ -53,18 +53,6 @@ class VersionedIntelligenceTests(unittest.TestCase):
         self.assertEqual({item["lifecycle_status"] for item in opinions}, {"validated"})
         self.assertEqual({item["schema_version"] for item in opinions}, {"1"})
 
-    def test_migration_defines_publication_and_retention_contract(self):
-        migration = (
-            Path(__file__).resolve().parents[2]
-            / "db"
-            / "migrations"
-            / "015_versioned_intelligence.sql"
-        ).read_text()
-        self.assertIn("lifecycle_status", migration)
-        self.assertIn("publication_status", migration)
-        self.assertIn("output_ids", migration)
-        self.assertIn("retention_days INTEGER DEFAULT 90", migration)
-
     def test_processing_output_ids_remain_native_array(self):
         output_ids = ["26a71a75-52b5-40bb-96a1-e8f08d3249e6"]
         prepared = _prepare_record(

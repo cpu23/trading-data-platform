@@ -19,11 +19,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from collectors import get_collector
 from collectors.base import CollectionResult, CollectionWriteBatch, elapsed_ms
-from db import get_session, upsert_records, write_batches_in_session
 from errors import (
     ERROR_CLASS_UNKNOWN,
     InvalidSourceData,
@@ -43,6 +40,9 @@ from run_lifecycle import (
     maintain_run_heartbeat,
     start_run,
 )
+from sqlalchemy import text
+
+from db import get_session, upsert_records, write_batches_in_session
 
 DEFAULT_COLLECTOR_WORKERS = 3
 MAX_COLLECTOR_WORKERS = 8

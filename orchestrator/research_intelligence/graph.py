@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.config import ResearchSettings
 from research_intelligence.contracts import (
     CausalEdgeDraft,
@@ -138,7 +139,9 @@ def _path_exists(
     return False
 
 
-def _entity_supported(entity: NormalizedEntity, evidence: Sequence[NormalizedEvidence]) -> bool:
+def _entity_supported(
+    entity: NormalizedEntity, evidence: Sequence[NormalizedEvidence]
+) -> bool:
     for item in evidence:
         if any(
             candidate.entity_type == entity.entity_type
@@ -184,9 +187,17 @@ def validate_causal_output(
             raise ValueError("causal edge keys do not match the strict contract")
         source = _entity(raw.get("from_entity"), "from_entity")
         target = _entity(raw.get("to_entity"), "to_entity")
-        if allowed_seed and _node(source) not in allowed_seed and not _entity_supported(source, evidence):
+        if (
+            allowed_seed
+            and _node(source) not in allowed_seed
+            and not _entity_supported(source, evidence)
+        ):
             raise ValueError(f"unsupported graph entity: {source.display_name}")
-        if allowed_seed and _node(target) not in allowed_seed and not _entity_supported(target, evidence):
+        if (
+            allowed_seed
+            and _node(target) not in allowed_seed
+            and not _entity_supported(target, evidence)
+        ):
             raise ValueError(f"unsupported graph entity: {target.display_name}")
         relationship = validate_relationship(raw.get("relationship"))
         fingerprint = causal_edge_fingerprint(
@@ -200,7 +211,10 @@ def validate_causal_output(
         if state not in {item.value for item in EpistemicState}:
             raise ValueError("causal epistemic state is invalid")
         references = validate_evidence_references(raw.get("evidence_ids"), catalog)
-        if state in {EpistemicState.OBSERVED.value, EpistemicState.SUPPORTED.value} and not references:
+        if (
+            state in {EpistemicState.OBSERVED.value, EpistemicState.SUPPORTED.value}
+            and not references
+        ):
             raise ValueError(f"{state} edge requires evidence")
         if state == EpistemicState.OBSERVED.value and not any(
             catalog[reference].evidence_type in _DIRECT_OBSERVATION_TYPES
@@ -222,7 +236,11 @@ def validate_causal_output(
         if scan_prohibited_language(raw):
             raise ValueError("causal edge contains prohibited advisory language")
         reject_unsupported_numeric_text(
-            {"mechanism": mechanism, "missing_evidence": missing, "break_conditions": breaks},
+            {
+                "mechanism": mechanism,
+                "missing_evidence": missing,
+                "break_conditions": breaks,
+            },
             evidence,
         )
         draft = CausalEdgeDraft(
@@ -269,7 +287,9 @@ def bounded_traversal(
 ) -> tuple[tuple[CausalEdgeDraft | Mapping[str, Any], ...], ...]:
     if not 1 <= max_depth <= hard_max_depth <= 8:
         raise ValueError("invalid graph traversal bounds")
-    adjacency: dict[tuple[str, str], list[CausalEdgeDraft | Mapping[str, Any]]] = defaultdict(list)
+    adjacency: dict[tuple[str, str], list[CausalEdgeDraft | Mapping[str, Any]]] = (
+        defaultdict(list)
+    )
     for edge in edges[:400]:
         if isinstance(edge, Mapping):
             source = (str(edge.get("from_type")), str(edge.get("from_key")))
@@ -277,9 +297,9 @@ def bounded_traversal(
             source = (edge.from_type, edge.from_key)
         adjacency[source].append(edge)
     paths: list[tuple[CausalEdgeDraft | Mapping[str, Any], ...]] = []
-    queue: deque[tuple[tuple[str, str], tuple[Any, ...], frozenset[tuple[str, str]]]] = deque(
-        [((start_type, start_key), (), frozenset({(start_type, start_key)}))]
-    )
+    queue: deque[
+        tuple[tuple[str, str], tuple[Any, ...], frozenset[tuple[str, str]]]
+    ] = deque([((start_type, start_key), (), frozenset({(start_type, start_key)}))])
     while queue:
         node, path, visited = queue.popleft()
         if len(path) >= max_depth:

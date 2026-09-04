@@ -518,7 +518,7 @@ class AtomRoutingTests(unittest.TestCase):
         with (
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=ROUTING_CONFIG),
-            patch("analysis_jobs.enqueue_job", side_effect=capture),
+            patch("jobs.enqueue_job", side_effect=capture),
             patch(
                 "materiality.assess_event_materiality",
                 side_effect=[
@@ -566,7 +566,7 @@ class AtomRoutingTests(unittest.TestCase):
         with (
             patch("events.freshness.record_event_observation", return_value={}),
             patch("events.routing._config", return_value=ROUTING_CONFIG),
-            patch("analysis_jobs.enqueue_job", side_effect=capture),
+            patch("jobs.enqueue_job", side_effect=capture),
             patch("materiality.assess_event_materiality", side_effect=decisions),
             patch(
                 "macro_releases.upsert_macro_release_card",
@@ -599,7 +599,7 @@ class ReconciliationAtomTests(unittest.TestCase):
             patch.object(
                 reconciliation, "get_session", return_value=self.SessionContext()
             ),
-            patch("analysis_jobs.reconcile_jobs", return_value=[]),
+            patch("jobs.reconcile_jobs", return_value=[]),
             patch(
                 "section_snapshots.reconcile_snapshots", return_value={"repaired": 0}
             ),
@@ -611,7 +611,6 @@ class ReconciliationAtomTests(unittest.TestCase):
                 "story_confirmation.backfill_story_confirmations",
                 return_value={"updated": 0},
             ),
-            patch("ui_events.delete_expired_ui_events", return_value=0),
             patch(
                 "events.freshness.refresh_freshness_states",
                 return_value={"changed": 0},
@@ -631,7 +630,7 @@ class ReconciliationAtomTests(unittest.TestCase):
             patch.object(
                 reconciliation, "get_session", return_value=self.SessionContext()
             ),
-            patch("analysis_jobs.reconcile_jobs", return_value=[]),
+            patch("jobs.reconcile_jobs", return_value=[]),
             patch(
                 "section_snapshots.reconcile_snapshots", return_value={"repaired": 0}
             ),
@@ -643,7 +642,6 @@ class ReconciliationAtomTests(unittest.TestCase):
                 "story_confirmation.backfill_story_confirmations",
                 return_value={"updated": 0},
             ),
-            patch("ui_events.delete_expired_ui_events", return_value=0),
             patch(
                 "events.freshness.refresh_freshness_states",
                 return_value={"changed": 0},
@@ -664,7 +662,7 @@ class ReconciliationAtomTests(unittest.TestCase):
             patch.object(
                 reconciliation, "get_session", return_value=self.SessionContext()
             ),
-            patch("analysis_jobs.reconcile_jobs", return_value=[]),
+            patch("jobs.reconcile_jobs", return_value=[]),
             patch(
                 "section_snapshots.reconcile_snapshots", return_value={"repaired": 0}
             ),
@@ -676,7 +674,6 @@ class ReconciliationAtomTests(unittest.TestCase):
                 "story_confirmation.backfill_story_confirmations",
                 return_value={"updated": 0},
             ),
-            patch("ui_events.delete_expired_ui_events", return_value=0),
             patch(
                 "events.freshness.refresh_freshness_states",
                 return_value={"changed": 0},

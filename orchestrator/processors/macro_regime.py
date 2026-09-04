@@ -4,12 +4,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import text
-
 from budgets import BudgetContext
-from db import get_session
 from llm_client import LLMStage, LLMValidationError
 from logging_config import get_logger
+from sqlalchemy import text
+
+from db import get_session
 from processors.base import load_prompt_template
 from processors.macro_trends import (
     HISTORY_LIMIT,
@@ -314,6 +314,7 @@ class MacroRegimeProcessor:
             return None
         try:
             from atoms import current_atoms, publish_atom
+
             from processors.base import canonical_fingerprint
 
             regime = str(parsed.get("regime") or "quiet").strip().lower() or "quiet"

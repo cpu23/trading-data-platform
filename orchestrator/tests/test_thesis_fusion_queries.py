@@ -25,7 +25,6 @@ from support_thesis_fusion import (  # noqa: E402
     Result,
     Session,
 )
-
 from thesis_fusion import (  # noqa: E402
     list_ranked_opportunities,
     list_thesis_groups,
@@ -407,7 +406,6 @@ class RankedOpportunitiesTests(unittest.TestCase):
         session.commit.assert_not_called()
 
 
-
 class GroupTournamentTests(unittest.TestCase):
     def test_load_group_tournament_shows_competing_theses(self):
         bull = {
@@ -540,7 +538,6 @@ class GroupTournamentTests(unittest.TestCase):
         session.commit.assert_not_called()
 
 
-
 class ListThesisGroupsTests(unittest.TestCase):
     def test_groups_carry_bounded_aggregates_and_deterministic_order(self):
         session = Session(
@@ -596,7 +593,6 @@ class ListThesisGroupsTests(unittest.TestCase):
         list_thesis_groups(session, limit=1000)
         self.assertEqual(session.calls[0][1]["limit"], 100)
         session.commit.assert_not_called()
-
 
 
 class ThesisDetailTests(unittest.TestCase):
@@ -786,7 +782,6 @@ class ThesisDetailTests(unittest.TestCase):
         session = Session([Result(first=None)])
         self.assertIsNone(load_thesis_detail(session, str(THESIS_ID)))
         session.commit.assert_not_called()
-
 
 
 class ThesisDeskStatusTests(unittest.TestCase):

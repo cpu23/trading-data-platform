@@ -1,9 +1,9 @@
+from api_db import query_one
 from fastapi import APIRouter, HTTPException
-
-from config import load_config
-from db import query_one
 from serializers import isoformat
 from staleness import get_staleness_config, is_stale
+
+from config import load_config
 
 router = APIRouter()
 

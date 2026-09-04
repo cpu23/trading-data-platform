@@ -4,7 +4,7 @@ Covers the bounded GET contracts (opportunities, groups, group detail,
 thesis detail, desk status) and the strict public run trigger under
 ``/api/research/theses/*``: query validation, JSON serialization of
 datetime/UUID/Decimal values, 404/422/503 mapping, and the authenticated
-proxy to the internal orchestrator enqueue route.
+dispatch to the internal thesis autonomy enqueue seam.
 """
 
 import os
@@ -13,7 +13,7 @@ import unittest
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 from uuid import UUID
 
 os.environ.update(
@@ -24,9 +24,8 @@ os.environ.update(
         "OPENROUTER_API_KEY": "test",
         "OPENROUTER_MODEL": "test/model",
         "OANDA_API_KEY": "test",
-        "DASHBOARD_USER": "test",
-        "DASHBOARD_PASSWORD": "test",
         "DEPLOYMENT_MODE": "test",
+        "DISABLE_AUTH": "true",
         "SECRETS_FILE": "/nonexistent/test-secrets.env",
         "CONFIG_DIR": str(Path(__file__).resolve().parents[2] / "config"),
     }
@@ -60,7 +59,6 @@ client.__enter__()
 
 CSRF_TOKEN = mint_csrf_token()
 AUTH = {
-    "Authorization": "Basic dGVzdDp0ZXN0",  # test:test
     "Origin": "http://testserver",
     "X-CSRF-Token": CSRF_TOKEN,
 }
@@ -110,14 +108,18 @@ class ThesisDeskDeploymentWiringTests(unittest.TestCase):
 
 class ThesisDeskReadRoutesTests(unittest.TestCase):
     def test_desk_reads_require_authentication(self):
-        for path in (
-            "/api/research/theses/opportunities",
-            "/api/research/theses/groups",
-            f"/api/research/theses/{THESIS_ID}",
-            "/api/research/theses/status",
+        with (
+            patch.dict(os.environ, {"DISABLE_AUTH": ""}, clear=False),
+            patch("auth.setup_complete", return_value=True),
         ):
-            with self.subTest(path=path):
-                self.assertEqual(client.get(path).status_code, 401)
+            for path in (
+                "/api/research/theses/opportunities",
+                "/api/research/theses/groups",
+                f"/api/research/theses/{THESIS_ID}",
+                "/api/research/theses/status",
+            ):
+                with self.subTest(path=path):
+                    self.assertEqual(client.get(path).status_code, 401)
 
     def test_opportunities_validate_query_and_serialize_json_types(self):
         helpers = MagicMock()
@@ -558,8 +560,8 @@ class ThesisDeskReadRoutesTests(unittest.TestCase):
 
 
 class ThesisDeskRunRouteTests(unittest.TestCase):
-    def test_desk_run_proxies_strict_body_with_budget(self):
-        upstream = AsyncMock(
+    def test_desk_run_enqueues_strict_body_with_budget(self):
+        enqueue_mock = Mock(
             return_value={
                 "status": "queued",
                 "job_id": "job-1",
@@ -571,7 +573,10 @@ class ThesisDeskRunRouteTests(unittest.TestCase):
         )
         with (
             patch("routes.json.research._enforce_research_budget") as budget,
-            patch("routes.json.research._research_orchestrator_post", upstream),
+            patch(
+                "routes.json.research.enqueue_thesis_autonomy_job",
+                enqueue_mock,
+            ),
         ):
             response = client.post(
                 "/api/research/theses/run",
@@ -581,14 +586,18 @@ class ThesisDeskRunRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["job_id"], "job-1")
         budget.assert_called_once_with(None)
-        self.assertEqual(upstream.await_args.args[1], "/research/theses/run")
-        self.assertEqual(upstream.await_args.args[2], {"force": True})
+        enqueue_mock.assert_called_once()
+        self.assertEqual(enqueue_mock.call_args.kwargs.get("triggered_by"), "api")
+        self.assertEqual(enqueue_mock.call_args.kwargs.get("force"), True)
 
-    def test_desk_run_rejects_unknown_fields_before_proxy(self):
-        upstream = AsyncMock()
+    def test_desk_run_rejects_unknown_fields_before_dispatch(self):
+        enqueue_mock = Mock()
         with (
             patch("routes.json.research._enforce_research_budget"),
-            patch("routes.json.research._research_orchestrator_post", upstream),
+            patch(
+                "routes.json.research.enqueue_thesis_autonomy_job",
+                enqueue_mock,
+            ),
         ):
             for body in (
                 {"force": False, "unbounded": True},
@@ -602,10 +611,14 @@ class ThesisDeskRunRouteTests(unittest.TestCase):
                         headers=AUTH,
                     )
                     self.assertEqual(response.status_code, 422)
-        upstream.assert_not_called()
+        enqueue_mock.assert_not_called()
 
     def test_desk_run_requires_authentication(self):
-        response = client.post("/api/research/theses/run", json={})
+        with (
+            patch.dict(os.environ, {"DISABLE_AUTH": ""}, clear=False),
+            patch("auth.setup_complete", return_value=True),
+        ):
+            response = client.post("/api/research/theses/run", json={})
         self.assertEqual(response.status_code, 401)
 
 

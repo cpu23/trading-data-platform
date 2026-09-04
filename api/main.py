@@ -6,14 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpx
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from starlette.concurrency import run_in_threadpool
-from starlette.middleware.trustedhost import TrustedHostMiddleware
-
+from api_db import check_connection
+from api_logging import setup_logging
 from auth import (
     ACTIVATION_FILE,
     AUTH_FILE,
@@ -27,7 +21,6 @@ from auth import (
     expected_origin,
     load_previous_session_secret,
     load_session_secret,
-    migrate_legacy_state,
     mint_csrf_token,
     normalize_origin,
     session_max_age_seconds,
@@ -35,17 +28,20 @@ from auth import (
     sign_session_cookie,
     validate_cookie_security,
     validate_host_security,
-    validate_operator_credentials,
     validate_signing_keys,
     verify_credentials,
     verify_csrf_token,
 )
-from config import config_version, load_config, orchestrator_url
-from db import check_connection
-from logging_config import setup_logging
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from routes.json import router as json_router
-from routes.stream import stream_router
 from routes.views import router as views_router
+from starlette.concurrency import run_in_threadpool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from config import config_version, load_config
 
 _JSON_BODY_LIMIT = 1024 * 1024
 _JSON_PATH_LIMITS = {
@@ -146,34 +142,17 @@ def _origin_matches(request: Request, supplied_origin: str) -> bool:
         return False
 
 
-def create_app(
-    orchestrator_client_factory: Callable[..., httpx.AsyncClient] | None = None,
-) -> FastAPI:
+def create_app() -> FastAPI:
     validate_signing_keys()
     allowed_hosts = validate_host_security()
-    validate_operator_credentials()
     validate_cookie_security()
-    migrate_legacy_state()
     config = load_config()
     log_level = config.get("logging", {}).get("level", "INFO")
     setup_logging(level=log_level)
 
-    client_factory = orchestrator_client_factory or httpx.AsyncClient
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.orchestrator_client = client_factory(
-            timeout=httpx.Timeout(connect=2.0, read=10.0, write=10.0, pool=2.0),
-            limits=httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
-                keepalive_expiry=30.0,
-            ),
-        )
-        try:
-            yield
-        finally:
-            await app.state.orchestrator_client.aclose()
+        yield
 
     app = FastAPI(
         title="Trading Data API",
@@ -196,9 +175,7 @@ def create_app(
         token_exempt = path in CSRF_TOKEN_EXEMPT_PATHS
         unsafe = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         session_auth = bool(request.scope.get("session", {}).get("authenticated"))
-        header_auth = bool(request.headers.get("authorization"))
-        has_auth = header_auth or session_auth
-        if unsafe and not has_auth and not token_exempt:
+        if unsafe and not session_auth and not token_exempt:
             # No credentials: the auth dependency rejects these requests, so
             # CSRF processing adds nothing and would mint needless tokens.
             return await call_next(request)
@@ -209,74 +186,42 @@ def create_app(
 
         origin = request.headers.get("origin")
         referer = request.headers.get("referer")
-        browser_signal = bool(
-            origin
-            or referer
-            or request.cookies.get(CSRF_COOKIE)
-            or request.headers.get("sec-fetch-site")
-        )
 
         if unsafe:
-            # Browser signals are computed for every method so safe browser
-            # requests may receive a CSRF cookie while stateless machine
-            # clients remain cookie-free.
-            # The machine exemption is only for Authorization-authenticated API
-            # clients: JSON body, no browser signals, and no session. A
-            # session-authenticated request is a browser flow and is never
-            # exempt, even when it carries no Origin header.
-            machine_json = (
-                header_auth
-                and not session_auth
-                and not browser_signal
-                and request.headers.get("content-type", "").split(";", 1)[0].lower()
-                == "application/json"
-            )
-            if not machine_json:
-                supplied_origin = origin or referer
-                if session_auth and not token_exempt:
-                    # Session mutations require a canonical Origin plus a valid
-                    # signed token; no machine exemption.
-                    if not supplied_origin or not _origin_matches(
-                        request, supplied_origin
-                    ):
-                        return JSONResponse(
-                            status_code=403,
-                            content={"detail": "CSRF validation failed"},
-                        )
-                elif supplied_origin and not _origin_matches(request, supplied_origin):
+            supplied_origin = origin or referer
+            if session_auth and not token_exempt:
+                if not supplied_origin or not _origin_matches(request, supplied_origin):
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "CSRF validation failed"},
                     )
-                if not token_exempt:
-                    supplied = request.headers.get("x-csrf-token", "")
-                    cookie_value = request.cookies.get(CSRF_COOKIE, "")
-                    # Coherent double submit: the cookie must hold a signed
-                    # token and the header must carry the exact same value.
-                    if (
-                        not cookie_value
-                        or not verify_csrf_token(cookie_value)
-                        or not verify_csrf_token(supplied)
-                        or not hmac.compare_digest(supplied, cookie_value)
-                    ):
-                        return JSONResponse(
-                            status_code=403,
-                            content={"detail": "CSRF validation failed"},
-                        )
-        stateless_machine = header_auth and not session_auth and not browser_signal
+            elif supplied_origin and not _origin_matches(request, supplied_origin):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed"},
+                )
+            if not token_exempt:
+                supplied = request.headers.get("x-csrf-token", "")
+                cookie_value = request.cookies.get(CSRF_COOKIE, "")
+                if (
+                    not cookie_value
+                    or not verify_csrf_token(cookie_value)
+                    or not verify_csrf_token(supplied)
+                    or not hmac.compare_digest(supplied, cookie_value)
+                ):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "CSRF validation failed"},
+                    )
         response = await call_next(request)
         if (
             token
             and response.status_code < 400
-            and path not in {"/static", "/api/quotes/stream", "/stream"}
+            and path != "/static"
             and (request.method == "GET" or token_exempt)
-            and not stateless_machine
         ):
-            # Bootstrap responses (login/activate) hand the exact same token to
-            # the caller via the body and the cookie, so the next mutation can
-            # satisfy double submit immediately. Stateless Authorization-only
-            # calls never receive the cookie so their machine exemption cannot
-            # be poisoned by a cookie jar.
+            # Bootstrap responses hand the same token to the caller via the
+            # body and cookie so the next mutation can satisfy double submit.
             response.set_cookie(
                 CSRF_COOKIE,
                 token,
@@ -334,7 +279,6 @@ def create_app(
     app.state.config = config
 
     app.include_router(json_router)
-    app.include_router(stream_router)
     app.include_router(views_router)
 
     @app.get("/api/meta/build")
@@ -365,73 +309,12 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/ready")
-    async def ready(request: Request):
-        """Dependency-aware readiness with bounded upstream checks.
+    async def ready():
+        """Dependency-aware readiness checking local database and configuration.
 
-        Returns 503 while the orchestrator is unreachable/not ready or the
-        database connection fails; the health check only passes when every
-        required dependency answers.
+        Returns 503 while the database connection fails.
         """
         dependencies: dict[str, Any] = {}
-        try:
-            upstream = await request.app.state.orchestrator_client.get(
-                f"{orchestrator_url()}/health",
-                timeout=2.0,
-            )
-            dependencies["orchestrator"] = str(upstream.status_code)
-            if upstream.status_code != 200:
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "unready",
-                        "dependencies": dependencies,
-                        "config_version": config_version(),
-                    },
-                )
-            body = upstream.json()
-            if not isinstance(body, dict) or body.get("readiness") != "ready":
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "unready",
-                        "dependencies": dependencies,
-                        "config_version": config_version(),
-                    },
-                )
-            orchestrator_version = body.get("config_version")
-            active_version = config_version()
-            version_mismatch = bool(
-                orchestrator_version
-                and active_version
-                and orchestrator_version != active_version
-            )
-            dependencies["config_version"] = {
-                "api": active_version,
-                "orchestrator": orchestrator_version,
-                "mismatch": version_mismatch,
-            }
-            if version_mismatch:
-                # Mixed config across processes can corrupt behavior; a
-                # rolling-start transient is reported as unready until the
-                # restart completes.
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "unready",
-                        "dependencies": dependencies,
-                        "config_version": active_version,
-                    },
-                )
-        except Exception:
-            dependencies["orchestrator"] = "unreachable"
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "unready",
-                    "dependencies": dependencies,
-                    "config_version": config_version(),
-                },
-            )
         try:
             db_ok = await run_in_threadpool(check_connection)
         except Exception:

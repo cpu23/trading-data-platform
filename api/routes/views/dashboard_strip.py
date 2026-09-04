@@ -17,11 +17,11 @@ is isolated fail-soft: one unavailable source degrades only its own field.
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from api_db import query_one
+from api_logging import get_logger
 from fastapi import APIRouter, Request
 
 import config as app_config
-from db import query_one
-from logging_config import get_logger
 from routes.json.regime import get_regime_current
 
 router = APIRouter()
@@ -92,8 +92,6 @@ def countdown_display(minutes) -> str | None:
     if minutes < 60:
         return f"{minutes}m"
     return f"{minutes // 60}h {minutes % 60}m"
-
-
 
 
 def load_compact_strip(config: dict) -> dict:
@@ -185,6 +183,5 @@ def partial_top_strip(request: Request):
         {
             "request": request,
             "strip": load_compact_strip(config),
-            "live_updates_enabled": app_config.live_updates_enabled(config),
         },
     )

@@ -1,0 +1,73 @@
+[project]
+name = "trading-data-platform"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "apscheduler>=3.10",
+    "beautifulsoup4>=4.12",
+    "click>=8.0",
+    "fastapi>=0.111",
+    "httpx>=0.28,<1",
+    "jinja2>=3.1",
+    "lxml>=5.0",
+    "psycopg2-binary>=2.9",
+    "pydantic>=2.7,<3",
+    "pypdf>=5.0",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+    "structlog>=24.0",
+    "tenacity>=8.0",
+    "uvicorn[standard]>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==1.17.1",
+    "ruff==0.12.11",
+    "types-pyyaml>=6.0.12.20260724",
+]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM103",
+    "SIM108",
+    "SIM118",
+]
+ignore = ["E501", "UP038", "UP040"]
+
+[tool.ruff.lint.per-file-ignores]
+"api/routes/**/*.py" = ["B008", "B904"]
+"api/auth.py" = ["B008"]
+"api/tests/**/*.py" = ["E402"]
+"orchestrator/tests/**/*.py" = ["B017", "B023", "B904", "E402"]
+"tests/**/*.py" = ["B017", "B023", "B904", "E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "orchestrator", "contracts"]
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+    "api/config.py",
+    "api/api_db.py",
+    "orchestrator/config_loader.py",
+    "orchestrator/db.py",
+    "contracts",
+]
+ignore_missing_imports = true
+follow_imports = "silent"
+check_untyped_defs = false
+disallow_untyped_defs = false
+no_implicit_optional = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true

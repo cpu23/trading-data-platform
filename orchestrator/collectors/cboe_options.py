@@ -44,13 +44,13 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-
-from collectors.base import CollectionResult, CollectionWriteBatch
 from errors import InvalidSourceData, TransientSourceError
 from http_client import ResponseBodyTooLarge, make_request
 from logging_config import get_logger
 from options_analytics import analyze_chain
 from provider_origins import validate_configured_origin
+
+from collectors.base import CollectionResult, CollectionWriteBatch
 
 logger = get_logger("collector.cboe_options")
 

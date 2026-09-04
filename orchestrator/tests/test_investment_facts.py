@@ -142,9 +142,7 @@ Capital expenditures including finance lease additions  12      3,100      2,600
         self.assertEqual(cash_tags["metric_family"], "capital_investment")
         self.assertEqual(broader_tags["metric_family"], "capital_investment")
         self.assertEqual(cash_tags["cash_basis"], "cash")
-        self.assertEqual(
-            broader_tags["cash_basis"], "cash_plus_finance_leases"
-        )
+        self.assertEqual(broader_tags["cash_basis"], "cash_plus_finance_leases")
         self.assertEqual(cash_tags["scope"], broader_tags["scope"])
         self.assertEqual(cash_tags["temporal_basis"], "period_flow")
         self.assertEqual(broader_tags["temporal_basis"], "period_flow")
@@ -278,7 +276,6 @@ Gross profit                    1,100       700
         self.assertEqual(current["gross_profit"]["value"], 1_100)
         self.assertEqual(prior["gross_profit"]["value"], 700)
 
-
     def test_external_effect_extraction_accepts_generic_contribution_and_drag(self):
         current = {
             "revenue": {
@@ -359,8 +356,7 @@ Gross profit                    1,100       700
         }
 
         effects = _extract_external_effect_facts(
-            "$5 million was reclassified from revenue to operating income "
-            "in 2025.",
+            "$5 million was reclassified from revenue to operating income in 2025.",
             current,
             ["2025", "2024"],
         )
@@ -405,6 +401,7 @@ Gross profit                    1,100       700
             ["2025", "2024"],
         )
         self.assertEqual(effects, {})
+
 
 if __name__ == "__main__":
     unittest.main()

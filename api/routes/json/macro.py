@@ -1,11 +1,11 @@
 from datetime import UTC, date, datetime, timedelta
 
+from api_db import query_many
 from fastapi import APIRouter, HTTPException, Query
-
-import config as app_config
-from db import query_many
 from serializers import isoformat
 from staleness import get_staleness_config, is_stale
+
+import config as app_config
 
 router = APIRouter()
 

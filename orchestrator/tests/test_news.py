@@ -579,7 +579,6 @@ class NewsTests(unittest.TestCase):
 
         for payload in wrong_roots:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
-
                 state_path = Path(tmp, "reuters/state.json")
                 cfg = {
                     "reuters": {
@@ -1001,7 +1000,6 @@ class NewsTests(unittest.TestCase):
 
         for payload in malformed_payloads:
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
-
                 state_path = Path(tmp, "kobeissi/state.json")
                 state_path.parent.mkdir(parents=True)
                 state_path.write_text(

@@ -19,9 +19,7 @@ class ProviderOriginValidationTests(unittest.TestCase):
 
     def test_custom_private_origin_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-public address"):
-            validate_configured_origin(
-                "https://10.0.0.5/v1", {}, label="test provider"
-            )
+            validate_configured_origin("https://10.0.0.5/v1", {}, label="test provider")
 
     def test_local_origin_is_rejected_without_escape_hatch(self):
         """There is no runtime private/local-provider opt-in: every
@@ -136,18 +134,14 @@ class ReutersSitemapOriginTests(unittest.TestCase):
             ],
         ):
             with self.assertRaisesRegex(ValueError, "must be on www.reuters.com"):
-                reuters._validated_sitemap_url(
-                    "https://evil.example.test/sitemap.xml"
-                )
+                reuters._validated_sitemap_url("https://evil.example.test/sitemap.xml")
 
     def test_child_sitemap_oversize_response_fails_closed(self):
         import sources.reuters as reuters
 
         fake_response = MagicMock()
         fake_response.raise_for_status = MagicMock()
-        fake_response.iter_bytes.return_value = [
-            b"x" * (reuters.MAX_SITEMAP_BYTES + 1)
-        ]
+        fake_response.iter_bytes.return_value = [b"x" * (reuters.MAX_SITEMAP_BYTES + 1)]
         fake_client = MagicMock()
         fake_client.stream.return_value.__enter__.return_value = fake_response
         with (
@@ -194,9 +188,7 @@ class KobeissiCredentialForwardingTests(unittest.TestCase):
                 return FakeResponse()
 
         with (
-            patch.object(
-                kobeissi, "get_shared_client", return_value=FakeClient()
-            ),
+            patch.object(kobeissi, "get_shared_client", return_value=FakeClient()),
             patch.object(kobeissi, "atomic_write_json"),
         ):
             kobeissi.run_kobeissi(
@@ -206,9 +198,7 @@ class KobeissiCredentialForwardingTests(unittest.TestCase):
 
         self.assertEqual(captured["method"], "GET")
         self.assertIn("api.twitterapi.io", captured["url"])
-        self.assertEqual(
-            captured["kwargs"]["headers"]["X-API-Key"], "secret-key"
-        )
+        self.assertEqual(captured["kwargs"]["headers"]["X-API-Key"], "secret-key")
         self.assertFalse(captured["kwargs"]["follow_redirects"])
 
     def test_kobeissi_redirect_fails_closed_without_second_send(self):
@@ -234,9 +224,7 @@ class KobeissiCredentialForwardingTests(unittest.TestCase):
                 return RedirectResponse()
 
         with (
-            patch.object(
-                kobeissi, "get_shared_client", return_value=FakeClient()
-            ),
+            patch.object(kobeissi, "get_shared_client", return_value=FakeClient()),
             patch.object(kobeissi, "atomic_write_json"),
         ):
             result = kobeissi.run_kobeissi(
@@ -272,9 +260,7 @@ class KobeissiCredentialForwardingTests(unittest.TestCase):
                 return OversizeResponse()
 
         with (
-            patch.object(
-                kobeissi, "get_shared_client", return_value=FakeClient()
-            ),
+            patch.object(kobeissi, "get_shared_client", return_value=FakeClient()),
             patch.object(kobeissi, "atomic_write_json"),
         ):
             result = kobeissi.run_kobeissi(

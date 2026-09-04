@@ -22,13 +22,6 @@ Failure and crash model
 3. A hard crash between staging and the swap leaves an orphaned (unreferenced)
    version directory; the next commit's version numbering skips it and pruning
    removes it.
-4. Legacy (pre-versioning) states — real root files plus a marker without a
-   ``layout`` — are converted content-preservingly on the first versioned
-   write: a version directory is staged from the live files, ``current`` is
-   pointed at it, and the root paths become stable links (their content is
-   identical before and after, so link conversion is safe and needs no
-   rollback). A corrupt or partial legacy state is treated as fresh and
-   superseded by the first commit.
 
 Concurrency
 -----------
@@ -69,8 +62,7 @@ SETUP_FILENAMES = ("auth.json", "operator.yaml", "secrets.env")
 
 _SECRET_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
-# Marker file format written by commits; ``migrate_legacy_state`` and older
-# activations write a marker without the ``layout`` key (legacy layout).
+# The marker is always the current version manifest.
 MANIFEST_FILENAME = "manifest.json"
 
 
@@ -103,12 +95,7 @@ def current_link_path(state_dir: Path) -> Path:
 
 
 def read_pointer(marker_path: Path) -> dict | None:
-    """Parse the activation marker; ``None`` when absent or unreadable.
-
-    The marker is a stable link to the current version's manifest, so this
-    returns the committed manifest. Legacy markers (real files without a
-    ``layout``) parse as-is.
-    """
+    """Parse the current version manifest; ``None`` when absent or unreadable."""
     try:
         if not marker_path.exists():
             return None
@@ -119,7 +106,7 @@ def read_pointer(marker_path: Path) -> dict | None:
 
 
 def pointer_version(pointer: dict | None) -> int | None:
-    """Committed version number, or ``None`` for a legacy pointer."""
+    """Return a valid committed version number, else ``None``."""
     if not pointer:
         return None
     version = pointer.get("version")
@@ -269,37 +256,24 @@ def _validate_version_directory(directory: Path, expected_version: int) -> bool:
 def read_live_state(
     state_dir: Path, marker_path: Path, live_paths: dict[str, Path]
 ) -> dict[str, str]:
-    """Raw contents of the current live setup files.
-
-    With the versioned topology the root paths are stable links through
-    ``current``, so they are read as a set; a missing link is tampering and
-    falls back to the committed version directory. Legacy materializations
-    (real root files) are read per-file — ``secrets.env`` was optional in the
-    historical layout.
-    """
+    """Read the complete current setup snapshot or return no state."""
     current_link = current_link_path(state_dir)
-    if current_link.is_symlink():
-        if all(path.exists() for path in live_paths.values()):
-            try:
-                return {name: path.read_text() for name, path in live_paths.items()}
-            except OSError:
-                pass
-        pointer = read_pointer(marker_path)
-        version = pointer_version(pointer)
-        if version is not None and is_versioned_pointer(pointer):
-            directory = version_directory(state_dir, version)
-            try:
-                return {
-                    name: (directory / name).read_text() for name in SETUP_FILENAMES
-                }
-            except OSError:
-                return {}
+    if not current_link.is_symlink():
         return {}
-    return {
-        name: path.read_text()
-        for name, path in live_paths.items()
-        if path.exists()
-    }
+    if all(path.is_symlink() and path.exists() for path in live_paths.values()):
+        try:
+            return {name: path.read_text() for name, path in live_paths.items()}
+        except OSError:
+            pass
+    pointer = read_pointer(marker_path)
+    version = pointer_version(pointer)
+    if version is None or not is_versioned_pointer(pointer):
+        return {}
+    directory = version_directory(state_dir, version)
+    try:
+        return {name: (directory / name).read_text() for name in SETUP_FILENAMES}
+    except OSError:
+        return {}
 
 
 # --------------------------------------------------------------------------
@@ -473,63 +447,14 @@ def commit_setup(
         payload["auth.json"], payload["operator.yaml"], payload["secrets.env"]
     )
 
-    pointer = read_pointer(marker_path)
-    committed = pointer_version(pointer)
-    # A legacy materialization is only converted when a legacy pointer
-    # (activated.json without a versioned layout) exists. Marker-less root
-    # files are uncommitted leftovers: they must never be activated.
-    is_legacy = pointer is not None and not is_versioned_pointer(pointer)
     current_link = current_link_path(state_dir)
-
-    # Establish the stable-link topology once. Legacy materializations (real
-    # root files) are converted content-preservingly; corrupt or partial
-    # legacy states and fresh installs get their stable links (dangling until
-    # the flip below) FIRST, so the very first commit is a single atomic
-    # switch from "no committed state" to a fully consistent one.
     if not current_link.is_symlink():
-        base = read_live_state(state_dir, marker_path, live_paths)
-        convertible = False
-        if is_legacy and base.get("auth.json") and base.get("operator.yaml"):
-            try:
-                validate_setup_contents(
-                    base["auth.json"],
-                    base["operator.yaml"],
-                    base.get("secrets.env", ""),
-                )
-                convertible = True
-            except ValueError:
-                convertible = False
-        if convertible:
-            conversion_version = max(
-                committed or 1,
-                _highest_staged_version(state_dir) + 1,
-            )
-            _stage_version(
-                state_dir,
-                conversion_version,
-                {name: base.get(name, "") for name in SETUP_FILENAMES},
-                None,
-            )
-            _flip_current(
-                current_link,
-                version_directory(state_dir, conversion_version),
-            )
-            for name, path in live_paths.items():
+        for name, path in live_paths.items():
+            if not path.is_symlink():
                 _stable_link(path, f"{CURRENT_LINK_NAME}/{name}")
+        if not marker_path.is_symlink():
             _stable_link(marker_path, f"{CURRENT_LINK_NAME}/{MANIFEST_FILENAME}")
-        else:
-            # Fresh or invalid legacy: nothing is committed yet. Establish the
-            # stable links now (dangling); the single flip below makes them
-            # resolve atomically.
-            for name, path in live_paths.items():
-                if not path.is_symlink():
-                    _stable_link(path, f"{CURRENT_LINK_NAME}/{name}")
-            if not marker_path.is_symlink():
-                _stable_link(marker_path, f"{CURRENT_LINK_NAME}/{MANIFEST_FILENAME}")
-
-    # Repair any consumer path that is not a stable link (tampering or an
-    # interrupted first conversion): before the flip it resolves to the
-    # current version's file, and the flip carries it to the new version.
+    # Repair consumer links before the atomic pointer flip.
     for name, path in live_paths.items():
         if not path.is_symlink():
             _stable_link(path, f"{CURRENT_LINK_NAME}/{name}")
@@ -539,11 +464,14 @@ def commit_setup(
     # Re-read the pointer after repair so version numbering and pruning use
     # the true committed state (a tampered marker must not skew them).
     committed = pointer_version(read_pointer(marker_path))
-    next_version = max(
-        committed or 0,
-        previous_version_hint or 0,
-        _highest_staged_version(state_dir),
-    ) + 1
+    next_version = (
+        max(
+            committed or 0,
+            previous_version_hint or 0,
+            _highest_staged_version(state_dir),
+        )
+        + 1
+    )
     directory = _stage_version(state_dir, next_version, payload, committed)
 
     # Full-configuration gate: the staged operator/secrets candidate must
@@ -577,9 +505,7 @@ def commit_setup(
             exc.errno, "setup state committed but durability could not be confirmed"
         ) from exc
 
-    # The stable links were established before the flip (dangling for fresh
-    # installs, resolving through the conversion pointer for legacy states);
-    # the single flip above switched every consumer atomically.
+    # The pointer flip switches every consumer to the new snapshot atomically.
     _prune_versions(state_dir, next_version, committed)
     return CommitResult(
         version=next_version,
@@ -598,17 +524,7 @@ def validate_committed_state(
     marker_path: Path,
     live_paths: dict[str, Path],
 ) -> bool:
-    """True only when a committed, complete, valid setup state exists.
-
-    - A versioned marker (stable link to the current manifest) requires the
-      named version directory to exist, its manifest to match (version +
-      content checksums), every file to parse, and the root materialization to
-      be present.
-    - A legacy pointer (pre-versioning marker without ``layout``) requires the
-      root files to exist and parse (``secrets.env`` optional, matching the
-      historical layout).
-    - No pointer means no committed state.
-    """
+    """Validate the version pointer, manifest checksums, and stable consumer links."""
     pointer = read_pointer(marker_path)
     if pointer is None:
         return False
@@ -637,7 +553,9 @@ def validate_committed_state(
         # The marker and every consumer path must be the stable links (a
         # tampered real file or re-pointed link is not complete).
         try:
-            if not _is_stable_link(marker_path, f"{CURRENT_LINK_NAME}/{MANIFEST_FILENAME}"):
+            if not _is_stable_link(
+                marker_path, f"{CURRENT_LINK_NAME}/{MANIFEST_FILENAME}"
+            ):
                 return False
             for name, path in live_paths.items():
                 if not _is_stable_link(path, f"{CURRENT_LINK_NAME}/{name}"):
@@ -645,22 +563,7 @@ def validate_committed_state(
         except OSError:
             return False
         return True
-    # Legacy layout: marker without a versioned layout.
-    try:
-        if not _valid_auth_record(live_paths["auth.json"].read_text()):
-            return False
-        if not _valid_operator_profile(live_paths["operator.yaml"].read_text()):
-            return False
-    except OSError:
-        return False
-    secrets_path = live_paths.get("secrets.env")
-    if secrets_path is not None and secrets_path.exists():
-        try:
-            if not _valid_secrets_file(secrets_path.read_text()):
-                return False
-        except OSError:
-            return False
-    return True
+    return False
 
 
 def _is_stable_link(path: Path, target: str) -> bool:
@@ -679,39 +582,3 @@ def merge_profile(base: dict, update: dict) -> dict:
         else:
             result[key] = value
     return result
-
-
-#: Legacy operator-profile ``llm`` keys rejected by the frozen config model.
-LEGACY_LLM_KEYS = ("base_url", "default_model", "reasoning_effort")
-
-
-def migrate_legacy_profile(profile: dict) -> tuple[dict, list[str]]:
-    """One-time, explicit migration of a legacy operator profile.
-
-    Legacy profiles carry ``llm.default_model``/``llm.base_url``/
-    ``llm.reasoning_effort`` keys that the frozen configuration model rejects.
-    The value of ``llm.default_model`` is preserved by promotion to
-    ``llm.models.default``; the inert keys are removed. Returns the migrated
-    profile and the list of changed fields so callers can report the
-    migration explicitly (never silently). The original legacy content stays
-    observable in the version history, which preserves the pre-migration
-    snapshot verbatim. Profiles without legacy keys are returned unchanged.
-    """
-    result = dict(profile)
-    llm = result.get("llm")
-    if not isinstance(llm, dict) or not any(key in llm for key in LEGACY_LLM_KEYS):
-        return result, []
-    changed: list[str] = []
-    llm = dict(llm)
-    models = llm.get("models")
-    if not isinstance(models, dict):
-        legacy = llm.get("default_model")
-        if isinstance(legacy, str) and legacy.strip():
-            llm["models"] = {"default": legacy.strip()}
-            changed.append("llm.default_model promoted to llm.models.default")
-    for key in LEGACY_LLM_KEYS:
-        if key in llm:
-            del llm[key]
-            changed.append(f"llm.{key} removed (inert legacy key)")
-    result["llm"] = llm
-    return result, changed

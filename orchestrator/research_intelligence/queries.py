@@ -19,8 +19,6 @@ _MAX_DETAIL = 200
 _MAX_HISTORY = 100
 
 
-
-
 def _uuid(value: Any) -> str:
     try:
         return str(UUID(str(value)))
@@ -49,9 +47,10 @@ def list_cases(
     }
     if lifecycle_state is not None and lifecycle_state not in states:
         raise ValueError("invalid lifecycle state")
-    rows = result_rows(session.execute(
-        text(
-            """
+    rows = result_rows(
+        session.execute(
+            text(
+                """
             SELECT c.id, c.title, c.definition, c.horizon, c.case_type,
                    c.lifecycle_state, c.origin, c.economic_significance,
                    c.market_sensitivity, c.persistence, c.breadth,
@@ -78,23 +77,27 @@ def list_cases(
                 c.last_changed_at DESC, c.id
             LIMIT :limit OFFSET :offset
             """
-        ),
-        {
-            "lifecycle_state": lifecycle_state,
-            "changed_only": bool(changed_only),
-            "limit": bounded_limit,
-            "offset": bounded_offset,
-        },
-    ))
+            ),
+            {
+                "lifecycle_state": lifecycle_state,
+                "changed_only": bool(changed_only),
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+            },
+        )
+    )
     return rows
 
 
-def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str, Any] | None:
+def get_case(
+    session: Any, case_id: str, *, detail_limit: int = 100
+) -> dict[str, Any] | None:
     parsed = _uuid(case_id)
     bounded = max(1, min(int(detail_limit), _MAX_DETAIL))
-    case = result_first(session.execute(
-        text(
-            """
+    case = result_first(
+        session.execute(
+            text(
+                """
             SELECT c.*, s.id AS snapshot_id, s.change_summary,
                    s.payload AS current_snapshot, s.created_at AS snapshot_created_at,
                    t.id AS theme_id, t.name AS theme_name, t.origin AS theme_origin
@@ -104,25 +107,29 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
             LEFT JOIN investment_themes t ON t.source_case_id = c.id
             WHERE c.id = :case_id LIMIT 1
             """
-        ),
-        {"case_id": parsed},
-    ))
+            ),
+            {"case_id": parsed},
+        )
+    )
     if case is None:
         return None
-    entities = result_rows(session.execute(
-        text(
-            """
+    entities = result_rows(
+        session.execute(
+            text(
+                """
             SELECT entity_type, normalized_key, display_name, role,
                    first_seen_at, last_seen_at
             FROM research_case_entities WHERE case_id = :case_id
             ORDER BY entity_type, display_name LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    evidence = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    evidence = result_rows(
+        session.execute(
+            text(
+                """
             SELECT evidence_type, evidence_id, source_name, title,
                    source_reference, relationship, evidence_fingerprint,
                    source_timestamp, excerpt, created_at
@@ -130,12 +137,14 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
             ORDER BY source_timestamp DESC, evidence_type, evidence_id
             LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    edges = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    edges = result_rows(
+        session.execute(
+            text(
+                """
             SELECT x.*,
                    COALESCE(
                        ARRAY_AGG(ee.evidence_type || ':' || ee.evidence_id)
@@ -148,12 +157,14 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
             GROUP BY x.id
             ORDER BY x.depth, x.created_at, x.id LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    value_capture = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    value_capture = result_rows(
+        session.execute(
+            text(
+                """
             SELECT v.*,
                    COALESCE(
                        ARRAY_AGG(ve.evidence_type || ':' || ve.evidence_id)
@@ -166,12 +177,14 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
             GROUP BY v.id
             ORDER BY v.node_type, v.node_name LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    counterevidence = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    counterevidence = result_rows(
+        session.execute(
+            text(
+                """
             SELECT ce.*,
                    COALESCE(
                        ARRAY_AGG(cee.evidence_type || ':' || cee.evidence_id)
@@ -185,12 +198,14 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
             GROUP BY ce.id
             ORDER BY ce.created_at DESC, ce.id LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    requests = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    requests = result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, subject, requested_evidence_type, reason,
                    desired_frequency, priority, status,
                    candidate_source_class, linked_evidence_type,
@@ -202,15 +217,18 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
                 CASE priority WHEN 'high' THEN 1 WHEN 'moderate' THEN 2 ELSE 3 END,
                 created_at DESC, id LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
-    aliases = result_rows(session.execute(
-        text(
-            "SELECT alias FROM research_case_aliases WHERE case_id = :case_id ORDER BY alias LIMIT 50"
-        ),
-        {"case_id": parsed},
-    ))
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
+    aliases = result_rows(
+        session.execute(
+            text(
+                "SELECT alias FROM research_case_aliases WHERE case_id = :case_id ORDER BY alias LIMIT 50"
+            ),
+            {"case_id": parsed},
+        )
+    )
     return {
         "case": case,
         "aliases": [row["alias"] for row in aliases],
@@ -228,30 +246,35 @@ def get_case(session: Any, case_id: str, *, detail_limit: int = 100) -> dict[str
     }
 
 
-def case_history(session: Any, case_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+def case_history(
+    session: Any, case_id: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
     parsed = _uuid(case_id)
     bounded = max(1, min(int(limit), _MAX_HISTORY))
-    return result_rows(session.execute(
-        text(
-            """
+    return result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, case_id, version, input_fingerprint, lifecycle_state,
                    change_summary, payload, model_slug, prompt_version,
                    generation_attempt_id, correlation_id, created_at
             FROM research_case_snapshots WHERE case_id = :case_id
             ORDER BY version DESC LIMIT :limit
             """
-        ),
-        {"case_id": parsed, "limit": bounded},
-    ))
+            ),
+            {"case_id": parsed, "limit": bounded},
+        )
+    )
 
 
 def current_market_drivers(
     session: Any, *, changed_only: bool = False, limit: int = 50
 ) -> list[dict[str, Any]]:
     bounded = max(1, min(int(limit), _MAX_LIST))
-    return result_rows(session.execute(
-        text(
-            """
+    return result_rows(
+        session.execute(
+            text(
+                """
             SELECT d.id, d.target, d.driver_key, d.driver_label, d.direction,
                    d.strength, d.horizon, d.mechanism,
                    d.changed_since_prior, d.invalidation_conditions,
@@ -276,9 +299,10 @@ def current_market_drivers(
             ORDER BY d.changed_since_prior DESC, d.target, d.driver_key
             LIMIT :limit
             """
-        ),
-        {"changed_only": bool(changed_only), "limit": bounded},
-    ))
+            ),
+            {"changed_only": bool(changed_only), "limit": bounded},
+        )
+    )
 
 
 def list_replay_runs(
@@ -290,9 +314,10 @@ def list_replay_runs(
 ) -> list[dict[str, Any]]:
     bounded_limit = max(1, min(int(limit), _MAX_LIST))
     bounded_offset = max(0, min(int(offset), _MAX_OFFSET))
-    return result_rows(session.execute(
-        text(
-            """
+    return result_rows(
+        session.execute(
+            text(
+                """
             SELECT r.id, r.benchmark_id, r.replay_as_of, r.evidence_source,
                    r.status, r.comparison_group, r.variant_fingerprint,
                    r.variant_identity, r.model_overrides, r.prompt_overrides,
@@ -309,13 +334,14 @@ def list_replay_runs(
             ORDER BY r.replay_as_of DESC, r.created_at DESC, r.id
             LIMIT :limit OFFSET :offset
             """
-        ),
-        {
-            "benchmark_id": benchmark_id,
-            "limit": bounded_limit,
-            "offset": bounded_offset,
-        },
-    ))
+            ),
+            {
+                "benchmark_id": benchmark_id,
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+            },
+        )
+    )
 
 
 def get_replay_run(
@@ -326,9 +352,10 @@ def get_replay_run(
 ) -> dict[str, Any] | None:
     parsed = _uuid(replay_run_id)
     bounded = max(1, min(int(detail_limit), _MAX_DETAIL))
-    run = result_first(session.execute(
-        text(
-            """
+    run = result_first(
+        session.execute(
+            text(
+                """
             SELECT r.*, s.scorecard_version, s.dimensions,
                    s.human_annotations, s.annotation_version,
                    s.evaluator_judgment
@@ -338,14 +365,16 @@ def get_replay_run(
             WHERE r.id = :run_id
             LIMIT 1
             """
-        ),
-        {"run_id": parsed},
-    ))
+            ),
+            {"run_id": parsed},
+        )
+    )
     if run is None:
         return None
-    cases = result_rows(session.execute(
-        text(
-            """
+    cases = result_rows(
+        session.execute(
+            text(
+                """
             SELECT semantic_fingerprint, title, definition,
                    case_is_economic_proposition, proposition_rationale,
                    lifecycle_state, first_qualifying_evidence_at,
@@ -356,24 +385,28 @@ def get_replay_run(
             ORDER BY lifecycle_state, title, semantic_fingerprint
             LIMIT :limit
             """
-        ),
-        {"run_id": parsed, "limit": bounded},
-    ))
-    timeline = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"run_id": parsed, "limit": bounded},
+        )
+    )
+    timeline = result_rows(
+        session.execute(
+            text(
+                """
             SELECT semantic_fingerprint, event_type, occurred_at, detail
             FROM research_replay_timeline_events
             WHERE replay_run_id = :run_id
             ORDER BY occurred_at, id
             LIMIT :limit
             """
-        ),
-        {"run_id": parsed, "limit": bounded},
-    ))
-    metrics = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"run_id": parsed, "limit": bounded},
+        )
+    )
+    metrics = result_rows(
+        session.execute(
+            text(
+                """
             SELECT benchmark_id, metric_scope, subject_id,
                    metric_version, metrics, created_at
             FROM research_quality_metrics
@@ -381,12 +414,14 @@ def get_replay_run(
             ORDER BY metric_scope, subject_id, created_at
             LIMIT :limit
             """
-        ),
-        {"run_id": parsed, "limit": bounded},
-    ))
-    annotations = result_rows(session.execute(
-        text(
-            """
+            ),
+            {"run_id": parsed, "limit": bounded},
+        )
+    )
+    annotations = result_rows(
+        session.execute(
+            text(
+                """
             SELECT a.annotation_version, a.annotations, a.annotated_by,
                    a.created_at
             FROM research_benchmark_annotations a
@@ -395,9 +430,10 @@ def get_replay_run(
             ORDER BY a.annotation_version DESC
             LIMIT :limit
             """
-        ),
-        {"run_id": parsed, "limit": bounded},
-    ))
+            ),
+            {"run_id": parsed, "limit": bounded},
+        )
+    )
     return {
         "run": run,
         "cases": cases,
@@ -480,7 +516,6 @@ def live_case_cohorts(
             for row in members
         ]
 
-
         formed = sum(1 for row in members if row.get("first_forming_at"))
         corroborated = sum(1 for row in members if row.get("ever_corroborated"))
         ready = sum(1 for row in members if row.get("ever_research_ready"))
@@ -489,14 +524,12 @@ def live_case_cohorts(
         weak_archived = sum(
             1
             for row in members
-            if row["lifecycle_state"] == "archived"
-            and not row.get("ever_corroborated")
+            if row["lifecycle_state"] == "archived" and not row.get("ever_corroborated")
         )
         ready_then_archived = sum(
             1
             for row in members
-            if row["lifecycle_state"] == "archived"
-            and row.get("ever_research_ready")
+            if row["lifecycle_state"] == "archived" and row.get("ever_research_ready")
         )
         state_counts = {
             state: sum(1 for row in members if row["lifecycle_state"] == state)
@@ -534,22 +567,20 @@ def live_case_cohorts(
                 "median_survival_days": (
                     statistics.median(durations) if durations else 0
                 ),
-                "median_days_to_forming": _median_days_to(
-                    members, "first_forming_at"
-                ),
+                "median_days_to_forming": _median_days_to(members, "first_forming_at"),
                 "median_days_to_corroborated": _median_days_to(
                     members, "first_corroborated_at"
                 ),
                 "median_days_to_research_ready": _median_days_to(
                     members, "first_research_ready_at"
                 ),
-                "median_days_to_mature": _median_days_to(
-                    members, "first_mature_at"
-                ),
+                "median_days_to_mature": _median_days_to(members, "first_mature_at"),
                 "current_state_counts": state_counts,
             }
         )
     return output
+
+
 def list_quality_metrics(
     session: Any,
     *,
@@ -561,9 +592,10 @@ def list_quality_metrics(
     if metric_scope is not None and metric_scope not in allowed_scopes:
         raise ValueError("invalid metric scope")
     bounded = max(1, min(int(limit), _MAX_DETAIL))
-    return result_rows(session.execute(
-        text(
-            """
+    return result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, replay_run_id, benchmark_id, metric_scope,
                    subject_id, metric_version, metrics, created_at
             FROM research_quality_metrics
@@ -572,28 +604,33 @@ def list_quality_metrics(
             ORDER BY created_at DESC, id
             LIMIT :limit
             """
-        ),
-        {
-            "metric_scope": metric_scope,
-            "benchmark_id": benchmark_id,
-            "limit": bounded,
-        },
-    ))
+            ),
+            {
+                "metric_scope": metric_scope,
+                "benchmark_id": benchmark_id,
+                "limit": bounded,
+            },
+        )
+    )
 
 
 def research_status(session: Any, *, limit: int = 20) -> dict[str, Any]:
     bounded = max(1, min(int(limit), 100))
-    state_rows = result_rows(session.execute(
-        text(
-            """
+    state_rows = result_rows(
+        session.execute(
+            text(
+                """
             SELECT lifecycle_state, COUNT(*) AS count
             FROM research_cases GROUP BY lifecycle_state ORDER BY lifecycle_state
             """
+            )
         )
-    ))
-    counts = result_first(session.execute(
-        text(
-            """
+    )
+    counts = (
+        result_first(
+            session.execute(
+                text(
+                    """
             SELECT
                 (SELECT COUNT(*) FROM research_data_requests WHERE status IN ('unresolved', 'in_progress', 'partially_satisfied')) AS unresolved_requests,
                 (SELECT COUNT(*) FROM research_market_drivers WHERE superseded_at IS NULL) AS current_drivers,
@@ -601,20 +638,25 @@ def research_status(session: Any, *, limit: int = 20) -> dict[str, Any]:
                 (SELECT COUNT(*) FROM research_replay_runs WHERE status IN ('completed', 'completed_with_errors')) AS completed_replays,
                 (SELECT COALESCE(SUM(cost_usd), 0) FROM generation_attempts WHERE processor LIKE 'research_%' AND created_at >= CURRENT_DATE) AS today_cost_usd
             """
+                )
+            )
         )
-    )) or {}
-    jobs = result_rows(session.execute(
-        text(
-            """
+        or {}
+    )
+    jobs = result_rows(
+        session.execute(
+            text(
+                """
             SELECT id, job_type, state, attempt_count, max_attempts, correlation_id,
                    result_ref, created_at, started_at, completed_at
-            FROM analysis_jobs
+            FROM jobs
             WHERE job_type IN ('research_discovery', 'research_case_update')
             ORDER BY created_at DESC, id LIMIT :limit
             """
-        ),
-        {"limit": bounded},
-    ))
+            ),
+            {"limit": bounded},
+        )
+    )
     return {
         "enabled_objects": True,
         "cases_by_state": {

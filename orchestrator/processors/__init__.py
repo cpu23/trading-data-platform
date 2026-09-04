@@ -1,13 +1,11 @@
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
-from processors.intelligence import MarketIntelligenceProcessor
 from processors.macro_regime import MacroRegimeProcessor
 
 PROCESSORS: dict[str, type] = {
     "macro_regime": MacroRegimeProcessor,
     "event_impact": EventImpactProcessor,
     "briefing": DailyBriefingProcessor,
-    "market_intelligence": MarketIntelligenceProcessor,
 }
 
 

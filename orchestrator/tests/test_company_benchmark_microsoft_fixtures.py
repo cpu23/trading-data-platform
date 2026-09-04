@@ -12,14 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import investment_service as service  # noqa: E402
 import yaml  # noqa: E402
 from company_benchmark_support import (  # noqa: E402
     _finalized_for,
     judge_payload,
     narrative_payload,
 )
-
-import investment_service as service  # noqa: E402
 from investment_schemas import _normalize_grounding_text  # noqa: E402
 from research_intelligence import company_benchmarks as cb  # noqa: E402
 from research_intelligence import company_judging as judging  # noqa: E402
@@ -197,9 +196,7 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
             facts = dict(baseline.facts)
             facts["summary"] = summary
             finalized = baseline._replace(facts=facts)
-            return cq.run_company_hard_gates(
-                self.producer, self.evaluator, finalized
-            )
+            return cq.run_company_hard_gates(self.producer, self.evaluator, finalized)
 
         leaks = {
             "azure_cc_34": "Looking to Q1 FY2025, Azure growth in constant currency should be about 34%.",
@@ -342,7 +339,9 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
             name
             for name, metric in self.producer.deterministic_current.items()
             if isinstance(metric, Mapping)
-            and str(metric.get("source_location", "")).lower().startswith("press release")
+            and str(metric.get("source_location", ""))
+            .lower()
+            .startswith("press release")
         ]
         self.assertTrue(press_release_metrics)
         for name in press_release_metrics:
@@ -357,7 +356,9 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
 
     # -- Activision single-contributor semantics ------------------------------
 
-    def test_activision_observation_names_distinct_contributors_without_sole_cause(self):
+    def test_activision_observation_names_distinct_contributors_without_sole_cause(
+        self,
+    ):
         growth_quality = self._observation("Growth-quality divergence")
         distortion = self._observation("Activision distortion")
         combined = f"{growth_quality} {distortion}"
@@ -448,9 +449,7 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
         self.assertEqual(
             (
                 metrics["recast_fy2024_q4_azure_growth_yoy_gaap_percent"],
-                metrics[
-                    "recast_fy2024_q4_azure_growth_yoy_constant_currency_percent"
-                ],
+                metrics["recast_fy2024_q4_azure_growth_yoy_constant_currency_percent"],
             ),
             (34, 35),
             "same-basis recast details belong in the dated outcome",
@@ -509,8 +508,7 @@ class MicrosoftFixtureRegressionTests(unittest.TestCase):
         }
         payload = narrative_payload(
             summary=(
-                "Capacity constraints keep the timing of demand conversion "
-                "uncertain."
+                "Capacity constraints keep the timing of demand conversion uncertain."
             ),
             thesis=(
                 "Demand remains supply constrained; weakening demand invalidates "
@@ -670,10 +668,13 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _quiet_payload(summary, thesis=(
-        "No material change is supported by the window; uncertainty stays "
-        "explicit until the scheduled results are released."
-    )):
+    def _quiet_payload(
+        summary,
+        thesis=(
+            "No material change is supported by the window; uncertainty stays "
+            "explicit until the scheduled results are released."
+        ),
+    ):
         """Compliant quiet-period response: empty optional arrays, no digits."""
         qualitative = {
             name: {"present": False, "strength": "none", "evidence": ""}
@@ -751,7 +752,9 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
     def test_shipped_negative_control_pair_loads_through_production_seams(self):
         raw = self.producer_raw
         self.assertEqual(raw["case_id"], "msft.pre_fy2024_q4.quiet_period_no_change")
-        self.assertEqual(self.producer.case_id, "msft.pre_fy2024_q4.quiet_period_no_change")
+        self.assertEqual(
+            self.producer.case_id, "msft.pre_fy2024_q4.quiet_period_no_change"
+        )
         self.assertNotEqual(self.producer.case_id, "msft.fy2024.q4.capacity_economics")
         self.assertEqual(self.producer.document["symbol"], "MSFT")
         self.assertEqual(self.producer.as_of, _QUIET_AS_OF)
@@ -841,7 +844,9 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
                 self.assertNotIn(phrase, blob)
         allowed_numbers = set(cq._numeric_tokens(blob))
         leaked = _QUIET_PRODUCER_LEAK_NUMBERS & allowed_numbers
-        self.assertEqual(leaked, set(), f"Q4 result values leaked to producer: {leaked}")
+        self.assertEqual(
+            leaked, set(), f"Q4 result values leaked to producer: {leaked}"
+        )
 
     # -- consensus policy ------------------------------------------------------
 
@@ -943,8 +948,7 @@ class MicrosoftQuietPeriodNegativeControlTests(unittest.TestCase):
                 "fourth quarter."
             ),
             "free_cash_flow": (
-                "Free cash flow was $23.3 billion in fiscal year 2024 fourth "
-                "quarter."
+                "Free cash flow was $23.3 billion in fiscal year 2024 fourth quarter."
             ),
         }
         for label, sentence in leaks.items():
@@ -1090,9 +1094,7 @@ class MicrosoftFinalizedMetricsRegressionTests(unittest.TestCase):
     def test_cash_capex_and_finance_lease_capex_stay_distinct(self):
         metrics = self._finalize().analysis["metrics"]
         cash_capex = metrics["capex"]["value"]
-        lease_capex = metrics[
-            "capital_expenditures_including_finance_leases"
-        ]["value"]
+        lease_capex = metrics["capital_expenditures_including_finance_leases"]["value"]
         self.assertAlmostEqual(float(cash_capex), 13.9, places=6)
         self.assertAlmostEqual(float(lease_capex), 19.0, places=6)
         self.assertNotEqual(cash_capex, lease_capex)
@@ -1108,5 +1110,9 @@ class MicrosoftFinalizedMetricsRegressionTests(unittest.TestCase):
         self.assertEqual(cloud_gm["unit"], "percent")
         ai_points = metrics["azure_growth_from_ai_services_points"]
         self.assertAlmostEqual(float(ai_points["value"]), 8.0, places=6)
-        fact_ai = finalized.facts["metrics"].get("azure_growth_from_ai_services_points", {})
-        self.assertTrue(str(fact_ai.get("source_location", "")).startswith("transcript"))
+        fact_ai = finalized.facts["metrics"].get(
+            "azure_growth_from_ai_services_points", {}
+        )
+        self.assertTrue(
+            str(fact_ai.get("source_location", "")).startswith("transcript")
+        )

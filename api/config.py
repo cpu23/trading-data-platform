@@ -14,7 +14,6 @@ keys cannot linger or fall back to stale process-environment values.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
 from typing import Any, TypeAlias, cast
 
 import yaml
@@ -38,7 +37,6 @@ ConfigMap: TypeAlias = dict[str, Any]
 _DEFAULT_CONFIG_PATH = "/app/config/config.yaml"
 _DEFAULT_SECRETS_PATH = "/app/state/secrets.env"
 _DEFAULT_OPERATOR_PATH = "/app/state/operator.yaml"
-_DEFAULT_ORCHESTRATOR_URL = "http://orchestrator:8000"
 
 _store = ConfigStore()
 
@@ -160,62 +158,13 @@ def validate_candidate(
     )
 
 
-def orchestrator_url() -> str:
-    """Deployment-controlled, root origin of the trusted orchestrator.
-
-    Setup/operator state must never retarget the client that carries internal
-    Basic credentials. ``ORCHESTRATOR_URL`` is therefore read only from the
-    process environment; Compose supplies the internal default.
-    """
-    from urllib.parse import urlsplit
-
-    candidate = (
-        os.environ.get("ORCHESTRATOR_URL", "").strip()
-        or _DEFAULT_ORCHESTRATOR_URL
-    ).rstrip("/")
-    parts = urlsplit(candidate)
-    if (
-        parts.scheme not in {"http", "https"}
-        or not parts.hostname
-        or parts.username is not None
-        or parts.password is not None
-        or parts.path not in {"", "/"}
-        or parts.query
-        or parts.fragment
-    ):
-        raise RuntimeError(
-            "ORCHESTRATOR_URL must be a deployment-controlled root HTTP(S) origin"
-        )
-    try:
-        _port = parts.port
-    except ValueError as exc:
-        raise RuntimeError("ORCHESTRATOR_URL contains an invalid port") from exc
-    return candidate
-
-
-def live_updates_enabled(config: Mapping[str, Any] | None = None) -> bool:
-    """True when SSE live updates are enabled in configuration."""
-    cfg = load_config() if config is None else config
-    if not isinstance(cfg, Mapping):
-        return False
-    event_pipeline = cfg.get("event_pipeline")
-    if not isinstance(event_pipeline, Mapping):
-        return False
-    sse = event_pipeline.get("sse")
-    if not isinstance(sse, Mapping):
-        return False
-    return sse.get("enabled") is True
-
-
 __all__ = [
     "AppConfig",
     "ConfigError",
     "ConfigSnapshot",
     "config_snapshot",
     "config_version",
-    "live_updates_enabled",
     "load_config",
-    "orchestrator_url",
     "reload_config",
     "restart_required",
     "restart_sensitive_changes",

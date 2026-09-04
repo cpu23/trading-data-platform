@@ -1,5 +1,7 @@
 import os
 import unittest
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -10,6 +12,8 @@ from contracts import (
     RunAcceptanceRequest,
     RunAcceptedResponse,
     RunDetailResponse,
+    SystemTopologyNode,
+    SystemTopologyResponse,
 )
 
 
@@ -86,6 +90,46 @@ class SharedContractTests(unittest.TestCase):
         self.assertEqual(
             collect_schema["$ref"], "#/components/schemas/RunAcceptedResponse"
         )
+
+    def test_topology_is_bounded_strict_and_timezone_safe(self):
+        node = SystemTopologyNode(
+            id="planner",
+            label="Planner",
+            group="Research",
+            kind="planner",
+            status="idle",
+            activity_state="no eligible questions",
+            bounded_count=0,
+            safe_detail="Latest persisted plan selected no work.",
+        )
+        response = SystemTopologyResponse(
+            generated_at=datetime.now(UTC),
+            status="available",
+            nodes=[node],
+            edges=[],
+            summary="One bounded topology node.",
+        )
+        self.assertEqual(response.nodes[0].bounded_count, 0)
+
+        with self.assertRaisesRegex(ValidationError, "timezone-aware"):
+            SystemTopologyResponse(
+                generated_at=datetime.now(),
+                status="available",
+                nodes=[],
+                edges=[],
+                summary="Unavailable.",
+            )
+        with self.assertRaisesRegex(ValidationError, "extra_forbidden"):
+            SystemTopologyNode(
+                id="planner",
+                label="Planner",
+                group="Research",
+                kind="planner",
+                status="idle",
+                activity_state="idle",
+                safe_detail="No work.",
+                private_payload={"token": str(uuid4())},
+            )
 
 
 if __name__ == "__main__":

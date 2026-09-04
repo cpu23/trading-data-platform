@@ -11,12 +11,11 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["STATE_DIR"] = "/tmp/trading-api-setup-conn-tests"
 os.environ["DEPLOYMENT_MODE"] = "test"
-os.environ["DASHBOARD_USER"] = "test"
-os.environ["DASHBOARD_PASSWORD"] = "test"
 
-from contracts.outbound_transport import PublicOnlyHTTPTransport  # noqa: E402
 from routes.json import setup  # noqa: E402
 from routes.json.setup import TestConnectionRequest  # noqa: E402
+
+from contracts.outbound_transport import PublicOnlyHTTPTransport  # noqa: E402
 
 
 def _fake_request():
@@ -24,9 +23,7 @@ def _fake_request():
 
 
 def _public_answer(host, port, *_args, **_kwargs):
-    return [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))
-    ]
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
 
 
 class SetupConnectionSecurityTests(unittest.TestCase):
@@ -48,9 +45,7 @@ class SetupConnectionSecurityTests(unittest.TestCase):
             response = httpx.Response(
                 200,
                 json={"data": []},
-                request=httpx.Request(
-                    "GET", "https://openrouter.ai/api/v1/models"
-                ),
+                request=httpx.Request("GET", "https://openrouter.ai/api/v1/models"),
             )
             fake_client = MagicMock()
             fake_client.__enter__.return_value.get.return_value = response
@@ -117,9 +112,7 @@ class SetupConnectionSecurityTests(unittest.TestCase):
         redirect = httpx.Response(
             302,
             headers={"location": "https://evil.example.test/steal"},
-            request=httpx.Request(
-                "GET", "https://openrouter.ai/api/v1/models"
-            ),
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/models"),
         )
         fake_client = MagicMock()
         fake_client.__enter__.return_value.get.return_value = redirect
@@ -140,16 +133,12 @@ class SetupConnectionSecurityTests(unittest.TestCase):
         redirect = httpx.Response(
             302,
             headers={"location": "https://openrouter.ai/api/v1/models?x=1"},
-            request=httpx.Request(
-                "GET", "https://openrouter.ai/api/v1/models"
-            ),
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/models"),
         )
         final = httpx.Response(
             200,
             json={"data": []},
-            request=httpx.Request(
-                "GET", "https://openrouter.ai/api/v1/models?x=1"
-            ),
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/models?x=1"),
         )
         fake_client = MagicMock()
         fake_client.__enter__.return_value.get.side_effect = [redirect, final]
@@ -163,9 +152,7 @@ class SetupConnectionSecurityTests(unittest.TestCase):
         self.assertEqual(result, {"connected": True})
         gets = fake_client.__enter__.return_value.get.call_args_list
         self.assertEqual(len(gets), 2)
-        self.assertEqual(
-            gets[1].kwargs["headers"]["Authorization"], "Bearer key"
-        )
+        self.assertEqual(gets[1].kwargs["headers"]["Authorization"], "Bearer key")
 
     def test_relative_redirects_resolve_against_current_url(self):
         """Relative Locations accumulate against the current hop URL, not
@@ -287,9 +274,7 @@ class PublicOnlyTransportTests(unittest.TestCase):
             patch.object(httpx.HTTPTransport, "handle_request", fake_parent),
             patch("socket.getaddrinfo", side_effect=_public_answer),
         ):
-            with httpx.Client(
-                transport=transport, follow_redirects=True
-            ) as client:
+            with httpx.Client(transport=transport, follow_redirects=True) as client:
                 response = client.get("https://public.example.test/first")
 
         self.assertEqual(response.status_code, 200)

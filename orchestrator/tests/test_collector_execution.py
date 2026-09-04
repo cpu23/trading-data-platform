@@ -6,11 +6,12 @@ from unittest.mock import MagicMock, patch
 import collector_execution as runtime
 from collectors.base import CollectionResult, CollectionWriteBatch
 from collectors.public_equities import corporate_action_id
-from db import BatchWriteError, WriteResult
 from errors import PersistenceError, TransientSourceError
 from events.publisher import PublicationResult
 from events.repository import EventInsertResult
 from sources.news_result import NewsCollectionResult
+
+from db import BatchWriteError, WriteResult
 
 
 class DynamicResearchUniverseTests(unittest.TestCase):

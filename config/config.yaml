@@ -11,8 +11,7 @@ llm:
   api_keys:
     investment_analysis: ${OPENROUTER_API_KEY}
   # Single source of truth: every LLM processor inherits llm.models.default.
-  # Per-processor model selectors are unsupported; the frozen config schema
-  # rejects them and setup_state promotes any legacy default.
+  # Per-processor model selectors are unsupported by the frozen config schema.
   models:
     default: openai/gpt-5.6-luna
   # OpenRouter's Luna endpoint rejects sampling controls; omit temperature
@@ -27,21 +26,18 @@ llm:
   max_output_tokens:
     macro_regime: 1800
     briefing: 4096
-    market_intelligence: 4096
     investment_analysis: 4096
-    # 32 candidates x 8 roles cannot fit in 4096 tokens; the desk needs a
+    # 32 candidates x 2 roles cannot fit in 4096 tokens; the desk needs a
     # high ceiling so strict array outputs stay encodable.  The per-run and
     # global daily budget caps remain the hard spend limits.
     thesis_autonomy: 16384
   temperatures:
     macro_regime: 0.2
     briefing: 0.2
-    market_intelligence: 0.2
     investment_analysis: 0.0
   structured_response:
     macro_regime: true
     briefing: true
-    market_intelligence: true
     investment_analysis: true
     thesis_autonomy: true
   # Luna supports strict schemas, but OpenRouter does not currently advertise
@@ -49,15 +45,6 @@ llm:
   require_parameters:
     investment_analysis: false
     thesis_autonomy: false
-  intelligence_roles:
-    analyst:
-      reasoning_effort: low
-    skeptic:
-      reasoning_effort: low
-    auditor:
-      reasoning_effort: low
-    editor:
-      reasoning_effort: low
   stage_timeout_seconds: 180
   validation_retries: 1
   # Paid OpenRouter calls are single-attempt: the endpoint has no documented
@@ -81,13 +68,6 @@ orchestration:
 
 event_pipeline:
   enabled: true
-  sse:
-    enabled: true
-    heartbeat_seconds: 15
-    poll_seconds: 0.5
-    replay_limit: 100
-    max_streams_per_client: 3
-    retention_hours: 48
   # Free/public keyless sources plus FRED/OANDA; corporate actions flow
   # inside public_equities.
   sources:
@@ -408,15 +388,14 @@ research_intelligence:
     deliverable: high
     macro_transmission: high
 
-# Autonomous thesis-fusion desk: two weekday runs for one private portfolio,
-# bounded evidence and promotion ceilings, a per-run model budget below the
-# global daily cap, and a three-hour UTC ingestion-time debounce bucket so
-# historical backfills coalesce. Null scoring inputs keep the pure-scoring
-# defaults (unknown, never invented).
+# Autonomous thesis-fusion desk: one nightly run plus bounded event-triggered
+# runs for a private portfolio. Every surviving candidate enters the immutable
+# human review queue; no agent output directly changes a canonical thesis.
+# Null scoring inputs remain unknown rather than being invented.
 thesis_autonomy:
   enabled: true
   schedule_enabled: true
-  schedule: "0 8,20 * * 1-5"  # Weekdays 08:00/20:00 UTC
+  schedule: "0 2 * * *"  # Daily 02:00 UTC
   lookback_days: 30
   # 13 adapters x ~31 rows each: enough for a 25-symbol price/options
   # universe; the tournament prompt brief stays independently capped.
@@ -442,31 +421,13 @@ thesis_autonomy:
   minimum_supporting_source_families: 3
   require_cited_excerpts: true
   require_opposing_variants: true
-  # Twenty raw candidates across eight roles cannot fit in 4096 output tokens;
+  # Raw candidates across two generation roles cannot fit in 4096 output tokens;
   # 16384 keeps strict array outputs encodable. Truncation fails the role soft
   # and the per-run ($0.75) and global daily ($5) budgets remain hard caps.
   max_output_tokens: 16384
   cost: null
   liquidity: null
   downside: null
-
-# Incremental autonomous research maintenance. The deterministic planner runs
-# independently from broad thesis discovery and may complete with an empty
-# agenda without invoking a model. The global UTC-day LLM budget remains the
-# authoritative cap over every plan and skill.
-research_control_plane:
-  enabled: true
-  planning_interval_minutes: 15
-  event_debounce_seconds: 120
-  maximum_questions_per_plan: 20
-  maximum_work_orders_per_plan: 8
-  maximum_runtime_seconds_per_plan: 900
-  model_budget_usd_per_plan: 1.00
-  minimum_priority: 0.0
-  catalyst_lookahead_days: 30
-  stale_question_days: 14
-  priority_policy_version: v1
-  materiality_policy_version: v1
 
 collectors:
   fred:
@@ -1434,11 +1395,6 @@ processors:
     depends_on: [macro_regime]
     prompt_template: prompts/briefing_v5.txt
     schedule: "5 7 * * *"
-
-  market_intelligence:
-    enabled: true
-    depends_on: [macro_regime]
-    schedule: "0 7 * * *"
     asset_context:
       EURUSD:
         channels: [US-Eurozone relative growth, relative monetary policy, inflation expectations]
@@ -1471,7 +1427,6 @@ processors:
         channels: [Eurozone and German growth, ECB policy, credit conditions, global trade]
       UK100:
         channels: [UK growth and credit, BoE policy, sterling conditions, global commodity demand]
-
 watchlist:
   trading:
     - symbol: EURUSD

@@ -368,20 +368,29 @@ class RuntimeFieldBehaviorTests(unittest.TestCase):
             places=6,
         )
 
-    def test_update_price_features_threshold_changes_output_without_previous_volatility(self):
+    def test_update_price_features_threshold_changes_output_without_previous_volatility(
+        self,
+    ):
         # End to end: a plain price_tick (no previous_volatility in the payload)
         # still consumes high_volatility_threshold through the always-present
         # volatility_level classification.
         rows = intraday_closes([100, 101, 102])
         base = {"symbol": "EURUSD", "timestamp": AS_OF}
-        for threshold, expected in ((0.01, "volatility_high"), (0.1, "volatility_normal")):
+        for threshold, expected in (
+            (0.01, "volatility_high"),
+            (0.1, "volatility_normal"),
+        ):
             session = MagicMock()
             session.execute.return_value.mappings.return_value.all.return_value = rows
             source = SimpleNamespace(event_id="event-1", payload=dict(base))
             snapshot = market_state.update_price_features(
                 session,
                 source,
-                {"market_state": {"state_thresholds": {"high_volatility_threshold": threshold}}},
+                {
+                    "market_state": {
+                        "state_thresholds": {"high_volatility_threshold": threshold}
+                    }
+                },
             )
             self.assertEqual(
                 snapshot["features"]["volatility_level"]["value"], expected
@@ -452,9 +461,7 @@ class RuntimeFieldBehaviorTests(unittest.TestCase):
             high_correlation_threshold=0.2,
         )
         pair = "AUDJPY:EURUSD"
-        self.assertEqual(
-            snapshot["features"]["correlations"][pair]["pairs"], 4
-        )
+        self.assertEqual(snapshot["features"]["correlations"][pair]["pairs"], 4)
         self.assertEqual(
             snapshot["features"]["correlations"][pair]["reason"],
             "insufficient_paired_samples",
@@ -477,9 +484,7 @@ class RuntimeFieldBehaviorTests(unittest.TestCase):
             market_rows=rows_shifted,
             high_correlation_threshold=0.2,
         )
-        self.assertEqual(
-            shifted["features"]["correlations"][pair]["pairs"], 0
-        )
+        self.assertEqual(shifted["features"]["correlations"][pair]["pairs"], 0)
         self.assertEqual(
             shifted["features"]["correlations"][pair]["reason"],
             "insufficient_paired_samples",
@@ -512,9 +517,7 @@ class RuntimeFieldBehaviorTests(unittest.TestCase):
         self.assertEqual(metric["value"], "correlation_normal")
         self.assertLess(abs(metric["correlation"]), 0.3)
         # Contrast: position-paired raw levels are spuriously high.
-        self.assertGreater(
-            market_state.correlation(a_closes, b_closes), 0.8
-        )
+        self.assertGreater(market_state.correlation(a_closes, b_closes), 0.8)
 
 
 class DefinitionSeparationTests(unittest.TestCase):
@@ -596,8 +599,16 @@ class DefinitionSeparationTests(unittest.TestCase):
             return result
 
         yield_rows = [
-            {"series_id": "DGS10", "observed_at": AS_OF - timedelta(hours=1), "value": 4.2},
-            {"series_id": "DGS2", "observed_at": AS_OF - timedelta(hours=1), "value": 2.5},
+            {
+                "series_id": "DGS10",
+                "observed_at": AS_OF - timedelta(hours=1),
+                "value": 4.2,
+            },
+            {
+                "series_id": "DGS2",
+                "observed_at": AS_OF - timedelta(hours=1),
+                "value": 2.5,
+            },
         ]
         session = MagicMock()
         session.execute.side_effect = [
@@ -804,7 +815,9 @@ class ProvenanceTests(unittest.TestCase):
             AS_OF,
             "event-1",
             market_rows=rows,
-            config_issues=["market_state.zscore_bars is documented but has no consumer"],
+            config_issues=[
+                "market_state.zscore_bars is documented but has no consumer"
+            ],
         )
         self.assertEqual(
             snapshot["provenance"]["config_flags"],
@@ -906,9 +919,7 @@ class ConfigValidationTests(unittest.TestCase):
             },
         )
         self.assertEqual(model_fields, top_level)
-        nested = {
-            key for key in market_state.MARKET_STATE_CONSUMERS if "." in key
-        }
+        nested = {key for key in market_state.MARKET_STATE_CONSUMERS if "." in key}
         self.assertEqual(
             nested,
             {

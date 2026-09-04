@@ -11,6 +11,7 @@ from collectors.public_positioning import (
     FinraShortVolumeCollector,
     SecForm4Collector,
 )
+
 from contracts.runtime_config import CollectorConfig
 
 SEC_CONFIG = {

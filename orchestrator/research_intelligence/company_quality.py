@@ -45,6 +45,7 @@ from investment_schemas import (
     validate_numeric_claim_rows,
 )
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.company_benchmarks import EvaluatorCase, ProducerCase
 
 if TYPE_CHECKING:
@@ -70,7 +71,14 @@ _LEDGER_ARITHMETIC_KEYS = frozenset(
     {"numerator_path", "denominator_path", "scale", "expected_path", "tolerance"}
 )
 _LEDGER_KINDS = frozenset(
-    {"equals", "contains", "not_contains", "nonblank", "number_close", "arithmetic_close"}
+    {
+        "equals",
+        "contains",
+        "not_contains",
+        "nonblank",
+        "number_close",
+        "arithmetic_close",
+    }
 )
 _FISCAL_QUARTER_PERIOD_RES = (
     re.compile(
@@ -168,7 +176,6 @@ class GateFailure:
     observed: Any
     expected: Any
     evidence: str
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,8 +292,6 @@ def _claim_coefficient_key(value: object, unit: str = "") -> str | None:
     return _numeric_claim_coefficient_key(value, unit)
 
 
-
-
 def _to_decimal(value: Any) -> Decimal | None:
     """Strict numeric coercion for ledger comparisons; ``None`` when not numeric."""
     if isinstance(value, bool) or value is None:
@@ -379,9 +384,9 @@ def _authored_projection(facts: object) -> dict:
     return {key: value for key, value in facts.items() if key in keys}
 
 
-
-
-def _fingerprint_failure(producer: ProducerCase, evaluator: EvaluatorCase) -> list[GateFailure]:
+def _fingerprint_failure(
+    producer: ProducerCase, evaluator: EvaluatorCase
+) -> list[GateFailure]:
     if evaluator.producer_fingerprint == producer.fingerprint:
         return []
     return [
@@ -463,7 +468,10 @@ def _required_evidence_failures(
     from investment_schemas import _normalize_grounding_text
 
     failures: list[GateFailure] = []
-    spans = [_normalize_grounding_text(span) for span in filing_content_spans(producer.excerpt)]
+    spans = [
+        _normalize_grounding_text(span)
+        for span in filing_content_spans(producer.excerpt)
+    ]
     for quote in evaluator.required_material_evidence:
         normalized = _normalize_grounding_text(quote)
         if not normalized:
@@ -504,7 +512,6 @@ def _numeric_claim_ledger(
     return [row for row in rows if isinstance(row, dict)]
 
 
-
 def _numeric_grounding_failures(
     producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
@@ -520,7 +527,7 @@ def _numeric_grounding_failures(
 
 
 def _structural_claim_failures(
-    finalized: InvestmentFinalizedAnalysis
+    finalized: InvestmentFinalizedAnalysis,
 ) -> list[GateFailure]:
     """Shared structural row validation at the hard-gate boundary plus
     forged, stale, or ineligible target pointers.
@@ -543,8 +550,7 @@ def _structural_claim_failures(
                 path="numeric_claims",
                 observed=problem,
                 expected=(
-                    "every numeric_claims row satisfies the structural "
-                    "ledger contract"
+                    "every numeric_claims row satisfies the structural ledger contract"
                 ),
                 evidence=problem,
             )
@@ -557,7 +563,9 @@ def _structural_claim_failures(
         label = claim_id if isinstance(claim_id, str) and claim_id.strip() else where
         target_path = row.get("path")
         if isinstance(target_path, str) and target_path.strip():
-            eligible = bool(target_path.startswith("$") or target_path in finalized.facts)
+            eligible = bool(
+                target_path.startswith("$") or target_path in finalized.facts
+            )
             if not eligible:
                 failures.append(
                     _fail(
@@ -596,16 +604,15 @@ def _claim_source_failure(
         evidence=f"{where} ({label}): {detail}",
     )
 
+
 def _normalized_metric_name(value: object) -> str:
     """Stable identity used only to distinguish same-number target bindings."""
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
+
 def _normalized_unit_name(value: object) -> str:
     """Canonical ledger-unit identity for duplicate detection."""
     return str(value or "").strip().casefold()
-
-
-
 
 
 def _target_occurrence_compatible(
@@ -616,7 +623,6 @@ def _target_occurrence_compatible(
 ) -> bool:
     """Delegate occurrence-local target tuple semantics to production."""
     return True
-
 
 
 def _verify_claim_row(
@@ -656,19 +662,22 @@ def _verify_claim_row(
         ]
 
     def mismatch(detail: str) -> list[GateFailure]:
-        return [_claim_source_failure(
-            where, label, "numeric_claim_tuple_mismatch", detail
-        )]
+        return [
+            _claim_source_failure(where, label, "numeric_claim_tuple_mismatch", detail)
+        ]
 
     def unresolved(detail: str) -> list[GateFailure]:
-        return [_claim_source_failure(
-            where, label, "numeric_claim_source_unresolved", detail
-        )]
+        return [
+            _claim_source_failure(
+                where, label, "numeric_claim_source_unresolved", detail
+            )
+        ]
 
     source_kind = row.get("source_kind")
     if source_kind not in ("fact", "text", "arithmetic"):
         return unresolved(f"unknown source_kind {source_kind!r}")
     return []
+
 
 def _relationship_numeric_coverage_failures(
     finalized: InvestmentFinalizedAnalysis,
@@ -685,8 +694,7 @@ def _relationship_numeric_coverage_failures(
         {
             row.get("relationship_id"): row
             for row in reconciliations
-            if isinstance(row, Mapping)
-            and isinstance(row.get("relationship_id"), str)
+            if isinstance(row, Mapping) and isinstance(row.get("relationship_id"), str)
         }
         if isinstance(reconciliations, list)
         else {}
@@ -702,8 +710,7 @@ def _relationship_numeric_coverage_failures(
         row = authored.get(relationship_id)
         observation = (
             row.get("observation")
-            if isinstance(row, Mapping)
-            and isinstance(row.get("observation"), str)
+            if isinstance(row, Mapping) and isinstance(row.get("observation"), str)
             else ""
         )
         path = f"$.relationship_reconciliations[{index}].observation"
@@ -738,9 +745,7 @@ def _relationship_numeric_coverage_failures(
                     )
                     == fact_key
                     and any(
-                        _target_occurrence_compatible(
-                            binding, observation, start, end
-                        )
+                        _target_occurrence_compatible(binding, observation, start, end)
                         for start, end in occurrences
                     )
                     for binding in bindings
@@ -772,8 +777,6 @@ def _relationship_numeric_coverage_failures(
     return failures
 
 
-
-
 def _claim_coverage_failures(
     producer: ProducerCase, finalized: InvestmentFinalizedAnalysis
 ) -> list[GateFailure]:
@@ -800,9 +803,7 @@ def _claim_coverage_failures(
     return failures
 
 
-def _target_resolves(
-    finalized: InvestmentFinalizedAnalysis, row: dict
-) -> bool:
+def _target_resolves(finalized: InvestmentFinalizedAnalysis, row: dict) -> bool:
     """Does the row target an eligible narrative text leaf?"""
     path = str(row.get("path") or "")
     return bool(path.strip())
@@ -811,7 +812,9 @@ def _target_resolves(
 def _normalized_forbidden_value(value: int | float | str) -> str | None:
     """Canonical numeric form of one forbidden claim value."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _normalize_number(repr(value) if isinstance(value, float) else str(value))
+        return _normalize_number(
+            repr(value) if isinstance(value, float) else str(value)
+        )
     return _normalize_number(str(value))
 
 
@@ -881,7 +884,7 @@ def _hindsight_failures(
 
 
 def _prohibited_language_failures(
-    finalized: InvestmentFinalizedAnalysis
+    finalized: InvestmentFinalizedAnalysis,
 ) -> list[GateFailure]:
     failures: list[GateFailure] = []
     for finding in scan_prohibited_language(_authored_projection(finalized.facts)):
@@ -922,7 +925,9 @@ def _resolve_path(root: dict, dotted: str) -> tuple[Any, bool]:
             segments: tuple[str, ...] = (name, index_text)
         else:
             if "[" in raw_part or "]" in raw_part:
-                raise ValueError(f"path segment {raw_part!r} is not a supported selector")
+                raise ValueError(
+                    f"path segment {raw_part!r} is not a supported selector"
+                )
             segments = (raw_part,)
         for part in segments:
             if isinstance(node, dict):
@@ -1004,7 +1009,9 @@ def _ledger_row_failures(
     if actual_keys != allowed_keys:
         missing = sorted(allowed_keys - actual_keys)
         extra = sorted(actual_keys - allowed_keys)
-        raise ValueError(f"exact key set violated (missing={missing}, unexpected={extra})")
+        raise ValueError(
+            f"exact key set violated (missing={missing}, unexpected={extra})"
+        )
 
     failures: list[GateFailure] = []
 
@@ -1090,7 +1097,8 @@ def _ledger_row_failures(
         # Exact structural equality; booleans never equal 1/0. No tolerance:
         # the key set above already rejects any tolerance key on this kind.
         observed_matches = resolved and (
-            (isinstance(observed, bool) == isinstance(expected, bool)) and observed == expected
+            (isinstance(observed, bool) == isinstance(expected, bool))
+            and observed == expected
         )
         if not observed_matches:
             check_failed(
@@ -1184,9 +1192,7 @@ def run_company_hard_gates(
 
     deduped: dict[tuple[str, str, str], GateFailure] = {}
     for failure in failures:
-        deduped.setdefault(
-            (failure.code, failure.path, failure.evidence), failure
-        )
+        deduped.setdefault((failure.code, failure.path, failure.evidence), failure)
     ordered = sorted(
         deduped.values(), key=lambda item: (item.code, item.path, item.evidence)
     )

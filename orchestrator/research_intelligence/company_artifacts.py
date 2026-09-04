@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any
 
 import investment_service
+
 from research_intelligence.company_benchmarks import (
     _EVALUATOR_ONLY_KEYS,
     EvaluatorCase,
@@ -153,7 +154,6 @@ __all__ = [
 ]
 
 
-
 @dataclass(frozen=True, slots=True)
 class RecordedAttempt:
     """One recorded executor dispatch in the ordered run chain.
@@ -226,7 +226,9 @@ def _checked_executor_provenance(provenance: object) -> dict[str, Any]:
     checked: dict[str, Any] = {}
     for key, value in provenance.items():
         if not isinstance(key, str) or not key or len(key) > _MAX_PROVENANCE_KEY_CHARS:
-            raise ValueError("company run executor provenance keys must be short strings")
+            raise ValueError(
+                "company run executor provenance keys must be short strings"
+            )
         if value is not None and not isinstance(value, (str, bool, int, float)):
             raise ValueError("company run executor provenance values must be scalars")
         if isinstance(value, str) and len(value) > _MAX_PROVENANCE_VALUE_CHARS:
@@ -241,9 +243,7 @@ def _nonblank_text(value: object, label: str, maximum: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"company run {label} must be nonblank text")
     if len(value) > maximum:
-        raise ValueError(
-            f"company run {label} must be at most {maximum} characters"
-        )
+        raise ValueError(f"company run {label} must be at most {maximum} characters")
     return value
 
 
@@ -324,6 +324,7 @@ def _checked_attempts(
         )
     return tuple(checked)
 
+
 def _producer_identity_namespace(
     attempts: Sequence[RecordedAttempt], execution_id: str
 ) -> set[str]:
@@ -361,9 +362,7 @@ def _checked_stage_config(
     plain-copy config plus the extracted identity mapping.
     """
     if not isinstance(value, Mapping) or not value:
-        raise ValueError(
-            "company run stage_config must be a nonempty JSON object"
-        )
+        raise ValueError("company run stage_config must be a nonempty JSON object")
     budget = {"nodes": 0}
 
     def visit(node: Any, path: str, depth: int) -> None:
@@ -382,7 +381,9 @@ def _checked_stage_config(
             return
         if isinstance(node, str):
             if len(node) > _MAX_STAGE_STRING_CHARS:
-                raise ValueError(f"company run stage_config string at {path} is too long")
+                raise ValueError(
+                    f"company run stage_config string at {path} is too long"
+                )
             return
         if isinstance(node, Mapping):
             for key, item in node.items():
@@ -400,20 +401,18 @@ def _checked_stage_config(
 
     for key, item in value.items():
         if not isinstance(key, str) or not key or len(key) > _MAX_STAGE_KEY_CHARS:
-            raise ValueError("company run stage_config keys must be short nonempty strings")
+            raise ValueError(
+                "company run stage_config keys must be short nonempty strings"
+            )
         visit(item, key, 1)
 
     raw_identity = value.get("executor")
-    if (
-        not isinstance(raw_identity, Mapping)
-        or set(raw_identity)
-        != {
-            "executor_kind",
-            "execution_id",
-            "executor_name",
-            "executor_version",
-        }
-    ):
+    if not isinstance(raw_identity, Mapping) or set(raw_identity) != {
+        "executor_kind",
+        "execution_id",
+        "executor_name",
+        "executor_version",
+    }:
         raise ValueError(
             "company run stage_config.executor must carry exactly executor_kind, "
             "execution_id, executor_name, and executor_version"
@@ -519,7 +518,9 @@ def _reject_evaluator_keys(node: Any, path: str, *, depth: int = 0) -> None:
             _reject_evaluator_keys(item, f"{path}[{index}]", depth=depth + 1)
 
 
-def _producer_payload(producer: ProducerCase, producer_fingerprint: str) -> dict[str, Any]:
+def _producer_payload(
+    producer: ProducerCase, producer_fingerprint: str
+) -> dict[str, Any]:
     """Canonical producer.json envelope the exact loader keys can replay.
 
     Serializes exactly the defined producer identity fields plus the DERIVED
@@ -587,7 +588,9 @@ def _finalized_payload(
     producer: ProducerCase,
 ) -> dict[str, Any]:
     if not isinstance(finalized, investment_service.InvestmentFinalizedAnalysis):
-        raise ValueError("company run finalized analysis must be an InvestmentFinalizedAnalysis")
+        raise ValueError(
+            "company run finalized analysis must be an InvestmentFinalizedAnalysis"
+        )
     # previous_state/prior_count are finalization inputs owned by the producer
     # case; they are recorded beside the finalized outputs for replay context.
     payload = {
@@ -626,9 +629,6 @@ def _evaluator_envelope(raw: Any, producer: ProducerCase) -> EvaluatorCase:
     return load_evaluator_case(raw, producer=producer)
 
 
-
-
-
 def _plain(value: Any) -> Any:
     """Normalize frozen/mapping containers into JSON-native structures."""
     if isinstance(value, Mapping):
@@ -644,9 +644,6 @@ def _plain(value: Any) -> Any:
     return str(value)
 
 
-
-
-
 def _plain_judge_request(request: BlindJudgeRequest) -> dict[str, Any]:
     return {
         "role": request.role,
@@ -660,8 +657,6 @@ def _plain_judge_request(request: BlindJudgeRequest) -> dict[str, Any]:
         "fingerprint": request.fingerprint,
         "response_binding": request.response_binding,
     }
-
-
 
 
 def _panel_report_payload(panel_report: object) -> dict[str, Any]:
@@ -689,7 +684,9 @@ def _defect_log_payload(
             defects.append({"source": result.role, "defect": defect})
     defects.sort(key=lambda entry: (entry["source"], entry["defect"]))
     failures = panel_report.get("gate_failures")
-    gate_failures = [failure for failure in failures] if isinstance(failures, list) else []
+    gate_failures = (
+        [failure for failure in failures] if isinstance(failures, list) else []
+    )
     return {
         "judge_defects": defects,
         "gate_failures": gate_failures,
@@ -726,7 +723,9 @@ def _discard_directory(root: Path, written: list[Path]) -> None:
         pass
 
 
-def _checked_evaluator_identity(evaluator: object, producer: ProducerCase, producer_fingerprint: str) -> None:
+def _checked_evaluator_identity(
+    evaluator: object, producer: ProducerCase, producer_fingerprint: str
+) -> None:
     """Anchor the supplied evaluator half to this exact producer case.
 
     The pairing fields are checked against the DERIVED canonical producer
@@ -755,9 +754,7 @@ def _checked_salt(blind_salt: object) -> bytes:
     else:
         raise ValueError("company run blind_salt must be str or bytes")
     if not 0 < len(encoded) <= _MAX_SALT_BYTES:
-        raise ValueError(
-            f"company run blind_salt must be 1..{_MAX_SALT_BYTES} bytes"
-        )
+        raise ValueError(f"company run blind_salt must be 1..{_MAX_SALT_BYTES} bytes")
     return encoded
 
 
@@ -824,7 +821,9 @@ def _checked_judge_records(
     ``reserved_identities``. Returns records keyed by role plus the ordered
     role list.
     """
-    if isinstance(judge_records, (str, bytes)) or not isinstance(judge_records, Sequence):
+    if isinstance(judge_records, (str, bytes)) or not isinstance(
+        judge_records, Sequence
+    ):
         raise ValueError("company run judge_records must be a sequence")
     records = list(judge_records)
     if len(records) != 3:
@@ -896,6 +895,8 @@ def _judge_provenance_block(
         "request_fingerprint": request.fingerprint,
         "response_binding": request.response_binding,
     }
+
+
 def write_immutable_company_run(
     output_dir: str | Path,
     *,
@@ -946,9 +947,8 @@ def write_immutable_company_run(
         raise ValueError("company run producer must be a ProducerCase")
     producer_fingerprint = canonical_producer_fingerprint(producer)
     stored_fingerprint = producer.fingerprint
-    if (
-        not isinstance(stored_fingerprint, str)
-        or not hmac.compare_digest(stored_fingerprint, producer_fingerprint)
+    if not isinstance(stored_fingerprint, str) or not hmac.compare_digest(
+        stored_fingerprint, producer_fingerprint
     ):
         raise ValueError(
             "company run rebound producer case rejected: stored producer "
@@ -959,9 +959,7 @@ def write_immutable_company_run(
 
     _checked_evaluator_identity(evaluator, producer, producer_fingerprint)
     salt = _checked_salt(blind_salt)
-    by_role, record_order = _checked_judge_records(
-        judge_records, producer_identities
-    )
+    by_role, record_order = _checked_judge_records(judge_records, producer_identities)
 
     recomputed_request = prepare_company_run(producer)
     request_data = _request_payload(request)
@@ -981,9 +979,7 @@ def write_immutable_company_run(
         "final output",
     )
 
-    recomputed_gates = run_company_hard_gates(
-        producer, evaluator, recomputed_finalized
-    )
+    recomputed_gates = run_company_hard_gates(producer, evaluator, recomputed_finalized)
     gates_data = _hard_gate_report_payload(recomputed_gates)
 
     # Rebuild the exact dispatch inputs from trusted content plus salt, then
@@ -1184,7 +1180,6 @@ def is_complete_company_run(path: str | Path) -> bool:
             if entry.is_symlink() or not entry.is_file():
                 return False
 
-
         blobs = {name: (root / name).read_bytes() for name in _PAYLOAD_FILES}
         manifest = json.loads((root / MANIFEST_NAME).read_bytes().decode("utf-8"))
 
@@ -1217,7 +1212,10 @@ def is_complete_company_run(path: str | Path) -> bool:
             return False
 
         recorded_files = manifest["files"]
-        if not isinstance(recorded_files, Mapping) or set(recorded_files) != _PAYLOAD_FILES:
+        if (
+            not isinstance(recorded_files, Mapping)
+            or set(recorded_files) != _PAYLOAD_FILES
+        ):
             return False
         for name in sorted(_PAYLOAD_FILES):
             spec = recorded_files[name]
@@ -1264,10 +1262,7 @@ def is_complete_company_run(path: str | Path) -> bool:
         defect_log_payload = payloads[_DEFECT_LOG_FILE]
         stage_payload = payloads[_STAGE_CONFIG_FILE]
         hard_gates_payload = payloads[_HARD_GATES_FILE]
-        if not all(
-            isinstance(payloads[name], Mapping)
-            for name in _PAYLOAD_FILES
-        ):
+        if not all(isinstance(payloads[name], Mapping) for name in _PAYLOAD_FILES):
             return False
 
         attempts_entries = attempts_payload.get("attempts")
@@ -1367,13 +1362,19 @@ def is_complete_company_run(path: str | Path) -> bool:
             if not isinstance(entry, Mapping):
                 return False
             fingerprint = entry.get("fingerprint")
-            if not isinstance(fingerprint, str) or not _FINGERPRINT_RE.fullmatch(fingerprint):
+            if not isinstance(fingerprint, str) or not _FINGERPRINT_RE.fullmatch(
+                fingerprint
+            ):
                 return False
             rebuilt_request_fingerprints.append(fingerprint)
             role = entry.get("role")
             token = entry.get("token")
             binding = entry.get("response_binding")
-            if not isinstance(role, str) or not isinstance(token, str) or not isinstance(binding, str):
+            if (
+                not isinstance(role, str)
+                or not isinstance(token, str)
+                or not isinstance(binding, str)
+            ):
                 return False
             result = results_by_role.get(role)
             if (
@@ -1422,14 +1423,13 @@ def is_complete_company_run(path: str | Path) -> bool:
             salt = _salt_from_hex(salt_disclosure["salt_hex"])
         except ValueError:
             return False
-        if not hmac.compare_digest(_salt_commitment(salt), manifest["blind_salt_commitment"]):
+        if not hmac.compare_digest(
+            _salt_commitment(salt), manifest["blind_salt_commitment"]
+        ):
             return False
 
         git_commit = manifest["git_commit"]
-        if (
-            not isinstance(git_commit, str)
-            or not _GIT_COMMIT_RE.fullmatch(git_commit)
-        ):
+        if not isinstance(git_commit, str) or not _GIT_COMMIT_RE.fullmatch(git_commit):
             return False
         if not isinstance(manifest["git_dirty"], bool):
             return False
@@ -1457,16 +1457,22 @@ def is_complete_company_run(path: str | Path) -> bool:
         # every recomputation against the stored bytes.
         producer = _producer_envelope(producer_payload)
         evaluator = _evaluator_envelope(evaluator_payload, producer)
-        if manifest["case_id"] != producer.case_id or manifest[
-            "fixture_version"
-        ] != producer.fixture_version:
+        if (
+            manifest["case_id"] != producer.case_id
+            or manifest["fixture_version"] != producer.fixture_version
+        ):
             return False
-        if hmac.compare_digest(manifest["producer_fingerprint"], producer.fingerprint) is False:
+        if (
+            hmac.compare_digest(manifest["producer_fingerprint"], producer.fingerprint)
+            is False
+        ):
             return False
 
         recomputed_request = prepare_company_run(producer)
         _canonical_matches(
-            _request_payload(recomputed_request), request_payload, "replayed producer request"
+            _request_payload(recomputed_request),
+            request_payload,
+            "replayed producer request",
         )
 
         replay_recorded = recorded_executor_output(
@@ -1566,7 +1572,9 @@ def is_complete_company_run(path: str | Path) -> bool:
             recomputed_gates,
         )
         _canonical_matches(
-            _panel_report_payload(recomputed_panel), panel_payload, "replayed panel report"
+            _panel_report_payload(recomputed_panel),
+            panel_payload,
+            "replayed panel report",
         )
         _canonical_matches(
             _defect_log_payload(parsed_results, panel_payload),
@@ -1576,4 +1584,3 @@ def is_complete_company_run(path: str | Path) -> bool:
         return True
     except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError):
         return False
-

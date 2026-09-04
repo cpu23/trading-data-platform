@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from processors._validators import scan_prohibited_language
+
 from research_intelligence.contracts import (
     VALUE_CAPTURE_DIMENSIONS,
     NormalizedEvidence,
@@ -53,11 +54,16 @@ def validate_value_capture_output(
     if not isinstance(output.get("abstained"), bool):
         raise ValueError("value-capture abstained flag must be boolean")
     raw_assessments = output.get("assessments")
-    if not isinstance(raw_assessments, list) or len(raw_assessments) > maximum_assessments:
+    if (
+        not isinstance(raw_assessments, list)
+        or len(raw_assessments) > maximum_assessments
+    ):
         raise ValueError("value-capture assessments exceed configured bound")
     if output["abstained"]:
         if raw_assessments:
-            raise ValueError("abstained value-capture output cannot include assessments")
+            raise ValueError(
+                "abstained value-capture output cannot include assessments"
+            )
         return ()
     catalog = evidence_catalog(evidence)
     drafts: list[ValueCaptureDraft] = []
@@ -66,7 +72,10 @@ def validate_value_capture_output(
         if not isinstance(raw, Mapping) or set(raw) != _ASSESSMENT_KEYS:
             raise ValueError("value-capture assessment keys are invalid")
         node_raw = raw.get("node")
-        if not isinstance(node_raw, Mapping) or set(node_raw) != {"entity_type", "name"}:
+        if not isinstance(node_raw, Mapping) or set(node_raw) != {
+            "entity_type",
+            "name",
+        }:
             raise ValueError("value-capture node keys are invalid")
         node = normalize_entity(node_raw.get("entity_type"), node_raw.get("name"))
         node_id = (node.entity_type, node.normalized_key)
@@ -107,7 +116,9 @@ def validate_value_capture_output(
             raise ValueError("non-null value-capture dimensions require evidence")
         unknowns = _unknowns(raw.get("unknowns"))
         if scan_prohibited_language(raw):
-            raise ValueError("value-capture output contains prohibited advisory language")
+            raise ValueError(
+                "value-capture output contains prohibited advisory language"
+            )
         reject_unsupported_numeric_text(
             {"rationale": rationale, "unknowns": unknowns}, evidence
         )

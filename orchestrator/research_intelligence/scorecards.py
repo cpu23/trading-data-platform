@@ -26,9 +26,7 @@ SCORECARD_DIMENSIONS = frozenset(
         "point_in_time_integrity",
     }
 )
-_HUMAN_ANNOTATION_KEYS = frozenset(
-    {"overall_label", "dimension_labels", "notes"}
-)
+_HUMAN_ANNOTATION_KEYS = frozenset({"overall_label", "dimension_labels", "notes"})
 
 
 def validate_human_annotations(value: Any) -> dict[str, Any]:
