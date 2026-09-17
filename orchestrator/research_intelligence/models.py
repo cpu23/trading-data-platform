@@ -18,6 +18,7 @@ from research_intelligence.adversarial import RESEARCH_DATA_TYPES
 from research_intelligence.claims import MAX_SOURCE_CLAIMS_PER_BATCH
 from research_intelligence.config import ResearchSettings
 from research_intelligence.contracts import (
+    VALUE_CAPTURE_DIMENSIONS,
     ModelProvenance,
     canonical_fingerprint,
     parse_json_payload,
@@ -80,27 +81,6 @@ _IMPORTANCE = _object(
     }
 )
 _IMPORTANCE_RATIONALE = _object({name: _STRING for name in _IMPORTANCE["properties"]})
-_VALUE_DIMENSIONS = (
-    "demand_impulse",
-    "revenue_exposure",
-    "volume_sensitivity",
-    "supply_responsiveness",
-    "scarcity",
-    "pricing_power",
-    "cost_pass_through",
-    "margin_sensitivity",
-    "capital_intensity",
-    "competitive_intensity",
-    "barriers_to_entry",
-    "capacity_lead_time",
-    "substitution_risk",
-    "balance_sheet_capacity",
-    "capital_allocation",
-    "public_market_investability",
-    "valuation",
-    "crowding",
-    "evidence_strength",
-)
 
 CLAIM_SCHEMA = {
     "name": STAGE_VERSIONS["claim_extraction"],
@@ -237,11 +217,11 @@ VALUE_CAPTURE_SCHEMA = {
                                     "string",
                                     enum=["low", "moderate", "high", "unknown"],
                                 )
-                                for name in _VALUE_DIMENSIONS
+                                for name in VALUE_CAPTURE_DIMENSIONS
                             }
                         ),
                         "rationale": _object(
-                            {name: _STRING for name in _VALUE_DIMENSIONS}
+                            {name: _STRING for name in VALUE_CAPTURE_DIMENSIONS}
                         ),
                         "evidence_ids": _array(_STRING, 4),
                         "unknowns": _array(_STRING, 5),

@@ -14,7 +14,22 @@ from logging_config import get_logger
 from sqlalchemy import text
 
 from contracts.runtime_config import AppConfig
-from research_intelligence.adversarial import validate_adversarial_output
+from research_intelligence.analysis import (
+    build_adversarial_payload,
+    build_case_context,
+    build_causal_payload,
+    build_claim_payload,
+    build_deliverable_payload,
+    build_pattern_payload,
+    build_value_payload,
+    causal_graph_nodes,
+    stage_input_fingerprint,
+    validate_adversarial_stage,
+    validate_value_stage,
+)
+from research_intelligence.analysis import (
+    edge_fingerprints as edge_fingerprints_for_edges,
+)
 from research_intelligence.claims import (
     CLAIM_ELIGIBLE_EVIDENCE_TYPES,
     claim_evidence,
@@ -35,7 +50,6 @@ from research_intelligence.deliverable import validate_deliverable_output
 from research_intelligence.discovery import (
     PatternAssessment,
     build_candidate_groups,
-    pattern_prompt_payload,
     select_case_match,
     token_similarity,
     validate_pattern_output,
@@ -63,7 +77,6 @@ from research_intelligence.models import (
     ResearchRunBudgetExceeded,
 )
 from research_intelligence.queries import get_case
-from research_intelligence.relationships import causal_edge_fingerprint
 from research_intelligence.repository import (
     current_market_drivers,
     ensure_hypothesis_data_requests,
@@ -80,7 +93,6 @@ from research_intelligence.repository import (
     unresolved_material_hypotheses,
     upsert_case,
 )
-from research_intelligence.value_capture import validate_value_capture_output
 
 logger = get_logger("research_intelligence.service")
 
@@ -153,8 +165,18 @@ def run_model_stage[T](
     return runner.run(stage, payload, validator, input_fingerprint=input_fingerprint)
 
 
-def _stage_fingerprint(stage: str, payload: Any) -> str:
-    return canonical_fingerprint({"stage": STAGE_VERSIONS[stage], "input": payload})
+def _pipeline_fingerprint(group: CandidateGroup, settings: ResearchSettings) -> str:
+    return canonical_fingerprint(
+        {
+            "evidence": group.input_fingerprint,
+            "versions": STAGE_VERSIONS,
+            "bounds": {
+                "graph_depth": settings.graph_depth,
+                "maximum_graph_edges": settings.maximum_graph_edges,
+                "evidence_per_candidate": settings.evidence_per_candidate,
+            },
+        }
+    )
 
 
 def _extract_claims(
@@ -171,8 +193,8 @@ def _extract_claims(
     )[: runner.settings.maximum_claim_documents_per_run]
     if not eligible or not runner.settings.claim_extraction_enabled:
         return ()
-    payload = {"evidence": [item.to_dict() for item in eligible]}
-    fingerprint = _stage_fingerprint("claim_extraction", payload)
+    payload = build_claim_payload(eligible)
+    fingerprint = stage_input_fingerprint("claim_extraction", payload)
     result = run_model_stage(
         session,
         runner,
@@ -187,53 +209,6 @@ def _extract_claims(
         with _savepoint(session):
             persist_source_claims(session, claims, result.provenance)
     return claim_evidence(claims, result.provenance)
-
-
-def _pattern_payload(group: CandidateGroup) -> dict[str, Any]:
-    return json.loads(pattern_prompt_payload(group))
-
-
-def _pipeline_fingerprint(group: CandidateGroup, settings: ResearchSettings) -> str:
-    return canonical_fingerprint(
-        {
-            "evidence": group.input_fingerprint,
-            "versions": STAGE_VERSIONS,
-            "bounds": {
-                "graph_depth": settings.graph_depth,
-                "maximum_graph_edges": settings.maximum_graph_edges,
-                "evidence_per_candidate": settings.evidence_per_candidate,
-            },
-        }
-    )
-
-
-def _edge_fingerprints(edges: Sequence[Any]) -> tuple[str, ...]:
-    return tuple(
-        causal_edge_fingerprint(
-            from_type=edge.from_type,
-            from_key=edge.from_key,
-            relationship=edge.relationship,
-            to_type=edge.to_type,
-            to_key=edge.to_key,
-        )
-        for edge in edges
-    )
-
-
-def _validate_value_nodes(
-    output: Any, evidence: Sequence[NormalizedEvidence], nodes: set[tuple[str, str]]
-):
-    assessments = validate_value_capture_output(output, evidence)
-    unsupported = [
-        (item.node_type, item.node_key)
-        for item in assessments
-        if nodes and (item.node_type, item.node_key) not in nodes
-    ]
-    if unsupported:
-        raise ValueError(
-            "value-capture output references a node outside the causal graph"
-        )
-    return assessments
 
 
 def _current_lifecycle(session: Any, case_id: str) -> str:
@@ -278,8 +253,8 @@ def _process_group(
                 "status": "unchanged",
                 "pipeline_input_fingerprint": pipeline_fingerprint,
             }
-    pattern_payload = _pattern_payload(group)
-    pattern_fingerprint = _stage_fingerprint("pattern_discovery", pattern_payload)
+    pattern_payload = build_pattern_payload(group)
+    pattern_fingerprint = stage_input_fingerprint("pattern_discovery", pattern_payload)
     pattern_result = run_model_stage(
         session,
         runner,
@@ -306,20 +281,14 @@ def _process_group(
             matched_case=matched,
         )
     case_id = mutation.case_id
-    case_context = {
-        "case_id": case_id,
-        "case": clean_payload(assessment),
-        "evidence": [item.to_dict() for item in group.evidence],
-    }
+    case_context = build_case_context(group, assessment, case_id=case_id)
 
-    causal_payload = {
-        **case_context,
-        "bounds": {
-            "maximum_depth": settings.graph_depth,
-            "maximum_edges": settings.maximum_graph_edges,
-        },
-    }
-    causal_fp = _stage_fingerprint("causal_chain", causal_payload)
+    causal_payload = build_causal_payload(
+        case_context,
+        graph_depth=settings.graph_depth,
+        maximum_graph_edges=settings.maximum_graph_edges,
+    )
+    causal_fp = stage_input_fingerprint("causal_chain", causal_payload)
     causal_result = run_model_stage(
         session,
         runner,
@@ -340,43 +309,17 @@ def _process_group(
         hypothesis_request_counts = ensure_hypothesis_data_requests(
             session, case_id, edges, group.evidence
         )
-    edge_fingerprints = _edge_fingerprints(edges)
-    allowed_nodes = {(edge.from_type, edge.from_key) for edge in edges} | {
-        (edge.to_type, edge.to_key) for edge in edges
-    }
+    edge_fingerprints = edge_fingerprints_for_edges(edges)
+    allowed_nodes = causal_graph_nodes(edges)
 
-    value_payload = {
-        **case_context,
-        "causal_edges": clean_payload(edges),
-        "dimensions": [
-            "demand_impulse",
-            "revenue_exposure",
-            "volume_sensitivity",
-            "supply_responsiveness",
-            "scarcity",
-            "pricing_power",
-            "cost_pass_through",
-            "margin_sensitivity",
-            "capital_intensity",
-            "competitive_intensity",
-            "barriers_to_entry",
-            "capacity_lead_time",
-            "substitution_risk",
-            "balance_sheet_capacity",
-            "capital_allocation",
-            "public_market_investability",
-            "valuation",
-            "crowding",
-            "evidence_strength",
-        ],
-    }
-    value_fp = _stage_fingerprint("value_capture", value_payload)
+    value_payload = build_value_payload(case_context, edges)
+    value_fp = stage_input_fingerprint("value_capture", value_payload)
     value_result = run_model_stage(
         session,
         runner,
         "value_capture",
         value_payload,
-        lambda output: _validate_value_nodes(output, group.evidence, allowed_nodes),
+        lambda output: validate_value_stage(output, group.evidence, allowed_nodes),
         value_fp,
         force=force,
     )
@@ -391,25 +334,20 @@ def _process_group(
         )
 
     current_detail = get_case(session, case_id, detail_limit=100) or {}
-    adversarial_payload = {
-        **case_context,
-        "causal_edges": clean_payload(edges),
-        "edge_fingerprints": edge_fingerprints,
-        "value_capture": clean_payload(value_assessments),
-        "existing_data_requests": current_detail.get("data_requests", []),
-    }
-    adversarial_fp = _stage_fingerprint("adversarial", adversarial_payload)
+    adversarial_payload = build_adversarial_payload(
+        case_context,
+        edges,
+        value_assessments,
+        existing_data_requests=current_detail.get("data_requests", []),
+    )
+    adversarial_fp = stage_input_fingerprint("adversarial", adversarial_payload)
     adversarial_result = run_model_stage(
         session,
         runner,
         "adversarial",
         adversarial_payload,
-        lambda output: validate_adversarial_output(
-            output,
-            group.evidence,
-            edge_fingerprints=edge_fingerprints,
-            maximum_counterevidence=30,
-            maximum_requests=20,
+        lambda output: validate_adversarial_stage(
+            output, group.evidence, edge_fingerprints
         ),
         adversarial_fp,
         force=force,
@@ -426,14 +364,10 @@ def _process_group(
                 adversarial_result.provenance,
             )
 
-    deliverable_payload = {
-        **case_context,
-        "causal_edges": clean_payload(edges),
-        "edge_fingerprints": edge_fingerprints,
-        "value_capture": clean_payload(value_assessments),
-        "counterevidence": clean_payload(adversarial),
-    }
-    deliverable_fp = _stage_fingerprint("deliverable", deliverable_payload)
+    deliverable_payload = build_deliverable_payload(
+        case_context, edges, value_assessments, adversarial
+    )
+    deliverable_fp = stage_input_fingerprint("deliverable", deliverable_payload)
     deliverable_result = run_model_stage(
         session,
         runner,

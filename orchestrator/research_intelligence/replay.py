@@ -14,7 +14,23 @@ from sqlalchemy import text
 
 from contracts.db_results import result_first, result_rows
 from contracts.runtime_config import DEFAULT_STAGE_NAMES, AppConfig
-from research_intelligence.adversarial import validate_adversarial_output
+from research_intelligence.analysis import (
+    analytical_stage_identities,
+    build_adversarial_payload,
+    build_case_context,
+    build_causal_payload,
+    build_claim_payload,
+    build_deliverable_payload,
+    build_pattern_payload,
+    build_value_payload,
+    causal_graph_nodes,
+    stage_input_fingerprint,
+    validate_adversarial_stage,
+    validate_value_stage,
+)
+from research_intelligence.analysis import (
+    edge_fingerprints as edge_fingerprints_for_edges,
+)
 from research_intelligence.benchmarks import BenchmarkEpisode
 from research_intelligence.claims import (
     CLAIM_ELIGIBLE_EVIDENCE_TYPES,
@@ -39,38 +55,14 @@ from research_intelligence.evidence import EvidenceRegistry
 from research_intelligence.graph import validate_causal_output
 from research_intelligence.lifecycle import CaseStats, next_lifecycle_state
 from research_intelligence.models import ModelStageResult, ResearchModelRunner
-from research_intelligence.relationships import causal_edge_fingerprint
 from research_intelligence.service import run_model_stage
-from research_intelligence.value_capture import validate_value_capture_output
-
-StageExecutor = Callable[[str, Any, Callable[[Any], Any], str], ModelStageResult]
-
-_REPLAY_STAGES = (
-    "claim_extraction",
-    "pattern_discovery",
-    "causal_chain",
-    "value_capture",
-    "adversarial",
-    "deliverable",
-)
-
-
-def _edge_fingerprints(edges: Sequence[CausalEdgeDraft]) -> tuple[str, ...]:
-    return tuple(
-        causal_edge_fingerprint(
-            from_type=edge.from_type,
-            from_key=edge.from_key,
-            relationship=edge.relationship,
-            to_type=edge.to_type,
-            to_key=edge.to_key,
-        )
-        for edge in edges
-    )
 
 
 def _hypothesis_requests(edges: Sequence[CausalEdgeDraft]) -> list[dict[str, Any]]:
     requests: list[dict[str, Any]] = []
-    for edge, fingerprint in zip(edges, _edge_fingerprints(edges), strict=True):
+    for edge, fingerprint in zip(
+        edges, edge_fingerprints_for_edges(edges), strict=True
+    ):
         if edge.epistemic_state != "hypothesis":
             continue
         missing = list(edge.missing_evidence) or [
@@ -187,6 +179,12 @@ class ReplayExecution:
     cost_usd: float
 
 
+StageExecutor = Callable[
+    [str, Any, Callable[[Any], Any], str],
+    ModelStageResult,
+]
+
+
 def execute_replay_research(
     evidence: Sequence[NormalizedEvidence],
     context: ResearchContext,
@@ -233,12 +231,8 @@ def execute_replay_research(
         payload: Any,
         validator: Callable[[Any], Any],
     ) -> ModelStageResult:
-        fingerprint = canonical_fingerprint(
-            {
-                "stage": stage,
-                "replay_as_of": context.effective_time.isoformat(),
-                "input": payload,
-            }
+        fingerprint = stage_input_fingerprint(
+            stage, payload, replay_as_of=context.effective_time
         )
         context.guard_model_input(payload, stage=stage)
         result = stage_executor(stage, payload, validator, fingerprint)
@@ -275,7 +269,7 @@ def execute_replay_research(
         try:
             claim_result = run_stage(
                 "claim_extraction",
-                {"evidence": [item.to_dict() for item in eligible_claim_sources]},
+                build_claim_payload(eligible_claim_sources),
                 lambda output: validate_claim_output(output, eligible_claim_sources),
             )
             derived_claims = claim_evidence(
@@ -298,13 +292,11 @@ def execute_replay_research(
     )
 
     for group in groups[: settings.maximum_cases_per_run]:
-        pattern_payload = {
-            "replay": context.to_prompt_metadata(),
-            "blocking_key": group.blocking_key,
-            "evidence": [item.to_dict() for item in group.evidence],
-            "source_names": list(group.source_names),
-            "industries": list(group.industries),
-        }
+        pattern_payload = build_pattern_payload(
+            group,
+            replay_metadata=context.to_prompt_metadata(),
+            now=context.effective_time,
+        )
         try:
             pattern_result = run_stage(
                 "pattern_discovery",
@@ -329,29 +321,27 @@ def execute_replay_research(
             continue
         if assessment.semantic_fingerprint in cases:
             continue
-        case_context = {
-            "case_id": f"replay:{assessment.semantic_fingerprint}",
-            "case": clean_payload(assessment),
-            "replay": context.to_prompt_metadata(),
-            "evidence": [item.to_dict() for item in group.evidence],
-        }
+        case_context = build_case_context(
+            group,
+            assessment,
+            case_id=f"replay:{assessment.semantic_fingerprint}",
+            replay_metadata=context.to_prompt_metadata(),
+        )
         edges: tuple[CausalEdgeDraft, ...] = ()
         causal_result: ModelStageResult | None = None
         try:
-            causal_payload = {
-                **case_context,
-                "bounds": {
-                    "maximum_depth": settings.graph_depth,
-                    "maximum_edges": settings.maximum_graph_edges,
-                },
-            }
+            causal_payload = build_causal_payload(
+                case_context,
+                graph_depth=settings.graph_depth,
+                maximum_graph_edges=settings.maximum_graph_edges,
+            )
             causal_result = run_stage(
                 "causal_chain",
                 causal_payload,
-                lambda output,
-                selected=group,
-                seed=assessment.entities: validate_causal_output(
-                    output, selected.evidence, settings, seed_entities=seed
+                lambda output, selected=group, seed=assessment.entities: (
+                    validate_causal_output(
+                        output, selected.evidence, settings, seed_entities=seed
+                    )
                 ),
             )
             edges = causal_result.value or ()
@@ -364,38 +354,19 @@ def execute_replay_research(
                     "detail": str(exc)[:240],
                 }
             )
-        edge_fingerprints = _edge_fingerprints(edges)
-        allowed_nodes = {(edge.from_type, edge.from_key) for edge in edges} | {
-            (edge.to_type, edge.to_key) for edge in edges
-        }
+        edge_fingerprints = edge_fingerprints_for_edges(edges)
+        allowed_nodes = causal_graph_nodes(edges)
         value_assessments: tuple[Any, ...] = ()
         value_result: ModelStageResult | None = None
         if edges:
             try:
-                value_payload = {
-                    **case_context,
-                    "causal_edges": clean_payload(edges),
-                }
-
-                def validate_values(
-                    output: Any,
-                    *,
-                    evidence: Sequence[NormalizedEvidence] = group.evidence,
-                    graph_nodes: set[tuple[str, str]] = allowed_nodes,
-                ) -> tuple[Any, ...]:
-                    values = validate_value_capture_output(output, evidence)
-                    if any(
-                        graph_nodes
-                        and (item.node_type, item.node_key) not in graph_nodes
-                        for item in values
-                    ):
-                        raise ValueError(
-                            "value capture references a node outside the graph"
-                        )
-                    return values
-
+                value_payload = build_value_payload(case_context, edges)
                 value_result = run_stage(
-                    "value_capture", value_payload, validate_values
+                    "value_capture",
+                    value_payload,
+                    lambda output, evidence=group.evidence, graph_nodes=allowed_nodes: (
+                        validate_value_stage(output, evidence, graph_nodes)
+                    ),
                 )
                 value_assessments = value_result.value or ()
             except Exception as exc:
@@ -410,24 +381,19 @@ def execute_replay_research(
         adversarial = None
         adversarial_result: ModelStageResult | None = None
         try:
-            adversarial_payload = {
-                **case_context,
-                "causal_edges": clean_payload(edges),
-                "edge_fingerprints": edge_fingerprints,
-                "value_capture": clean_payload(value_assessments),
-                "existing_data_requests": [],
-            }
+            adversarial_payload = build_adversarial_payload(
+                case_context,
+                edges,
+                value_assessments,
+                existing_data_requests=[],
+            )
             adversarial_result = run_stage(
                 "adversarial",
                 adversarial_payload,
                 lambda output,
                 evidence=group.evidence,
-                fingerprints=edge_fingerprints: validate_adversarial_output(
-                    output,
-                    evidence,
-                    edge_fingerprints=fingerprints,
-                    maximum_counterevidence=30,
-                    maximum_requests=20,
+                fingerprints=edge_fingerprints: (
+                    validate_adversarial_stage(output, evidence, fingerprints)
                 ),
             )
             adversarial = adversarial_result.value
@@ -443,13 +409,9 @@ def execute_replay_research(
         deliverable = None
         deliverable_result: ModelStageResult | None = None
         try:
-            deliverable_payload = {
-                **case_context,
-                "causal_edges": clean_payload(edges),
-                "edge_fingerprints": edge_fingerprints,
-                "value_capture": clean_payload(value_assessments),
-                "counterevidence": clean_payload(adversarial),
-            }
+            deliverable_payload = build_deliverable_payload(
+                case_context, edges, value_assessments, adversarial
+            )
             assessment_nodes = tuple(
                 (item.node_type, item.node_key) for item in value_assessments
             )
@@ -459,11 +421,13 @@ def execute_replay_research(
                 lambda output,
                 evidence=group.evidence,
                 fingerprints=edge_fingerprints,
-                nodes=assessment_nodes: validate_deliverable_output(
-                    output,
-                    evidence,
-                    edge_fingerprints=fingerprints,
-                    assessment_nodes=nodes,
+                nodes=assessment_nodes: (
+                    validate_deliverable_output(
+                        output,
+                        evidence,
+                        edge_fingerprints=fingerprints,
+                        assessment_nodes=nodes,
+                    )
                 ),
             )
             deliverable = deliverable_result.value
@@ -895,9 +859,7 @@ def run_benchmark_replay_date(
         session=session,
         budget_context=budget_context,
     )
-    stage_identities = {
-        stage: temporary_runner.cache_identity(stage) for stage in _REPLAY_STAGES
-    }
+    stage_identities = analytical_stage_identities(temporary_runner.cache_identity)
     variant_fingerprint = canonical_fingerprint(stage_identities)
     deterministic_input = context.deterministic_fingerprint(
         extra={
@@ -1035,9 +997,7 @@ def run_database_replay(
         session=session,
         budget_context=budget_context,
     )
-    stage_identities = {
-        stage: temporary_runner.cache_identity(stage) for stage in _REPLAY_STAGES
-    }
+    stage_identities = analytical_stage_identities(temporary_runner.cache_identity)
     variant_fingerprint = canonical_fingerprint(stage_identities)
     execution_fingerprint = canonical_fingerprint(
         {
