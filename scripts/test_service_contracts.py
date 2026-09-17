@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -36,9 +37,13 @@ def request(base: str, path: str, *, method: str = "GET", body=None):
         return exc.code, payload
 
 
-def compose(compose_file: str, *args: str) -> str:
+def compose(compose_file: str, *args: str, project_name: str | None = None) -> str:
+    cmd = ["docker", "compose", "-f", compose_file]
+    if project_name:
+        cmd.extend(["-p", project_name])
+    cmd.extend(args)
     completed = subprocess.run(
-        ["docker", "compose", "-f", compose_file, *args],
+        cmd,
         check=True,
         text=True,
         capture_output=True,
@@ -56,18 +61,30 @@ def docker_inspect(container: str, fmt: str) -> str:
     return completed.stdout.strip()
 
 
-def assert_topology(compose_file: str) -> None:
+def assert_topology(compose_file: str, project_name: str | None = None) -> None:
     source = Path(compose_file).read_text()
     assert "services:" in source
     rows = compose(
-        compose_file, "ps", "-a", "--format", "{{.Service}}|{{.State}}|{{.Health}}"
+        compose_file,
+        "ps",
+        "-a",
+        "--format",
+        "{{.Service}}|{{.State}}|{{.Health}}",
+        project_name=project_name,
     )
     present = {line.split("|", 2)[0] for line in rows.splitlines() if line.strip()}
     assert present == EXPECTED_SERVICES, (
         f"expected exactly {sorted(EXPECTED_SERVICES)}, got {sorted(present)}"
     )
     for service in sorted(EXPECTED_SERVICES):
-        container = compose(compose_file, "ps", "-a", "-q", service).splitlines()[-1]
+        container = compose(
+            compose_file,
+            "ps",
+            "-a",
+            "-q",
+            service,
+            project_name=project_name,
+        ).splitlines()[-1]
         status = docker_inspect(
             container,
             "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}",
@@ -92,10 +109,13 @@ def wait_for_web(base: str, attempts: int = 40):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--compose-file", default="docker-compose.demo.yml")
+    parser.add_argument(
+        "--project-name", default=os.environ.get("COMPOSE_PROJECT_NAME")
+    )
     parser.add_argument("--api-url", default="http://127.0.0.1:18080")
     args = parser.parse_args()
 
-    assert_topology(args.compose_file)
+    assert_topology(args.compose_file, project_name=args.project_name)
     health = wait_for_web(args.api_url)
     assert health.get("liveness") == "ok"
 

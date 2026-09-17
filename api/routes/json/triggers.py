@@ -15,12 +15,12 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from jobs import accept_and_enqueue_operation
 from run_lifecycle import RunAcceptanceConflict
 
-import config as app_config
 from contracts import RunAcceptanceRequest, RunAcceptedResponse
 from contracts.runtime_config import (
     KNOWN_COLLECTORS,
     KNOWN_NEWS_SOURCES,
     KNOWN_PROCESSORS,
+    load_config,
 )
 
 router = APIRouter()
@@ -50,7 +50,7 @@ async def trigger_collect(
         else str(uuid.uuid4())
     )
     idempotency_key = body.get("idempotency_key") if isinstance(body, dict) else None
-    config = app_config.load_config()
+    config = load_config()
 
     try:
         accepted_at, enqueued = accept_and_enqueue_operation(
@@ -114,7 +114,7 @@ async def trigger_process(
     )
     idempotency_key = body.get("idempotency_key") if isinstance(body, dict) else None
 
-    config = app_config.load_config()
+    config = load_config()
     override_request = extract_manual_override(body, request)
     budget = enforce_api_budget(get_budget_status(config), override_request)
     override = None
@@ -199,7 +199,7 @@ async def trigger_news(
         else str(uuid.uuid4())
     )
     idempotency_key = body.get("idempotency_key") if isinstance(body, dict) else None
-    config = app_config.load_config()
+    config = load_config()
 
     try:
         accepted_at, enqueued = accept_and_enqueue_operation(
@@ -278,7 +278,7 @@ async def trigger_cycle(
     )
     idempotency_key = getattr(request_body, "idempotency_key", None)
 
-    config = app_config.load_config()
+    config = load_config()
     override_request = extract_manual_override(request_body, request)
     budget = get_budget_status(config)
     override = None

@@ -49,6 +49,7 @@
   </section>
   <button class="btn" id="activate-setup">Activate platform</button>
   <p id="setup-result" class="dim" role="alert" aria-live="polite"></p>
+  <a id="setup-dashboard" href="/" hidden>Open dashboard after restarting</a>
 </main>
 <script>
 document.getElementById('activate-setup').onclick = async function () {
@@ -82,8 +83,8 @@ document.getElementById('activate-setup').onclick = async function () {
     const response = await fetch('/api/setup/activate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.detail || 'Setup could not be activated.');
-    result.textContent = 'Ready. Opening dashboard…';
-    setTimeout(() => location.href='/', 600);
+    result.textContent = 'Setup saved. Run docker compose restart web worker before using the new configuration.';
+    document.getElementById('setup-dashboard').hidden = false;
   } catch (error) {
     result.textContent = error.message || 'Setup could not be activated.';
     button.disabled = false;

@@ -7,7 +7,7 @@ from uuid import UUID
 from api_db import query_many
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from config import load_config
+from contracts.runtime_config import load_config
 from routes.views.cockpit_panels import direction, json_obj, pct_display
 from routes.views.dashboard_strip import iso, time_display
 

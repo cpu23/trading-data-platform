@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query, Request
 
-from config import load_config
+from contracts.runtime_config import load_config
 from routes.json.system import get_system_logs, get_system_runs
 
 router = APIRouter()

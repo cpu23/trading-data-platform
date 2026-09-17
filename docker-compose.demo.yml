@@ -31,11 +31,11 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U demo -d trading_data"]
-      interval: 3s
+      interval: 30s
       timeout: 3s
       retries: 15
       start_period: 5s
-
+      start_interval: 3s
   web:
     build:
       context: .
@@ -59,11 +59,11 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
-      interval: 5s
+      interval: 30s
       timeout: 4s
       retries: 10
       start_period: 15s
-
+      start_interval: 3s
   worker:
     build:
       context: .
@@ -85,12 +85,12 @@ services:
     restart: unless-stopped
     stop_grace_period: 30m
     healthcheck:
-      test: ["CMD", "/app/.venv/bin/python", "-m", "roles", "check", "worker"]
-      interval: 5s
+      test: ["CMD", "/app/.venv/bin/python", "-m", "worker_health"]
+      interval: 30s
       timeout: 4s
       retries: 10
       start_period: 15s
-
+      start_interval: 3s
 volumes:
   demo_pgdata:
   demo_news:

@@ -20,7 +20,7 @@ from api_logging import get_logger
 from fastapi import APIRouter, HTTPException, Request
 from starlette.requests import Request as StarletteRequest
 
-import config as app_config
+from contracts.runtime_config import load_config
 from routes.json.atoms import load_atom_context
 from routes.json.events import get_events_upcoming_data
 from routes.json.macro import get_macro_dashboard
@@ -963,7 +963,7 @@ def partial_watchlist_grid(
         view, sort, direction = _validate_grid_params(view, sort, direction)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    config = app_config.load_config()
+    config = load_config()
     try:
         data = load_watchlist_grid(config, view=view, sort=sort, direction=direction)
     except ValueError as error:
@@ -980,7 +980,7 @@ def partial_watchlist_grid(
 
 @router.get("/partials/dashboard/asset/{symbol}")
 def partial_asset_drawer(request: Request, symbol: str):
-    config = app_config.load_config()
+    config = load_config()
     try:
         drawer = load_asset_drawer(config, symbol, request=request)
     except ValueError:

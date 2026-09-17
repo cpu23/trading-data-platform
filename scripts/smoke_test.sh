@@ -80,7 +80,7 @@ for _ in $(seq 1 "$MAX_ATTEMPTS"); do
 done
 [[ ${live_prices:-0} -gt 0 ]] || fail_with_logs "worker demo quote publisher produced no rows"
 
-python3 scripts/test_service_contracts.py --compose-file "$COMPOSE_FILE" --api-url "$API_URL"
+python3 scripts/test_service_contracts.py --compose-file "$COMPOSE_FILE" --api-url "$API_URL" ${COMPOSE_PROJECT_NAME:+--project-name "$COMPOSE_PROJECT_NAME"}
 assert_restart web
 assert_restart worker
 

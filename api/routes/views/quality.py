@@ -8,7 +8,7 @@ from data_quality import (
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 from staleness import get_staleness_config, is_stale
 
-import config as app_config
+from contracts.runtime_config import load_config
 from routes.json.events import get_events_upcoming_data, get_macro_release_cards_data
 from routes.json.macro import get_macro_dashboard
 from routes.json.regime import get_regime_current
@@ -197,7 +197,7 @@ def markets_page(request: Request):
 
 @router.get("/partials/markets/cross-asset")
 def partial_markets_cross_asset(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     return templates.TemplateResponse(
         request,
@@ -211,7 +211,7 @@ def partial_markets_cross_asset(request: Request):
 
 @router.get("/partials/markets/catalysts")
 def partial_markets_catalysts(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     return templates.TemplateResponse(
         request,
@@ -225,7 +225,7 @@ def partial_markets_catalysts(request: Request):
 
 @router.get("/partials/markets/macro-releases")
 def partial_markets_macro_releases(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     try:
         releases = get_macro_release_cards_data(
@@ -269,7 +269,7 @@ def partial_markets_regime(request: Request):
 
 @router.get("/partials/markets/indicators")
 def partial_markets_indicators(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     indicators = []
     stale = False
@@ -320,7 +320,7 @@ def partial_markets_indicators(request: Request):
 
 @router.get("/partials/markets/events")
 def partial_markets_events(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     events_data = {}
     try:

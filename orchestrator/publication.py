@@ -14,6 +14,8 @@ from errors import PersistenceError
 from logging_config import get_logger
 from sqlalchemy import text
 
+from db import get_session
+
 logger = get_logger("orchestrator.publication")
 NEWS_SOURCES = ("reuters", "kobeissi")
 NEWS_REQUIRED_FIELDS = {
@@ -193,12 +195,6 @@ def publish_news_result_unlocked(
     )
 
 
-def _get_session(config: dict):
-    import orchestrator
-
-    return orchestrator.get_session(config)
-
-
 def _write_collection_log(
     collector_id: str,
     started_at: datetime,
@@ -248,7 +244,7 @@ def _write_collection_log(
     }
 
     try:
-        with _get_session(config) as session:
+        with get_session(config) as session:
             columns = ", ".join(log_record.keys())
             placeholders = ", ".join(f":{k}" for k in log_record)
             sql = text(
@@ -308,7 +304,7 @@ def _write_processing_log(
     }
 
     try:
-        with _get_session(config) as session:
+        with get_session(config) as session:
             columns = ", ".join(log_record.keys())
             placeholders = ", ".join(f":{k}" for k in log_record)
             sql = text(
@@ -340,7 +336,7 @@ def _persist_processor_result(
     from db import insert_records_in_session, upsert_records_in_session
 
     try:
-        with _get_session(config) as session:
+        with get_session(config) as session:
             insert_records_in_session(session, "structured_opinions", opinions)
             for table_name, records in extra_records.items():
                 if table_name == "daily_briefings":

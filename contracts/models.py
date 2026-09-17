@@ -91,6 +91,7 @@ class RunKind(StrEnum):
     PROCESSOR = "processor"
     NEWS = "news"
     FILINGS = "filings"
+    RESEARCH = "research"
 
 
 class RunLifecycleStatus(StrEnum):
@@ -224,11 +225,6 @@ class RunAcceptedResponse(ContractModel):
     prior_job_id: str | None = None
 
 
-class CycleStatusResponse(ContractModel):
-    running: bool
-    correlation_id: str | None = None
-
-
 class RunStage(ContractModel):
     log_id: str | None = None
     correlation_id: str | None = None
@@ -247,34 +243,28 @@ class RunStage(ContractModel):
 
 
 class RunDetailResponse(ContractModel):
+    """Public representation of one durable cycle_runs row and its log stages."""
+
     correlation_id: str
     status: str
     result_status: str | None = None
     run_kind: RunKind = RunKind.CYCLE
     requested_component: str | None = None
     triggered_by: str | None = None
+    job_id: str | None = None
+    job_state: str | None = None
+    accepted_at: str | datetime | None = None
     started_at: str | datetime | None = None
     completed_at: str | datetime | None = None
     error_message: str | None = None
     summary: dict[str, Any] = Field(default_factory=dict)
+    progress: dict[str, Any] = Field(default_factory=dict)
     stages: list[RunStage] = Field(default_factory=list)
 
 
 class RunListResponse(ContractModel):
     runs: list[RunDetailResponse] = Field(default_factory=list)
     limit: int
-
-
-class RunStatusResponse(ContractModel):
-    status: str
-    correlation_id: str
-    lifecycle_status: str | None = None
-    result_status: str | None = None
-    started_at: str | datetime | None = None
-    completed_at: str | datetime | None = None
-    error_message: str | None = None
-    progress: dict[str, Any] = Field(default_factory=dict)
-    stages: list[RunStage] = Field(default_factory=list)
 
 
 class QualityResponse(QualitySnapshot):

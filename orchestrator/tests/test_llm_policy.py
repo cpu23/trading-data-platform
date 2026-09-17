@@ -1,9 +1,5 @@
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from llm_client import (
     LLMAttemptTelemetry,
@@ -397,7 +393,7 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
     def test_processor_failure_processing_log_keeps_safe_attempt_telemetry(
         self, _reserve
     ):
-        from orchestrator import _run_processor_impl
+        from processor_execution import _run_processor_impl
 
         telemetry = LLMAttemptTelemetry(
             attempt_count=2,
@@ -415,8 +411,8 @@ class LLMStageDeadlineAndTelemetryTests(unittest.TestCase):
             "LLM response validation failed after retry", telemetry
         )
         with (
-            patch("orchestrator.get_processor", return_value=processor),
-            patch("orchestrator._write_processing_log") as write_log,
+            patch("processor_execution.get_processor", return_value=processor),
+            patch("processor_execution._write_processing_log") as write_log,
         ):
             result = _run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False

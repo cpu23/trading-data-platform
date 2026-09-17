@@ -16,11 +16,14 @@ orchestration runs the suite after sequential integration.
 import os
 import sys
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 os.environ.update(
     {
+        "DEPLOYMENT_MODE": "test",
+        "DISABLE_AUTH": "true",
         "DB_USER": "test",
         "DB_PASSWORD": "test",
         "FRED_API_KEY": "test",
@@ -120,7 +123,7 @@ class MarketsPageTests(unittest.TestCase):
         app = make_app()
         client = TestClient(app)
         with patch(
-            "routes.views.markets.app_config.load_config",
+            "routes.views.markets.load_config",
             return_value=MOCK_CONFIG,
         ):
             response = client.get("/markets", headers=AUTH)
@@ -144,7 +147,7 @@ class MarketsPageTests(unittest.TestCase):
         client = TestClient(app)
         with (
             patch(
-                "routes.views.markets.app_config.load_config",
+                "routes.views.markets.load_config",
                 return_value=MOCK_CONFIG,
             ),
             patch("routes.views.markets.load_cross_asset") as cross_asset,
@@ -168,7 +171,7 @@ class SlimDashboardTests(unittest.TestCase):
         client = TestClient(app)
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.dashboard.load_config",
                 return_value=MOCK_CONFIG,
             ),
             patch(
@@ -259,7 +262,7 @@ class SlimDashboardTests(unittest.TestCase):
         client = TestClient(app)
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.dashboard.load_config",
                 return_value=MOCK_CONFIG,
             ),
             patch(
@@ -318,7 +321,7 @@ class CompactStripRouteTests(unittest.TestCase):
                 return_value=COMPACT_STRIP,
             ),
             patch(
-                "routes.views.dashboard_strip.app_config.load_config",
+                "routes.views.dashboard_strip.load_config",
                 return_value={"event_pipeline": {"sse": {"enabled": False}}},
             ),
         ):
@@ -345,7 +348,7 @@ class CompactStripRouteTests(unittest.TestCase):
                 return_value={"available": False},
             ),
             patch(
-                "routes.views.dashboard_strip.app_config.load_config",
+                "routes.views.dashboard_strip.load_config",
                 return_value={"event_pipeline": {"sse": {"enabled": False}}},
             ),
         ):
@@ -384,7 +387,7 @@ class MergedBriefingTests(unittest.TestCase):
         client = TestClient(app)
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.dashboard.load_config",
                 return_value=MOCK_CONFIG,
             ),
             patch(
@@ -408,7 +411,7 @@ class MergedBriefingTests(unittest.TestCase):
         client = TestClient(app)
         with (
             patch(
-                "routes.views.dashboard.app_config.load_config",
+                "routes.views.dashboard.load_config",
                 return_value=MOCK_CONFIG,
             ),
             patch(
@@ -448,6 +451,120 @@ class MergedBriefingTests(unittest.TestCase):
             )
         self.assertNotIn("live_updates_enabled", page_context)
         self.assertNotIn("live_updates_enabled", partial_context)
+
+
+class CompactDashboardHeaderTests(unittest.TestCase):
+    def test_compact_health_avoids_quality_checks_fanout(self):
+        from routes.json.system import load_compact_health
+        from routes.views.dashboard import _data_status
+
+        config = {
+            "collectors": {
+                "fred": {"enabled": True},
+                "disabled_col": {"enabled": False},
+            },
+            "processors": {
+                "regime": {"enabled": True},
+                "disabled_proc": {"enabled": False},
+            },
+        }
+        with (
+            patch(
+                "routes.json.system.fresh_role_heartbeats",
+                return_value=[{"status": "running"}],
+            ),
+            patch(
+                "routes.json.system.query_many",
+                side_effect=[
+                    [
+                        {
+                            "collector": "fred",
+                            "started_at": datetime.now(UTC),
+                            "status": "success",
+                            "duration_ms": 100,
+                            "error_message": None,
+                        }
+                    ],
+                    [],
+                ],
+            ),
+            patch("routes.json.system.run_quality_checks") as mock_quality,
+            patch("routes.json.system.evaluate_quality") as mock_eval,
+        ):
+            health = load_compact_health(config)
+
+        mock_quality.assert_not_called()
+        mock_eval.assert_not_called()
+
+        components = health["components"]
+        names = {c["name"] for c in components}
+        self.assertIn("database", names)
+        self.assertIn("role:worker", names)
+        self.assertIn("fred", names)
+        self.assertIn("regime", names)
+        self.assertNotIn("disabled_col", names)
+        self.assertNotIn("disabled_proc", names)
+        self.assertNotIn("quality_checks", names)
+
+        fred = next(c for c in components if c["name"] == "fred")
+        self.assertFalse(fred["stale"])
+        self.assertEqual(fred["last_status"], "success")
+
+        regime = next(c for c in components if c["name"] == "regime")
+        self.assertTrue(regime["stale"])
+        self.assertEqual(regime["last_status"], "never_run")
+
+        status = _data_status(health)
+        # regime has never run, so it's delayed
+        self.assertEqual(status["state"], "delayed")
+        self.assertEqual(status["delayed_count"], 1)
+
+    def test_compact_health_flags_missing_worker(self):
+        from routes.json.system import load_compact_health
+        from routes.views.dashboard import _data_status
+
+        with (
+            patch("routes.json.system.fresh_role_heartbeats", return_value=[]),
+            patch("routes.json.system.query_many", return_value=[]),
+            patch("routes.json.system.run_quality_checks") as mock_quality,
+        ):
+            health = load_compact_health({"collectors": {}, "processors": {}})
+
+        mock_quality.assert_not_called()
+        worker = next(c for c in health["components"] if c["name"] == "role:worker")
+        self.assertTrue(worker["stale"])
+        self.assertEqual(worker["last_status"], "error")
+
+        status = _data_status(health)
+        self.assertEqual(status["state"], "delayed")
+        self.assertGreaterEqual(status["delayed_count"], 1)
+
+    def test_partial_header_route_renders_compact_status(self):
+        from fastapi.testclient import TestClient
+
+        app = make_app()
+        client = TestClient(app)
+        with (
+            patch(
+                "routes.views.dashboard.load_config",
+                return_value=MOCK_CONFIG,
+            ),
+            patch(
+                "routes.json.system.fresh_role_heartbeats",
+                return_value=[{"status": "running"}],
+            ),
+            patch(
+                "routes.json.system.query_many",
+                return_value=[],
+            ),
+            patch("routes.json.system.run_quality_checks") as mock_quality,
+        ):
+            response = client.get("/partials/header", headers=AUTH)
+
+        self.assertEqual(response.status_code, 200)
+        mock_quality.assert_not_called()
+        self.assertIn('id="header"', response.text)
+        self.assertIn('id="data-chip"', response.text)
 
 
 if __name__ == "__main__":

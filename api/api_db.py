@@ -8,7 +8,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
-from config import AppConfig, load_config
+from contracts.runtime_config import AppConfig, load_config
 
 logger = get_logger("db")
 _engine: Engine | None = None

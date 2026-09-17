@@ -27,6 +27,7 @@ from run_lifecycle import DEFAULT_HEARTBEAT_TIMEOUT, RunAcceptanceConflict
 from sqlalchemy import text
 
 from contracts.db_results import result_first, result_rows
+from db import get_session
 
 ACTIVE_STATES = ("queued", "leased", "running", "failed_retryable")
 TERMINAL_STATES = (
@@ -372,7 +373,6 @@ def accept_and_enqueue_operation(
     """
     if run_kind not in RUN_KINDS:
         raise ValueError("unsupported operation run kind")
-    import orchestrator
 
     accepted_at = _utcnow()
     identity_key, identity_fingerprint = _identity_for(
@@ -384,7 +384,7 @@ def accept_and_enqueue_operation(
         dedupe_key,
         input_fingerprint,
     )
-    with orchestrator.get_session(config) as session:
+    with get_session(config) as session:
         # Targetless ON CONFLICT DO NOTHING: a unique conflict on EITHER the
         # correlation primary key or the idempotency_key index is swallowed
         # without aborting the transaction, so the replay queries below can
@@ -527,70 +527,106 @@ def accept_and_enqueue_operation(
     return accepted_at, enqueued
 
 
-def claim_operation_jobs(
+_QUEUE_FIELDS = """id, run_kind, requested_component, correlation_id, job_type,
+state, priority, source_event_id, dedupe_key, input_fingerprint, not_before,
+lease_expires_at, claimed_by, attempt_count, max_attempts, payload, result_ref,
+last_error, created_at, started_at, completed_at, cancelled_at"""
+
+
+def _job_from_row(row: Mapping[str, Any]) -> OperationJob | AnalysisJob:
+    """Decode either durable lane without duplicating transition logic."""
+    if row.get("run_kind") is not None:
+        return OperationJob.from_row(row)
+    return AnalysisJob.from_row(row)
+
+
+def claim_jobs(
     session: Any,
     worker_id: str,
     limit: int = 25,
     lease_seconds: float = 120,
+    *,
+    job_types: Sequence[str] | None = None,
     run_kinds: Sequence[str] | None = None,
-) -> list[OperationJob]:
-    """Atomically lease eligible operation jobs; expired leases are eligible."""
+) -> list[OperationJob | AnalysisJob]:
+    """Atomically lease eligible jobs from either durable execution lane.
+
+    ``job_types`` and ``run_kinds`` are lane filters. Workers use one filter
+    each, retaining independent operation and analysis throughput.
+    """
     now = _utcnow()
     lease_until = now + timedelta(seconds=max(1.0, float(lease_seconds)))
     params: dict[str, Any] = {"now": now, "limit": max(1, int(limit))}
     where = (
-        "run_kind IS NOT NULL AND ((state IN ('queued','failed_retryable') AND not_before <= :now) "
+        "((state IN ('queued','failed_retryable') AND not_before <= :now) "
         "OR (state = 'leased' AND lease_expires_at <= :now)) "
         "AND attempt_count < max_attempts"
     )
-    if run_kinds:
-        names = []
-        for index, value in enumerate(run_kinds):
-            key = f"run_kind_{index}"
-            names.append(f":{key}")
-            params[key] = str(value)
-        where += " AND run_kind IN (" + ", ".join(names) + ")"
+    if job_types is not None:
+        if job_types:
+            names = []
+            for index, value in enumerate(job_types):
+                key = f"job_type_{index}"
+                names.append(f":{key}")
+                params[key] = str(value)
+            where += " AND job_type IN (" + ", ".join(names) + ")"
+        else:
+            where += " AND job_type IS NOT NULL"
+    if run_kinds is not None:
+        if run_kinds:
+            names = []
+            for index, value in enumerate(run_kinds):
+                key = f"run_kind_{index}"
+                names.append(f":{key}")
+                params[key] = str(value)
+            where += " AND run_kind IN (" + ", ".join(names) + ")"
+        else:
+            where += " AND run_kind IS NOT NULL"
     lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
     rows = result_rows(
         session.execute(
             text(
-                f"SELECT id, correlation_id FROM jobs WHERE {where} "
+                f"SELECT {_QUEUE_FIELDS} FROM jobs WHERE {where} "
                 "ORDER BY priority DESC, not_before ASC, created_at ASC, id ASC "
                 "LIMIT :limit" + lock
             ),
             params,
         )
     )
-    claims: list[OperationJob] = []
+    claims: list[OperationJob | AnalysisJob] = []
     for row in rows:
-        # A claimable operation job means no worker holds its lease, so a
-        # still-'running' cycle_runs row whose heartbeat has aged past the
-        # timeout belongs to a dead or retired attempt; reset it to 'accepted'
-        # so this claim can start execution.  A FRESH running row is either
-        # this worker's own attempt or another live worker's and must never be
-        # clobbered (that would silently break the other owner's finalize).
-        # Rows already terminal stay untouched and fail the claim below.
-        session.execute(
-            text(
-                "UPDATE cycle_runs SET status = 'accepted', worker_id = NULL, "
-                "started_at = NULL WHERE correlation_id = :cid AND status = 'running' "
-                "AND COALESCE(heartbeat_at, started_at) < :stale_cutoff"
-            ),
-            {
-                "cid": row["correlation_id"],
-                "stale_cutoff": now - DEFAULT_HEARTBEAT_TIMEOUT,
-            },
-        )
+        if row.get("run_kind") is not None:
+            # A claimable operation means no worker currently holds a lease.
+            # An old running cycle run is safe to return to accepted before
+            # this attempt; fresh ownership is never clobbered.
+            session.execute(
+                text(
+                    "UPDATE cycle_runs SET status = 'accepted', worker_id = NULL, "
+                    "started_at = NULL WHERE correlation_id = :cid "
+                    "AND status = 'running' "
+                    "AND COALESCE(heartbeat_at, started_at) < :stale_cutoff "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM jobs AS protected_jobs "
+                    "WHERE protected_jobs.correlation_id = cycle_runs.correlation_id "
+                    "AND protected_jobs.state IN ('leased', 'running') "
+                    "AND protected_jobs.lease_expires_at > :now)"
+                ),
+                {
+                    "cid": row["correlation_id"],
+                    "stale_cutoff": now - DEFAULT_HEARTBEAT_TIMEOUT,
+                    "now": now,
+                },
+            )
         updated = result_first(
             session.execute(
                 text(
-                    "UPDATE jobs SET state = 'leased', "
-                    "claimed_by = :worker_id, lease_expires_at = :lease_until, "
+                    "UPDATE jobs SET state = 'leased', claimed_by = :worker_id, "
+                    "lease_expires_at = :lease_until, "
                     "attempt_count = attempt_count + 1 WHERE id = :id "
-                    "AND attempt_count < max_attempts "
-                    "AND ((state IN ('queued','failed_retryable') AND not_before <= :now) "
-                    "OR (state = 'leased' AND lease_expires_at <= :now)) RETURNING "
-                    + _OPERATION_FIELDS
+                    "AND attempt_count < max_attempts AND "
+                    "((state IN ('queued','failed_retryable') AND not_before <= :now) "
+                    "OR (state = 'leased' AND lease_expires_at <= :now)) "
+                    "RETURNING " + _QUEUE_FIELDS
                 ),
                 {
                     "id": row["id"],
@@ -601,36 +637,24 @@ def claim_operation_jobs(
             )
         )
         if updated is not None:
-            claims.append(OperationJob.from_row(updated))
+            claims.append(_job_from_row(updated))
     return claims
 
 
-def start_operation_job(
-    session: Any, job_id: Any, worker_id: str, lease_seconds: float = 120
+def start_job(
+    session: Any,
+    job_id: Any,
+    worker_id: str,
+    lease_seconds: float = 120,
 ) -> bool:
-    """Transition one job to ``running`` in the caller's transaction.
-
-    - An owned unexpired lease starts normally (fail closed: an expired lease
-      or another worker's lease never starts).
-    - A job handed to the worker without a lease (``queued`` or
-      ``failed_retryable``) is claimed and started in the SAME conditional
-      update, so the transition is atomic and the attempt is counted once.
-      ``not_before`` is deliberately not re-checked here: the caller's claim
-      already gated eligibility, and starting a job that was explicitly handed
-      over must not dead-letter it over a backoff boundary.
-    """
+    """Start an unexpired lease owned by this worker."""
     now = _utcnow()
     result = session.execute(
         text(
-            "UPDATE jobs SET state = 'running', "
-            "claimed_by = :worker_id, lease_expires_at = :lease_until, "
-            "started_at = COALESCE(started_at, :now), "
-            "attempt_count = attempt_count + CASE WHEN state = 'leased' THEN 0 ELSE 1 END "
-            "WHERE id = :id AND ("
-            "  (state IN ('queued', 'failed_retryable') AND attempt_count < max_attempts) "
-            "  OR (state = 'leased' AND claimed_by = :worker_id "
-            "     AND lease_expires_at > :now)"
-            ") "
+            "UPDATE jobs SET state = 'running', lease_expires_at = :lease_until, "
+            "started_at = COALESCE(started_at, :now) "
+            "WHERE id = :id AND state = 'leased' AND claimed_by = :worker_id "
+            "AND lease_expires_at > :now"
         ),
         {
             "id": job_id,
@@ -642,7 +666,7 @@ def start_operation_job(
     return bool(getattr(result, "rowcount", 0))
 
 
-def succeed_operation_job(
+def succeed_job(
     session: Any,
     job_id: Any,
     worker_id: str,
@@ -667,51 +691,45 @@ def succeed_operation_job(
     return bool(getattr(result, "rowcount", 0))
 
 
-def retry_operation_job(
+def retry_job(
     session: Any,
     job_id: Any,
     worker_id: str,
     not_before: datetime,
     error: str | BaseException | None = None,
 ) -> bool:
-    """Move an owned running job to retryable AND release its run row.
-
-    The cycle_runs row is reset to ``accepted`` (clearing the dead attempt's
-    worker ownership) in the SAME transaction, so the retried attempt can
-    claim it immediately after ``not_before`` without waiting for any stale
-    timeout.  Only a job the caller still owns is touched.
-    """
-    updated = result_first(
-        session.execute(
-            text(
-                "UPDATE jobs SET state = 'failed_retryable', "
-                "not_before = :not_before, claimed_by = NULL, lease_expires_at = NULL, "
-                "last_error = :last_error WHERE id = :id AND state = 'running' "
-                "AND claimed_by = :worker_id AND attempt_count < max_attempts "
-                "RETURNING correlation_id"
-            ),
-            {
-                "id": job_id,
-                "worker_id": worker_id,
-                "not_before": not_before,
-                "last_error": sanitize_error(error),
-            },
-        )
+    """Retry an owned job and reset its operation run in the same transaction."""
+    result = session.execute(
+        text(
+            "UPDATE jobs SET state = 'failed_retryable', "
+            "not_before = :not_before, claimed_by = NULL, lease_expires_at = NULL, "
+            "last_error = :last_error WHERE id = :id AND state = 'running' "
+            "AND claimed_by = :worker_id AND attempt_count < max_attempts "
+            "RETURNING correlation_id, run_kind"
+        ),
+        {
+            "id": job_id,
+            "worker_id": worker_id,
+            "not_before": not_before,
+            "last_error": sanitize_error(error),
+        },
     )
+    updated = result_first(result)
     if updated is None:
         return False
-    session.execute(
-        text(
-            "UPDATE cycle_runs SET status = 'accepted', worker_id = NULL, "
-            "started_at = NULL, heartbeat_at = NULL "
-            "WHERE correlation_id = :cid AND status = 'running'"
-        ),
-        {"cid": updated["correlation_id"]},
-    )
+    if updated.get("run_kind") is not None:
+        session.execute(
+            text(
+                "UPDATE cycle_runs SET status = 'accepted', worker_id = NULL, "
+                "started_at = NULL, heartbeat_at = NULL "
+                "WHERE correlation_id = :cid AND status = 'running'"
+            ),
+            {"cid": updated["correlation_id"]},
+        )
     return True
 
 
-def terminal_fail_operation_job(
+def terminal_fail_job(
     session: Any,
     job_id: Any,
     worker_id: str,
@@ -733,7 +751,7 @@ def terminal_fail_operation_job(
     return bool(getattr(result, "rowcount", 0))
 
 
-def renew_operation_job_lease(
+def renew_job_lease(
     session: Any, job_id: Any, worker_id: str, lease_seconds: float = 120
 ) -> bool:
     now = _utcnow()
@@ -753,56 +771,85 @@ def renew_operation_job_lease(
     return bool(getattr(result, "rowcount", 0))
 
 
-def reconcile_operation_jobs(session: Any, limit: int = 100) -> int:
-    """Recover expired-leased jobs AND their run rows in one transaction.
-
-    - Terminal (attempts exhausted): job -> failed_terminal AND the matching
-      cycle_runs row -> failed (sanitized reason).  Any failure raises so the
-      whole reconcile transaction rolls back (job and run stay coherent).
-    - Retryable: job -> failed_retryable AND the matching running cycle_runs
-      row -> accepted (worker/heartbeat cleared) immediately, so the run row
-      never falsely reports running/owned during the backoff window.
-    """
+def reconcile_jobs(
+    session: Any,
+    limit: int = 100,
+    *,
+    job_types: Sequence[str] | None = None,
+    run_kinds: Sequence[str] | None = None,
+) -> int:
+    """Repair expired jobs and operation run rows transactionally."""
     now = _utcnow()
     reason = "lease expired without completion"
     params: dict[str, Any] = {"now": now, "limit": max(1, int(limit))}
+    where = "state IN ('leased','running') AND lease_expires_at <= :now"
+    if job_types is not None:
+        if job_types:
+            names = []
+            for index, value in enumerate(job_types):
+                key = f"job_type_{index}"
+                names.append(f":{key}")
+                params[key] = str(value)
+            where += " AND job_type IN (" + ", ".join(names) + ")"
+        else:
+            where += " AND job_type IS NOT NULL"
+    if run_kinds is not None:
+        if run_kinds:
+            names = []
+            for index, value in enumerate(run_kinds):
+                key = f"run_kind_{index}"
+                names.append(f":{key}")
+                params[key] = str(value)
+            where += " AND run_kind IN (" + ", ".join(names) + ")"
+        else:
+            where += " AND run_kind IS NOT NULL"
     lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
     candidates = result_rows(
         session.execute(
             text(
-                "SELECT id, correlation_id, attempt_count, max_attempts "
-                "FROM jobs "
-                "WHERE run_kind IS NOT NULL AND state IN ('leased','running') AND lease_expires_at <= :now "
-                "ORDER BY lease_expires_at ASC, id ASC LIMIT :limit" + lock
+                "SELECT id, correlation_id, run_kind, attempt_count, max_attempts "
+                "FROM jobs WHERE "
+                + where
+                + " ORDER BY lease_expires_at ASC, id ASC LIMIT :limit"
+                + lock
             ),
             params,
         )
     )
     repaired = 0
     for candidate in candidates:
-        job_id = candidate["id"]
-        attempt_count = int(candidate["attempt_count"] or 0)
-        max_attempts = int(candidate["max_attempts"] or 1)
-        if attempt_count >= max_attempts:
-            updated = result_first(
-                session.execute(
-                    text(
-                        "UPDATE jobs SET state = 'failed_terminal', "
-                        "completed_at = :now, claimed_by = NULL, "
-                        "lease_expires_at = NULL, last_error = :reason "
-                        "WHERE id = :id AND state IN ('leased','running') "
-                        "AND lease_expires_at <= :now RETURNING correlation_id"
-                    ),
-                    {"id": job_id, "now": now, "reason": reason},
-                )
+        terminal = int(candidate["attempt_count"] or 0) >= int(
+            candidate["max_attempts"] or 1
+        )
+        state = "failed_terminal" if terminal else "failed_retryable"
+        updated = result_first(
+            session.execute(
+                text(
+                    "UPDATE jobs SET state = :state, not_before = :now, "
+                    "claimed_by = NULL, lease_expires_at = NULL, "
+                    "completed_at = CASE WHEN :terminal THEN :now ELSE completed_at END, "
+                    "last_error = :reason WHERE id = :id "
+                    "AND state IN ('leased','running') AND lease_expires_at <= :now "
+                    "RETURNING correlation_id, run_kind"
+                ),
+                {
+                    "id": candidate["id"],
+                    "state": state,
+                    "terminal": terminal,
+                    "now": now,
+                    "reason": reason,
+                },
             )
-            if updated is not None:
+        )
+        if updated is None:
+            continue
+        if updated.get("run_kind") is not None:
+            if terminal:
                 session.execute(
                     text(
                         "UPDATE cycle_runs SET status = 'failed', "
                         "result_status = 'failed', completed_at = :now, "
-                        "heartbeat_at = :now, error_message = :reason, "
-                        "summary = "
+                        "heartbeat_at = :now, error_message = :reason, summary = "
                         + _jsonb_expr("summary", session)
                         + " WHERE correlation_id = :cid "
                         "AND status IN ('running','accepted')"
@@ -816,38 +863,22 @@ def reconcile_operation_jobs(session: Any, limit: int = 100) -> int:
                         ),
                     },
                 )
-                repaired += 1
-        else:
-            updated = result_first(
+            else:
                 session.execute(
                     text(
-                        "UPDATE jobs SET state = 'failed_retryable', "
-                        "not_before = :now, claimed_by = NULL, "
-                        "lease_expires_at = NULL, last_error = :reason "
-                        "WHERE id = :id AND state IN ('leased','running') "
-                        "AND lease_expires_at <= :now RETURNING correlation_id"
-                    ),
-                    {"id": job_id, "now": now, "reason": reason},
-                )
-            )
-            if updated is not None:
-                session.execute(
-                    text(
-                        "UPDATE cycle_runs SET status = 'accepted', "
-                        "worker_id = NULL, started_at = NULL, heartbeat_at = NULL "
+                        "UPDATE cycle_runs SET status = 'accepted', worker_id = NULL, "
+                        "started_at = NULL, heartbeat_at = NULL "
                         "WHERE correlation_id = :cid AND status = 'running'"
                     ),
                     {"cid": updated["correlation_id"]},
                 )
-                repaired += 1
+        repaired += 1
     return repaired
 
 
 def operation_queue_summary(config: dict) -> dict[str, Any]:
     """Bounded durable queue state for status endpoints (no payloads/errors)."""
-    import orchestrator
-
-    with orchestrator.get_session(config) as session:
+    with get_session(config) as session:
         rows = session.execute(
             text(
                 "SELECT state, COUNT(*) AS count, MIN(created_at) AS oldest_created_at "
@@ -858,7 +889,7 @@ def operation_queue_summary(config: dict) -> dict[str, Any]:
         active_rows = [state for state in ACTIVE_STATES if counts.get(state, 0)]
     oldest = None
     if active_rows:
-        with orchestrator.get_session(config) as session:
+        with get_session(config) as session:
             row = (
                 session.execute(
                     text(
@@ -879,9 +910,7 @@ def operation_queue_summary(config: dict) -> dict[str, Any]:
 
 def latest_cycle_status(config: dict) -> dict[str, Any]:
     """Durable replacement for the in-process cycle correlation global."""
-    import orchestrator
-
-    with orchestrator.get_session(config) as session:
+    with get_session(config) as session:
         row = (
             session.execute(
                 text(
@@ -1055,151 +1084,6 @@ def enqueue_job(
     )
 
 
-def claim_jobs(
-    session: Any,
-    worker_id: str,
-    limit: int = 25,
-    lease_seconds: float = 120,
-    job_types: Sequence[str] | None = None,
-) -> list[AnalysisJob]:
-    now = _utcnow()
-    lease_until = now + timedelta(seconds=max(1.0, float(lease_seconds)))
-    params: dict[str, Any] = {"now": now, "limit": max(1, int(limit))}
-    where = "job_type IS NOT NULL AND ((state IN ('queued','failed_retryable') AND not_before <= :now) OR (state = 'leased' AND lease_expires_at <= :now)) AND attempt_count < max_attempts"
-    if job_types:
-        names = []
-        for index, value in enumerate(job_types):
-            key = f"job_type_{index}"
-            names.append(f":{key}")
-            params[key] = str(value)
-        where += " AND job_type IN (" + ", ".join(names) + ")"
-    lock = " FOR UPDATE SKIP LOCKED" if _supports_skip_locked(session) else ""
-    rows = result_rows(
-        session.execute(
-            text(
-                f"SELECT id FROM jobs WHERE {where} ORDER BY priority DESC, not_before ASC, created_at ASC, id ASC LIMIT :limit"
-                + lock
-            ),
-            params,
-        )
-    )
-    claims: list[AnalysisJob] = []
-    for row in rows:
-        updated = result_first(
-            session.execute(
-                text(
-                    "UPDATE jobs SET state = 'leased', claimed_by = :worker_id, lease_expires_at = :lease_until, attempt_count = attempt_count + 1 WHERE id = :id AND attempt_count < max_attempts AND ((state IN ('queued','failed_retryable') AND not_before <= :now) OR (state = 'leased' AND lease_expires_at <= :now)) RETURNING "
-                    + _ANALYSIS_FIELDS
-                ),
-                {
-                    "id": row["id"],
-                    "worker_id": worker_id,
-                    "now": now,
-                    "lease_until": lease_until,
-                },
-            )
-        )
-        if updated is not None:
-            claims.append(AnalysisJob.from_row(updated))
-    return claims
-
-
-def start_job(session: Any, job_id: Any, worker_id: str) -> bool:
-    now = _utcnow()
-    result = session.execute(
-        text(
-            "UPDATE jobs SET state = 'running', started_at = COALESCE(started_at, :now) WHERE id = :id AND state = 'leased' AND claimed_by = :worker_id AND lease_expires_at > :now"
-        ),
-        {"id": job_id, "worker_id": worker_id, "now": now},
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def succeed_job(
-    session: Any,
-    job_id: Any,
-    worker_id: str,
-    result_ref: Mapping[str, Any] | None = None,
-) -> bool:
-    result = session.execute(
-        text(
-            "UPDATE jobs SET state = 'succeeded', completed_at = :now, claimed_by = NULL, lease_expires_at = NULL, result_ref = CAST(:result_ref AS JSONB) WHERE id = :id AND state = 'running' AND claimed_by = :worker_id"
-        ),
-        {
-            "id": job_id,
-            "worker_id": worker_id,
-            "now": _utcnow(),
-            "result_ref": _canonical_payload(result_ref)
-            if result_ref is not None
-            else None,
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def retry_job(
-    session: Any,
-    job_id: Any,
-    worker_id: str,
-    not_before: datetime,
-    error: str | BaseException | None = None,
-    error_state: str = "retryable",
-) -> bool:
-    result = session.execute(
-        text(
-            "UPDATE jobs SET state = 'failed_retryable', not_before = :not_before, claimed_by = NULL, lease_expires_at = NULL, last_error = :last_error WHERE id = :id AND state = 'running' AND claimed_by = :worker_id AND attempt_count < max_attempts"
-        ),
-        {
-            "id": job_id,
-            "worker_id": worker_id,
-            "not_before": not_before,
-            "last_error": sanitize_error(error),
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def terminal_fail_job(
-    session: Any,
-    job_id: Any,
-    worker_id: str,
-    error: str | BaseException | None = None,
-    error_state: str = "terminal",
-) -> bool:
-    result = session.execute(
-        text(
-            "UPDATE jobs SET state = 'failed_terminal', completed_at = :now, claimed_by = NULL, lease_expires_at = NULL, last_error = :last_error WHERE id = :id AND state = 'running' AND claimed_by = :worker_id"
-        ),
-        {
-            "id": job_id,
-            "worker_id": worker_id,
-            "now": _utcnow(),
-            "last_error": sanitize_error(error),
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
-def renew_job_lease(
-    session: Any, job_id: Any, worker_id: str, lease_seconds: float = 120
-) -> bool:
-    now = _utcnow()
-    result = session.execute(
-        text(
-            "UPDATE jobs SET lease_expires_at = :lease_until "
-            "WHERE id = :id AND claimed_by = :worker_id AND state IN ('leased','running') "
-            "AND lease_expires_at > :now"
-        ),
-        {
-            "id": job_id,
-            "worker_id": worker_id,
-            "now": now,
-            "lease_until": now + timedelta(seconds=max(1.0, float(lease_seconds))),
-        },
-    )
-    return bool(getattr(result, "rowcount", 0))
-
-
 def suppress_job(
     session: Any,
     job_id: Any,
@@ -1228,16 +1112,6 @@ def suppress_job(
         params,
     )
     return bool(getattr(result, "rowcount", 0))
-
-
-def reconcile_jobs(session: Any, limit: int = 100) -> int:
-    result = session.execute(
-        text(
-            "UPDATE jobs SET state = CASE WHEN attempt_count >= max_attempts THEN 'failed_terminal' ELSE 'failed_retryable' END, not_before = :now, claimed_by = NULL, lease_expires_at = NULL, completed_at = CASE WHEN attempt_count >= max_attempts THEN :now ELSE completed_at END WHERE id IN (SELECT id FROM jobs WHERE job_type IS NOT NULL AND state IN ('leased','running') AND lease_expires_at <= :now ORDER BY lease_expires_at ASC LIMIT :limit)"
-        ),
-        {"now": _utcnow(), "limit": max(1, int(limit))},
-    )
-    return int(getattr(result, "rowcount", 0) or 0)
 
 
 def run_job_worker_forever(
@@ -1271,23 +1145,16 @@ __all__ = [
     "OperationJobEnqueueResult",
     "accept_and_enqueue_operation",
     "claim_jobs",
-    "claim_operation_jobs",
     "enqueue_job",
     "enqueue_operation",
     "latest_cycle_status",
     "operation_queue_summary",
     "reconcile_jobs",
-    "reconcile_operation_jobs",
     "run_job_worker_forever",
     "renew_job_lease",
-    "renew_operation_job_lease",
     "retry_job",
-    "retry_operation_job",
     "start_job",
-    "start_operation_job",
     "succeed_job",
-    "succeed_operation_job",
     "suppress_job",
     "terminal_fail_job",
-    "terminal_fail_operation_job",
 ]

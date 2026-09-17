@@ -18,7 +18,6 @@ from api_logging import get_logger
 from fastapi import HTTPException, Request
 from sqlalchemy import text
 
-from config import load_config
 from contracts.budgets import (
     BUDGET_OVERRIDE_TTL_SECONDS,
     budget_status,
@@ -27,6 +26,7 @@ from contracts.budgets import (
 from contracts.budgets import (
     get_budget_config as _contract_get_budget_config,
 )
+from contracts.runtime_config import load_config
 
 logger = get_logger("budgets")
 

@@ -202,71 +202,71 @@ def start_scheduler(config: dict) -> None:
     if _scheduler and _scheduler.running:
         return
     _scheduler = BackgroundScheduler(timezone=UTC)
-    for source_id, source_config in config.get("collectors", {}).items():
-        schedule = source_config.get("schedule")
-        if (
-            source_config.get("enabled", True)
-            and schedule
-            and schedule != "after_dependency"
-        ):
-            _scheduler.add_job(
-                _scheduled_collector,
-                _build_cron_trigger(schedule),
-                args=[source_id, config],
-                id=f"collector:{source_id}",
-                replace_existing=True,
-                coalesce=True,
-                max_instances=1,
-            )
-    for processor_id, processor_config in config.get("processors", {}).items():
-        schedule = processor_config.get("schedule")
-        if (
-            processor_config.get("enabled", False)
-            and schedule
-            and schedule != "after_dependency"
-        ):
-            _scheduler.add_job(
-                _scheduled_processor,
-                _build_cron_trigger(schedule),
-                args=[processor_id, config],
-                id=f"processor:{processor_id}",
-                replace_existing=True,
-                coalesce=True,
-                max_instances=1,
-            )
-    research_config = config.get("research_intelligence", {})
-    research_schedule = research_config.get("schedule")
-    if (
-        research_config.get("enabled", False)
-        and research_config.get("schedule_enabled", False)
-        and research_schedule
-    ):
-        _scheduler.add_job(
-            _scheduled_research,
-            _build_cron_trigger(research_schedule),
-            args=[config],
-            id="research:discovery",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
-    autonomy_config = config.get("thesis_autonomy", {})
-    autonomy_schedule = autonomy_config.get("schedule")
-    if (
-        autonomy_config.get("enabled", False)
-        and autonomy_config.get("schedule_enabled", False)
-        and autonomy_schedule
-    ):
-        _scheduler.add_job(
-            _scheduled_thesis_autonomy,
-            _build_cron_trigger(autonomy_schedule),
-            args=[config],
-            id="thesis-autonomy:run",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
     if not config.get("demo", {}).get("enabled", False):
+        for source_id, source_config in config.get("collectors", {}).items():
+            schedule = source_config.get("schedule")
+            if (
+                source_config.get("enabled", True)
+                and schedule
+                and schedule != "after_dependency"
+            ):
+                _scheduler.add_job(
+                    _scheduled_collector,
+                    _build_cron_trigger(schedule),
+                    args=[source_id, config],
+                    id=f"collector:{source_id}",
+                    replace_existing=True,
+                    coalesce=True,
+                    max_instances=1,
+                )
+        for processor_id, processor_config in config.get("processors", {}).items():
+            schedule = processor_config.get("schedule")
+            if (
+                processor_config.get("enabled", False)
+                and schedule
+                and schedule != "after_dependency"
+            ):
+                _scheduler.add_job(
+                    _scheduled_processor,
+                    _build_cron_trigger(schedule),
+                    args=[processor_id, config],
+                    id=f"processor:{processor_id}",
+                    replace_existing=True,
+                    coalesce=True,
+                    max_instances=1,
+                )
+        research_config = config.get("research_intelligence", {})
+        research_schedule = research_config.get("schedule")
+        if (
+            research_config.get("enabled", False)
+            and research_config.get("schedule_enabled", False)
+            and research_schedule
+        ):
+            _scheduler.add_job(
+                _scheduled_research,
+                _build_cron_trigger(research_schedule),
+                args=[config],
+                id="research:discovery",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+        autonomy_config = config.get("thesis_autonomy", {})
+        autonomy_schedule = autonomy_config.get("schedule")
+        if (
+            autonomy_config.get("enabled", False)
+            and autonomy_config.get("schedule_enabled", False)
+            and autonomy_schedule
+        ):
+            _scheduler.add_job(
+                _scheduled_thesis_autonomy,
+                _build_cron_trigger(autonomy_schedule),
+                args=[config],
+                id="thesis-autonomy:run",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
         from sources.news_registry import get_news_source_ids
 
         for source_id in get_news_source_ids():
@@ -287,23 +287,23 @@ def start_scheduler(config: dict) -> None:
                 coalesce=True,
                 max_instances=1,
             )
-    # Investment filings collection
-    filings_config = config.get("investment_filings", {})
-    filings_schedule = filings_config.get("schedule", "")
-    if filings_config.get("enabled", False) and filings_schedule:
-        filing_job_options = {}
-        if filings_config.get("run_on_startup", True):
-            filing_job_options["next_run_time"] = datetime.now(UTC)
-        _scheduler.add_job(
-            _scheduled_filings,
-            _build_cron_trigger(filings_schedule),
-            args=[config],
-            id="filings:investment_filings",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-            **filing_job_options,
-        )
+        # Investment filings collection
+        filings_config = config.get("investment_filings", {})
+        filings_schedule = filings_config.get("schedule", "")
+        if filings_config.get("enabled", False) and filings_schedule:
+            filing_job_options = {}
+            if filings_config.get("run_on_startup", False):
+                filing_job_options["next_run_time"] = datetime.now(UTC)
+            _scheduler.add_job(
+                _scheduled_filings,
+                _build_cron_trigger(filings_schedule),
+                args=[config],
+                id="filings:investment_filings",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+                **filing_job_options,
+            )
     _scheduler.start()
     logger.info("scheduler_started", jobs=len(_scheduler.get_jobs()))
 

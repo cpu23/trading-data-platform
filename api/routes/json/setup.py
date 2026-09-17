@@ -36,7 +36,6 @@ from setup_state import (
 
 from routes.json.settings import (
     _read_secrets,
-    _reload_or_restart,
     apply_secret_updates,
     managed_secret,
     serialize_secrets,
@@ -359,13 +358,13 @@ def _live_paths() -> dict[str, Path]:
 def _candidate_validator():
     """Full-configuration gate for staged operator/secrets candidates.
 
-    Delegates to ``config.validate_candidate`` when available (RuntimeConfig);
+    Delegates to ``contracts.runtime_config.validate_candidate``;
     runs under the setup lock against the staged contents before the atomic
     pointer swap, so an incompatible candidate never becomes current.
     """
-    import config as config_module
+    from contracts.runtime_config import validate_candidate
 
-    return getattr(config_module, "validate_candidate", None)
+    return validate_candidate
 
 
 def _setup_session(request: Request) -> str:
@@ -435,12 +434,14 @@ def activate(body: ActivationRequest, request: Request):
             raise HTTPException(
                 500, "Setup could not be activated; you can safely retry"
             ) from exc
-    restart_required = _reload_or_restart()
+    # Committed setup state is intentionally immutable until process restart.
     return {
         "activated": True,
         "csrf_token": _setup_session(request),
         "version": result.version,
-        "restart_required": restart_required,
+        "restart_required": True,
+        "applies_to_next_run": False,
+        "message": "Setup saved. Restart the service before configuration takes effect.",
     }
 
 
@@ -498,11 +499,13 @@ def update_profile(body: ProfileUpdateRequest, request: Request):
             raise HTTPException(
                 500, "Profile could not be saved; the previous settings remain active"
             ) from exc
-    restart_required = _reload_or_restart()
+    # Committed profile state is intentionally immutable until process restart.
     return {
         "saved": True,
-        "restart_required": restart_required,
+        "restart_required": True,
+        "applies_to_next_run": False,
         "version": result.version,
+        "message": "Profile saved. Restart the service before configuration takes effect.",
     }
 
 

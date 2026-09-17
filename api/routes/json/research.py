@@ -18,7 +18,7 @@ from api_logging import get_logger
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-import config as app_config
+from contracts.runtime_config import load_config
 
 try:
     from thesis_autonomy import enqueue_thesis_autonomy_job
@@ -34,10 +34,6 @@ except ImportError:  # pragma: no cover - deployment wiring reconciles
     THESIS_GROUP_STATUSES = ()
 
 logger = get_logger("api.research")
-
-
-def load_config() -> Mapping[str, Any]:
-    return app_config.load_config()
 
 
 def _enforce_research_budget(

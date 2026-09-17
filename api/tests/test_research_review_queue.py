@@ -50,7 +50,7 @@ MOCK_CONFIG = {
     "budgets": {"daily_llm_usd": 2.00, "warn_at_pct": 80},
 }
 
-with patch("config.load_config", return_value=MOCK_CONFIG):
+with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
     from main import app  # noqa: E402
 
 client = TestClient(app)

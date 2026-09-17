@@ -51,7 +51,7 @@ MOCK_CONFIG = {
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-with patch("config.load_config", return_value=MOCK_CONFIG):
+with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
     from main import app  # noqa: E402
 
 client = TestClient(app)

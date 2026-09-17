@@ -38,7 +38,7 @@ AUTH = {
     "X-CSRF-Token": CSRF_TOKEN,
 }
 
-with patch("config.load_config", return_value=MOCK_CONFIG):
+with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
     from main import create_app
 from fastapi.testclient import TestClient
 

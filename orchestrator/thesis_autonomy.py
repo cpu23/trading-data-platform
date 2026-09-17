@@ -76,6 +76,7 @@ from research_intelligence.evidence import (
     DEFAULT_ADAPTERS,
     EvidenceRegistry,
 )
+from run_lifecycle import accept_run, finalize_run_safely, start_run
 from sqlalchemy import text
 from thesis_challenges import (
     MAX_CITATIONS_PER_CLAIM,
@@ -114,7 +115,6 @@ from thesis_tournament import (
 from contracts.db_results import result_first, result_rows
 from contracts.runtime_config import ThesisAutonomyConfig
 from db import get_session
-from orchestrator import accept_run, finalize_run_safely, start_run
 
 JOB_TYPE = "thesis_autonomy_run"
 

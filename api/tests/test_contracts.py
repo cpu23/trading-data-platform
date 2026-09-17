@@ -67,30 +67,6 @@ class SharedContractTests(unittest.TestCase):
         )
         self.assertEqual(response.run_kind, "filings")
 
-    def test_openapi_routes_reference_shared_response_models(self):
-        from main import app
-
-        schema = app.openapi()
-        health_schema = schema["paths"]["/api/system/health"]["get"]["responses"][
-            "200"
-        ]["content"]["application/json"]["schema"]
-        cycle_schema = schema["paths"]["/api/triggers/cycle"]["post"]["responses"][
-            "202"
-        ]["content"]["application/json"]["schema"]
-        collect_schema = schema["paths"]["/api/collect/{source_id}"]["post"][
-            "responses"
-        ]["202"]["content"]["application/json"]["schema"]
-
-        self.assertEqual(
-            health_schema["$ref"], "#/components/schemas/SystemHealthResponse"
-        )
-        self.assertEqual(
-            cycle_schema["$ref"], "#/components/schemas/RunAcceptedResponse"
-        )
-        self.assertEqual(
-            collect_schema["$ref"], "#/components/schemas/RunAcceptedResponse"
-        )
-
     def test_topology_is_bounded_strict_and_timezone_safe(self):
         node = SystemTopologyNode(
             id="planner",

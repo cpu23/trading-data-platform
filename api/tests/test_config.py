@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config import load_config as _load_config
+from contracts.runtime_config import RuntimeConfigLoader
+
+
+def _load_local(path: Path):
+    """Load an isolated sample without replacing the process shared loader."""
+    return RuntimeConfigLoader().load(str(path))
 
 
 class ConfigLoadingTests(unittest.TestCase):
@@ -26,7 +31,7 @@ class ConfigLoadingTests(unittest.TestCase):
                 {"REQUIRED_VALUE": "configured", "EMPTY_VALUE": ""},
                 clear=True,
             ):
-                config = _load_config(str(config_path))
+                config = _load_local(config_path)
 
         self.assertEqual(config["database"]["user"], "configured")
         self.assertEqual(config["database"]["password"], "correct-horse-battery-staple")
@@ -38,7 +43,7 @@ class ConfigLoadingTests(unittest.TestCase):
             config_path.write_text("required: ${TRULY_REQUIRED}\n")
             with patch.dict(os.environ, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "TRULY_REQUIRED"):
-                    _load_config(str(config_path))
+                    _load_local(config_path)
 
     def test_env_substitution_rejects_blank_required_variable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -46,7 +51,7 @@ class ConfigLoadingTests(unittest.TestCase):
             config_path.write_text("required: ${BLANK_REQUIRED}\n")
             with patch.dict(os.environ, {"BLANK_REQUIRED": ""}, clear=True):
                 with self.assertRaisesRegex(ValueError, "BLANK_REQUIRED"):
-                    _load_config(str(config_path))
+                    _load_local(config_path)
 
     def test_production_config_preserves_empty_optional_twitter_key(self):
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
@@ -60,7 +65,7 @@ class ConfigLoadingTests(unittest.TestCase):
             "TWITTERAPI_KEY": "",
         }
         with patch.dict(os.environ, env, clear=True):
-            config = _load_config(str(config_path))
+            config = _load_local(config_path)
 
         self.assertEqual(config["kobeissi"]["api_key"], "")
 
@@ -78,17 +83,41 @@ class ConfigLoadingTests(unittest.TestCase):
             "TWITTERAPI_KEY": "",
         }
         with patch.dict(os.environ, env, clear=True):
-            default_config = _load_config(str(config_path))
+            default_config = _load_local(config_path)
         self.assertEqual(default_config["logging"]["level"], "INFO")
 
-        # A distinct path bypasses the production config cache and remains
-        # isolated from the module-level load_config patches in route tests.
         with tempfile.TemporaryDirectory() as tmp:
             debug_path = Path(tmp) / "config.yaml"
             debug_path.write_text(config_path.read_text())
             with patch.dict(os.environ, {**env, "LOG_LEVEL": "DEBUG"}, clear=True):
-                debug_config = _load_config(str(debug_path))
+                debug_config = _load_local(debug_path)
         self.assertEqual(debug_config["logging"]["level"], "DEBUG")
+
+    def test_demo_mode_transform_disables_all_external_scheduled_workloads(self):
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        env = {
+            "DEMO_MODE": "1",
+            "DEPLOYMENT_MODE": "demo",
+            "DB_USER": "trading",
+            "DB_PASSWORD": "correct-horse-battery-staple",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = _load_local(config_path)
+
+        self.assertTrue(config["demo"]["enabled"])
+        self.assertFalse(config["investment_filings"]["enabled"])
+        self.assertIsNone(config["investment_filings"]["schedule"])
+        self.assertFalse(config["investment_filings"]["run_on_startup"])
+        self.assertFalse(config["research_intelligence"]["schedule_enabled"])
+        self.assertFalse(config["thesis_autonomy"]["schedule_enabled"])
+        self.assertFalse(config["reuters"]["enabled"])
+        self.assertFalse(config["reuters"]["schedule_enabled"])
+        self.assertFalse(config["kobeissi"]["enabled"])
+        self.assertFalse(config["kobeissi"]["schedule_enabled"])
+        for collector in config["collectors"].values():
+            self.assertFalse(collector["enabled"])
+        for processor in config["processors"].values():
+            self.assertFalse(processor["enabled"])
 
 
 if __name__ == "__main__":

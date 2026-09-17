@@ -27,11 +27,11 @@ import setup_state  # noqa: E402
 from routes.json import settings as settings_route  # noqa: E402
 from routes.json import setup  # noqa: E402
 
-import config as config_module  # noqa: E402
+import contracts.runtime_config as config_module  # noqa: E402
 
 VALID_PASSWORD = "a sufficiently long password"
 VALID_SETUP_TOKEN = "9f2c1a77e4b5d6098a3f1c2e4d5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
-# Environment needed by the real config.validate_candidate (config.yaml refs).
+# Environment needed by the real contracts.runtime_config.validate_candidate (config.yaml refs).
 REAL_CONFIG_ENV = {
     "CONFIG_DIR": str(Path(__file__).resolve().parents[2] / "config"),
     "DB_USER": "trading",
@@ -80,7 +80,6 @@ class SetupStateTests(unittest.TestCase):
             patch.object(setup, "ACTIVATION_FILE", self.marker),
             patch.object(setup, "AUTH_FILE", self.live["auth.json"]),
             patch.object(setup, "OPERATOR_FILE", self.live["operator.yaml"]),
-            patch.object(setup, "_reload_or_restart", return_value=False),
             patch.object(auth, "STATE_DIR", self.state),
             patch.object(auth, "ACTIVATION_FILE", self.marker),
             patch.object(auth, "AUTH_FILE", self.live["auth.json"]),
@@ -89,7 +88,6 @@ class SetupStateTests(unittest.TestCase):
             patch.object(settings_route, "STATE_DIR", self.state),
             patch.object(settings_route, "SECRETS_FILE", self.live["secrets.env"]),
             patch.object(settings_route, "OPERATOR_CONFIG", self.live["operator.yaml"]),
-            patch.object(settings_route, "_reload_or_restart", return_value=False),
             # The full-config candidate gate runs against the real config.yaml
             # (RuntimeConfig); unit tests keep it inert and test it explicitly.
             patch.object(config_module, "validate_candidate", return_value=None),
@@ -124,7 +122,8 @@ class SetupStateTests(unittest.TestCase):
             )
         self.assertTrue(result["activated"])
         self.assertEqual(result["version"], 1)
-        self.assertEqual(result["restart_required"], False)
+        self.assertEqual(result["restart_required"], True)
+        self.assertFalse(result["applies_to_next_run"])
         marker = json.loads(self.marker.read_text())
         self.assertEqual(marker["version"], 1)
         self.assertEqual(marker["layout"], "versions")
@@ -345,19 +344,18 @@ class SetupStateTests(unittest.TestCase):
         self.assertFalse((self.state / "auth.json").exists())
         self.assertFalse(self._is_complete())
 
-    def test_reload_failure_is_reported_truthfully_after_commit(self):
+    def test_commit_reports_restart_requirement_truthfully(self):
         with ExitStack() as stack:
             for entry in self._patches():
                 stack.enter_context(entry)
-            with patch.object(setup, "_reload_or_restart", return_value=True):
-                result = setup.activate(
-                    setup.ActivationRequest(
-                        password=VALID_PASSWORD, profile={}, secrets={}
-                    ),
-                    _unauthed_request(),
-                )
-        # The commit is durable; the truthfully reported restart requirement
-        # covers the in-process configuration reload failure.
+            result = setup.activate(
+                setup.ActivationRequest(
+                    password=VALID_PASSWORD, profile={}, secrets={}
+                ),
+                _unauthed_request(),
+            )
+        # Committed state is durable; configuration takes effect only after
+        # restarting the process that owns its immutable snapshot.
         self.assertTrue(result["activated"])
         self.assertTrue(result["restart_required"])
         self.assertEqual(json.loads(self.marker.read_text())["version"], 1)
@@ -512,7 +510,8 @@ class SetupStateTests(unittest.TestCase):
                 }
             )
         self.assertEqual(result["saved"], True)
-        self.assertIsInstance(result["restart_required"], bool)
+        self.assertTrue(result["restart_required"])
+        self.assertFalse(result["applies_to_next_run"])
         profile = yaml_load(self.state / "versions" / "v2" / "operator.yaml")
         self.assertEqual(profile["llm"]["models"]["default"], "new-model")
         # Sections outside the settings form are preserved, not clobbered.
@@ -1115,7 +1114,9 @@ class SetupStateTests(unittest.TestCase):
         """Legacy/unsupported llm profile keys fail strict staged validation
         with 422 and nothing is committed (no silent canonicalization)."""
         if not hasattr(config_module, "validate_candidate"):
-            self.skipTest("config.validate_candidate not yet available")
+            self.skipTest(
+                "contracts.runtime_config.validate_candidate not yet available"
+            )
         real_validator = config_module.validate_candidate
         with patch.dict(os.environ, REAL_CONFIG_ENV, clear=False):
             with ExitStack() as stack:
@@ -1155,7 +1156,9 @@ class SetupStateTests(unittest.TestCase):
         must fail the staged candidate (422), keep the prior state, and leave
         a first activation incomplete."""
         if not hasattr(config_module, "validate_candidate"):
-            self.skipTest("config.validate_candidate not yet available")
+            self.skipTest(
+                "contracts.runtime_config.validate_candidate not yet available"
+            )
         real_validator = config_module.validate_candidate
         with patch.dict(os.environ, REAL_CONFIG_ENV, clear=False):
             with ExitStack() as stack:
@@ -1249,7 +1252,6 @@ class SetupTokenBoundaryTests(unittest.TestCase):
             patch.object(auth, "AUTH_FILE", self.live["auth.json"]),
             patch.object(auth, "OPERATOR_FILE", self.live["operator.yaml"]),
             patch.object(auth, "SECRETS_FILE", self.live["secrets.env"]),
-            patch.object(setup, "_reload_or_restart", return_value=False),
             patch.object(setup, "managed_secret", return_value=""),
             patch.object(config_module, "validate_candidate", return_value=None),
         ]
@@ -1482,7 +1484,6 @@ class SetupCsrfExemptionTests(unittest.TestCase):
             patch.object(setup, "AUTH_FILE", state / "auth.json"),
             patch.object(setup, "OPERATOR_FILE", state / "operator.yaml"),
             patch.object(setup, "ACTIVATION_FILE", state / "activated.json"),
-            patch.object(setup, "_reload_or_restart", return_value=False),
         ):
             stack.enter_context(patcher)
         return stack, TestClient(main.create_app(), base_url="https://testserver")

@@ -1,4 +1,3 @@
-import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -141,21 +140,6 @@ class Phase10FrontendContracts(unittest.TestCase):
         self.assertIn("min-height: 36px", self.css)
         self.assertIn(".chart-frame", self.css)
         self.assertIn("height: clamp(", self.css)
-
-    def test_dashboard_health_forwards_request_context(self):
-        from unittest.mock import patch
-
-        from routes.views.dashboard import _get_dashboard_health
-
-        request = object()
-        with patch(
-            "routes.views.dashboard.get_system_health",
-            return_value={"overall": "healthy"},
-        ) as health:
-            self.assertEqual(
-                asyncio.run(_get_dashboard_health(request)), {"overall": "healthy"}
-            )
-        health.assert_awaited_once_with(request)
 
     def test_dashboard_news_is_bounded_and_has_truthful_empty_state(self):
         from unittest.mock import patch

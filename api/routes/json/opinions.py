@@ -2,7 +2,7 @@ from api_db import query_many
 from fastapi import APIRouter, Query
 from serializers import isoformat
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

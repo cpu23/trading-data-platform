@@ -2,11 +2,45 @@
 
 ## Scope
 
-This document records local read-path acceptance measurements. They are not
-production SLAs and do not include collector, market-data-provider, or paid
-model latency.
+This document records local read-path and idle-runtime acceptance measurements.
+They are not production SLAs and do not include collector, market-data-provider,
+or paid model latency.
 
-## Current warm baseline — 29 July 2026
+## Three-service idle runtime — 17 September 2026
+
+Isolated deterministic demo on a Ryzen 7 7800X3D, using the real PostgreSQL,
+web, and worker containers. The browser was closed; the fictional price publisher
+continued every five seconds and the external scheduler registered zero jobs.
+Docker cumulative CPU counters were sampled over 60.1 seconds. CPU percentages
+below are fractions of one logical core, not of total host capacity.
+
+| Service | Average CPU | Highest 10-second average | Container memory, MiB |
+| --- | ---: | ---: | ---: |
+| PostgreSQL | 0.431% | 0.735% | 140.7 |
+| Web | 0.367% | 1.048% | 107.2 |
+| Worker | 0.646% | 1.615% | 129.0 |
+
+Combined average: **1.444% of one core**. Memory is Docker's total usage counter,
+including cache. No equivalent pre-change whole-stack measurement was taken;
+these values do not establish a production before/after speedup.
+
+Five executions of each worker health command in the same image measured
+125–128 ms CPU for `python -m worker_health`, versus 918–924 ms for
+`python -m roles check worker`: approximately **86% less CPU per probe**.
+The latter remains available as a database-backed diagnostic.
+
+Three real `publish_source_health_snapshot` jobs submitted after idle periods
+started after 0.222, 3.195, and 4.988 seconds, and completed after 0.229, 3.201,
+and 4.990 seconds. This exposes the deliberate five-second idle-poll latency
+tradeoff rather than hiding it behind throughput figures.
+
+Live three-service contracts passed before and after restarting web and worker.
+Chromium rendered the dashboard and logs; compact dashboard partial refreshes
+worked. With hidden state simulated in the page execution world, log polling
+produced two requests while visible, zero while hidden, and resumed on visibility.
+No external provider or paid model work was invoked.
+
+## Historical warm baseline — 29 July 2026
 
 Environment:
 

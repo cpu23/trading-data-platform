@@ -1,22 +1,29 @@
 """Cycle planning and orchestration.
 
 This module owns stage aggregation, due checks, dependency availability, and
-full-cycle execution. Runtime dependencies are resolved through the
-``orchestrator`` facade at call time so existing patch seams remain valid while
-the facade itself stays small.
+full-cycle execution.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from collector_execution import collector_worker_limit, run_collector
+from collectors import get_all_collectors
+from collectors.base import elapsed_ms
 from logging_config import get_logger
+from processor_execution import _resolve_and_run_processors
+from processors import get_all_processors
+from run_lifecycle import update_run_progress
 from schedules import build_cron_trigger
+
+from contracts.runtime_config import load_config
+from db import get_session
 
 if TYPE_CHECKING:
     from budgets import BudgetContext
@@ -78,17 +85,10 @@ def _aggregate_stage_status(results: dict[str, dict]) -> str:
     return "partial"
 
 
-def _facade():
-    import orchestrator
-
-    return orchestrator
-
-
 def _last_successful_collection(source_id: str, config: dict) -> datetime | None:
     from sqlalchemy import text
 
-    facade = _facade()
-    with facade.get_session(config) as session:
+    with get_session(config) as session:
         row = session.execute(
             text(
                 "SELECT completed_at FROM collection_log "
@@ -111,7 +111,7 @@ def _collector_is_due(
         current = current.replace(tzinfo=UTC)
     current = current.astimezone(UTC)
     try:
-        completed_at = _facade()._last_successful_collection(source_id, config)
+        completed_at = _last_successful_collection(source_id, config)
         if completed_at is None:
             return True
         if completed_at.tzinfo is None:
@@ -141,28 +141,22 @@ def _collector_is_due(
 def _run_full_cycle_impl(
     config: dict | None = None,
     correlation_id: str | None = None,
-    manage_lifecycle: bool = True,
     worker_id: str | None = None,
     budget_context: BudgetContext | None = None,
     mode: str = "refresh",
     now: datetime | None = None,
 ) -> dict | None:
-    """Execute collector and processor layers, optionally without lifecycle."""
+    """Execute collector and processor layers."""
     if mode not in VALID_CYCLE_MODES:
         raise ValueError("invalid cycle mode")
-    facade = _facade()
     if config is None:
-        config = facade._resolved_config(None)
+        config = load_config()
     correlation_id = correlation_id or str(uuid4())
-    if manage_lifecycle:
-        facade.accept_run(config, correlation_id, "internal", "cycle")
-        if not facade.start_run(config, correlation_id, f"sync:{uuid4()}"):
-            return None
 
-    facade.logger.info(
+    logger.info(
         "full_cycle_started", action="run_full_cycle", correlation_id=correlation_id
     )
-    all_collectors = facade.get_all_collectors()
+    all_collectors = get_all_collectors()
     enabled_collectors = [
         source_id
         for source_id in all_collectors
@@ -170,7 +164,7 @@ def _run_full_cycle_impl(
     ]
     enabled_processors = [
         processor_id
-        for processor_id in facade.get_all_processors()
+        for processor_id in get_all_processors()
         if config.get("processors", {}).get(processor_id, {}).get("enabled", False)
     ]
     progress = {
@@ -231,9 +225,9 @@ def _run_full_cycle_impl(
                 running_stage["component"] if running_stage else None
             )
             progress["current_kind"] = running_stage["kind"] if running_stage else None
-        facade.update_run_progress(correlation_id, progress, config, worker_id)
+        update_run_progress(correlation_id, progress, config, worker_id)
 
-    facade.update_run_progress(correlation_id, progress, config, worker_id)
+    update_run_progress(correlation_id, progress, config, worker_id)
     collector_layer_started = monotonic()
     cycle_now = now or datetime.now(UTC)
     collectors_to_run: list[str] = []
@@ -245,20 +239,20 @@ def _run_full_cycle_impl(
             continue
         if mode == "analyze":
             reason = "analyze_mode_no_collection"
-        elif facade._collector_is_due(source_id, config, now=cycle_now):
+        elif _collector_is_due(source_id, config, now=cycle_now):
             collectors_to_run.append(source_id)
             continue
         else:
             reason = "not_due"
         if mode != "analyze":
             try:
-                if facade._last_successful_collection(source_id, config) is not None:
+                if _last_successful_collection(source_id, config) is not None:
                     historical_available.add(source_id)
             except Exception as exc:
                 from errors import classify_error
 
                 policy = classify_error(exc)
-                facade.logger.warning(
+                logger.warning(
                     "collector_history_lookup_failed",
                     action="select_cycle_collectors",
                     collector=source_id,
@@ -277,9 +271,9 @@ def _run_full_cycle_impl(
         collector_results_by_id[source_id] = skipped
         record_progress(source_id, "collector", "skipped", skipped)
 
-    worker_limit = facade.collector_worker_limit(config, len(collectors_to_run))
+    worker_limit = collector_worker_limit(config, len(collectors_to_run))
     if collectors_to_run:
-        with facade.ThreadPoolExecutor(
+        with ThreadPoolExecutor(
             max_workers=worker_limit,
             thread_name_prefix="cycle-collector",
         ) as executor:
@@ -288,7 +282,7 @@ def _run_full_cycle_impl(
                 record_progress(source_id, "collector", "running")
                 future_sources[
                     executor.submit(
-                        facade.run_collector,
+                        run_collector,
                         source_id,
                         config=config,
                         correlation_id=correlation_id,
@@ -303,7 +297,7 @@ def _run_full_cycle_impl(
                     from errors import classify_error
 
                     policy = classify_error(exc)
-                    facade.logger.error(
+                    logger.error(
                         "collector_future_failed",
                         action="run_full_cycle",
                         collector=source_id,
@@ -331,16 +325,16 @@ def _run_full_cycle_impl(
         for source_id in collectors_to_run
         if collector_results[source_id]["status"] == "success"
     }
-    facade.logger.info(
+    logger.info(
         "collector_layer_finished",
         action="run_full_cycle",
         worker_limit=worker_limit,
         collector_count=len(collectors_to_run),
         enabled_collector_count=len(enabled_collectors),
-        duration_ms=facade.elapsed_ms(collector_layer_started),
+        duration_ms=elapsed_ms(collector_layer_started),
         correlation_id=correlation_id,
     )
-    processor_results = facade._resolve_and_run_processors(
+    processor_results = _resolve_and_run_processors(
         config=config,
         correlation_id=correlation_id,
         successful_collectors=successful_collectors,
@@ -374,7 +368,7 @@ def _run_full_cycle_impl(
                 "snapshots_reconciled": 0,
                 "error_count": 1,
             }
-    facade.logger.info(
+    logger.info(
         "full_cycle_work_finished",
         action="run_full_cycle",
         overall_status=overall_status,
@@ -387,13 +381,4 @@ def _run_full_cycle_impl(
         processors_run=list(processor_results.keys()),
         correlation_id=correlation_id,
     )
-    if manage_lifecycle:
-        facade.finalize_run_safely(
-            correlation_id,
-            overall_status,
-            cycle_result,
-            config,
-            worker_id=worker_id,
-            run_kind="cycle",
-        )
     return cycle_result

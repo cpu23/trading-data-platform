@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from serializers import isoformat
 from staleness import get_staleness_config, is_stale
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

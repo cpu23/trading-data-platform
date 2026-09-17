@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 
 def is_stale(

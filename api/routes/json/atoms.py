@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from serializers import isoformat
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

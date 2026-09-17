@@ -22,7 +22,8 @@ build identity, `/live`, and dependency-aware `/ready`.
 
 ## State and Configuration Precedence
 
-The platform merges:
+The one `contracts.runtime_config.RuntimeConfigLoader` API is shared by web
+and worker. Each process loads one immutable, process-local snapshot from:
 
 1. Repository defaults in `config/config.yaml`.
 2. Environment-backed credentials and deployment settings.
@@ -32,15 +33,30 @@ The platform merges:
 The operator profile changes coverage, watchlist, endpoint, model, reasoning,
 and budget without rewriting repository defaults. Secret updates are
 tri-state: a non-empty string sets, omission or an empty string leaves
-unchanged, and JSON `null` deletes. Deleted values are absent from subsequent
-immutable settings snapshots; loaders do not keep them alive in global
-`os.environ`.
+unchanged, and JSON `null` deletes. Explicitly deleted secrets serialize as
+canonical `KEY=` tombstones in `secrets.env` so loaders see them as
+present-but-empty and fail closed without falling back to the process
+environment.
 
-Setup commits versioned directories under `/app/state/versions`. Each version
-contains `auth.json`, `operator.yaml`, `secrets.env`, and a checksummed
-`manifest.json`, all private. One atomic `current` symlink selects the complete
-snapshot; stable consumer links resolve through it. Readers validate the
-manifest, checksums, and contents.
+Setup and Settings validate the candidate against the shared schema, then save
+versioned directories under `/app/state/versions`. Each version contains
+`auth.json`, `operator.yaml`, `secrets.env`, and a checksummed `manifest.json`,
+all private. One atomic `current` symlink selects the complete snapshot; stable
+consumer links resolve through it. Readers validate the manifest, checksums,
+and contents.
+
+Saving does not hot-reload either process or defer changes to a next run.
+Restart both services explicitly after a successful save:
+
+```bash
+docker compose restart web worker
+```
+
+The worker drains at a safe boundary when it detects committed drift and exits;
+credential drift fails closed and blocks paid admission. The `/ready` endpoint
+verifies database connectivity (returning 503 while the database is unreachable),
+while `/api/system/health` and the dashboard header monitor worker heartbeat
+liveness and active configuration version.
 
 ## Collection Contracts
 
@@ -101,6 +117,30 @@ Published intelligence includes:
 - rolling global narrative memory
 - deterministic since-last-cycle delta
 
+### Execution Lanes and Run API
+
+The single `jobs` queue supports two independent execution lanes:
+
+1. **Operation lane**: jobs with `run_kind` (`cycle`, `collector`, `processor`,
+   `news`, or `filings`) commit atomically with their `cycle_runs` row and
+   manage operation run lifecycle.
+2. **Analysis lane**: background tasks with `job_type` (including snapshot
+   publication, investment analysis, and research jobs) claim jobs independently
+   without consuming operation worker throughput.
+
+Both lanes share the single queue lifecycle (`queued → leased → running →
+succeeded`, reconciling lease expiry to `failed_retryable` or `failed_terminal`
+at the attempt ceiling, and active states transitioning to `suppressed_*`).
+
+The public run API (`GET /api/system/runs` and `GET
+/api/system/runs/{correlation_id}`, aliased by `GET /api/system/cycle-status`)
+queries `cycle_runs` LEFT JOIN `jobs` and assembles stages from
+`collection_log` and `processing_log` into the unified `RunDetailResponse`
+contract. Non-terminal run statuses are `accepted` and `running`; terminal
+statuses include `completed`, `failed`, and `abandoned`. `result_status`
+reports outcomes such as `success`, `partial`, `failed`, `validation_failed`,
+`skipped`, or `budget_blocked`.
+
 ## AI Client and Accounting
 
 The client targets one OpenAI-compatible endpoint. It supports:
@@ -155,21 +195,26 @@ Cases have immutable version snapshots and deterministic lifecycle transitions:
 research-ready case can extend an existing manual theme or promote to one new
 maintained theme; exact and semantic matching prevent duplicates.
 
-The scheduler enqueues deterministic research discovery and a nightly 02:00 UTC
-autonomous thesis cycle on the canonical `jobs` queue. Two independent
-researcher roles generate competing candidates; deterministic evidence,
-opposition, citation, budget, and scoring gates run before every surviving
-candidate is staged in `investment_thesis_proposals`. Agent output never
-mutates a canonical thesis. Approval, rejection, or revision always requires a
-human review action. Model attempts, prompt versions, fingerprints, usage,
-cost, and validation failures remain inspectable. Dashboard reads never invoke
-the model.
-
+Scheduled autonomous thesis discovery and nightly thesis-fusion cycles on the
+canonical `jobs` queue are opt-in (`thesis_autonomy.schedule_enabled: false` by
+default) to keep idle runtime quiet and prevent unintended inference spend.
+When enabled, two independent researcher roles generate competing candidates;
+deterministic evidence, opposition, citation, budget, and scoring gates run
+before every surviving candidate is staged in `investment_thesis_proposals`.
+Agent output never mutates a canonical thesis. Approval, rejection, or revision
+always requires a human review action. Model attempts, prompt versions,
+fingerprints, usage, cost, and validation failures remain inspectable. Dashboard
+reads never invoke the model.
 Point-in-time replay reuses the same adapters and validators under a strict
-availability cutoff and never mutates live research state. Four
-version-controlled benchmark episodes exercise full claim extraction,
-discovery, causal, value-capture, adversarial, deliverable, lifecycle, and
-abstention paths. Benchmark answers remain evaluator-only. Replay rows persist
+availability cutoff and never mutates live research state. Live research and
+point-in-time replay share one analytical pipeline contract
+(`orchestrator.research_intelligence.analysis`) for stage payload builders,
+input fingerprinting, and stage validation across claim extraction, pattern
+discovery, causal chain, value capture, adversarial review, and deliverable
+stages. Four version-controlled benchmark episodes exercise full claim
+extraction, discovery, causal, value-capture, adversarial, deliverable,
+lifecycle, and abstention paths. Benchmark answers remain evaluator-only.
+Replay rows persist
 separate deterministic-input and resolved model/prompt variant identities;
 longitudinal history cannot cross variants, and regression comparisons require
 identical deterministic inputs. `/research/evaluation`, the bounded JSON API,
@@ -203,17 +248,17 @@ enabled only when their keys and permanent issuer identifiers are present. EU
 ESEF coverage outside cross-listed SEC filers remains manual because national
 OAMs are decentralized.
 
-Automatic analysis after filing ingestion is disabled by default. This keeps
-scheduled regulatory collection free of accidental model spend. Manual file and
-public-URL intake remains available through `/investment`.
-
+Scheduled filing collection and automatic analysis after ingestion are disabled
+by default (`investment_filings.enabled: false`, `auto_analyze: false`). This
+keeps idle background execution quiet and free of external scraping or model
+spend. Manual file and public-URL intake remains available through `/investment`.
 See [Investment Research and Filing Intake](investment-research.md) for source
 coverage, HTTP contracts, storage, failure semantics, and measurements.
 
 ## Dashboard Design
+The interface uses progressive disclosure and compact header semantics:
 
-The interface uses progressive disclosure:
-
+- a unified top-bar status chip reflecting database and combined worker state
 - compact source and intelligence status strips
 - a slim since-last-cycle section
 - compact watchlist cards
@@ -224,8 +269,8 @@ The interface uses progressive disclosure:
 
 Primary navigation exposes Dashboard, News, Investments, and Settings, with
 asset, Logs, Operations, and Data quality deep links. Desktop and mobile
-layouts are supported.
-
+layouts are supported. Probes use lightweight database connectivity checks
+rather than heavyweight cross-service cascades.
 ## Read Path and Health Snapshot
 
 Dashboard rendering is a concurrent fan-in over stored regime, briefing,
@@ -245,11 +290,13 @@ previous observations, while a bounded five-day aggregate derives the trend.
 This replaces per-indicator query fanout without changing the response
 contract.
 
+`GET /ready` provides lightweight dependency-aware readiness checking the
+PostgreSQL database connection (returning 503 if unavailable).
 `GET /api/system/health` checks PostgreSQL, the durable `worker` heartbeat,
-collector/processor freshness, and bounded data-quality state. Readiness
-requires the database and current worker heartbeat; missing quote or outbox
-subcomponent detail does not invent extra service dependencies. The
-operator-facing `/quality` page is the explicit detailed diagnostic path.
+collector/processor freshness, and bounded data-quality state. The combined
+`worker` heartbeat detail reports subcomponent states (scheduler, outbox,
+quotes, jobs) without inventing extra service dependencies. The operator-facing
+`/quality` page is the explicit detailed diagnostic path.
 
 ## Authentication and Request Security
 
@@ -351,10 +398,21 @@ Back up both persistent volumes before a material upgrade:
 - database volume (`pgdata`)
 - private state volume (`operatorstate`)
 
-`db/schema.sql` is the sole schema definition and initializes only a fresh
-PostgreSQL volume. This clean-cutover runtime does not include an application
-migration service or compatibility loader. Schema-changing upgrades therefore
-require a fresh volume or an explicitly reviewed database change performed
-outside the application. Never replace the private state volume with loose
-root-level state files; only complete versioned snapshots are supported.
+`db/schema.sql` is the authoritative schema definition and initializes only a
+fresh PostgreSQL volume. This clean-cutover runtime does not include an
+application migration service or compatibility loader. Schema-changing upgrades
+therefore require a fresh volume or an explicitly reviewed database change
+performed outside the application. Never replace the private state volume with
+loose root-level state files; only complete versioned snapshots are supported.
 
+### Existing Database Continuous Aggregate and Policy Management
+
+Existing databases are not modified automatically. The continuous aggregate
+views (`market_data_1m`, `market_data_5m`, `market_data_15m`, `market_data_1h`,
+`market_data_1d`) and their retention policies provide continuous rollup
+caching for volatility term structure and watchlist indicators.
+
+All five resolutions have current readers. Keep their refresh and retention
+policies: removing a view would break those read paths even though the underlying
+`market_data` rows survive. This simplification removes duplicate schema
+declarations, not these active aggregates or their maintenance.

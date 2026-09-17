@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import random
 import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -56,6 +57,7 @@ class BasePollingWorker:
     _enabled_key: str = "enabled"
     _default_poll_seconds: float = 1.0
     _poll_error_interval: float = 1.0
+    _maintenance_interval_seconds: float = 30.0
 
     def __init__(
         self,
@@ -76,6 +78,7 @@ class BasePollingWorker:
         self._counts: Counter[str] = Counter()
         self._last_poll_at: datetime | None = None
         self._last_success_at: datetime | None = None
+        self._last_maintenance_monotonic: float | None = None
         self._running = False
 
     @staticmethod
@@ -139,6 +142,7 @@ class BasePollingWorker:
                 # job another replica reclaimed).
                 self.worker_id = f"{configured_id}:{uuid4()}"
             self._stop.clear()
+            self._last_maintenance_monotonic = None
             self._running = True
             self._thread = threading.Thread(
                 target=self._run, name=self.worker_id, daemon=True
@@ -169,21 +173,48 @@ class BasePollingWorker:
 
     def _run(self) -> None:
         try:
+            settings = self._cfg()
+            worker = self._worker_settings(settings)
+            try:
+                base_interval = max(
+                    0.05,
+                    float(worker.get("poll_seconds", self._default_poll_seconds)),
+                )
+            except (TypeError, ValueError):
+                base_interval = self._poll_error_interval
+            max_idle_interval = max(5.0, base_interval)
+            current_idle_interval = base_interval
+
             while not self._stop.is_set():
-                try:
-                    self.poll_once()
-                except Exception:
-                    self._increment("poll_errors")
                 settings = self._cfg()
                 worker = self._worker_settings(settings)
                 try:
-                    interval = max(
+                    base_interval = max(
                         0.05,
                         float(worker.get("poll_seconds", self._default_poll_seconds)),
                     )
                 except (TypeError, ValueError):
-                    interval = self._poll_error_interval
-                self._stop.wait(interval)
+                    base_interval = self._poll_error_interval
+                max_idle_interval = max(5.0, base_interval)
+
+                with self._lock:
+                    prev_claimed = self._counts.get("claimed", 0)
+
+                try:
+                    self.poll_once()
+                except Exception:
+                    self._increment("poll_errors")
+
+                with self._lock:
+                    claimed_this_poll = self._counts.get("claimed", 0) - prev_claimed
+
+                if claimed_this_poll > 0:
+                    current_idle_interval = base_interval
+                else:
+                    self._stop.wait(current_idle_interval)
+                    current_idle_interval = min(
+                        max_idle_interval, current_idle_interval * 2.0
+                    )
         finally:
             with self._lock:
                 self._running = False
@@ -270,3 +301,25 @@ class BasePollingWorker:
 
     def poll_once(self) -> dict[str, int]:
         raise NotImplementedError
+
+    def _is_maintenance_due(self) -> bool:
+        with self._lock:
+            last = self._last_maintenance_monotonic
+        if last is None:
+            return True
+        return (time.monotonic() - last) >= self._maintenance_interval_seconds
+
+    def _maintain_if_due(self) -> None:
+        if not self._is_maintenance_due():
+            return
+        settings = self._cfg()
+        try:
+            with self._session() as session:
+                self._run_maintenance(session, settings)
+            with self._lock:
+                self._last_maintenance_monotonic = time.monotonic()
+        except Exception:
+            self._increment("poll_errors")
+
+    def _run_maintenance(self, session: Any, settings: dict[str, Any]) -> None:
+        pass

@@ -7,11 +7,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from jobs import enqueue_job
+from run_lifecycle import accept_run, finalize_run_safely, start_run
 from sqlalchemy import text
 
 from contracts.runtime_config import AppConfig
 from db import get_session
-from orchestrator import accept_run, finalize_run_safely, start_run
 from research_intelligence.config import ResearchSettings
 from research_intelligence.contracts import canonical_fingerprint
 

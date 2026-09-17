@@ -1,47 +1,44 @@
-"""Processor execution, reuse decisions, budget policy, and telemetry.
-
-The public orchestrator module re-exports these helpers for backwards
-compatibility. Runtime dependencies are resolved through that facade so tests
-and integrations retaining the historical patch seams continue to work.
-"""
+"""Processor execution, reuse decisions, budget policy, and telemetry."""
 
 from __future__ import annotations
 
 import json
 import math
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from budgets import BudgetBlock, BudgetContext
+from collectors import get_all_collectors
 from errors import InvalidSourceData, PersistenceError, classify_error
 from llm_client import LLMStageFailure
+from locks import advisory_lock
 from logging_config import get_logger
+from processors import get_all_processors, get_processor
 from processors.base import canonical_fingerprint
+from run_lifecycle import (
+    RunAcceptanceConflict,
+    accept_run,
+    finalize_run_safely,
+    maintain_run_heartbeat,
+    start_run,
+)
 from sqlalchemy import text
+
+from db import get_session, insert_records, upsert_records
 
 logger = get_logger("orchestrator.processor_execution")
 
 
-def _facade():
-    import orchestrator
-
-    return orchestrator
-
-
-def _dependency(name: str, fallback):
-    """Read a dependency from the compatibility facade at call time."""
-    return getattr(_facade(), name, fallback)
-
-
 def _get_session(config: dict):
-    return _dependency("get_session", None)(config)
+    return get_session(config)
 
 
 def _resolved_config(config: dict | None) -> dict:
     if config is not None:
         return config
-    from config_loader import load_config
+    from contracts.runtime_config import load_config
 
     return load_config()
 
@@ -54,7 +51,7 @@ def build_processor_fingerprint(processor, config: dict) -> str | None:
         return None
     from llm_client import resolve_model
 
-    fingerprint = _dependency("canonical_fingerprint", canonical_fingerprint)
+    fingerprint = canonical_fingerprint
     payload = {
         "processor_id": processor.processor_id,
         "processor_schema_version": str(schema_version),
@@ -93,10 +90,6 @@ def _resolve_and_run_processors(
     analyze_existing_data: bool = False,
 ) -> dict:
     """Run enabled processors in dependency order, isolating stage outcomes."""
-    get_all_processors = _dependency("get_all_processors", None)
-    get_all_collectors = _dependency("get_all_collectors", None)
-    run_processor_impl = globals()["run_processor"]
-    run_processor = _dependency("run_processor", run_processor_impl)
     all_processors = get_all_processors()
     collector_dependencies = (
         set(get_all_collectors()) if analyze_existing_data else set()
@@ -228,17 +221,16 @@ def _run_processor_impl(
     """Execute one processor and publish its result with explicit failure policy."""
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
-    facade = _facade()
     if manage_lifecycle:
-        facade.accept_run(config, correlation_id, "internal", "processor", processor_id)
-        if not facade.start_run(config, correlation_id, f"sync:{uuid4()}"):
+        accept_run(config, correlation_id, "internal", "processor", processor_id)
+        if not start_run(config, correlation_id, f"sync:{uuid4()}"):
             return None
 
     import structlog.contextvars
 
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
-    processor = _dependency("get_processor", None)(processor_id)
+    processor = get_processor(processor_id)
     started_at = datetime.now(UTC)
     start_ms = time.monotonic() * 1000
     logger.info(
@@ -262,10 +254,7 @@ def _run_processor_impl(
     processing_log_persisted = False
 
     try:
-        fingerprint_builder = _dependency(
-            "build_processor_fingerprint",
-            build_processor_fingerprint,
-        )
+        fingerprint_builder = build_processor_fingerprint
         input_fingerprint = fingerprint_builder(processor, config)
     except Exception as exc:
         logger.warning(
@@ -278,9 +267,9 @@ def _run_processor_impl(
 
     if input_fingerprint and not force:
         try:
-            reusable_output = _dependency(
-                "_find_reusable_processor_output", _find_reusable_processor_output
-            )(processor_id, input_fingerprint, config)
+            reusable_output = _find_reusable_processor_output(
+                processor_id, input_fingerprint, config
+            )
         except Exception as exc:
             logger.warning(
                 "processor_fingerprint_lookup_failed",
@@ -390,7 +379,7 @@ def _run_processor_impl(
                     "prompt_text": None,
                     "raw_response": None,
                 }
-                _dependency("_persist_processor_result", None)(
+                _persist_processor_result(
                     opinions=versioned_opinions,
                     extra_records=result_payload.get("extra_records", {}),
                     processing_log=atomic_processing_log,
@@ -430,8 +419,6 @@ def _run_processor_impl(
         any_output_written = False
         write_outcomes = []
         try:
-            insert_records = _dependency("insert_records", None)
-            upsert_records = _dependency("upsert_records", None)
             opinion = result_payload.get("opinion")
             if (
                 not isinstance(opinion, dict)
@@ -557,7 +544,7 @@ def _run_processor_impl(
 
     if not processing_log_persisted:
         try:
-            _dependency("_write_processing_log", None)(
+            _write_processing_log(
                 processor_id=processor_id,
                 started_at=started_at,
                 completed_at=completed_at,
@@ -609,7 +596,7 @@ def _run_processor_impl(
         },
     )
     if manage_lifecycle:
-        facade.finalize_run_safely(
+        finalize_run_safely(
             correlation_id,
             status,
             result,
@@ -631,38 +618,31 @@ def run_processor(
 ) -> dict | None:
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
-    facade = _facade()
     lifecycle_created = False
     worker_id: str | None = None
     try:
         if manage_lifecycle:
-            facade.accept_run(
-                config, correlation_id, "internal", "processor", processor_id
-            )
+            accept_run(config, correlation_id, "internal", "processor", processor_id)
             lifecycle_created = True
             claim_worker_id = f"sync:{uuid4()}"
-            if not facade.start_run(config, correlation_id, claim_worker_id):
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
             worker_id = claim_worker_id
             if budget_context is None:
-                authorize = _dependency(
-                    "_authorize_claimed_run_budget", _authorize_claimed_run_budget
-                )
-                budget_context = authorize(
+                budget_context = _authorize_claimed_run_budget(
                     config,
                     correlation_id,
                     run_kind="processor",
                     component=processor_id,
                 )
         heartbeat = (
-            facade.maintain_run_heartbeat(config, correlation_id, worker_id)
+            maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
-            else __import__("contextlib").nullcontext()
+            else nullcontext()
         )
         with heartbeat:
-            with facade.advisory_lock(f"processor:{processor_id}", config):
-                impl = getattr(facade, "_run_processor_impl", _run_processor_impl)
-                result = impl(
+            with advisory_lock(f"processor:{processor_id}", config):
+                result = _run_processor_impl(
                     processor_id,
                     config,
                     correlation_id,
@@ -671,7 +651,7 @@ def run_processor(
                     force=force,
                 )
             if manage_lifecycle and result is not None:
-                finalized = facade.finalize_run_safely(
+                finalized = finalize_run_safely(
                     correlation_id,
                     result["status"],
                     result,
@@ -684,11 +664,11 @@ def run_processor(
                 if finalized:
                     logger.info("processor_completed", action="run_processor", **result)
             return result
-    except facade.RunAcceptanceConflict:
+    except RunAcceptanceConflict:
         raise
     except Exception as exc:
         if manage_lifecycle and lifecycle_created:
-            policy = facade.classify_error(exc)
+            policy = classify_error(exc)
             error_message = (
                 str(exc) if worker_id is not None else "run start unavailable"
             )
@@ -702,7 +682,7 @@ def run_processor(
                     "retryable": policy.retryable,
                 }
             )
-            facade.finalize_run_safely(
+            finalize_run_safely(
                 correlation_id,
                 "failed",
                 result,
@@ -865,8 +845,8 @@ def _authorize_claimed_run_budget(
     )
 
 
-# Publication owns the durable implementations. These aliases are intentionally
-# module-level so the facade can re-export the historical patch targets.
+# Publication owns the durable implementations. Keep these direct imports
+# available to this module's persistence call sites.
 from publication import _persist_processor_result, _write_processing_log  # noqa: E402
 
 __all__ = [

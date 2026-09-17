@@ -39,15 +39,6 @@ class ErrorTaxonomyTests(unittest.TestCase):
             ("failed", "unknown", False),
         )
 
-    def test_compatibility_facade_exports_lifecycle_conflicts_and_taxonomy(self):
-        from run_lifecycle import RunAcceptanceConflict, RunStartConflict
-
-        import orchestrator
-
-        self.assertIs(orchestrator.RunAcceptanceConflict, RunAcceptanceConflict)
-        self.assertIs(orchestrator.RunStartConflict, RunStartConflict)
-        self.assertIs(orchestrator.TransientSourceError, TransientSourceError)
-
     def test_sanitize_error_none_returns_none(self):
         self.assertIsNone(sanitize_error(None))
 

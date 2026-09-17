@@ -100,8 +100,13 @@ class OutboxWorker:
         max_backoff = max(
             base_backoff, _number(settings, "max_backoff_seconds", 60.0, base_backoff)
         )
+        max_idle_interval = max(5.0, poll)
+        current_idle_interval = poll
         try:
             while not self._stop.is_set():
+                settings = _pipeline_config(self._config)
+                poll = _number(settings, "poll_interval_seconds", 1.0, 0.01)
+                max_idle_interval = max(5.0, poll)
                 self.state["last_poll_at"] = datetime.now(UTC)
                 claimed = False
                 try:
@@ -119,8 +124,13 @@ class OutboxWorker:
                 except Exception as exc:
                     # Poll errors must not kill the daemon; store only a type name.
                     self.state["last_error"] = type(exc).__name__
-                if not claimed:
-                    self._stop.wait(poll)
+                if claimed:
+                    current_idle_interval = poll
+                else:
+                    self._stop.wait(current_idle_interval)
+                    current_idle_interval = min(
+                        max_idle_interval, current_idle_interval * 2.0
+                    )
         finally:
             self.state["running"] = False
 

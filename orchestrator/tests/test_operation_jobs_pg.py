@@ -22,11 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jobs import (
     OperationJob,
     accept_and_enqueue_operation,
-    claim_operation_jobs,
+    claim_jobs,
     enqueue_operation,
-    retry_operation_job,
-    start_operation_job,
-    succeed_operation_job,
+    retry_job,
+    start_job,
+    succeed_job,
 )
 from operation_worker import OperationWorker
 from pg_support import (
@@ -303,8 +303,12 @@ class OperationJobsPostgresTests(unittest.TestCase):
             try:
                 barrier.wait(timeout=10)
                 with self.session() as session:
-                    claimed = claim_operation_jobs(
-                        session, worker_id, limit=10, lease_seconds=60
+                    claimed = claim_jobs(
+                        session,
+                        worker_id,
+                        limit=10,
+                        lease_seconds=60,
+                        run_kinds=["collector"],
                     )
                 results[worker_id] = [str(job.id) for job in claimed]
             except Exception as exc:  # pragma: no cover - failure diagnostics
@@ -339,22 +343,26 @@ class OperationJobsPostgresTests(unittest.TestCase):
             result = self._enqueue(session, max_attempts=5)
         job_id = str(result.job.id)
         with self.session() as session:
-            claimed = claim_operation_jobs(session, "worker-a", lease_seconds=60)
+            claimed = claim_jobs(
+                session, "worker-a", lease_seconds=60, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         with self.session() as session:
             session.execute(
                 text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
-            reclaimed = claim_operation_jobs(session, "worker-b", lease_seconds=60)
+            reclaimed = claim_jobs(
+                session, "worker-b", lease_seconds=60, run_kinds=["collector"]
+            )
         self.assertEqual(len(reclaimed), 1)
         self.assertEqual(reclaimed[0].claimed_by, "worker-b")
         self.assertEqual(reclaimed[0].attempt_count, 2)
         with self.session() as session:
-            self.assertFalse(start_operation_job(session, job_id, "worker-a"))
-            self.assertTrue(start_operation_job(session, job_id, "worker-b"))
-            self.assertFalse(succeed_operation_job(session, job_id, "worker-a"))
-            self.assertTrue(succeed_operation_job(session, job_id, "worker-b"))
+            self.assertFalse(start_job(session, job_id, "worker-a"))
+            self.assertTrue(start_job(session, job_id, "worker-b"))
+            self.assertFalse(succeed_job(session, job_id, "worker-a"))
+            self.assertTrue(succeed_job(session, job_id, "worker-b"))
 
     def test_retry_transition_reclaims_run_row(self):
         with self.session() as session:
@@ -362,8 +370,8 @@ class OperationJobsPostgresTests(unittest.TestCase):
         job_id = str(result.job.id)
         correlation_id = str(result.job.correlation_id)
         with self.session() as session:
-            claim_operation_jobs(session, "worker-a", lease_seconds=60)
-            self.assertTrue(start_operation_job(session, job_id, "worker-a"))
+            claim_jobs(session, "worker-a", lease_seconds=60, run_kinds=["collector"])
+            self.assertTrue(start_job(session, job_id, "worker-a"))
             session.execute(
                 text(
                     "UPDATE cycle_runs SET status = 'running', "
@@ -374,7 +382,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
             )
         with self.session() as session:
             self.assertTrue(
-                retry_operation_job(
+                retry_job(
                     session,
                     job_id,
                     "worker-a",
@@ -420,7 +428,8 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 input_fingerprint="f" * 64,
                 payload={"mode": "refresh"},
             )
-        result = recover_operation_runs(self.config)
+        with self.session() as session:
+            result = recover_operation_runs(session)
         self.assertEqual(result["reclaimed_ids"], [])
         # The accepted row WITH an active job survives untouched (claimable);
         # the orphan acceptance and the stale running row are abandoned.
@@ -448,7 +457,9 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 },
             )
         with self.session() as session:
-            claimed = claim_operation_jobs(session, "worker-c", lease_seconds=60)
+            claimed = claim_jobs(
+                session, "worker-c", lease_seconds=60, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         run = self._run_row(correlation_id)
         self.assertEqual(run["status"], "accepted")
@@ -530,7 +541,7 @@ class OperationJobsPostgresTests(unittest.TestCase):
             session_factory=lambda cfg: self.session(),
         )
         with self.session() as session:
-            claim_operation_jobs(session, "worker-x", lease_seconds=60)
+            claim_jobs(session, "worker-x", lease_seconds=60, run_kinds=["collector"])
         claimed = OperationJob.from_row(self._job_row(job_id))
         with (
             patch("operation_worker.uuid4", return_value=fixed),
@@ -541,10 +552,10 @@ class OperationJobsPostgresTests(unittest.TestCase):
                 "_dispatch",
                 return_value={"status": "success", "error": None},
             ),
-            patch("operation_worker.succeed_operation_job", return_value=False),
+            patch("operation_worker.succeed_job", return_value=False),
             # Simulate the reclaimed job's new owner already taking it over, so
             # the retry transition no-ops and the rollback stands alone.
-            patch("operation_worker.retry_operation_job", return_value=False),
+            patch("operation_worker.retry_job", return_value=False),
         ):
             heartbeat.return_value.__enter__ = Mock(return_value=None)
             heartbeat.return_value.__exit__ = Mock(return_value=False)

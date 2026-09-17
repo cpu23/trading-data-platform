@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

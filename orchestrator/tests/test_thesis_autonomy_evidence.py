@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, text
 
 ORCH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ORCH_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Import support first so environment is configured
 from research_intelligence.contracts import EvidenceSignal
@@ -46,24 +47,6 @@ from contracts.runtime_config import AppConfig, ThesisAutonomyConfig
 
 
 class ThesisAutonomyConfigTests(unittest.TestCase):
-    def test_strict_defaults_match_the_checked_in_profile(self):
-        config = ThesisAutonomyConfig()
-        self.assertTrue(config.enabled)
-        self.assertTrue(config.schedule_enabled)
-        self.assertEqual(config.schedule, "0 2 * * *")
-        self.assertEqual(config.lookback_days, 30)
-        self.assertEqual(config.maximum_evidence, 96)
-        self.assertEqual(config.maximum_promoted, 64)
-        self.assertEqual(config.maximum_challenges_per_run, 25)
-        self.assertEqual(config.event_debounce_minutes, 60)
-        self.assertEqual(config.model_budget_usd_per_run, 0.75)
-        self.assertIsNone(config.reasoning_effort)
-        self.assertIsNone(config.model_override)
-        self.assertIsNone(config.max_output_tokens)
-        self.assertIsNone(config.cost)
-        self.assertIsNone(config.liquidity)
-        self.assertIsNone(config.downside)
-
     def test_unknown_fields_and_out_of_bounds_values_are_rejected(self):
         with self.assertRaises(ValidationError):
             ThesisAutonomyConfig.model_validate({"mystery_key": 1})

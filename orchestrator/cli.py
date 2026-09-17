@@ -2,19 +2,16 @@ import json
 from datetime import UTC, datetime
 
 import click
+from collector_execution import get_last_collection_runs, run_collector
 from collectors import get_all_collectors
-from config_loader import load_config
 from logging_config import setup_logging
+from processor_execution import run_processor
 from processors import get_all_processors
 from sqlalchemy import text
 
+from contracts.runtime_config import load_config
 from db import check_connection, check_tables_exist, get_session
-from orchestrator import (
-    get_last_collection_runs,
-    run_collector,
-    run_full_cycle,
-    run_processor,
-)
+from orchestrator import run_full_cycle
 
 REQUIRED_TABLES = [
     "macro_series",

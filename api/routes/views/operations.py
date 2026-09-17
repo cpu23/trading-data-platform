@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from topology import build_system_topology, unavailable_system_topology
 
-from config import load_config
+from contracts.runtime_config import load_config
 from routes.json.atoms import load_atom_context
 from routes.json.settings import timezone_context
 from routes.json.system import get_system_health

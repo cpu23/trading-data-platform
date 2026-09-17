@@ -481,9 +481,12 @@
           detail.hidden = false;
           var heading = document.createElement('div');
           heading.className = 'run-detail-heading';
-          heading.textContent = (run.run_kind || 'run') + ' · ' + (run.result_status || run.status);
+          var lifecycle = String(run.status || '').toLowerCase();
+          var outcome = String(run.result_status || '').toLowerCase();
+          heading.textContent = (run.run_kind || 'run') + ' · ' + (outcome || lifecycle || 'unknown');
           detail.appendChild(heading);
           (run.stages || []).forEach(function (stage) {
+            if (!stage.log_id) return;
             var row = document.createElement('button');
             row.type = 'button';
             row.className = 'run-stage';
@@ -586,44 +589,58 @@
         }
         fetch('/api/system/cycle-status?correlation_id=' + encodeURIComponent(correlationId))
           .then(function (r) {
-            if (!r.ok) throw new Error('Cycle status unavailable');
+            if (!r.ok) {
+              var error = new Error(r.status === 404 ? 'Cycle run not found' : 'Cycle status unavailable');
+              error.status = r.status;
+              throw error;
+            }
             return r.json();
           })
           .then(function (data) {
+            var lifecycle = String(data.status || '').toLowerCase();
+            var outcome = String(data.result_status || '').toLowerCase();
             var progress = data.progress || {};
-            var total = progress.total_stages || 1;
-            var completed = progress.completed_stages !== undefined
+            var total = Number.isInteger(progress.total_stages) && progress.total_stages > 0
+              ? progress.total_stages : 1;
+            var completed = Number.isInteger(progress.completed_stages)
               ? progress.completed_stages
-              : (data.stages || []).filter(function (s) { return !['pending', 'running'].includes(s.status); }).length;
+              : (data.stages || []).filter(function (s) {
+                return !['pending', 'running'].includes(String(s.status || '').toLowerCase());
+              }).length;
             var pct = Math.min(95, Math.round((completed / total) * 100));
 
-            var successfulTerminal = ['success', 'partial', 'completed'];
-            var failedTerminal = [
-              'failed',
-              'validation_failed',
-              'budget_denied',
-              'budget_blocked',
-              'budget_unavailable'
-            ];
-            if (successfulTerminal.includes(data.status)) {
-              showProgress('Cycle finished: ' + data.status, 100);
-              setTimeout(function () { showResult('Cycle completed: ' + data.status, false); }, 600);
-              setButtons(false);
-              dispatchCycleRefresh();
-            } else if (failedTerminal.includes(data.status)) {
-              showResult('Cycle ' + data.status.replaceAll('_', ' ') + ' — check logs', true);
+            var terminal = ['completed', 'failed', 'abandoned'].includes(lifecycle) ||
+              ['success', 'partial', 'failed', 'skipped', 'validation_failed',
+                'budget_denied', 'budget_blocked', 'budget_unavailable'].includes(outcome);
+            if (terminal) {
+              var terminalStatus = outcome || lifecycle;
+              var successful = ['success', 'partial', 'completed'].includes(terminalStatus);
+              if (successful) {
+                showProgress('Cycle finished: ' + terminalStatus, 100);
+                setTimeout(function () { showResult('Cycle completed: ' + terminalStatus, false); }, 600);
+              } else {
+                showResult('Cycle ' + terminalStatus.replaceAll('_', ' ') + ' — check logs', true);
+              }
               setButtons(false);
               dispatchCycleRefresh();
             } else {
               var current = progress.current_stage;
-              var label = current
-                ? 'Running ' + current.replaceAll('_', ' ') + '…'
-                : 'Cycle running…';
+              var label = lifecycle === 'accepted'
+                ? 'Cycle queued…'
+                : current
+                  ? 'Running ' + current.replaceAll('_', ' ') + '…'
+                  : 'Cycle running…';
               showProgress(label + ' (' + completed + '/' + total + ')', pct);
               setTimeout(poll, 2000);
             }
           })
-          .catch(function () {
+          .catch(function (error) {
+            if (error.status === 404) {
+              showResult('Cycle run not found', true);
+              setButtons(false);
+              dispatchCycleRefresh();
+              return;
+            }
             setTimeout(poll, 3000);
           });
       }

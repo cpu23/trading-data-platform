@@ -5,11 +5,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from config_loader import AppConfig
 from logging_config import get_logger
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
+
+from contracts.runtime_config import AppConfig
 
 logger = get_logger("db")
 
@@ -59,7 +60,7 @@ def get_engine(config: AppConfig | Mapping[str, Any] | None = None) -> Engine:
         return _engine
 
     if config is None:
-        from config_loader import load_config
+        from contracts.runtime_config import load_config
 
         config = load_config()
 

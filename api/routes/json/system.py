@@ -19,26 +19,24 @@ from serializers import isoformat
 from staleness import get_staleness_config, is_stale
 from starlette.concurrency import run_in_threadpool
 
-import config as app_config
 from contracts import (
     RunDetailResponse,
     RunListResponse,
-    RunStatusResponse,
     SystemHealthResponse,
     SystemTopologyResponse,
 )
+from contracts.runtime_config import config_version, load_config
 
 router = APIRouter()
 
 logger = get_logger("system.health")
 
-_ROLE_HEALTHY_STATUS = {"worker": frozenset({"running"})}
-_ROLE_ORDER = ("worker",)
+_WORKER_HEALTHY_STATUS = frozenset({"running"})
 
 
 def _safe_config_version() -> str | None:
     try:
-        return app_config.config_version()
+        return config_version()
     except Exception:
         return None
 
@@ -75,76 +73,62 @@ def _dependency_unready_response(
     return JSONResponse(status_code=503, content=payload.model_dump(mode="json"))
 
 
-def _required_role_dependencies(_config: dict) -> dict[str, bool]:
-    return {"worker": True}
-
-
-def _role_unhealthy_reason(heartbeat: dict | None) -> str:
+def _worker_unhealthy_reason(heartbeat: dict | None) -> str:
     if heartbeat is None:
         return "no heartbeat"
     return f"unhealthy status {heartbeat.get('status', 'unknown')}"
 
 
 def _role_readiness(config: dict) -> tuple[list[dict], bool]:
-    required = _required_role_dependencies(config)
-    components: list[dict] = []
-    ready = True
     active_version = _safe_config_version()
-    for role in _ROLE_ORDER:
-        is_required = required.get(role, False)
-        try:
-            heartbeats = fresh_role_heartbeats(config, role)
-            heartbeat = heartbeats[0] if heartbeats else None
-        except Exception as exc:
-            logger.warning(
-                "role_heartbeat_read_failed", role=role, error_type=type(exc).__name__
-            )
-            heartbeat = None
-        healthy_status = heartbeat is not None and str(
-            heartbeat.get("status", "")
-        ).strip() in _ROLE_HEALTHY_STATUS.get(role, frozenset())
-        role_version = (
-            (heartbeat.get("detail") or {}).get("config_version")
-            if heartbeat is not None
-            else None
+    try:
+        heartbeats = fresh_role_heartbeats(config, "worker")
+        heartbeat = heartbeats[0] if heartbeats else None
+    except Exception as exc:
+        logger.warning(
+            "role_heartbeat_read_failed", role="worker", error_type=type(exc).__name__
         )
-        version_mismatch = bool(
-            role_version is not None
-            and active_version is not None
-            and role_version != active_version
+        heartbeat = None
+    healthy_status = (
+        heartbeat is not None
+        and str(heartbeat.get("status", "")).strip() in _WORKER_HEALTHY_STATUS
+    )
+    role_version = (
+        (heartbeat.get("detail") or {}).get("config_version")
+        if heartbeat is not None
+        else None
+    )
+    version_mismatch = bool(
+        role_version is not None
+        and active_version is not None
+        and role_version != active_version
+    )
+    healthy = healthy_status and not version_mismatch
+    reason = None
+    if not healthy_status:
+        reason = _worker_unhealthy_reason(heartbeat)
+    elif version_mismatch:
+        reason = (
+            f"config version mismatch: role runs {role_version}, "
+            f"active {active_version}; restart required"
         )
-        healthy = healthy_status and not version_mismatch
-        component: dict = {
-            "name": f"role:{role}",
-            "kind": "service",
-            "status": "available" if healthy else "degraded",
-            "reason": None if healthy else _role_unhealthy_reason(heartbeat),
-        }
-        if role_version is not None:
-            component["config_version"] = role_version
-        if version_mismatch:
-            component["restart_required"] = True
-            component["reason"] = (
-                f"config version mismatch: role runs {role_version}, "
-                f"active {active_version}; restart required"
-            )
-        if not is_required:
-            if heartbeat is None:
-                continue
-            component["critical"] = False
-            components.append(component)
-            continue
-        if not healthy:
-            ready = False
-        component["critical"] = True
-        component["status"] = "available" if healthy else "unavailable"
-        components.append(component)
-    return components, ready
+    component: dict = {
+        "name": "role:worker",
+        "kind": "service",
+        "status": "available" if healthy else "unavailable",
+        "reason": reason,
+        "critical": True,
+    }
+    if role_version is not None:
+        component["config_version"] = role_version
+    if version_mismatch:
+        component["restart_required"] = True
+    return [component], healthy
 
 
-def _load_local_health_data():
-    config = app_config.load_config()
-    thresholds = get_staleness_config(config)
+def _load_collector_and_processor_rows(
+    config: dict,
+) -> tuple[list[dict], list[dict]]:
     collector_rows = query_many(
         """SELECT DISTINCT ON (collector)
                collector, started_at, status, duration_ms, error_message
@@ -159,6 +143,167 @@ def _load_local_health_data():
            ORDER BY processor, started_at DESC""",
         config=config,
     )
+    return collector_rows, processor_rows
+
+
+def _build_database_components() -> list[dict]:
+    return [
+        {
+            "name": "database",
+            "kind": "service",
+            "last_run_at": None,
+            "last_status": "running",
+            "next_due_at": None,
+            "stale": False,
+            "quality_warn": False,
+            "error_message": None,
+        }
+    ]
+
+
+def _build_role_components(role_components: list[dict]) -> list[dict]:
+    status_map = {
+        "available": "running",
+        "degraded": "degraded",
+        "unavailable": "error",
+    }
+    components = []
+    for component in role_components:
+        status = status_map.get(component["status"], "error")
+        components.append(
+            {
+                "name": component["name"],
+                "kind": component.get("kind") or "service",
+                "last_run_at": None,
+                "last_status": status,
+                "next_due_at": None,
+                "stale": status != "running",
+                "quality_warn": component.get("kind") == "data" and status != "running",
+                "error_message": _public_failure(
+                    component.get("reason"),
+                    status=status,
+                    kind="service",
+                ),
+            }
+        )
+    return components
+
+
+def _build_collector_components(
+    config: dict,
+    thresholds: dict,
+    collector_rows: list[dict],
+    quality_warn_map: dict[str, bool] | None = None,
+) -> list[dict]:
+    quality_warn_map = quality_warn_map or {}
+    collector_map = {row["collector"]: row for row in collector_rows}
+    components = []
+    for source_id, collector_config in config.get("collectors", {}).items():
+        if not collector_config.get("enabled", True):
+            continue
+        row = collector_map.get(source_id)
+        if row is None:
+            components.append(
+                {
+                    "name": source_id,
+                    "kind": "collector",
+                    "last_run_at": None,
+                    "last_status": "never_run",
+                    "next_due_at": None,
+                    "stale": True,
+                    "quality_warn": quality_warn_map.get(source_id, False),
+                }
+            )
+            continue
+        threshold_hours = thresholds.get("macro_hours", 30)
+        if source_id == "forex_factory":
+            threshold_hours = thresholds.get("events_hours", 8)
+        stale, _ = is_stale(row["started_at"], threshold_hours)
+        components.append(
+            {
+                "name": source_id,
+                "kind": "collector",
+                "last_run_at": isoformat(row["started_at"]),
+                "last_status": row.get("status", "unknown"),
+                "next_due_at": None,
+                "stale": stale,
+                "quality_warn": quality_warn_map.get(source_id, False),
+                "error_message": _public_failure(
+                    row.get("error_message"),
+                    status=row.get("status"),
+                    kind="collector",
+                ),
+            }
+        )
+    return components
+
+
+def _build_processor_components(
+    config: dict,
+    thresholds: dict,
+    processor_rows: list[dict],
+    quality_warn_map: dict[str, bool] | None = None,
+) -> list[dict]:
+    quality_warn_map = quality_warn_map or {}
+    processor_map = {row["processor"]: row for row in processor_rows}
+    components = []
+    for processor_id, processor_config in config.get("processors", {}).items():
+        if not processor_config.get("enabled", False):
+            continue
+        row = processor_map.get(processor_id)
+        if row is None:
+            components.append(
+                {
+                    "name": processor_id,
+                    "kind": "processor",
+                    "last_run_at": None,
+                    "last_status": "never_run",
+                    "next_due_at": None,
+                    "stale": True,
+                    "quality_warn": quality_warn_map.get(processor_id, False),
+                }
+            )
+            continue
+        threshold_hours = thresholds.get("regime_hours", 18)
+        if processor_id == "briefing":
+            threshold_hours = thresholds.get("briefing_hours", 18)
+        stale, _ = is_stale(row["started_at"], threshold_hours)
+        components.append(
+            {
+                "name": processor_id,
+                "kind": "processor",
+                "last_run_at": isoformat(row["started_at"]),
+                "last_status": row.get("status", "unknown"),
+                "next_due_at": None,
+                "stale": stale,
+                "quality_warn": quality_warn_map.get(processor_id, False),
+                "error_message": _public_failure(
+                    row.get("error_message"),
+                    status=row.get("status"),
+                    kind="processor",
+                ),
+            }
+        )
+    return components
+
+
+def load_compact_health(config: dict | None = None) -> dict:
+    """Narrow collector/processor/worker component status for compact surfaces."""
+    config = config or load_config()
+    thresholds = get_staleness_config(config)
+    collector_rows, processor_rows = _load_collector_and_processor_rows(config)
+    role_components, _roles_ready = _role_readiness(config)
+    components = _build_database_components()
+    components.extend(_build_role_components(role_components))
+    components.extend(_build_collector_components(config, thresholds, collector_rows))
+    components.extend(_build_processor_components(config, thresholds, processor_rows))
+    return {"components": components}
+
+
+def _load_local_health_data():
+    config = load_config()
+    thresholds = get_staleness_config(config)
+    collector_rows, processor_rows = _load_collector_and_processor_rows(config)
     today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     cost_rows = query_many(
         "SELECT COALESCE(SUM(cost_usd), 0) as total_cost, "
@@ -284,6 +429,32 @@ def _public_progress(summary: object) -> dict:
     return public
 
 
+_PRIVATE_SUMMARY_KEYS = {
+    "error",
+    "errors",
+    "exception",
+    "diagnostics",
+    "raw_response",
+    "traceback",
+    "error_traceback",
+}
+
+
+def _public_summary(value: object) -> object:
+    """Keep operational summary metadata while omitting private diagnostics."""
+    if isinstance(value, Mapping):
+        return {
+            str(key)[:100]: _public_summary(item)
+            for key, item in list(value.items())[:100]
+            if str(key).lower() not in _PRIVATE_SUMMARY_KEYS
+        }
+    if isinstance(value, list):
+        return [_public_summary(item) for item in value[:100]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return None
+
+
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def get_system_health(request: Request):
     try:
@@ -314,43 +485,8 @@ async def get_system_health(request: Request):
     today_cost = float(cost_rows[0].get("total_cost") or 0) if cost_rows else 0.0
     today_tokens = int(cost_rows[0].get("total_tokens") or 0) if cost_rows else 0
 
-    components = [
-        {
-            "name": "database",
-            "kind": "service",
-            "last_run_at": None,
-            "last_status": "running",
-            "next_due_at": None,
-            "stale": False,
-            "quality_warn": False,
-            "error_message": None,
-        }
-    ]
-
-    status_map = {
-        "available": "running",
-        "degraded": "degraded",
-        "unavailable": "error",
-    }
-    for component in role_components:
-        status = status_map.get(component["status"], "error")
-        components.append(
-            {
-                "name": component["name"],
-                "kind": component.get("kind") or "service",
-                "last_run_at": None,
-                "last_status": status,
-                "next_due_at": None,
-                "stale": status != "running",
-                "quality_warn": component.get("kind") == "data" and status != "running",
-                "error_message": _public_failure(
-                    component.get("reason"),
-                    status=status,
-                    kind="service",
-                ),
-            }
-        )
-
+    components = _build_database_components()
+    components.extend(_build_role_components(role_components))
     quality_warn_map: dict[str, bool] = {}
     raw_checks = normalized_quality
     if isinstance(raw_checks, dict):
@@ -407,84 +543,22 @@ async def get_system_health(request: Request):
             }
         )
 
-    collector_map = {row["collector"]: row for row in collector_rows}
-    for source_id, collector_config in config.get("collectors", {}).items():
-        if not collector_config.get("enabled", True):
-            continue
-        row = collector_map.get(source_id)
-        if row is None:
-            components.append(
-                {
-                    "name": source_id,
-                    "kind": "collector",
-                    "last_run_at": None,
-                    "last_status": "never_run",
-                    "next_due_at": None,
-                    "stale": True,
-                    "quality_warn": quality_warn_map.get(source_id, False),
-                }
-            )
-            continue
-        threshold_hours = thresholds.get("macro_hours", 30)
-        if source_id == "forex_factory":
-            threshold_hours = thresholds.get("events_hours", 8)
-        stale, _ = is_stale(row["started_at"], threshold_hours)
-        components.append(
-            {
-                "name": source_id,
-                "kind": "collector",
-                "last_run_at": isoformat(row["started_at"]),
-                "last_status": row.get("status", "unknown"),
-                "next_due_at": None,
-                "stale": stale,
-                "quality_warn": quality_warn_map.get(source_id, False),
-                "error_message": _public_failure(
-                    row.get("error_message"),
-                    status=row.get("status"),
-                    kind="collector",
-                ),
-            }
+    components.extend(
+        _build_collector_components(
+            config,
+            thresholds,
+            collector_rows,
+            quality_warn_map,
         )
-
-    processor_map = {row["processor"]: row for row in processor_rows}
-    for processor_id, processor_config in config.get("processors", {}).items():
-        if not processor_config.get("enabled", False):
-            continue
-        row = processor_map.get(processor_id)
-        if row is None:
-            components.append(
-                {
-                    "name": processor_id,
-                    "kind": "processor",
-                    "last_run_at": None,
-                    "last_status": "never_run",
-                    "next_due_at": None,
-                    "stale": True,
-                    "quality_warn": quality_warn_map.get(processor_id, False),
-                }
-            )
-            continue
-        threshold_hours = thresholds.get("regime_hours", 18)
-        if processor_id == "briefing":
-            threshold_hours = thresholds.get("briefing_hours", 18)
-        stale, _ = is_stale(row["started_at"], threshold_hours)
-        components.append(
-            {
-                "name": processor_id,
-                "kind": "processor",
-                "last_run_at": isoformat(row["started_at"]),
-                "last_status": row.get("status", "unknown"),
-                "next_due_at": None,
-                "stale": stale,
-                "quality_warn": quality_warn_map.get(processor_id, False),
-                "error_message": _public_failure(
-                    row.get("error_message"),
-                    status=row.get("status"),
-                    kind="processor",
-                ),
-            }
+    )
+    components.extend(
+        _build_processor_components(
+            config,
+            thresholds,
+            processor_rows,
+            quality_warn_map,
         )
-
+    )
     critical_failing = {
         check_id
         for check_id in critical_checks
@@ -638,7 +712,7 @@ def get_system_logs(
             ORDER BY started_at DESC
             LIMIT :limit""",
         params=params,
-        config=app_config.load_config(),
+        config=load_config(),
     )
     logs = []
     for row in rows:
@@ -691,7 +765,7 @@ def get_bounded_logs(lines: str = Query(default="200")):
            ORDER BY started_at DESC
            LIMIT :limit""",
         params={"limit": normalized},
-        config=app_config.load_config(),
+        config=load_config(),
     )
     logs = [
         {
@@ -715,116 +789,146 @@ def get_bounded_logs(lines: str = Query(default="200")):
     return {"logs": logs, "lines": normalized}
 
 
+def _public_run_stage(row: Mapping) -> dict:
+    """Normalize one real collection_log or processing_log row."""
+    kind = str(row.get("kind") or "operation")
+    return {
+        "log_id": str(row["log_id"]) if row.get("log_id") else None,
+        "correlation_id": (
+            str(row["correlation_id"]) if row.get("correlation_id") else None
+        ),
+        "kind": kind,
+        "component": str(row.get("component") or ""),
+        "started_at": isoformat(row.get("started_at")),
+        "completed_at": isoformat(row.get("completed_at")),
+        "status": str(row.get("status") or "unknown"),
+        "duration_ms": row.get("duration_ms"),
+        "records_fetched": row.get("records_fetched"),
+        "records_written": row.get("records_written"),
+        "tokens_input": row.get("tokens_input"),
+        "tokens_output": row.get("tokens_output"),
+        "cost_usd": (
+            float(row["cost_usd"]) if row.get("cost_usd") is not None else None
+        ),
+        "error_message": _public_failure(
+            row.get("error_message"),
+            status=row.get("status"),
+            kind=kind,
+        ),
+    }
+
+
+def _run_stages(correlation_id: UUID, config: dict) -> list[dict]:
+    rows = query_many(
+        """SELECT log_id, correlation_id, 'collector' AS kind,
+                  collector AS component, started_at, completed_at, status,
+                  duration_ms, records_fetched, records_written,
+                  NULL AS tokens_input, NULL AS tokens_output, NULL AS cost_usd,
+                  error_message
+           FROM collection_log
+           WHERE correlation_id = :correlation_id
+           UNION ALL
+           SELECT log_id, correlation_id, 'processor' AS kind,
+                  processor AS component, started_at, completed_at, status,
+                  duration_ms, NULL AS records_fetched, NULL AS records_written,
+                  tokens_input, tokens_output, cost_usd, error_message
+           FROM processing_log
+           WHERE correlation_id = :correlation_id
+           ORDER BY started_at ASC""",
+        params={"correlation_id": correlation_id},
+        config=config,
+    )
+    return [_public_run_stage(row) for row in rows]
+
+
+def _public_run(row: Mapping, stages: list[dict] | None = None) -> dict:
+    run_kind = str(row.get("run_kind") or "cycle")
+    summary = row.get("summary")
+    if not isinstance(summary, Mapping):
+        summary = {}
+    status = str(row.get("status") or "unknown")
+    result_status = row.get("result_status")
+    return {
+        "correlation_id": str(row.get("correlation_id")),
+        "status": status,
+        "result_status": str(result_status) if result_status is not None else None,
+        "run_kind": run_kind,
+        "requested_component": row.get("requested_component"),
+        "triggered_by": row.get("triggered_by"),
+        "job_id": str(row["job_id"]) if row.get("job_id") else None,
+        "job_state": str(row["job_state"]) if row.get("job_state") else None,
+        "accepted_at": isoformat(row.get("accepted_at")),
+        "started_at": isoformat(row.get("started_at")),
+        "completed_at": isoformat(row.get("completed_at")),
+        "error_message": _public_failure(
+            row.get("error_message"),
+            status=result_status or status,
+            kind=run_kind,
+        ),
+        "summary": _public_summary(summary),
+        "progress": _public_progress(summary),
+        "stages": stages or [],
+    }
+
+
+def _load_public_run(
+    correlation_id: UUID, config: dict, *, missing_detail: str
+) -> dict:
+    row = query_one(
+        """SELECT cr.correlation_id, cr.status, cr.result_status, cr.run_kind,
+                  cr.requested_component, cr.triggered_by, cr.accepted_at,
+                  cr.started_at, cr.completed_at, cr.error_message, cr.summary,
+                  j.id AS job_id, j.state AS job_state
+           FROM cycle_runs AS cr
+           LEFT JOIN jobs AS j
+             ON j.correlation_id = cr.correlation_id AND j.run_kind IS NOT NULL
+           WHERE cr.correlation_id = :correlation_id""",
+        {"correlation_id": correlation_id},
+        config=config,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=missing_detail)
+    return _public_run(row, _run_stages(correlation_id, config))
+
+
 @router.get("/system/runs", response_model=RunListResponse)
 def get_system_runs(limit: int = Query(default=20, ge=1, le=100)):
+    config = load_config()
     rows = query_many(
-        """SELECT correlation_id, status, result_status, run_kind,
-                  source_or_processor, started_at, completed_at, error_message
-           FROM orchestrator_runs
-           ORDER BY started_at DESC
+        """SELECT cr.correlation_id, cr.status, cr.result_status, cr.run_kind,
+                  cr.requested_component, cr.triggered_by, cr.accepted_at,
+                  cr.started_at, cr.completed_at, cr.error_message, cr.summary,
+                  j.id AS job_id, j.state AS job_state
+           FROM cycle_runs AS cr
+           LEFT JOIN jobs AS j
+             ON j.correlation_id = cr.correlation_id AND j.run_kind IS NOT NULL
+           ORDER BY COALESCE(cr.started_at, cr.accepted_at) DESC
            LIMIT :limit""",
-        {"limit": limit},
+        params={"limit": limit},
+        config=config,
     )
-    return {"runs": rows}
+    return {
+        "runs": [_public_run(row) for row in rows],
+        "limit": limit,
+    }
 
 
 @router.get("/system/runs/{correlation_id}", response_model=RunDetailResponse)
 def get_system_run(correlation_id: UUID):
-    config = app_config.load_config()
-    row = query_one(
-        """SELECT correlation_id, idempotency_key, status, result_status,
-                  run_kind, source_or_processor, started_at, completed_at,
-                  attempt, max_attempts, next_attempt_at, payload,
-                  request_summary, execution_summary, error_message
-           FROM orchestrator_runs
-           WHERE correlation_id = :correlation_id""",
-        {"correlation_id": correlation_id},
-        config=config,
+    return _load_public_run(
+        correlation_id,
+        load_config(),
+        missing_detail="Run not found",
     )
-    if not row:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    steps = query_many(
-        """SELECT step_name, step_type, status, started_at, completed_at,
-                  duration_ms, output_summary, error_message
-           FROM run_steps
-           WHERE correlation_id = :correlation_id
-           ORDER BY started_at ASC""",
-        {"correlation_id": correlation_id},
-        config=config,
-    )
-    events = query_many(
-        """SELECT event_id, event_type, created_at, payload
-           FROM run_events
-           WHERE correlation_id = :correlation_id
-           ORDER BY created_at ASC""",
-        {"correlation_id": correlation_id},
-        config=config,
-    )
-    artifacts = query_many(
-        """SELECT artifact_id, artifact_type, storage_path, created_at, metadata
-           FROM run_artifacts
-           WHERE correlation_id = :correlation_id
-           ORDER BY created_at ASC""",
-        {"correlation_id": correlation_id},
-        config=config,
-    )
-    run_dict = dict(row)
-    run_dict["steps"] = steps
-    run_dict["events"] = events
-    run_dict["artifacts"] = artifacts
-    return run_dict
 
 
-@router.get("/system/cycle-status", response_model=RunStatusResponse)
+@router.get("/system/cycle-status", response_model=RunDetailResponse)
 def get_cycle_status(correlation_id: UUID = Query(...)):
-    config = app_config.load_config()
-
-    row = query_one(
-        """SELECT correlation_id, status, result_status, error_message,
-                  started_at, completed_at, execution_summary
-           FROM orchestrator_runs
-           WHERE correlation_id = :correlation_id""",
-        {"correlation_id": correlation_id},
-        config=config,
+    return _load_public_run(
+        correlation_id,
+        load_config(),
+        missing_detail="Cycle run not found",
     )
-    if not row:
-        raise HTTPException(status_code=404, detail="Cycle run not found")
-
-    steps = query_many(
-        """SELECT step_name, step_type, status, error_message,
-                  started_at, completed_at, output_summary
-           FROM run_steps
-           WHERE correlation_id = :correlation_id
-           ORDER BY started_at ASC""",
-        {"correlation_id": correlation_id},
-        config=config,
-    )
-    current_step = None
-    completed_steps = []
-    failed_step = None
-    for step in steps:
-        step_status = step.get("status")
-        if step_status == "running":
-            current_step = step.get("step_name")
-        elif step_status == "success":
-            completed_steps.append(step.get("step_name"))
-        elif step_status in ("failed", "error"):
-            failed_step = step.get("step_name")
-
-    return {
-        "correlation_id": row["correlation_id"],
-        "status": row["status"],
-        "result_status": row.get("result_status"),
-        "error_message": row.get("error_message"),
-        "started_at": row["started_at"],
-        "completed_at": row.get("completed_at"),
-        "current_step": current_step,
-        "completed_steps": completed_steps,
-        "failed_step": failed_step,
-        "steps": steps,
-        "execution_summary": row.get("execution_summary"),
-    }
 
 
 def _snapshot_payload(row: dict | None) -> dict | None:
@@ -846,7 +950,7 @@ def get_section_snapshot(
     section_key: str = Path(pattern=r"^[a-z][a-z0-9_]{0,63}$"),
 ):
     """Return the current published snapshot and bounded publication history."""
-    config = app_config.load_config()
+    config = load_config()
     fields = """
         id, section_key, scope_key, version, status, payload, render_context,
         content_hash, data_freshness_at, analysis_freshness_at, source_event_ids,
@@ -883,7 +987,7 @@ def get_section_snapshot(
 @router.get("/jobs/status")
 def get_jobs_status():
     """Return bounded aggregate queue state without job payloads or errors."""
-    config = app_config.load_config()
+    config = load_config()
     rows = query_many(
         """SELECT state, COUNT(*) AS count, MIN(created_at) AS oldest_created_at
            FROM jobs

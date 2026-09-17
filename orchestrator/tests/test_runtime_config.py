@@ -2,38 +2,23 @@ import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import yaml
-
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "contracts"))
 os.environ.setdefault("DEPLOYMENT_MODE", "test")
 
-from config_loader import (  # noqa: E402
-    ConfigError,
-    config_version,
-    load_config,
-    reload_config,
-    restart_required,
-    restart_sensitive_changes,
-)
-from data_quality import evaluate_quality, required_quality_checks  # noqa: E402
-from research_intelligence.config import ResearchSettings  # noqa: E402
+from data_quality import evaluate_quality, required_quality_checks
+from research_intelligence.config import ResearchSettings
 
 from contracts.runtime_config import (  # noqa: E402
-    DEFAULT_LIFECYCLE_THRESHOLDS,
-    DEFAULT_MARKETS,
-    DEFAULT_PROMPT_TEMPLATES,
-    DEFAULT_REGIONS,
-    DEFAULT_STAGE_MAX_TOKENS,
-    DEFAULT_STAGE_NAMES,
-    ConfigStore,
+    ConfigError,
     ResearchIntelligenceConfig,
     ResearchStageConfig,
+    RuntimeConfigLoader,
+    apply_demo_transform,
     committed_config_paths,
 )
 
@@ -50,27 +35,130 @@ def _write_config(path: Path, extra: str = "") -> None:
     )
 
 
+def _load_local(path: Path):
+    """Load an isolated sample without replacing the process shared loader."""
+    return RuntimeConfigLoader().load(str(path))
+
+
 class ConfigLoaderValidationTests(unittest.TestCase):
     def test_unknown_key_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="mystery_section: 1\n")
             with self.assertRaises(ConfigError):
-                load_config(str(path))
+                _load_local(path)
+
+    def test_failed_initial_candidate_does_not_bind_loader_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad = root / "bad.yaml"
+            good = root / "good.yaml"
+            bad.write_text("database:\n  host: [broken\n")
+            _write_config(good)
+            loader = RuntimeConfigLoader()
+            with self.assertRaises(ConfigError):
+                loader.load(str(bad))
+            loaded = loader.load(str(good))
+
+            self.assertIs(loader.load(str(good)), loaded)
+            with self.assertRaisesRegex(ConfigError, "already bound"):
+                loader.load(str(bad))
 
     def test_semantic_validation_reports_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="orchestration:\n  collector_workers: 0\n")
             with self.assertRaisesRegex(ConfigError, "collector_workers"):
-                load_config(str(path))
+                _load_local(path)
 
-    def test_demo_transform_disables_investment_filing_jobs(self):
-        from config_loader import _demo_transform
+    def test_demo_transform_disables_all_external_scheduled_work(self):
+        raw = {
+            "collectors": {
+                "fred": {
+                    "enabled": True,
+                    "schedule": "0 6 * * *",
+                    "api_key": "dummy",
+                },
+            },
+            "processors": {
+                "briefing": {
+                    "enabled": True,
+                    "schedule": "5 7 * * *",
+                },
+            },
+            "reuters": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 */2 * * *",
+            },
+            "kobeissi": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "20 */6 * * *",
+            },
+            "research_intelligence": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 8 * * 1-5",
+            },
+            "thesis_autonomy": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "0 2 * * *",
+            },
+            "investment_filings": {
+                "enabled": True,
+                "schedule": "0 8 * * 1-5",
+                "run_on_startup": True,
+                "auto_analyze": True,
+            },
+        }
+        with patch.dict(os.environ, {"DEMO_MODE": "1"}, clear=False):
+            apply_demo_transform(raw)
+        self.assertTrue(raw["demo"]["enabled"])
+        self.assertFalse(raw["collectors"]["fred"]["enabled"])
+        self.assertFalse(raw["processors"]["briefing"]["enabled"])
+        self.assertFalse(raw["reuters"]["enabled"])
+        self.assertFalse(raw["reuters"]["schedule_enabled"])
+        self.assertFalse(raw["kobeissi"]["enabled"])
+        self.assertFalse(raw["kobeissi"]["schedule_enabled"])
+        self.assertFalse(raw["research_intelligence"]["schedule_enabled"])
+        self.assertFalse(raw["thesis_autonomy"]["schedule_enabled"])
+        self.assertFalse(raw["investment_filings"]["enabled"])
+        self.assertIsNone(raw["investment_filings"]["schedule"])
+        self.assertFalse(raw["investment_filings"]["run_on_startup"])
+
+    def test_demo_transformed_opted_in_config_schedules_no_external_calls(self):
+        from scheduler import scheduler_status, start_scheduler, stop_scheduler
 
         raw = {
-            "collectors": {},
-            "processors": {},
+            "collectors": {
+                "fred": {
+                    "enabled": True,
+                    "schedule": "0 6 * * *",
+                },
+            },
+            "processors": {
+                "briefing": {
+                    "enabled": True,
+                    "schedule": "5 7 * * *",
+                },
+            },
+            "reuters": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 */2 * * *",
+            },
+            "research_intelligence": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "15 8 * * 1-5",
+            },
+            "thesis_autonomy": {
+                "enabled": True,
+                "schedule_enabled": True,
+                "schedule": "0 2 * * *",
+            },
             "investment_filings": {
                 "enabled": True,
                 "schedule": "0 8 * * 1-5",
@@ -78,10 +166,12 @@ class ConfigLoaderValidationTests(unittest.TestCase):
             },
         }
         with patch.dict(os.environ, {"DEMO_MODE": "1"}, clear=False):
-            _demo_transform(raw)
-        self.assertFalse(raw["investment_filings"]["enabled"])
-        self.assertIsNone(raw["investment_filings"]["schedule"])
-        self.assertFalse(raw["investment_filings"]["run_on_startup"])
+            apply_demo_transform(raw)
+
+        self.addCleanup(stop_scheduler)
+        start_scheduler(raw)
+        status = scheduler_status()
+        self.assertEqual(status["jobs"], [])
 
     def test_loaded_config_supports_existing_call_sites(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,7 +191,7 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                     "    enabled: false\n"
                 ),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             self.assertEqual(
                 config.get("collectors", {}).get("fred", {}).get("enabled"), True
             )
@@ -122,7 +212,7 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                 extra=("processors:\n  market_intelligence:\n    enabled: true\n"),
             )
             with self.assertRaisesRegex(ConfigError, "unknown processor id"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_briefing_processor_accepts_asset_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,7 +228,7 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                     "        channels: [monetary policy]\n"
                 ),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             self.assertEqual(
                 config.processors["briefing"].asset_context["EURUSD"].channels,
                 ["monetary policy"],
@@ -157,7 +247,7 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                 ),
             )
             with self.assertRaises(ConfigError):
-                load_config(str(path))
+                _load_local(path)
 
     def test_version_and_restart_semantics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,7 +255,10 @@ class ConfigLoaderValidationTests(unittest.TestCase):
             operator = tmp / "operator.yaml"
             secrets = tmp / "secrets.env"
             path = tmp / "config.yaml"
-            _write_config(path)
+            _write_config(
+                path,
+                extra="collectors:\n  fred:\n    enabled: true\n    api_key: configured-fred\n",
+            )
             with patch.dict(
                 os.environ,
                 {
@@ -174,18 +267,19 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                load_config(str(path))
-                self.assertIsNotNone(config_version())
-                self.assertEqual(config_version(), config_version())
-                # Scheduler-fed change (collector toggle) requires restart:
-                # APScheduler captured the job definitions at startup.
+                loader = RuntimeConfigLoader()
+                config = loader.load(str(path))
+                self.assertIsNotNone(loader.config_version())
+                self.assertEqual(loader.config_version(), loader.config_version())
+                # Committed changes are visible to status, never hot-applied.
                 operator.write_text("collectors:\n  fred:\n    enabled: false\n")
-                reload_config(str(path))
-                self.assertTrue(restart_required())
-                self.assertIn("collectors", restart_sensitive_changes())
-                self.assertNotEqual(config_version(), None)
-                # A later live-only change must not erase the pending restart
-                # while the restart-sensitive collector delta remains active.
+                self.assertIs(loader.load(str(path)), config)
+                self.assertTrue(loader.restart_required())
+                self.assertIn("collectors", loader.restart_sensitive_changes())
+                self.assertNotEqual(loader.config_version(), None)
+                self.assertTrue(config["collectors"]["fred"]["enabled"])
+                # Further edits retain the same startup snapshot and pending
+                # restart requirement.
                 operator.write_text(
                     "collectors:\n"
                     "  fred:\n"
@@ -193,18 +287,16 @@ class ConfigLoaderValidationTests(unittest.TestCase):
                     "logging:\n"
                     "  level: DEBUG\n"
                 )
-                reload_config(str(path))
-                self.assertTrue(restart_required())
-                self.assertIn("collectors", restart_sensitive_changes())
-                # Restart-sensitive change (database): restart required.
-                operator.write_text("database:\n  host: other-host\n")
-                reload_config(str(path))
-                self.assertTrue(restart_required())
-                self.assertIn("database", restart_sensitive_changes())
+                self.assertIs(loader.load(str(path)), config)
+                self.assertTrue(loader.restart_required())
+                self.assertIn("collectors", loader.restart_sensitive_changes())
 
 
 class FreeCollectorConfigValidationTests(unittest.TestCase):
     """Strict nested config models for the free/public collector ids."""
+
+    def _load_local(self, path: Path):
+        return RuntimeConfigLoader().load(str(path))
 
     PRODUCTION_ENV = {
         "DB_USER": "trading",
@@ -273,7 +365,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     self._write_full_config(path, extra)
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         with self.assertRaisesRegex(ConfigError, "not applicable"):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_include_active_theses_defaults_safe_and_mapping_compatible(self):
         """Absent flag stays False and reads back through the mapping API."""
@@ -288,7 +380,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    symbols: [AAPL]\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             equities = config["collectors"]["public_equities"]
             self.assertIs(equities.get("include_active_theses"), False)
             # The untouched default never triggers per-source applicability.
@@ -308,7 +400,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    include_active_theses: true\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             equities = config["collectors"]["public_equities"]
             self.assertIs(equities.get("include_active_theses"), True)
             self.assertIn("include_active_theses", equities.model_fields_set)
@@ -328,7 +420,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    include_investment_universe: true\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
         equities = config["collectors"]["public_equities"]
         self.assertIs(equities.get("include_investment_universe"), True)
         self.assertEqual(equities.get("max_symbols"), 400)
@@ -369,7 +461,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                         with self.assertRaisesRegex(
                             ConfigError, "include_active_theses"
                         ):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_include_active_theses_requires_a_real_boolean(self):
         """Coerced strings/numbers are rejected instead of silently enabling."""
@@ -388,7 +480,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     )
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         with self.assertRaises(ConfigError):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_public_equities_max_symbols_capped_at_collector_hard_max(self):
         """A cap the collector would reject at runtime fails at startup."""
@@ -407,7 +499,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     )
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         if accepted:
-                            config = load_config(str(path))
+                            config = self._load_local(path)
                             self.assertEqual(
                                 config["collectors"]["public_equities"].get(
                                     "max_symbols"
@@ -416,7 +508,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                             )
                         else:
                             with self.assertRaisesRegex(ConfigError, "hard cap"):
-                                load_config(str(path))
+                                self._load_local(path)
 
     def test_public_equities_concurrency_cannot_exceed_runtime_cap(self):
         for raw, accepted in (("16", True), ("17", False), ("64", False)):
@@ -433,7 +525,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     )
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         if accepted:
-                            config = load_config(str(path))
+                            config = self._load_local(path)
                             self.assertEqual(
                                 config["collectors"]["public_equities"].get(
                                     "max_concurrency"
@@ -442,7 +534,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                             )
                         else:
                             with self.assertRaisesRegex(ConfigError, "hard cap"):
-                                load_config(str(path))
+                                self._load_local(path)
 
     def test_max_symbols_high_bound_stays_public_equities_specific(self):
         """The hard cap does not leak to other sources sharing the field."""
@@ -458,7 +550,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    max_symbols: 1000\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             self.assertEqual(
                 config["collectors"]["cboe_options"].get("max_symbols"), 1000
             )
@@ -497,7 +589,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                         with self.assertRaisesRegex(
                             ConfigError, "must contain only strings"
                         ):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_public_equities_string_symbols_load_and_stay_mapping_compatible(self):
         """Plain-string symbols pass validation and read back as strings."""
@@ -512,7 +604,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    symbols: [AAPL, MSFT]\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             equities = config["collectors"]["public_equities"]
             self.assertEqual(equities.get("symbols"), ["AAPL", "MSFT"])
 
@@ -540,7 +632,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     )
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         with self.assertRaisesRegex(ConfigError, "symbol grammar"):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_public_equities_symbols_accept_case_and_whitespace_variants(self):
         """Grammar-valid case/whitespace variants pass, stored verbatim."""
@@ -556,7 +648,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 f"{('A' * 20)!r}]\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             equities = config["collectors"]["public_equities"]
             # Stored verbatim; the collector canonicalizes at collection.
             self.assertEqual(
@@ -586,7 +678,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     )
                     with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
                         with self.assertRaisesRegex(ConfigError, "duplicates"):
-                            load_config(str(path))
+                            self._load_local(path)
 
     def test_public_equities_symbol_count_capped_by_max_symbols(self):
         """More configured symbols than the section cap fail startup."""
@@ -605,7 +697,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ConfigError, "exceeds the configured limit"
                 ):
-                    load_config(str(path))
+                    self._load_local(path)
         # At the boundary, exactly max_symbols symbols load.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
@@ -619,7 +711,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    max_symbols: 2\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             self.assertEqual(
                 config["collectors"]["public_equities"].get("symbols"),
                 ["AAPL", "MSFT"],
@@ -642,7 +734,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "        assets: [MSFT]\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             finra = config["collectors"]["finra_short_volume"]
             self.assertEqual(len(finra.get("symbols")), 2)
             first = finra.get("symbols")[0]
@@ -666,7 +758,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "        assets: [AAPL]\n",
             )
             with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-                config = load_config(str(path))
+                config = self._load_local(path)
             finra = config["collectors"]["finra_short_volume"]
             self.assertEqual(finra.get("symbols")[0].get("symbol"), "AAPL")
             self.assertEqual(finra.get("symbols")[0].get("assets"), ["AAPL"])
@@ -747,7 +839,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                     path = Path(tmp) / "config.yaml"
                     self._write_full_config(path, extra)
                     with self.assertRaisesRegex(ConfigError, fragment):
-                        load_config(str(path))
+                        self._load_local(path)
 
     def test_free_collector_sections_stay_mapping_compatible(self):
         """Loaded sections keep the .get() access collector code relies on."""
@@ -798,7 +890,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
                 "    symbols: [SPY, QQQ]\n"
                 '    source_timezone: "America/Chicago"\n',
             )
-            config = load_config(str(path))
+            config = self._load_local(path)
             issuer_news = config["collectors"]["issuer_news"]
             self.assertEqual(issuer_news.get("schedule"), "*/30 * * * *")
             self.assertEqual(issuer_news.get("state_path"), "/tmp/issuer_news.json")
@@ -831,7 +923,7 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-            config = load_config(str(config_path))
+            config = self._load_local(config_path)
 
         executable = set(get_all_collectors()) | set(STANDALONE_COLLECTORS)
         self.assertEqual(set(KNOWN_COLLECTORS), executable)
@@ -865,11 +957,11 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
 
         config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
         with patch.dict(os.environ, self.PRODUCTION_ENV, clear=False):
-            config = load_config(str(config_path))
+            config = self._load_local(config_path)
 
         autonomy = config.thesis_autonomy
         self.assertTrue(autonomy.enabled)
-        self.assertTrue(autonomy.schedule_enabled)
+        self.assertFalse(autonomy.schedule_enabled)
         build_cron_trigger(autonomy.schedule)  # raises on a malformed cron
         self.assertEqual(autonomy.maximum_evidence, 400)
         self.assertEqual(autonomy.maximum_promoted, 4)
@@ -906,44 +998,93 @@ class FreeCollectorConfigValidationTests(unittest.TestCase):
         )
 
 
-class ConfigStoreConcurrencyTests(unittest.TestCase):
-    def test_store_serializes_concurrent_reload_state_transitions(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = root / "config.yaml"
-            operator = root / "operator.yaml"
-            secrets = root / "secrets.env"
-            _write_config(path)
-            store = ConfigStore()
-            start = threading.Barrier(3)
-            counter_lock = threading.Lock()
-            active = 0
-            max_active = 0
-            errors = []
+class RuntimeConfigLoaderConcurrencyTests(unittest.TestCase):
+    def test_candidate_validation_finishes_while_reader_waits_for_setup_commit(self):
+        import fcntl
+        from contextlib import contextmanager
 
-            def parse(candidate: str):
-                nonlocal active, max_active
-                with counter_lock:
-                    active += 1
-                    max_active = max(max_active, active)
+        from contracts import runtime_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            _write_config(path)
+            loader = RuntimeConfigLoader()
+            reader_waiting = threading.Event()
+            validated = threading.Event()
+            errors = []
+            shared_lock = runtime_config.shared_state_lock
+
+            @contextmanager
+            def observed_shared_lock(lock_path):
+                reader_waiting.set()
+                with shared_lock(lock_path):
+                    yield
+
+            def read_config():
                 try:
-                    time.sleep(0.05)
-                    return yaml.safe_load(Path(candidate).read_text())
+                    loader.load(str(path))
+                except Exception as exc:
+                    errors.append(exc)
+
+            def validate():
+                try:
+                    loader.validate_candidate("{}", "", str(path))
+                    validated.set()
+                except Exception as exc:
+                    errors.append(exc)
+
+            reader = threading.Thread(target=read_config, daemon=True)
+            writer = threading.Thread(target=validate, daemon=True)
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "OPERATOR_CONFIG": str(Path(tmp) / "operator.yaml"),
+                        "SECRETS_FILE": str(Path(tmp) / "secrets.env"),
+                    },
+                ),
+                patch.object(runtime_config, "shared_state_lock", observed_shared_lock),
+                (Path(tmp) / ".setup.lock").open("w") as lock_file,
+            ):
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    reader.start()
+                    self.assertTrue(reader_waiting.wait(2))
+                    writer.start()
+                    completed_under_write_lock = validated.wait(2)
                 finally:
-                    with counter_lock:
-                        active -= 1
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    reader.join(2)
+                    if writer.ident is not None:
+                        writer.join(2)
+
+            self.assertFalse(reader.is_alive())
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(errors, [])
+            self.assertTrue(
+                completed_under_write_lock,
+                "candidate validation deadlocked behind a reader awaiting setup commit",
+            )
+
+    def test_loader_serializes_concurrent_initial_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            _write_config(path)
+            loader = RuntimeConfigLoader()
+            start = threading.Barrier(3)
+            configs = []
+            errors = []
+            result_lock = threading.Lock()
 
             def run():
                 start.wait()
                 try:
-                    store.reload(
-                        config_path=str(path),
-                        operator_path=str(operator),
-                        secrets_path=str(secrets),
-                        parse=parse,
-                    )
+                    config = loader.load(str(path))
+                    with result_lock:
+                        configs.append(config)
                 except Exception as exc:
-                    errors.append(exc)
+                    with result_lock:
+                        errors.append(exc)
 
             threads = [threading.Thread(target=run) for _ in range(2)]
             for thread in threads:
@@ -953,8 +1094,10 @@ class ConfigStoreConcurrencyTests(unittest.TestCase):
                 thread.join(timeout=2)
 
             self.assertFalse(errors)
-            self.assertEqual(max_active, 1)
-            self.assertEqual(store.status()["ordinal"], 2)
+            self.assertEqual(len(configs), 2)
+            self.assertIs(configs[0], configs[1])
+            self.assertEqual(configs[0].database.host, "localhost")
+            self.assertEqual(configs[0].database.user, "runtime-user")
 
     def test_committed_paths_lock_root_before_resolving_current(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1053,7 +1196,7 @@ class QualitySemanticsTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                config = load_config(str(path))
+                config = _load_local(path)
                 self.assertEqual(get_budget_config(config), (4.0, 75.0))
                 estimate, ttl = _reservation_policy(config, "briefing")
                 self.assertEqual((estimate, ttl), (0.10, 900.0))
@@ -1104,7 +1247,7 @@ class QualitySemanticsTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                config = load_config(str(path))
+                config = _load_local(path)
                 # No pricing materialized by the schema: the paid policy
                 # raises instead of guessing.
                 with self.assertRaisesRegex(ValueError, "no configured pricing"):
@@ -1118,8 +1261,8 @@ class QualitySemanticsTests(unittest.TestCase):
                 # The daily cap itself is still readable.
                 self.assertEqual(get_budget_config(config), (4.0, 75.0))
 
-    def test_invalid_reload_retains_prior_snapshot_and_reports_status(self):
-        """A rejected reload keeps the last valid config and never 500s."""
+    def test_invalid_saved_candidate_never_replaces_startup_snapshot(self):
+        """An invalid commit cannot replace the immutable startup config."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             operator = tmp / "operator.yaml"
@@ -1134,26 +1277,16 @@ class QualitySemanticsTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                config = load_config(str(path))
-                version_before = config_version()
+                loader = RuntimeConfigLoader()
+                config = loader.load(str(path))
+                version_before = loader.config_version()
                 operator.write_text("collectors:\n  fred:\n    enabled: [broken\n")
-                self.assertIs(reload_config(str(path)), config)
-                # Prior snapshot retained; ordinary consumers do not raise.
-                self.assertEqual(config_version(), version_before)
-                self.assertIs(load_config(str(path)), config)
-                self.assertEqual(restart_sensitive_changes(), ["reload_failed"])
-                self.assertTrue(restart_required())
-                from config_loader import config_status
+                self.assertIs(loader.load(str(path)), config)
+                self.assertEqual(loader.config_version(), version_before)
+                self.assertTrue(loader.restart_required())
+                self.assertTrue(loader.config_status()["restart_required"])
 
-                status = config_status()
-                self.assertTrue(status["last_reload"]["failed"])
-                self.assertIn("YAML parse error", status["last_reload"]["error"])
-                # Repairing the source clears the rejection and applies live.
-                operator.write_text("")
-                reload_config(str(path))
-                self.assertEqual(restart_sensitive_changes(), [])
-
-    def test_reload_forces_environment_only_change(self):
+    def test_environment_changes_do_not_hot_reload_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             operator = root / "operator.yaml"
@@ -1172,12 +1305,12 @@ class QualitySemanticsTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                first = reload_config(str(path))
+                loader = RuntimeConfigLoader()
+                first = loader.load(str(path))
                 os.environ["MODEL_NAME"] = "provider/model-b"
-                self.assertIs(load_config(str(path)), first)
-                second = reload_config(str(path))
-                self.assertEqual(second.llm.models["default"], "provider/model-b")
-                self.assertIsNot(second, first)
+                self.assertIs(loader.load(str(path)), first)
+                self.assertIs(loader.load(str(path)), first)
+                self.assertEqual(first.llm.models["default"], "provider/model-a")
 
     def test_run_quality_checks_skips_disabled_sources(self):
         with patch("data_quality.get_session"):
@@ -1196,26 +1329,6 @@ class QualitySemanticsTests(unittest.TestCase):
 
 
 class ResearchIntelligenceConfigTests(unittest.TestCase):
-    def test_defaults_preserve_effective_research_settings(self):
-        config = ResearchIntelligenceConfig()
-        settings = ResearchSettings.from_config(config)
-
-        self.assertEqual(config.schedule, "15 8 * * 1-5")
-        self.assertEqual(tuple(config.hot_market_universe), DEFAULT_MARKETS)
-        self.assertEqual(tuple(config.region_universe), DEFAULT_REGIONS)
-        self.assertEqual(
-            config.lifecycle_thresholds.model_dump(),
-            DEFAULT_LIFECYCLE_THRESHOLDS,
-        )
-        self.assertEqual(tuple(settings.stage_enabled), DEFAULT_STAGE_NAMES)
-        self.assertEqual(dict(settings.prompt_templates), DEFAULT_PROMPT_TEMPLATES)
-        self.assertEqual(
-            dict(settings.stage_max_output_tokens),
-            DEFAULT_STAGE_MAX_TOKENS,
-        )
-        self.assertEqual(settings.maximum_candidate_evidence, 240)
-        self.assertEqual(settings.model_budget_usd_per_run, 0.75)
-
     def test_typed_settings_conversion_preserves_custom_policy(self):
         config = ResearchIntelligenceConfig(
             limits={

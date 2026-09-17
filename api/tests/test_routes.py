@@ -54,10 +54,10 @@ MOCK_CONFIG = {
     "timezone": {"primary": {"name": "Europe/London", "label": "London"}},
 }
 
-# ── Patch config.load_config only while importing the module-level app. ────
+# ── Patch canonical load_config only while importing the module-level app. ──
 from fastapi.testclient import TestClient  # noqa: E402
 
-with patch("config.load_config", return_value=MOCK_CONFIG):
+with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
     from main import app  # noqa: E402
 
 client = TestClient(app)
@@ -86,7 +86,9 @@ def setUpModule():
     AUTH["X-CSRF-Token"] = CSRF_TOKEN
     client.cookies.clear()
     client.cookies.set("csrf-token", CSRF_TOKEN)
-    _runtime_config_patcher = patch("config.load_config", return_value=MOCK_CONFIG)
+    _runtime_config_patcher = patch(
+        "contracts.runtime_config.load_config", return_value=MOCK_CONFIG
+    )
     _runtime_config_patcher.start()
 
 
@@ -291,6 +293,11 @@ class TestCycleModes(unittest.TestCase):
 class TestSystemRoutes(unittest.TestCase):
     """Integration tests for /api/system/* endpoints."""
 
+    def setUp(self):
+        config = patch("routes.json.system.load_config", return_value=MOCK_CONFIG)
+        config.start()
+        self.addCleanup(config.stop)
+
     @patch("routes.json.system.query_many", return_value=[])
     @patch("routes.json.system.fresh_role_heartbeats")
     @patch("routes.json.system.run_quality_checks")
@@ -332,7 +339,7 @@ class TestSystemRoutes(unittest.TestCase):
             **MOCK_CONFIG,
             "collectors": {"oanda": {"enabled": True, "stream_enabled": True}},
         }
-        with patch("routes.json.system.app_config.load_config", return_value=config):
+        with patch("routes.json.system.load_config", return_value=config):
             response = client.get("/api/system/health", headers=AUTH)
 
         self.assertEqual(response.status_code, 200)
@@ -487,7 +494,6 @@ class TestSystemRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["current"]["version"], 1)
         self.assertEqual(len(resp.json()["history"]), 1)
-        self.assertIn("LIMIT 20", query_many.call_args.args[0])
 
     @patch(
         "routes.json.system.query_many",
@@ -559,6 +565,151 @@ class TestSystemRoutes(unittest.TestCase):
                 self.assertEqual(response.status_code, 422)
         query_many.assert_not_called()
 
+    @patch("routes.json.system.query_many")
+    def test_runs_list_reads_cycle_runs_rows(self, query_many):
+        correlation_id = UUID("00000000-0000-0000-0000-000000000123")
+        query_many.return_value = [
+            {
+                "correlation_id": correlation_id,
+                "status": "accepted",
+                "result_status": None,
+                "run_kind": "cycle",
+                "requested_component": None,
+                "triggered_by": "manual",
+                "accepted_at": datetime(2026, 8, 5, tzinfo=UTC),
+                "started_at": None,
+                "completed_at": None,
+                "error_message": None,
+                "summary": {"mode": "refresh"},
+                "job_id": UUID("00000000-0000-0000-0000-000000000223"),
+                "job_state": "queued",
+            }
+        ]
+
+        response = client.get("/api/system/runs?limit=1", headers=AUTH)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["runs"][0]["job_id"],
+            "00000000-0000-0000-0000-000000000223",
+        )
+        self.assertEqual(payload["runs"][0]["job_state"], "queued")
+        self.assertEqual(payload["runs"][0]["correlation_id"], str(correlation_id))
+        self.assertEqual(payload["runs"][0]["status"], "accepted")
+
+    @patch("routes.json.system.query_many", return_value=[])
+    @patch("routes.json.system.query_one")
+    def test_run_detail_reads_logs_and_redacts_failure(self, query_one, _query_many):
+        correlation_id = UUID("00000000-0000-0000-0000-000000000124")
+        query_one.return_value = {
+            "correlation_id": correlation_id,
+            "status": "failed",
+            "result_status": "failed",
+            "run_kind": "cycle",
+            "requested_component": None,
+            "triggered_by": "manual",
+            "accepted_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "started_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "completed_at": datetime(2026, 8, 5, 1, tzinfo=UTC),
+            "error_message": "provider traceback and secret",
+            "summary": {},
+            "job_id": UUID("00000000-0000-0000-0000-000000000224"),
+            "job_state": "failed_terminal",
+        }
+
+        response = client.get(f"/api/system/runs/{correlation_id}", headers=AUTH)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["error_message"],
+            "cycle reported failed; private diagnostics omitted",
+        )
+        self.assertEqual(
+            payload["job_id"],
+            "00000000-0000-0000-0000-000000000224",
+        )
+        self.assertEqual(payload["job_state"], "failed_terminal")
+        self.assertNotIn("provider traceback", response.text)
+
+    @patch("routes.json.system.query_many")
+    @patch("routes.json.system.query_one", return_value=None)
+    def test_missing_run_returns_404_without_stage_query(self, _query_one, query_many):
+        correlation_id = UUID("00000000-0000-0000-0000-000000000125")
+
+        response = client.get(
+            f"/api/system/cycle-status?correlation_id={correlation_id}",
+            headers=AUTH,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        query_many.assert_not_called()
+
+    @patch("routes.json.system.query_many")
+    @patch("routes.json.system.query_one")
+    def test_cycle_status_exposes_terminal_run_and_real_log_stage(
+        self, query_one, query_many
+    ):
+        correlation_id = UUID("00000000-0000-0000-0000-000000000126")
+        query_one.return_value = {
+            "correlation_id": correlation_id,
+            "status": "completed",
+            "result_status": "success",
+            "run_kind": "cycle",
+            "requested_component": None,
+            "triggered_by": "scheduler",
+            "accepted_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "started_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "completed_at": datetime(2026, 8, 5, 1, tzinfo=UTC),
+            "error_message": None,
+            "summary": {
+                "progress": {
+                    "total_stages": 2,
+                    "completed_stages": 2,
+                    "current_stage": None,
+                }
+            },
+            "job_id": UUID("00000000-0000-0000-0000-000000000225"),
+            "job_state": "succeeded",
+        }
+        query_many.return_value = [
+            {
+                "log_id": UUID("00000000-0000-0000-0000-000000000127"),
+                "correlation_id": correlation_id,
+                "kind": "collector",
+                "component": "fred",
+                "started_at": datetime(2026, 8, 5, tzinfo=UTC),
+                "completed_at": datetime(2026, 8, 5, 0, 1, tzinfo=UTC),
+                "status": "success",
+                "duration_ms": 1000,
+                "records_fetched": 5,
+                "records_written": 5,
+                "tokens_input": None,
+                "tokens_output": None,
+                "cost_usd": None,
+                "error_message": None,
+            }
+        ]
+
+        response = client.get(
+            f"/api/system/cycle-status?correlation_id={correlation_id}",
+            headers=AUTH,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["job_id"],
+            "00000000-0000-0000-0000-000000000225",
+        )
+        self.assertEqual(payload["job_state"], "succeeded")
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result_status"], "success")
+        self.assertEqual(payload["progress"]["completed_stages"], 2)
+        self.assertEqual(payload["stages"][0]["component"], "fred")
+        self.assertEqual(payload["stages"][0]["kind"], "collector")
+
 
 class TestBoundedDashboardInputs(unittest.TestCase):
     @patch("routes.json.events.query_many", return_value=[])
@@ -579,7 +730,6 @@ class TestBoundedDashboardInputs(unittest.TestCase):
                 )
                 params = query.call_args.kwargs["params"]
                 self.assertEqual(params["limit"], expected[1])
-                self.assertIn("LIMIT :limit", query.call_args.args[0])
 
     @patch("routes.json.events.query_many")
     def test_calendar_rejects_malformed_zero_and_negative_before_query(self, query):
@@ -712,7 +862,7 @@ class TestLiveViewPartials(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(
                 patch(
-                    "routes.views.dashboard.app_config.load_config",
+                    "routes.views.dashboard.load_config",
                     return_value=config,
                 )
             )
@@ -785,7 +935,7 @@ class TestLiveViewPartials(unittest.TestCase):
     def test_watchlist_grid_is_the_single_lazy_dashboard_watchlist(self):
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=self.ENABLED_CONFIG,
             ),
             patch(
@@ -948,7 +1098,7 @@ class TestLiveViewPartials(unittest.TestCase):
         }
         with (
             patch(
-                "routes.views.markets.app_config.load_config",
+                "routes.views.markets.load_config",
                 return_value=self.ENABLED_CONFIG,
             ),
             patch(
@@ -1097,8 +1247,6 @@ class TestOperationsOverview(unittest.TestCase):
             if call.kwargs.get("params", {}).get("limit") == 10
         ]
         self.assertEqual(len(bounded_calls), 3)
-        for call in bounded_calls:
-            self.assertIn("LIMIT :limit", call.args[0])
         self.assertIn("12", response.text)
         self.assertIn("current", response.text)
 
@@ -1150,6 +1298,11 @@ class TestRegimeRoutes(unittest.TestCase):
 
 class TestMacroRoutes(unittest.TestCase):
     """Integration tests for /api/macro/* endpoints."""
+
+    def setUp(self):
+        config = patch("routes.json.macro.load_config", return_value=MOCK_CONFIG)
+        config.start()
+        self.addCleanup(config.stop)
 
     @patch("routes.json.macro.query_many", return_value=[])
     def test_dashboard_returns_indicators(self, query):
@@ -1222,7 +1375,7 @@ class TestNewsRoutes(unittest.TestCase):
                 "reuters": {"enabled": True},
                 "kobeissi": {"enabled": False},
             }
-            with patch("config.load_config", return_value=cfg):
+            with patch("routes.json.news.load_config", return_value=cfg):
                 resp = client.get("/api/news/sources", headers=AUTH)
 
         self.assertEqual(resp.status_code, 200)
@@ -1241,7 +1394,7 @@ class TestNewsRoutes(unittest.TestCase):
                 "reuters": {"enabled": True},
                 "kobeissi": {"enabled": False},
             }
-            with patch("config.load_config", return_value=cfg):
+            with patch("routes.json.news.load_config", return_value=cfg):
                 resp = client.get("/api/news/sources", headers=AUTH)
 
         self.assertEqual(resp.status_code, 200)

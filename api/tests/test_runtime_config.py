@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-# Ensure api/ is on sys.path so "import main" / "import config" resolve here.
+# Ensure api/ is on sys.path so "import main" resolves here.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ["STATE_DIR"] = "/tmp/test_runtime_config_state"
@@ -24,16 +24,9 @@ MOCK_CONFIG = {
 }
 
 # Import the app with a patched loader so create_app() sees a valid config.
-with patch("config.load_config", return_value=MOCK_CONFIG):
+with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
     from main import create_app  # noqa: E402
-from config import (  # noqa: E402
-    ConfigError,
-    config_snapshot,
-    config_version,
-    load_config,
-    reload_config,
-    restart_required,
-)
+from contracts.runtime_config import ConfigError, RuntimeConfigLoader  # noqa: E402
 
 
 def _write_config(path: Path, extra: str = "", database: str | None = None) -> None:
@@ -48,20 +41,25 @@ def _write_config(path: Path, extra: str = "", database: str | None = None) -> N
     path.write_text(f"{db}{extra}")
 
 
+def _load_local(path: Path):
+    """Load an isolated sample without replacing the process shared loader."""
+    return RuntimeConfigLoader().load(str(path))
+
+
 class ConfigValidationTests(unittest.TestCase):
     def test_unknown_top_level_key_raises_config_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="unknown_section: 1\n")
             with self.assertRaises(ConfigError):
-                load_config(str(path))
+                _load_local(path)
 
     def test_unknown_nested_key_raises_config_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="budgets:\n  not_a_budget_key: 1\n")
             with self.assertRaises(ConfigError):
-                load_config(str(path))
+                _load_local(path)
 
     def test_operator_config_cannot_retarget_orchestrator(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +69,7 @@ class ConfigValidationTests(unittest.TestCase):
                 extra="api:\n  orchestrator_url: http://attacker.test\n",
             )
             with self.assertRaisesRegex(ConfigError, "orchestrator_url"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_port_out_of_range_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -88,7 +86,7 @@ class ConfigValidationTests(unittest.TestCase):
                 ),
             )
             with self.assertRaisesRegex(ConfigError, "database.port"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_numeric_port_string_is_coerced(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +102,7 @@ class ConfigValidationTests(unittest.TestCase):
                     "  password: correct-horse-battery\n"
                 ),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             self.assertEqual(config["database"]["port"], 5432)
 
     def test_budget_range_is_validated(self):
@@ -112,14 +110,14 @@ class ConfigValidationTests(unittest.TestCase):
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="budgets:\n  warn_at_pct: 150\n")
             with self.assertRaisesRegex(ConfigError, "budgets.warn_at_pct"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_bad_logging_level_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="logging:\n  level: LOUD\n")
             with self.assertRaisesRegex(ConfigError, "logging.level"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_llm_key_required_outside_demo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,14 +127,14 @@ class ConfigValidationTests(unittest.TestCase):
                 extra=('llm:\n  provider: openrouter\n  api_key: ""\n'),
             )
             with self.assertRaisesRegex(ConfigError, "llm.api_key"):
-                load_config(str(path))
+                _load_local(path)
 
     def test_missing_database_is_a_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             path.write_text("logging:\n  level: INFO\n")
             with self.assertRaises(ConfigError):
-                load_config(str(path))
+                _load_local(path)
 
     def test_market_state_strict_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,7 +149,7 @@ class ConfigValidationTests(unittest.TestCase):
                     "  yield_curves: {us_10y_2y: [DGS10, DGS2]}\n"
                 ),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             market_state = config["market_state"]
             self.assertEqual(market_state.lookback.value, 3)
             self.assertEqual(market_state.lookback.unit, "hours")
@@ -165,20 +163,20 @@ class ConfigValidationTests(unittest.TestCase):
                 bad_key, extra="market_state:\n  realized_volatility_window: 30\n"
             )
             with self.assertRaisesRegex(ConfigError, "market_state"):
-                load_config(str(bad_key))
+                _load_local(bad_key)
             bad_curve = Path(tmp) / "bad_curve.yaml"
             _write_config(
                 bad_curve,
                 extra="market_state:\n  yield_curves: {us_10y_2y: [DGS10]}\n",
             )
             with self.assertRaisesRegex(ConfigError, "yield_curves"):
-                load_config(str(bad_curve))
+                _load_local(bad_curve)
 
     def test_loaded_config_behaves_as_a_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             _write_config(path, extra="collectors:\n  fred:\n    enabled: true\n")
-            config = load_config(str(path))
+            config = _load_local(path)
             self.assertEqual(config["database"]["user"], "runtime-user")
             self.assertEqual(
                 config.get("collectors", {}).get("fred", {}).get("enabled"), True
@@ -199,7 +197,7 @@ class ConfigValidationTests(unittest.TestCase):
                 path,
                 extra=("budgets:\n  daily_llm_usd: 3.5\n  warn_at_pct: 90\n"),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             cap, warn_at = get_budget_config(config)
             self.assertEqual((cap, warn_at), (3.5, 90.0))
 
@@ -213,7 +211,7 @@ class VersionAndRestartTests(unittest.TestCase):
         )
         return path
 
-    def test_version_propagates_across_reloads_and_is_stable(self):
+    def test_version_is_stable_for_immutable_process_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             operator = Path(tmp) / "operator.yaml"
             secrets = Path(tmp) / "secrets.env"
@@ -227,15 +225,16 @@ class VersionAndRestartTests(unittest.TestCase):
                 clear=True,
             ):
                 path = self._config_with_llm(tmp, "model-a")
-                reload_config(str(path))
-                first_version = config_version()
+                loader = RuntimeConfigLoader()
+                first = loader.load(str(path))
+                first_version = loader.config_version()
                 self.assertIsNotNone(first_version)
-                self.assertEqual(config_version(), first_version)
-                snapshot = config_snapshot()
+                self.assertIs(loader.load(str(path)), first)
+                snapshot = loader.config_snapshot()
                 self.assertIsNotNone(snapshot)
                 self.assertEqual(snapshot.version, first_version)
 
-    def test_model_change_reports_restart_required(self):
+    def test_model_change_is_immutable_until_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             operator = Path(tmp) / "operator.yaml"
             secrets = Path(tmp) / "secrets.env"
@@ -249,11 +248,13 @@ class VersionAndRestartTests(unittest.TestCase):
                 clear=True,
             ):
                 path = self._config_with_llm(tmp, "model-a")
-                load_config(str(path))
+                loader = RuntimeConfigLoader()
+                first = loader.load(str(path))
                 operator.write_text("llm:\n  models:\n    default: model-b\n")
-                reload_config(str(path))
-                self.assertTrue(restart_required())
-                self.assertNotEqual(config_version(), None)
+                self.assertIs(loader.load(str(path)), first)
+                self.assertEqual(first["llm"]["models"]["default"], "model-a")
+                self.assertTrue(loader.restart_required())
+                self.assertNotEqual(loader.config_version(), None)
 
     def test_database_change_requires_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,14 +270,15 @@ class VersionAndRestartTests(unittest.TestCase):
                 clear=True,
             ):
                 path = self._config_with_llm(tmp, "model-a")
-                load_config(str(path))
+                loader = RuntimeConfigLoader()
+                loader.load(str(path))
                 operator.write_text("database:\n  host: other-host\n")
-                reload_config(str(path))
-                self.assertTrue(restart_required())
+                loader.load(str(path))
+                self.assertTrue(loader.restart_required())
 
 
 class SecretHandlingTests(unittest.TestCase):
-    def test_secrets_override_env_without_mutating_os_environ(self):
+    def test_secrets_are_immutable_until_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             operator = tmp / "operator.yaml"
@@ -301,13 +303,19 @@ class SecretHandlingTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                self.assertEqual(load_config(str(path)).llm.api_key, "env-key")
+                loader = RuntimeConfigLoader()
+                self.assertEqual(loader.load(str(path)).llm.api_key, "env-key")
                 secrets.write_text("OPENROUTER_API_KEY=file-key\n")
-                self.assertEqual(load_config(str(path)).llm.api_key, "file-key")
-                # The secrets file never mutated the process environment.
+                with self.assertRaisesRegex(ConfigError, "restart required"):
+                    loader.load(str(path))
+                # A new process loader sees the committed replacement.
+                replacement_loader = RuntimeConfigLoader()
+                self.assertEqual(
+                    replacement_loader.load(str(path)).llm.api_key, "file-key"
+                )
                 self.assertEqual(os.environ["OPENROUTER_API_KEY"], "env-key")
 
-    def test_deleted_secret_does_not_linger(self):
+    def test_deleted_secret_fails_closed_until_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             operator = tmp / "operator.yaml"
@@ -333,11 +341,13 @@ class SecretHandlingTests(unittest.TestCase):
                 clear=True,
             ):
                 secrets.write_text("TWITTERAPI_KEY=deleted-later\n")
+                loader = RuntimeConfigLoader()
                 self.assertEqual(
-                    load_config(str(path)).kobeissi.api_key, "deleted-later"
+                    loader.load(str(path)).kobeissi.api_key, "deleted-later"
                 )
                 secrets.write_text("")
-                self.assertEqual(load_config(str(path)).kobeissi.api_key, "")
+                with self.assertRaisesRegex(ConfigError, "restart required"):
+                    loader.load(str(path))
 
     def test_malformed_managed_secrets_never_fall_back_to_cached_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,14 +374,15 @@ class SecretHandlingTests(unittest.TestCase):
                 clear=True,
             ):
                 secrets.write_text("OPENROUTER_API_KEY=live-key\n")
-                self.assertEqual(load_config(str(path)).llm.api_key, "live-key")
+                loader = RuntimeConfigLoader()
+                self.assertEqual(loader.load(str(path)).llm.api_key, "live-key")
                 secrets.write_text("malformed-secret-line\n")
-                with self.assertRaisesRegex(ConfigError, "malformed secrets line"):
-                    load_config(str(path))
-                # A known-rejected fingerprint remains fail-closed on every
-                # subsequent load; it never takes the cached-snapshot shortcut.
+                with self.assertRaisesRegex(ConfigError, "restart required"):
+                    loader.load(str(path))
+                # Repeated reads remain fail-closed rather than serving keys
+                # from the startup snapshot.
                 with self.assertRaises(ConfigError):
-                    load_config(str(path))
+                    loader.load(str(path))
 
 
 class DatabaseUrlTests(unittest.TestCase):
@@ -391,7 +402,7 @@ class DatabaseUrlTests(unittest.TestCase):
                     "  password: p@ss:w/rd#x\n"
                 ),
             )
-            config = load_config(str(path))
+            config = _load_local(path)
             with (
                 patch.object(api_db, "_engine", None),
                 patch.object(api_db, "_engine_url", None),
@@ -462,7 +473,9 @@ class HealthEndpointTests(unittest.TestCase):
     def test_ready_returns_503_when_database_unavailable(self):
         with self.make_client() as client:
             with patch("main.check_connection", return_value=False):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
+                with patch(
+                    "contracts.runtime_config.load_config", return_value=MOCK_CONFIG
+                ):
                     response = client.get("/ready")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["dependencies"]["database"], "unavailable")
@@ -474,7 +487,9 @@ class HealthEndpointTests(unittest.TestCase):
                 "main.check_connection",
                 side_effect=RuntimeError("RAW_DB_EXCEPTION"),
             ):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
+                with patch(
+                    "contracts.runtime_config.load_config", return_value=MOCK_CONFIG
+                ):
                     response = client.get("/ready")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["status"], "unready")
@@ -484,7 +499,9 @@ class HealthEndpointTests(unittest.TestCase):
     def test_ready_returns_200_when_all_dependencies_pass(self):
         with self.make_client() as client:
             with patch("main.check_connection", return_value=True):
-                with patch("config.load_config", return_value=MOCK_CONFIG):
+                with patch(
+                    "contracts.runtime_config.load_config", return_value=MOCK_CONFIG
+                ):
                     response = client.get("/ready")
         self.assertEqual(response.status_code, 200)
         data = response.json()

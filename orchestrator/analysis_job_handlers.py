@@ -11,11 +11,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from config_loader import load_config
 from events.canonicalize import canonical_json_value
 from sqlalchemy import text
 
 from contracts.db_results import result_rows
+from contracts.runtime_config import load_config
 
 _MAX_ROWS = 200
 _SOURCE_COLUMNS = (

@@ -476,6 +476,27 @@ class LLMStage:
             raise LLMStageTimeout("LLM stage deadline exhausted", self.telemetry)
 
         try:
+            # Re-check the committed inputs before admission. A worker's
+            # startup snapshot is immutable, and committed drift must not
+            # consume a fresh reservation or dispatch with stale credentials.
+            from contracts.runtime_config import ensure_current
+
+            ensure_current()
+        except Exception:
+            permit = self._budget_permit
+            self._budget_permit = None
+            if permit is not None and getattr(permit, "valid", False):
+                try:
+                    release_budget_reservation(permit.reservation_id, self.config)
+                except Exception:
+                    logger.warning(
+                        "llm_budget_permit_release_failed",
+                        action="llm_budget_permit_release",
+                        error_type="release_error",
+                    )
+            raise
+
+        try:
             if self._budget_permit is None:
                 # Deterministic local validation precedes admission: a
                 # malformed request (bad max_prices/response_schema/api_key
@@ -556,17 +577,38 @@ def call_llm(
     processor_id: str = "default",
     max_output_tokens: int | None = None,
     timeout: float | None = None,
+    include_temperature: bool | None = None,
     structured_response: bool | None = None,
     response_schema: dict | None = None,
     reasoning_effort: str | None = None,
-    include_temperature: bool | None = None,
     budget_context: BudgetContext | None = None,
     _budget_permit: BudgetPermit | None = None,
 ) -> dict:
     if config is None:
-        from config_loader import load_config
+        from contracts.runtime_config import load_config
 
         config = load_config()
+    # A worker may still hold its startup snapshot after setup atomically
+    # commits a new version.  Refuse admission before reserving budget or
+    # sending a paid request; only process restart may apply the commit.
+    from contracts.runtime_config import ensure_current
+
+    try:
+        ensure_current()
+    except Exception:
+        # A caller may have supplied a permit (LLMStage does this after
+        # admission). If committed drift denies dispatch, release that permit
+        # before propagating the fail-closed error.
+        if _budget_permit is not None and getattr(_budget_permit, "valid", False):
+            try:
+                release_budget_reservation(_budget_permit.reservation_id, config)
+            except Exception:
+                logger.warning(
+                    "llm_budget_permit_release_failed",
+                    action="llm_budget_permit_release",
+                    error_type="release_error",
+                )
+        raise
 
     llm_config = config["llm"]
     policy = resolve_request_policy(

@@ -7,8 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from orchestrator import (
+from processor_execution import (
     _authorize_claimed_run_budget,
     _consume_budget_override,
     run_processor,
@@ -57,7 +56,7 @@ def _authorize_claimed_run_budget_context():
 
 
 class BudgetEnforcementTests(unittest.TestCase):
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_override_consumption_is_recorded_in_existing_run_summary(
         self,
         get_session,
@@ -75,7 +74,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIn('"consumed_at"', update_params["summary"])
         self.assertIn('"consumed_by": "run-id"', update_params["summary"])
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_consumed_cycle_override_remains_valid_for_same_run(self, get_session):
         override = _override(
             consumed_at="2026-06-18T12:00:00+00:00",
@@ -92,7 +91,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertEqual(result, override)
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_already_consumed_by_another_run_is_not_reusable(self, get_session):
         override = _override(
             consumed_at="2026-06-18T12:00:00+00:00",
@@ -109,7 +108,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_expired_override_is_not_consumed(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = _row(
@@ -120,7 +119,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("run-id", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_missing_or_malformed_expiry_fails_closed(self, get_session):
         for expires_at in (None, "not-a-date", 12345):
             with self.subTest(expires_at=expires_at):
@@ -132,7 +131,7 @@ class BudgetEnforcementTests(unittest.TestCase):
                 self.assertIsNone(_consume_budget_override("run-id", {}))
                 self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_wrong_run_kind_is_not_consumed(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = _row(
@@ -143,7 +142,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("run-id", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_wrong_component_is_not_consumed(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = _row(
@@ -155,7 +154,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("run-id", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_missing_requestor_is_not_consumed(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = _row(
@@ -166,7 +165,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("run-id", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_unknown_correlation_has_no_override(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = None
@@ -175,7 +174,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("other-run", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_malformed_summary_fails_closed(self, get_session):
         session = Mock()
         session.execute.return_value.fetchone.return_value = _row("not-json{")
@@ -184,7 +183,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         self.assertIsNone(_consume_budget_override("run-id", {}))
         self.assertEqual(session.execute.call_count, 1)
 
-    @patch("orchestrator.get_session")
+    @patch("processor_execution.get_session")
     def test_consume_failure_fails_closed_without_trusted_context(self, get_session):
         get_session.side_effect = RuntimeError("db unavailable")
 
@@ -194,15 +193,15 @@ class BudgetEnforcementTests(unittest.TestCase):
 
         self.assertIsNone(context)
 
-    @patch("orchestrator.finalize_run_safely", return_value=True)
-    @patch("orchestrator._write_processing_log")
-    @patch("orchestrator._persist_processor_result")
-    @patch("orchestrator._authorize_claimed_run_budget", return_value=None)
-    @patch("orchestrator.get_processor")
-    @patch("orchestrator.advisory_lock", return_value=nullcontext())
-    @patch("orchestrator.maintain_run_heartbeat", return_value=nullcontext())
-    @patch("orchestrator.start_run", return_value=True)
-    @patch("orchestrator.accept_run", return_value=datetime.now(UTC))
+    @patch("processor_execution.finalize_run_safely", return_value=True)
+    @patch("processor_execution._write_processing_log")
+    @patch("processor_execution._persist_processor_result")
+    @patch("processor_execution._authorize_claimed_run_budget", return_value=None)
+    @patch("processor_execution.get_processor")
+    @patch("processor_execution.advisory_lock", return_value=nullcontext())
+    @patch("processor_execution.maintain_run_heartbeat", return_value=nullcontext())
+    @patch("processor_execution.start_run", return_value=True)
+    @patch("processor_execution.accept_run", return_value=datetime.now(UTC))
     def test_denied_processor_without_override_has_no_trusted_context(
         self,
         accept_run,
@@ -228,15 +227,15 @@ class BudgetEnforcementTests(unittest.TestCase):
         authorize.assert_called_once()
         self.assertIsNone(processor.process.call_args.kwargs["budget_context"])
 
-    @patch("orchestrator.finalize_run_safely", return_value=True)
-    @patch("orchestrator._write_processing_log")
-    @patch("orchestrator._persist_processor_result")
-    @patch("orchestrator._authorize_claimed_run_budget")
-    @patch("orchestrator.get_processor")
-    @patch("orchestrator.advisory_lock", return_value=nullcontext())
-    @patch("orchestrator.maintain_run_heartbeat", return_value=nullcontext())
-    @patch("orchestrator.start_run", return_value=True)
-    @patch("orchestrator.accept_run", return_value=datetime.now(UTC))
+    @patch("processor_execution.finalize_run_safely", return_value=True)
+    @patch("processor_execution._write_processing_log")
+    @patch("processor_execution._persist_processor_result")
+    @patch("processor_execution._authorize_claimed_run_budget")
+    @patch("processor_execution.get_processor")
+    @patch("processor_execution.advisory_lock", return_value=nullcontext())
+    @patch("processor_execution.maintain_run_heartbeat", return_value=nullcontext())
+    @patch("processor_execution.start_run", return_value=True)
+    @patch("processor_execution.accept_run", return_value=datetime.now(UTC))
     def test_one_run_override_mints_trusted_context_propagated_into_paid_call(
         self,
         accept_run,

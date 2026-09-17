@@ -5,7 +5,7 @@
 
 <section class="section settings-section" aria-labelledby="settings-title">
   <div class="section-heading"><span class="label" id="settings-title">Settings</span></div>
-  <p class="settings-intro">Operator controls for the next collection or analysis run. Saved credentials are never displayed.</p>
+  <p class="settings-intro">Save validated settings, then restart web and worker to apply them. Saved credentials are never displayed.</p>
 
   <div class="settings-grid">
     <fieldset class="settings-panel">
@@ -152,7 +152,7 @@ document.getElementById('save-settings').addEventListener('click', async () => {
   status.textContent = 'Saving…';
   const response = await fetch('/api/settings/operator', {method:'PUT', headers:{'Content-Type':'application/json', ...csrfHeader()}, body:JSON.stringify(settingsPayload())});
   const data = await response.json().catch(() => ({}));
-  status.textContent = response.ok ? `Saved — ${data.model || 'one model'} applies to the next run` : (data.detail || 'Could not save settings');
+  status.textContent = response.ok ? `Saved — ${data.model || 'one model'}. Restart web and worker before it takes effect.` : (data.detail || 'Could not save settings');
 });
 </script>
 {% endblock %}

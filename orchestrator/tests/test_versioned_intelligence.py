@@ -4,21 +4,19 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from processor_execution import _run_processor_impl
 
 from db import _prepare_record, insert_records_in_session
-from orchestrator import _run_processor_impl
 
 
 class VersionedIntelligenceTests(unittest.TestCase):
-    @patch("orchestrator._consume_budget_override", return_value=None)
-    @patch("orchestrator.ensure_run")
-    @patch("orchestrator.get_processor")
-    @patch("orchestrator._persist_processor_result")
+    @patch("processor_execution._consume_budget_override", return_value=None)
+    @patch("processor_execution.get_processor")
+    @patch("processor_execution._persist_processor_result")
     def test_multi_opinion_result_is_versioned_and_staged_atomically(
         self,
         persist,
         get_processor,
-        ensure_run,
         consume_override,
     ):
         processor = Mock()

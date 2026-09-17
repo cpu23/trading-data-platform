@@ -231,6 +231,10 @@ The subsystem has a per-run model-cost ceiling in addition to the platform
 daily LLM budget. Unchanged fingerprints are reused where safe. A public
 `force` boolean does not mint budget bypass authority.
 
+### Shared Analytical Contract (`analysis.py`)
+
+`orchestrator/research_intelligence/analysis.py` centralizes the stage definitions, payload builders, input fingerprints, graph helpers, and value/adversarial validators shared across the analytical pipeline. Live execution (`service.py`) and point-in-time replay (`replay.py`) reuse these common builders and validation routines to construct consistent inputs and enforce stage bounds, while caller boundaries remain independent: `service.py` manages live database persistence, lifecycle state transitions, and candidate failure isolation, whereas `replay.py` enforces point-in-time leakage guards and evaluates benchmark scorecards.
+
 ## Point-in-Time Replay and Evaluation
 
 Replay uses the production evidence adapters and analytical validators without
@@ -299,10 +303,15 @@ apply. Normal refreshes coalesce by deterministic input identity; an explicit
 forced rebuild or retry receives a new job identity so completed prior work
 cannot suppress it.
 
-The durable worker claims the configured bounded batch (25 jobs by default)
-before its next poll interval. This preserves per-job provenance while preventing
-bursts of section-snapshot publication from starving lower-priority research
-work.
+Queue transitions are consolidated in `orchestrator/jobs.py` with separate
+execution lanes for operations (`run_kind`) and analysis (`job_type`). The
+`AnalysisJobWorker` (`job_worker.py`) polls the dedicated analysis lane and
+sequentially claims exactly **one job per poll** (`limit=1`). This single-claim
+contract ensures that no in-memory lease expires or gets reclaimed by another
+replica while a long analysis handler runs. Durable leasing, heartbeat renewal,
+retry/backoff, poison terminal state, and expired-lease reclaim use the shared
+queue infrastructure while keeping analysis throughput isolated from operational
+cycle runs.
 
 The discovery job runs macro drivers and case discovery. Adapter and candidate
 failures are isolated and counted. A failed macro stage does not destroy
@@ -344,8 +353,7 @@ immutable human annotation history.
 
 ## Storage
 
-Migration `039_research_intelligence.sql` adds additive, idempotent tables and
-indexes for:
+`db/schema.sql` is the sole application schema, defining tables and indexes for:
 
 - immutable `research_source_claims` with normalized entities in each claim;
 - cases, aliases, entities, evidence, and immutable snapshots, including
@@ -356,17 +364,13 @@ indexes for:
 - provenance-linked cold research-data requests;
 - current/superseded market drivers and driver evidence;
 - links from discovered cases to maintained themes;
-- research run kinds and generation-attempt lookup indexes.
-
-Migration `040_research_replay_evaluation.sql` adds immutable replay runs,
-replay cases/timelines, versioned benchmark scorecards, quality metrics,
-exploratory data-request fields, and shared macro factors/transmissions.
-Migration `041_research_economic_factors.sql` normalizes factor identity and
-history. Migration `042_research_replay_variant_identity.sql` persists and
-indexes resolved replay-variant identities so longitudinal state cannot cross
-model/prompt variants.
-Migration `043_research_benchmark_annotations.sql` adds immutable human-review
-history while the scorecard retains only the current review projection.
+- research run kinds and generation-attempt lookup indexes;
+- immutable replay runs, replay cases/timelines, versioned benchmark scorecards,
+  quality metrics, exploratory data-request fields, and shared macro factors/transmissions;
+- normalized factor identities and history;
+- resolved replay variant identities (`variant_identity`, `variant_fingerprint`)
+  so longitudinal state cannot cross model/prompt variants;
+- immutable human benchmark review history with current scorecard review projections.
 
 Important writes use deterministic unique identities. Active causal edges and
 current market drivers have partial unique indexes. Primary read paths are

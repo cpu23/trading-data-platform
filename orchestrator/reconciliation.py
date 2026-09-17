@@ -74,6 +74,7 @@ def reconcile_event_pipeline(config: Any) -> dict[str, Any]:
             repaired = reconcile_jobs(
                 session,
                 limit=_limit(settings, "max_reconcile_jobs", 100),
+                job_types=[],
             )
             result["jobs_reconciled"] = _count(repaired)
     except Exception as exc:

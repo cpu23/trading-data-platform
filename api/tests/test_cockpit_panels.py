@@ -158,6 +158,33 @@ class CrossAssetQueryTests(unittest.TestCase):
         sql_calls = [call.args[0] for call in query.call_args_list]
         self.assertFalse(any("market_data_1m" in sql for sql in sql_calls))
 
+    def test_volatility_term_structure_computes_spreads(self):
+        import routes.views.cockpit_panels as cockpit_panels
+
+        cfg = dict(CONFIG)
+        cfg["dashboard"] = dict(CONFIG["dashboard"])
+        cfg["dashboard"]["volatility_symbols"] = ["EURUSD", "SP500"]
+
+        rows = [
+            {"tf": "1m", "symbol": "EURUSD", "high": 1.10, "low": 1.00, "close": 1.05},
+            {"tf": "5m", "symbol": "EURUSD", "high": 1.15, "low": 0.95, "close": 1.05},
+            {
+                "tf": "1h",
+                "symbol": "SP500",
+                "high": 5100.0,
+                "low": 4900.0,
+                "close": 5000.0,
+            },
+        ]
+        with patch("routes.views.cockpit_panels.query_many", return_value=rows):
+            payload = cockpit_panels.load_cross_asset(cfg)
+        panel = next(
+            p for p in payload["panels"] if p["key"] == "volatility_term_structure"
+        )
+        self.assertTrue(panel["available"])
+        labels = [r["label"] for r in panel["rows"]]
+        self.assertEqual(labels, ["1h", "1m", "5m"])
+
     def test_rolling_correlation_hides_below_20_buckets(self):
         import routes.views.cockpit_panels as cockpit_panels
 
@@ -444,7 +471,7 @@ class RouteTests(unittest.TestCase):
         }
         with (
             patch("routes.views.markets.load_cross_asset", return_value=payload),
-            patch("routes.views.markets.app_config.load_config", return_value={}),
+            patch("routes.views.markets.load_config", return_value={}),
         ):
             response = client.get("/partials/markets/cross-asset")
         self.assertNotIn("data-panel-key", response.text)
@@ -484,7 +511,7 @@ class RouteTests(unittest.TestCase):
         }
         with (
             patch("routes.views.markets.load_cross_asset", return_value=payload),
-            patch("routes.views.markets.app_config.load_config", return_value={}),
+            patch("routes.views.markets.load_config", return_value={}),
         ):
             response = client.get("/partials/markets/cross-asset")
         self.assertIn('data-panel-key="commodity_impulse"', response.text)

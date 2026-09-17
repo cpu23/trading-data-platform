@@ -1,16 +1,13 @@
 """Collector and registered-news execution.
 
 This module owns source-facing work while :mod:`run_lifecycle` owns durable run
-ownership and :mod:`publication` owns durable output writes.  Dependencies that
-historically lived on ``orchestrator`` are resolved at call time so existing
-patch targets remain effective during the facade cutover.
+ownership and :mod:`publication` owns durable output writes.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import sys
 import time
 import traceback
 from collections.abc import Mapping
@@ -51,44 +48,11 @@ logger = get_logger("orchestrator.collector_execution")
 _DYNAMIC_MARKET_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,19}$")
 _EQUITY_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,19}$")
 
-# Keep local patchability when this module is tested directly, while preferring
-# facade patch targets when it is called through the compatibility facade.
-_LOCAL_DEPENDENCIES = {
-    "get_collector": get_collector,
-    "upsert_records": upsert_records,
-    "write_batches_in_session": write_batches_in_session,
-    "publish_collector_records_atomic": publish_collector_records_atomic,
-    "record_collection_freshness": record_collection_freshness,
-    "get_session": get_session,
-    "advisory_lock": advisory_lock,
-    "accept_run": accept_run,
-    "start_run": start_run,
-    "maintain_run_heartbeat": maintain_run_heartbeat,
-    "finalize_run_safely": finalize_run_safely,
-    "_write_collection_log": _write_collection_log,
-    "_estimate_api_calls": None,
-    "_run_collector_impl": None,
-    "logger": logger,
-}
-
-
-def _dependency(name: str) -> Any:
-    """Resolve a dependency through patched facade globals when available."""
-    local = globals().get(name)
-    if local is not _LOCAL_DEPENDENCIES.get(name):
-        return local
-    facade = sys.modules.get("orchestrator")
-    if facade is not None:
-        candidate = getattr(facade, name, None)
-        if candidate is not None:
-            return candidate
-    return local
-
 
 def _resolved_config(config: dict | None) -> dict:
     if config is not None:
         return config
-    from config_loader import load_config
+    from contracts.runtime_config import load_config
 
     return load_config()
 
@@ -156,7 +120,7 @@ def _with_active_thesis_symbols(
                 if len(configured) >= cap:
                     break
         except Exception as exc:
-            _dependency("logger").warning(
+            logger.warning(
                 "investment_collection_universe_unavailable",
                 action="extend_collection_universe",
                 source=source_id,
@@ -185,7 +149,7 @@ def _with_active_thesis_symbols(
     if configured:
         params["excluded"] = configured
     try:
-        with _dependency("get_session")(config) as session:
+        with get_session(config) as session:
             rows = (
                 session.execute(
                     text(
@@ -208,7 +172,7 @@ def _with_active_thesis_symbols(
                 .all()
             )
     except Exception as exc:
-        _dependency("logger").warning(
+        logger.warning(
             "dynamic_collection_symbols_unavailable",
             action="extend_collection_universe",
             source=source_id,
@@ -245,7 +209,7 @@ def _with_public_equity_bootstrap(config: dict) -> dict:
     if not symbols:
         return config
     try:
-        with _dependency("get_session")(config) as session:
+        with get_session(config) as session:
             rows = (
                 session.execute(
                     text(
@@ -262,7 +226,7 @@ def _with_public_equity_bootstrap(config: dict) -> dict:
                 .all()
             )
     except Exception as exc:
-        _dependency("logger").warning(
+        logger.warning(
             "public_equity_bootstrap_state_unavailable",
             action="extend_collection_universe",
             error_type=type(exc).__name__,
@@ -436,8 +400,8 @@ def _record_source_freshness(
     if status not in {"success", "partial"}:
         freshness_status = "rate_limited" if status == "rate_limited" else "failed"
     try:
-        with _dependency("get_session")(config) as session:
-            _dependency("record_collection_freshness")(
+        with get_session(config) as session:
+            record_collection_freshness(
                 session,
                 source=source_id,
                 source_config=source_config,
@@ -450,7 +414,7 @@ def _record_source_freshness(
                 detail={"collection_status": status},
             )
     except Exception as exc:
-        _dependency("logger").warning(
+        logger.warning(
             "source_freshness_update_failed",
             action="record_source_freshness",
             collector=source_id,
@@ -468,10 +432,8 @@ def _run_collector_impl(
     config = _resolved_config(config)
     correlation_id = correlation_id or str(uuid4())
     if manage_lifecycle:
-        _dependency("accept_run")(
-            config, correlation_id, "internal", "collector", source_id
-        )
-        if not _dependency("start_run")(config, correlation_id, f"sync:{uuid4()}"):
+        accept_run(config, correlation_id, "internal", "collector", source_id)
+        if not start_run(config, correlation_id, f"sync:{uuid4()}"):
             return None
 
     try:
@@ -482,10 +444,10 @@ def _run_collector_impl(
     except ImportError:  # pragma: no cover - structlog is a runtime dependency
         pass
 
-    collector = _dependency("get_collector")(source_id)
+    collector = get_collector(source_id)
     started_at = datetime.now(UTC)
     start_ms = time.monotonic() * 1000
-    _dependency("logger").info(
+    logger.info(
         "collector_started",
         action="run_collector",
         collector=source_id,
@@ -539,7 +501,7 @@ def _run_collector_impl(
         if isinstance(exact_api_calls, int) and exact_api_calls >= 0:
             api_calls_made = exact_api_calls
         else:
-            estimator = _dependency("_estimate_api_calls")
+            estimator = _estimate_api_calls
             if estimator is None:
                 estimator = _estimate_api_calls
             api_calls_made = estimator(source_id, records_fetched, config)
@@ -556,7 +518,7 @@ def _run_collector_impl(
             db_write_started = time.monotonic()
             try:
                 if _event_publication_enabled(source_id, config):
-                    write_result = _dependency("publish_collector_records_atomic")(
+                    write_result = publish_collector_records_atomic(
                         source_id=source_id,
                         table_name=table_name,
                         records=records,
@@ -584,10 +546,8 @@ def _run_collector_impl(
                         )
                     ]
                     batches.extend(additional_writes)
-                    with _dependency("get_session")(config) as session:
-                        write_results = _dependency("write_batches_in_session")(
-                            session, batches
-                        )
+                    with get_session(config) as session:
+                        write_results = write_batches_in_session(session, batches)
                     records_written = sum(
                         write_result.written for write_result in write_results
                     )
@@ -615,7 +575,7 @@ def _run_collector_impl(
                     # Single-table collectors keep the legacy writer: same
                     # semantics and same dependency-injection seam, with the
                     # collector's insert_only policy honored.
-                    write_result = _dependency("upsert_records")(
+                    write_result = upsert_records(
                         table_name=table_name,
                         records=records,
                         conflict_columns=conflict_columns,
@@ -631,7 +591,7 @@ def _run_collector_impl(
                 collection_metrics["db_write_duration_ms"] = elapsed_ms(
                     db_write_started
                 )
-                _dependency("logger").info(
+                logger.info(
                     "collector_db_write_metrics",
                     action="run_collector",
                     collector=source_id,
@@ -665,7 +625,7 @@ def _run_collector_impl(
         # (env-gated), never the database.
         error_message = error_class
         error_traceback = None
-        _dependency("logger").error(
+        logger.error(
             "collector_failed",
             action="run_collector",
             collector=source_id,
@@ -675,7 +635,7 @@ def _run_collector_impl(
             correlation_id=correlation_id,
         )
         if os.environ.get("COLLECTOR_DEBUG_TRACEBACK") == "1":
-            _dependency("logger").debug(
+            logger.debug(
                 "collector_failed_traceback",
                 action="run_collector",
                 collector=source_id,
@@ -685,7 +645,7 @@ def _run_collector_impl(
 
     completed_at = datetime.now(UTC)
     duration_ms = int(time.monotonic() * 1000 - start_ms)
-    writer = _dependency("_write_collection_log")
+    writer = _write_collection_log
     if writer is not None:
         writer(
             collector_id=source_id,
@@ -724,11 +684,9 @@ def _run_collector_impl(
         "retryable": retryable,
         "correlation_id": correlation_id,
     }
-    _dependency("logger").info(
-        "collector_work_finished", action="run_collector", **result
-    )
+    logger.info("collector_work_finished", action="run_collector", **result)
     if manage_lifecycle:
-        _dependency("finalize_run_safely")(
+        finalize_run_safely(
             correlation_id,
             status,
             result,
@@ -738,10 +696,6 @@ def _run_collector_impl(
             component=source_id,
         )
     return result
-
-
-_LOCAL_DEPENDENCIES["_estimate_api_calls"] = _estimate_api_calls
-_LOCAL_DEPENDENCIES["_run_collector_impl"] = _run_collector_impl
 
 
 def run_collector(
@@ -757,26 +711,24 @@ def run_collector(
     worker_id: str | None = None
     try:
         if manage_lifecycle:
-            _dependency("accept_run")(
-                config, correlation_id, "internal", "collector", source_id
-            )
+            accept_run(config, correlation_id, "internal", "collector", source_id)
             lifecycle_created = True
             claim_worker_id = f"sync:{uuid4()}"
-            if not _dependency("start_run")(config, correlation_id, claim_worker_id):
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
             worker_id = claim_worker_id
         heartbeat = (
-            _dependency("maintain_run_heartbeat")(config, correlation_id, worker_id)
+            maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
             else nullcontext()
         )
         with heartbeat:
-            with _dependency("advisory_lock")(f"collector:{source_id}", config):
-                result = _dependency("_run_collector_impl")(
+            with advisory_lock(f"collector:{source_id}", config):
+                result = _run_collector_impl(
                     source_id, config, correlation_id, manage_lifecycle=False
                 )
             if manage_lifecycle and result is not None:
-                finalized = _dependency("finalize_run_safely")(
+                finalized = finalize_run_safely(
                     correlation_id,
                     result["status"],
                     result,
@@ -787,9 +739,7 @@ def run_collector(
                     component=source_id,
                 )
                 if finalized:
-                    _dependency("logger").info(
-                        "collector_completed", action="run_collector", **result
-                    )
+                    logger.info("collector_completed", action="run_collector", **result)
             return result
     except RunAcceptanceConflict:
         raise
@@ -809,7 +759,7 @@ def run_collector(
                     "retryable": policy.retryable,
                 }
             )
-            _dependency("finalize_run_safely")(
+            finalize_run_safely(
                 correlation_id,
                 "failed",
                 result,
@@ -839,21 +789,19 @@ def run_news_source(
     worker_id: str | None = None
     try:
         if manage_lifecycle:
-            _dependency("accept_run")(
-                config, correlation_id, "internal", "news", source_id
-            )
+            accept_run(config, correlation_id, "internal", "news", source_id)
             lifecycle_created = True
             claim_worker_id = f"sync:{uuid4()}"
-            if not _dependency("start_run")(config, correlation_id, claim_worker_id):
+            if not start_run(config, correlation_id, claim_worker_id):
                 return None
             worker_id = claim_worker_id
         heartbeat = (
-            _dependency("maintain_run_heartbeat")(config, correlation_id, worker_id)
+            maintain_run_heartbeat(config, correlation_id, worker_id)
             if worker_id is not None
             else nullcontext()
         )
         with heartbeat:
-            with _dependency("advisory_lock")(f"news:{source_id}", config):
+            with advisory_lock(f"news:{source_id}", config):
                 started = time.monotonic()
                 error_class = None
                 retryable = False
@@ -920,7 +868,7 @@ def run_news_source(
                     "correlation_id": correlation_id,
                 }
             if manage_lifecycle:
-                finalized = _dependency("finalize_run_safely")(
+                finalized = finalize_run_safely(
                     correlation_id,
                     status,
                     result,
@@ -931,7 +879,7 @@ def run_news_source(
                     component=source_id,
                 )
                 if finalized:
-                    _dependency("logger").info(
+                    logger.info(
                         "news_source_completed",
                         action="run_news_source",
                         source_id=source_id,
@@ -944,7 +892,7 @@ def run_news_source(
         if manage_lifecycle and lifecycle_created:
             policy = classify_error(exc)
             reason = "run start unavailable" if worker_id is None else "news run failed"
-            _dependency("finalize_run_safely")(
+            finalize_run_safely(
                 correlation_id,
                 "failed",
                 {
@@ -978,11 +926,11 @@ def get_last_collection_runs(config: dict | None = None) -> list[dict]:
         "ORDER BY collector, started_at DESC"
     )
     try:
-        with _dependency("get_session")(config) as session:
+        with get_session(config) as session:
             result = session.execute(sql)
             return [dict(row._mapping) for row in result]
     except Exception as exc:
-        _dependency("logger").error(
+        logger.error(
             "last_runs_query_failed",
             action="get_last_runs",
             error_type=type(exc).__name__,

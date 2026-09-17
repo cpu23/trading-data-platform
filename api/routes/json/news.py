@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-import config as app_config
+from contracts.runtime_config import load_config
 from routes.views.news import (
     MAX_STORY_CLUSTERS,
     load_source_states,
@@ -38,7 +38,7 @@ def get_news_clusters(
 @router.get("/news/sources")
 def get_news_sources():
     """List bounded source state without exposing raw provider data."""
-    config = app_config.load_config()
+    config = load_config()
     sources = []
     for state in load_source_states(config):
         name = state["name"]

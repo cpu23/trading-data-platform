@@ -15,14 +15,9 @@ from errors import classify_error
 from logging_config import get_logger
 from sqlalchemy import text
 
+from db import get_session
+
 logger = get_logger("orchestrator.run_lifecycle")
-
-
-def _facade_logger():
-    """Use the facade logger when available so legacy patch targets remain effective."""
-    import orchestrator
-
-    return getattr(orchestrator, "logger", logger)
 
 
 DEFAULT_ACCEPTED_TIMEOUT = timedelta(minutes=15)
@@ -39,9 +34,7 @@ class RunStartConflict(RuntimeError):
 
 
 def _get_session(config: dict):
-    import orchestrator
-
-    return orchestrator.get_session(config)
+    return get_session(config)
 
 
 def accept_run(
@@ -78,7 +71,7 @@ def accept_run(
                 },
             )
     except IntegrityError as exc:
-        _facade_logger().info(
+        logger.info(
             "run_acceptance_conflict",
             action="accept_run",
             correlation_id=correlation_id,
@@ -165,15 +158,13 @@ def maintain_run_heartbeat(
     stop_event = event_factory()
     interval = _heartbeat_interval_seconds(config)
 
-    import orchestrator
-
     def heartbeat_loop() -> None:
         while not stop_event.wait(interval):
             try:
-                owned = orchestrator.heartbeat_run(config, correlation_id, worker_id)
+                owned = heartbeat_run(config, correlation_id, worker_id)
             except Exception as exc:
                 policy = classify_error(exc)
-                _facade_logger().error(
+                logger.error(
                     "run_heartbeat_failed",
                     action="heartbeat_run",
                     correlation_id=correlation_id,
@@ -183,7 +174,7 @@ def maintain_run_heartbeat(
                 )
                 continue
             if not owned:
-                _facade_logger().warning(
+                logger.warning(
                     "run_heartbeat_lost_ownership",
                     action="heartbeat_run",
                     correlation_id=correlation_id,
@@ -312,10 +303,9 @@ def finalize_run_safely(
     component: str | None = None,
 ) -> bool:
     """Finalize durably without masking the work outcome or exception."""
-    import orchestrator
 
     try:
-        finalized = orchestrator.finish_run(
+        finalized = finish_run(
             correlation_id,
             result_status,
             summary,
@@ -325,7 +315,7 @@ def finalize_run_safely(
         )
     except Exception as exc:
         policy = classify_error(exc)
-        _facade_logger().error(
+        logger.error(
             "run_finalization_failed",
             action="finish_run",
             correlation_id=correlation_id,
@@ -337,7 +327,7 @@ def finalize_run_safely(
         )
         return False
     if not finalized:
-        _facade_logger().warning(
+        logger.warning(
             "run_finalization_lost_ownership",
             action="finish_run",
             correlation_id=correlation_id,
@@ -375,7 +365,7 @@ def update_run_progress(
             return result.rowcount == 1
     except Exception as exc:
         policy = classify_error(exc)
-        _facade_logger().error(
+        logger.error(
             "cycle_progress_write_failed",
             action="update_run_progress",
             correlation_id=correlation_id,

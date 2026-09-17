@@ -6,10 +6,10 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from config_loader import load_config
 from logging_config import get_logger, setup_logging
 from sqlalchemy import text
 
+from contracts.runtime_config import load_config
 from db import get_session
 
 logger = get_logger("demo_live")

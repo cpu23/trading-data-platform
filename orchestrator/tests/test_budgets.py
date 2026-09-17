@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
+import processor_execution
 from budgets import (
     BudgetContext,
     BudgetExceeded,
@@ -129,6 +129,25 @@ class LLMEnforcementTests(unittest.TestCase):
                 "reservation_estimate_usd": 0.05,
             },
         }
+
+    @patch("llm_client.release_budget_reservation")
+    @patch("llm_client.make_request")
+    @patch(
+        "contracts.runtime_config.ensure_current",
+        side_effect=RuntimeError("restart required"),
+    )
+    def test_committed_drift_releases_existing_permit_before_dispatch(
+        self, _ensure_current, make_request, release
+    ):
+        stage = LLMStage(self.config, "briefing")
+        stage._budget_permit = Mock(valid=True, reservation_id="reservation-1")
+
+        with self.assertRaisesRegex(RuntimeError, "restart required"):
+            stage.call("private prompt")
+
+        make_request.assert_not_called()
+        release.assert_called_once_with("reservation-1", self.config)
+        self.assertIsNone(stage._budget_permit)
 
     @patch("llm_client.make_request")
     @patch("budgets.get_session")
@@ -430,15 +449,13 @@ class LLMEnforcementTests(unittest.TestCase):
 
 class RuntimeBudgetOutcomeTests(unittest.TestCase):
     def test_processor_budget_block_is_safe_and_persisted_separately(self):
-        import orchestrator
-
         processor = Mock()
         processor.process.side_effect = BudgetExceeded(2.0, 2.0, processor="briefing")
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
-            patch.object(orchestrator, "_write_processing_log") as write_log,
+            patch.object(processor_execution, "get_processor", return_value=processor),
+            patch.object(processor_execution, "_write_processing_log") as write_log,
         ):
-            result = orchestrator._run_processor_impl(
+            result = processor_execution._run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False
             )
 
@@ -451,36 +468,35 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
         self.assertNotIn("traceback", str(result).lower())
 
     def test_processor_budget_lookup_failure_is_safe_and_distinct(self):
-        import orchestrator
-
         processor = Mock()
         processor.process.side_effect = BudgetUnavailable(processor="macro_regime")
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
-            patch.object(orchestrator, "_write_processing_log"),
+            patch.object(processor_execution, "get_processor", return_value=processor),
+            patch.object(processor_execution, "_write_processing_log"),
         ):
-            result = orchestrator._run_processor_impl(
+            result = processor_execution._run_processor_impl(
                 "macro_regime", config={}, correlation_id="cid", manage_lifecycle=False
             )
         self.assertEqual(result["status"], "budget_unavailable")
         self.assertEqual(result["error"], "daily LLM budget unavailable")
 
     def test_cycle_aggregation_preserves_budget_outcomes(self):
-        import orchestrator
+        import cycle_planning
 
         self.assertEqual(
-            orchestrator.aggregate_stage_statuses(["budget_blocked"]), "budget_blocked"
+            cycle_planning.aggregate_stage_statuses(["budget_blocked"]),
+            "budget_blocked",
         )
         self.assertEqual(
-            orchestrator.aggregate_stage_statuses(["budget_unavailable"]),
+            cycle_planning.aggregate_stage_statuses(["budget_unavailable"]),
             "budget_unavailable",
         )
         self.assertEqual(
-            orchestrator.aggregate_stage_statuses(["success", "budget_blocked"]),
+            cycle_planning.aggregate_stage_statuses(["success", "budget_blocked"]),
             "partial",
         )
         self.assertEqual(
-            orchestrator.aggregate_stage_statuses(
+            cycle_planning.aggregate_stage_statuses(
                 ["budget_blocked", "budget_unavailable"]
             ),
             "partial",
@@ -521,18 +537,16 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
         self.assertEqual(result["processing_log"]["input_summary"]["attempt_count"], 1)
 
     def test_generic_provider_failure_never_persists_raw_text(self):
-        import orchestrator
-
         secret = "RAW_SECRET_OPENROUTER_KEY_9f2"
         processor = Mock()
         processor.process.side_effect = RuntimeError(
             f"provider echoed {secret} and prompt: buy X"
         )
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
-            patch.object(orchestrator, "_write_processing_log") as write_log,
+            patch.object(processor_execution, "get_processor", return_value=processor),
+            patch.object(processor_execution, "_write_processing_log") as write_log,
         ):
-            result = orchestrator._run_processor_impl(
+            result = processor_execution._run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False
             )
         self.assertEqual(result["status"], "failed")
@@ -545,15 +559,13 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
     def test_default_and_scheduler_paths_do_not_create_trusted_force(self):
         import operation_worker
 
-        import orchestrator
-
         processor = Mock()
         processor.process.side_effect = BudgetExceeded(2.0, 2.0, processor="briefing")
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
-            patch.object(orchestrator, "_write_processing_log"),
+            patch.object(processor_execution, "get_processor", return_value=processor),
+            patch.object(processor_execution, "_write_processing_log"),
         ):
-            orchestrator._run_processor_impl(
+            processor_execution._run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False
             )
         self.assertIsNone(processor.process.call_args.kwargs["budget_context"])
@@ -583,22 +595,27 @@ class RuntimeBudgetOutcomeTests(unittest.TestCase):
         self.assertNotIn("budget_context", run.call_args.kwargs)
 
     def test_budget_blocked_dependency_is_recorded_as_clear_skip(self):
-        import orchestrator
-
         processors = {
             "macro_regime": Mock(get_depends_on=Mock(return_value=["fred"])),
             "briefing": Mock(get_depends_on=Mock(return_value=["macro_regime"])),
         }
         config = {"processors": {name: {"enabled": True} for name in processors}}
         with (
-            patch.object(orchestrator, "get_all_processors", return_value=processors),
             patch.object(
-                orchestrator,
+                processor_execution, "get_all_processors", return_value=processors
+            ),
+            patch.object(
+                processor_execution,
                 "run_processor",
-                return_value={"processor": "macro_regime", "status": "budget_blocked"},
+                side_effect=lambda pid, **kwargs: {
+                    "processor": pid,
+                    "status": "budget_blocked" if pid == "macro_regime" else "skipped",
+                },
             ),
         ):
-            results = orchestrator._resolve_and_run_processors(config, "cid", {"fred"})
+            results = processor_execution._resolve_and_run_processors(
+                config, "cid", {"fred"}
+            )
         self.assertEqual(results["macro_regime"]["status"], "budget_blocked")
         self.assertEqual(results["briefing"]["status"], "skipped")
         self.assertIn("macro_regime", results["briefing"]["reason"])

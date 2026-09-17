@@ -1,13 +1,12 @@
 """Durable role liveness: per-process heartbeat rows replace process globals.
 
-Each role process (api, scheduler, worker, outbox, quotes) upserts its OWN
-``role_heartbeats`` row keyed by ``(role, instance_id)`` while it is alive, so
-replicas of the same role never overwrite each other's liveness and an exiting
-instance's ``stopped`` write cannot clobber a healthy sibling.  Health
-endpoints and the ``roles check <ROLE>`` command aggregate fresh instances:
-a role is ready when it has at least one fresh healthy instance (the scheduler
-additionally requires a fresh ``running`` leader).  Stale rows are ignored by
-readers and can be pruned with :func:`prune_stale_role_heartbeats`.
+The consolidated worker role process upserts its OWN ``role_heartbeats`` row
+keyed by ``(role, instance_id)`` while it is alive, so replicas of the same role
+never overwrite each other's liveness and an exiting instance's ``stopped`` write
+cannot clobber a healthy sibling. Health endpoints and the ``roles check <ROLE>``
+command aggregate fresh instances: a role is ready when it has at least one
+fresh healthy instance. Stale rows are ignored by readers and can be pruned with
+:func:`prune_stale_role_heartbeats`.
 """
 
 from __future__ import annotations
@@ -21,6 +20,8 @@ from typing import Any
 
 from sqlalchemy import text
 
+from db import get_session
+
 DEFAULT_HEARTBEAT_TIMEOUT = timedelta(seconds=12)
 ROLES = ("worker",)
 
@@ -31,12 +32,6 @@ ALLOWED_CLOCK_SKEW = timedelta(seconds=5)
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _get_session(config: dict):
-    import orchestrator
-
-    return orchestrator.get_session(config)
 
 
 def default_instance_id() -> str:
@@ -67,7 +62,7 @@ def update_role_heartbeat(
     resolved_instance = instance_id or default_instance_id()
     if not str(resolved_instance).strip():
         raise ValueError("role heartbeat instance_id must be nonblank")
-    with _get_session(config) as session:
+    with get_session(config) as session:
         session.execute(
             text(
                 "INSERT INTO role_heartbeats (role, instance_id, status, "
@@ -111,7 +106,7 @@ def _row_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def list_role_heartbeats(config: dict, role: str) -> list[dict[str, Any]]:
     """Return every recorded instance row for one role (bounded)."""
-    with _get_session(config) as session:
+    with get_session(config) as session:
         rows = session.execute(
             text(
                 "SELECT role, instance_id, status, last_heartbeat_at, detail "
@@ -183,7 +178,7 @@ def prune_stale_role_heartbeats(
             raise ValueError(f"unknown role: {role}")
         where += " AND role = :role"
         params["role"] = role
-    with _get_session(config) as session:
+    with get_session(config) as session:
         result = session.execute(
             text(f"DELETE FROM role_heartbeats WHERE {where}"),
             params,

@@ -308,7 +308,7 @@ analysis_routing:
 
 research_intelligence:
   enabled: true
-  schedule_enabled: true
+  schedule_enabled: false
   schedule: "15 8 * * 1-5"
   rolling_window_days: 45
   model_budget_usd_per_run: 0.75
@@ -394,7 +394,7 @@ research_intelligence:
 # Null scoring inputs remain unknown rather than being invented.
 thesis_autonomy:
   enabled: true
-  schedule_enabled: true
+  schedule_enabled: false
   schedule: "0 2 * * *"  # Daily 02:00 UTC
   lookback_days: 30
   # 13 adapters x ~31 rows each: enough for a 25-symbol price/options
@@ -1516,8 +1516,8 @@ investment_filings:
   enabled: true
   schedule: "0 8 * * 1-5"  # Weekdays 08:00 UTC
   lookback_days: 730
-  auto_analyze: true
-  run_on_startup: true
+  auto_analyze: false
+  run_on_startup: false
   company_workers: 1
   universe: top_us_uk_eu_100
   sec_user_agent: ${SEC_USER_AGENT:-TradingDataInvestmentResearch/1.0 (research@trading-data-platform.local)}

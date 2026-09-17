@@ -31,6 +31,7 @@ from role_heartbeat import (
     heartbeat_is_fresh,
     update_role_heartbeat,
 )
+from worker_health import clear_worker_health, write_worker_health
 
 logger = get_logger("roles")
 
@@ -74,8 +75,8 @@ def _heartbeat_tick(
     detail: Callable[[], dict[str, Any]] | None,
     started_at: str,
     config_version_value: str | None = None,
-) -> None:
-    """Write one durable liveness record; failures are logged, never fatal."""
+) -> bool:
+    """Write one durable liveness record; returns True if write succeeded, False otherwise."""
     try:
         current_detail = detail() if detail is not None else {}
         update_role_heartbeat(
@@ -89,12 +90,14 @@ def _heartbeat_tick(
                 "config_version": config_version_value,
             },
         )
+        return True
     except Exception as exc:
         logger.warning(
             "role_heartbeat_write_failed",
             role=role,
             error_type=type(exc).__name__,
         )
+        return False
 
 
 def _heartbeat_loop(
@@ -106,7 +109,7 @@ def _heartbeat_loop(
     stop_event: threading.Event | None = None,
 ) -> None:
     """Write durable role liveness until a signal or exit hook requests stop."""
-    from config_loader import config_version
+    from contracts.runtime_config import config_version
 
     interval = _role_interval_seconds()
     status_value = status if isinstance(status, str) else "running"
@@ -117,28 +120,51 @@ def _heartbeat_loop(
     ):
         if not isinstance(status, str):
             status_value = status()
-        _heartbeat_tick(
-            config,
-            role,
-            status_value,
-            detail,
-            started_at,
-            captured_version,
-        )
+        exit_requested = False
         if should_exit is not None:
             try:
                 if should_exit():
                     logger.info("role_exit_requested", role=role, reason="exit hook")
                     _HEARTBEAT_LOOP_STOP[0] = True
+                    exit_requested = True
                     if stop_event is not None:
                         stop_event.set()
-                    break
             except Exception as exc:
                 logger.warning(
                     "role_exit_hook_failed",
                     role=role,
                     error_type=type(exc).__name__,
                 )
+                exit_requested = True
+
+        effective_status = "stopped" if exit_requested else status_value
+        db_ok = _heartbeat_tick(
+            config,
+            role,
+            effective_status,
+            detail,
+            started_at,
+            captured_version,
+        )
+
+        if role == "worker":
+            if db_ok and not exit_requested and status_value == "running":
+                try:
+                    write_worker_health(
+                        status="running",
+                        pid=_pid(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "worker_health_write_failed",
+                        role=role,
+                        error_type=type(exc).__name__,
+                    )
+            else:
+                clear_worker_health()
+        if exit_requested:
+            break
+
         deadline = time.monotonic() + interval
         while (
             not _HEARTBEAT_LOOP_STOP[0]
@@ -183,30 +209,27 @@ def _sleep_interruptibly(
 
 
 def _config_version_exit_hook(start_version: str) -> Callable[[], bool]:
-    """Request a safe-boundary restart on a commit or credential reload failure.
+    """Request a safe-boundary restart when committed config drifts.
 
-    Ordinary invalid operator candidates are handled inside ``ConfigStore`` by
-    returning the last valid snapshot, so their unchanged version keeps the
-    role alive. A raised ``ConfigError`` is reserved for fail-closed material
-    such as malformed/deleted managed secrets; the role must drain and exit
-    rather than continue indefinitely with credentials from its startup
-    snapshot.
+    Workers retain their startup ``AppConfig``.  Checking source identity,
+    rather than reloading a candidate, prevents stale credentials or changed
+    budgets from being used by a subsequent paid operation.
     """
+
+    del start_version
 
     def check() -> bool:
         try:
-            from config_loader import ConfigError, config_version, load_config
+            from contracts.runtime_config import ensure_current
 
-            load_config()
-        except ConfigError as exc:
+            ensure_current()
+        except Exception as exc:  # noqa: BLE001 - restart must fail closed
             logger.error(
-                "role_config_reload_failed_closed",
+                "role_config_changed_restart_required",
                 error_type=type(exc).__name__,
             )
             return True
-        except Exception:
-            return False
-        return config_version() != start_version
+        return False
 
     return check
 
@@ -250,18 +273,19 @@ def _run_scheduler_loop(config: dict, stop_event: threading.Event) -> None:
 
 def run_worker() -> int:
     """Worker role: concurrently runs scheduler, job worker, outbox, and quotes."""
-    from config_loader import config_version, load_config
     from demo_live import run_demo_live
     from events.worker import outbox_worker
     from jobs import run_job_worker_forever
     from price_stream import quote_stream
     from scheduler import scheduler_status, stop_scheduler
 
+    from contracts.runtime_config import config_version, load_config
+
+    clear_worker_health()
     config = load_config()
     stop_event = threading.Event()
     _signal_handlers(stop_event)
     should_exit = _config_version_exit_hook(config_version())
-
     outbox_worker.start(config)
     quote_stream.start(config)
 
@@ -344,6 +368,7 @@ def run_worker() -> int:
         if demo_thread is not None:
             demo_thread.join(timeout=5.0)
         _write_stopped(config, "worker")
+        clear_worker_health()
     return 0
 
 
@@ -362,8 +387,7 @@ _REQUIRED_PREDICATES: dict[str, Callable[[dict], bool]] = {
 
 def check_role(role: str, timeout_seconds: float | None = None) -> int:
     """One-shot durable liveness check suitable for Compose healthchecks."""
-    from config_loader import load_config
-
+    from contracts.runtime_config import load_config
     from db import check_connection
 
     if role not in ROLES and role not in _ROLE_RUNNERS:

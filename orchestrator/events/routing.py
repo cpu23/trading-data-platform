@@ -23,7 +23,7 @@ def _config() -> Mapping[str, Any]:
     configuration propagates and stops work instead of silently falling
     back to defaults.
     """
-    from config_loader import load_config
+    from contracts.runtime_config import load_config
 
     return load_config()
 

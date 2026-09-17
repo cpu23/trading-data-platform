@@ -39,6 +39,20 @@ def _upsert_quote(config: dict, symbol: str, price: float, observed_at: str) -> 
         )
 
 
+def _extract_quote_state(heartbeat: dict) -> tuple[str, str | None]:
+    """Extract quote stream status and error from a worker role heartbeat."""
+    worker_status = str(heartbeat.get("status") or "").lower()
+    detail = heartbeat.get("detail")
+    if not isinstance(detail, dict):
+        detail = {}
+    quotes = detail.get("quotes")
+    if not isinstance(quotes, dict):
+        quotes = {}
+    if worker_status != "running":
+        return "stopped", quotes.get("error")
+    return str(quotes.get("status") or "stopped"), quotes.get("error")
+
+
 def db_snapshot(config: dict) -> dict:
     """Durable quote snapshot for the HTTP API role (reads quote_state)."""
     quotes: list[dict] = []
@@ -72,7 +86,7 @@ def db_snapshot(config: dict) -> dict:
         logger.warning("quote_snapshot_unavailable", error_type=type(exc).__name__)
     stream = {"status": "stopped", "last_heartbeat": None, "error": None}
     try:
-        fresh = fresh_role_heartbeats(config, "quotes")
+        fresh = fresh_role_heartbeats(config, "worker")
     except Exception:
         fresh = []
     # Prefer any fresh healthy (connected/simulated) instance; a newer
@@ -80,17 +94,17 @@ def db_snapshot(config: dict) -> dict:
     healthy = [
         heartbeat
         for heartbeat in fresh
-        if heartbeat.get("status") in ("connected", "simulated")
+        if _extract_quote_state(heartbeat)[0] in ("connected", "simulated")
     ]
     preferred = healthy[0] if healthy else (fresh[0] if fresh else None)
     if preferred is not None:
-        stream["status"] = preferred.get("status", "stopped")
+        status_val, error_val = _extract_quote_state(preferred)
+        stream["status"] = status_val
         last = preferred.get("last_heartbeat_at")
         stream["last_heartbeat"] = (
             last.isoformat() if hasattr(last, "isoformat") else last
         )
-        detail = preferred.get("detail") or {}
-        stream["error"] = detail.get("error")
+        stream["error"] = error_val
         stream["instances"] = len(fresh)
         stream["healthy_instances"] = len(healthy)
     return {"quotes": quotes, "stream": stream}

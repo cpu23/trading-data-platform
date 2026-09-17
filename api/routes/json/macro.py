@@ -5,14 +5,14 @@ from fastapi import APIRouter, HTTPException, Query
 from serializers import isoformat
 from staleness import get_staleness_config, is_stale
 
-import config as app_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 
 
 @router.get("/macro/dashboard")
 def get_macro_dashboard():
-    config = app_config.load_config()
+    config = load_config()
     thresholds = get_staleness_config(config)
 
     indicator_configs = config.get("dashboard", {}).get("indicators", [])
@@ -177,7 +177,7 @@ def get_macro_series(
     to_date: date | None = Query(default=None, alias="to"),
     days: int | None = Query(default=None, ge=1, le=3650),
 ):
-    config = app_config.load_config()
+    config = load_config()
 
     params: dict = {"sid": series_id}
     date_filter = ""

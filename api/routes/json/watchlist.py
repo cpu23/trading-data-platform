@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from price_stream import db_snapshot
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 router = APIRouter()
 

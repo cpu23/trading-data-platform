@@ -1,11 +1,10 @@
 """Frozen, runtime-validated configuration models shared by the API and orchestrator.
 
-These models replace the historical TypedDict casts in ``api/config.py`` and
-``orchestrator/config_loader.py``.  Every value loaded from ``config.yaml``,
-the operator profile, and the secrets file is validated against a strict
-schema: unknown fields are rejected, types/ranges/units are enforced, and
-cross-field constraints are checked, so misconfiguration fails at startup
-with a clear error instead of surfacing mid-run.
+Every value loaded from ``config.yaml``, the operator profile, and the secrets
+file is validated against a strict schema. The shared loader retains one
+immutable process snapshot; committed changes require a service restart.
+Unknown fields, invalid types/ranges/units, and cross-field conflicts fail
+validation before startup or setup commit.
 
 All models are frozen and expose a read-only ``Mapping`` interface so the
 existing ``config.get("section", {}).get("key", default)`` call sites keep
@@ -23,14 +22,14 @@ import json
 import os
 import re
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from datetime import time as time_of_day
-from functools import wraps
-from typing import Annotated, Any, BinaryIO, Literal, TextIO, cast
+from typing import Annotated, Any, BinaryIO, Literal, TextIO
 
+import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -40,6 +39,25 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+DEFAULT_CONFIG_PATH = "/app/config/config.yaml"
+DEFAULT_SECRETS_PATH = "/app/state/secrets.env"
+DEFAULT_OPERATOR_PATH = "/app/state/operator.yaml"
+
+
+def resolve_runtime_paths(config_path: str | None = None) -> tuple[str, str, str]:
+    return (
+        config_path
+        or os.path.join(os.environ.get("CONFIG_DIR", "/app/config"), "config.yaml"),
+        os.environ.get("OPERATOR_CONFIG", DEFAULT_OPERATOR_PATH),
+        os.environ.get("SECRETS_FILE", DEFAULT_SECRETS_PATH),
+    )
+
+
+def _parse_yaml(path: str) -> object:
+    with open(path) as handle:
+        return yaml.safe_load(handle)
+
 
 NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -89,6 +107,17 @@ def apply_demo_transform(raw: dict[str, Any]) -> None:
             for item in values.values():
                 if isinstance(item, dict):
                     item["enabled"] = False
+    for news_source in ("reuters", "kobeissi"):
+        news = raw.get(news_source)
+        if isinstance(news, dict):
+            news["enabled"] = False
+            news["schedule_enabled"] = False
+    research = raw.get("research_intelligence")
+    if isinstance(research, dict):
+        research["schedule_enabled"] = False
+    thesis = raw.get("thesis_autonomy")
+    if isinstance(thesis, dict):
+        thesis["schedule_enabled"] = False
     filings = raw.setdefault("investment_filings", {})
     if isinstance(filings, dict):
         filings["enabled"] = False
@@ -719,7 +748,7 @@ class ResearchLifecycleThresholdsConfig(FrozenModel):
 
 class ResearchIntelligenceConfig(FrozenModel):
     enabled: bool = True
-    schedule_enabled: bool = True
+    schedule_enabled: bool = False
     schedule: str = "15 8 * * 1-5"
     rolling_window_days: int = Field(default=45, ge=1, le=730)
     model_budget_usd_per_run: float = Field(default=0.75, ge=0.0, le=100.0)
@@ -838,7 +867,7 @@ class ThesisAutonomyConfig(FrozenModel):
     """
 
     enabled: bool = True
-    schedule_enabled: bool = True
+    schedule_enabled: bool = False
     schedule: str | None = "0 2 * * *"
     lookback_days: int = Field(default=30, ge=1, le=3650)
     # Mirrors the EvidenceRegistry collection cap (2000); the tournament
@@ -1357,8 +1386,8 @@ class InvestmentFilingsConfig(FrozenModel):
     enabled: bool = True
     schedule: str | None = None
     lookback_days: int = Field(default=730, ge=1, le=36500)
-    auto_analyze: bool = True
-    run_on_startup: bool = True
+    auto_analyze: bool = False
+    run_on_startup: bool = False
     company_workers: int = Field(default=1, ge=1, le=256)
     universe: NonBlankText = "top_us_uk_eu_100"
     sec_user_agent: str = (
@@ -1958,44 +1987,6 @@ def build_snapshot(
     )
 
 
-def _restart_value(config: AppConfig, section: str) -> Any:
-    """Serialize one section for restart comparison (full content)."""
-    value = getattr(config, section, None)
-    if value is None:
-        return None
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return {
-            str(key): (
-                item.model_dump(mode="json") if isinstance(item, BaseModel) else item
-            )
-            for key, item in value.items()
-        }
-    return value
-
-
-def restart_projection(config: AppConfig) -> dict[str, Any]:
-    """Serialize only the restart-sensitive sections for comparison."""
-    return {name: _restart_value(config, name) for name in RESTART_SENSITIVE_SECTIONS}
-
-
-def restart_changes(previous: AppConfig, current: AppConfig) -> list[str]:
-    """Names of restart-sensitive sections that differ between snapshots."""
-    before = restart_projection(previous)
-    after = restart_projection(current)
-    return sorted(
-        name
-        for name in RESTART_SENSITIVE_SECTIONS
-        if before.get(name) != after.get(name)
-    )
-
-
-def config_restart_required(previous: AppConfig, current: AppConfig) -> bool:
-    """True when a restart-sensitive section changed between two snapshots."""
-    return bool(restart_changes(previous, current))
-
-
 # ---------------------------------------------------------------------------
 # shared loading machinery (merge, substitution, fingerprints, snapshots)
 # ---------------------------------------------------------------------------
@@ -2189,19 +2180,8 @@ def committed_config_paths(
             yield operator_path, secrets_path
 
 
-def _store_locked[F: Callable[..., Any]](method: F) -> F:
-    """Serialize all mutable ConfigStore state transitions per process."""
-
-    @wraps(method)
-    def wrapper(self: ConfigStore, *args: Any, **kwargs: Any) -> Any:
-        with self._lock:
-            return method(self, *args, **kwargs)
-
-    return cast(F, wrapper)
-
-
 def _safe_config_error(exc: Exception) -> str:
-    """Bounded, redacted error text for rejected-reload status.
+    """Bounded, redacted error text for configuration loading failures.
 
     Never includes raw source lines, YAML snippets, or credential values:
     ``ConfigError`` -> its own (already redacted) message; ``ValidationError``
@@ -2274,242 +2254,143 @@ def _format_validation_error(exc: ValidationError) -> str:
     return details
 
 
-@dataclass(frozen=True)
-class RejectedConfig:
-    """A reload candidate that failed validation, retained for status."""
-
-    attempted_at: str
-    error: str
-    sources: tuple[tuple[str, int | None, str], ...]
-
-
-class ConfigStore:
-    """Process-local validated-config cache, snapshots, and reload state.
-
-    Shared by the API and orchestrator loaders so the merge/substitution/
-    fingerprint/snapshot machinery has exactly one implementation.  Service
-    specifics stay in the thin wrapper: default paths, the demo transform
-    (demo mode mutates the raw config differently per service), and the
-    fallback value for missing environment references (the orchestrator
-    substitutes ``"demo-disabled"`` in demo mode).
-    """
+class RuntimeConfigLoader:
+    """Load and retain one immutable, process-local configuration snapshot."""
 
     def __init__(self) -> None:
-        self._lock = threading.RLock()
         self._active_snapshot: ConfigSnapshot | None = None
-        self._previous_snapshot: ConfigSnapshot | None = None
-        self._startup_snapshot: ConfigSnapshot | None = None
-        self._ordinal = 0
-        self._force_reload = False
-        self._reload_failed = False
-        self._rejected: RejectedConfig | None = None
-        self._fail_closed_rejected = False
+        self._paths: tuple[str, str, str] | None = None
+        self._lock = threading.RLock()
 
-    @_store_locked
-    def load(
-        self,
-        *,
-        config_path: str,
-        operator_path: str,
-        secrets_path: str,
-        parse: Callable[[str], object],
-        demo_transform: Callable[[dict[str, Any]], None] | None = None,
-        missing_env_fallback: Callable[[str], str | None] | None = None,
-    ) -> AppConfig:
-        """Load, merge, substitute, and validate the effective configuration.
+    @staticmethod
+    def _current_sources(
+        paths: tuple[str, str, str],
+    ) -> tuple[tuple[str, int | None, str], ...]:
+        return tuple((path, *_file_fingerprint(path)) for path in paths)
 
-        Returns the cached snapshot when every input file is unchanged.
-        When a reload candidate fails validation, the previously active
-        snapshot is retained atomically: ordinary consumers keep receiving
-        the last valid configuration instead of raising, while
-        :meth:`status` exposes the rejected candidate's error and identity.
-        """
-        config_mtime, config_digest = _file_fingerprint(config_path)
-        operator_mtime, operator_digest = _file_fingerprint(operator_path)
-        secrets_mtime, secrets_digest = _file_fingerprint(secrets_path)
-
-        force = self._force_reload
-        self._force_reload = False
-
-        current_sources = (
-            (config_path, config_mtime, config_digest),
-            (operator_path, operator_mtime, operator_digest),
-            (secrets_path, secrets_mtime, secrets_digest),
-        )
-
-        cached = self._active_snapshot
-        if cached is not None and not force:
-            by_path = {source.path: source for source in cached.sources}
-            if all(
-                by_path.get(path) is not None
-                and by_path[path].mtime_ns == mtime
-                and by_path[path].digest == digest
-                for path, mtime, digest in current_sources
-            ):
-                return cached.config
-            # Ordinary known-rejected operator candidates are not retried on
-            # every read. Credential-boundary failures are different: every
-            # consumer must continue to raise rather than receive stale keys.
-            if (
-                self._rejected is not None
-                and self._rejected.sources == current_sources
-                and not self._fail_closed_rejected
-            ):
-                return cached.config
-
-        if self._rejected is not None and self._rejected.sources != current_sources:
-            self._rejected = None
-            self._reload_failed = False
-            self._fail_closed_rejected = False
-
-        # Base/operator parse failures may retain the prior immutable snapshot.
-        # Secret-file parsing and substitution are credential revocation
-        # boundaries and must fail closed rather than serving stale secrets.
-        fail_closed = False
-        try:
-            if not os.path.exists(config_path):
-                raise FileNotFoundError(f"Config file not found: {config_path}")
-
-            raw_config = parse(config_path)
-            if not isinstance(raw_config, dict):
-                raise ConfigError(
-                    f"Config file {config_path} must contain a YAML mapping"
-                )
-
-            if os.path.exists(operator_path):
-                operator = parse(operator_path)
-                if operator is None:
-                    operator = {}
-                if not isinstance(operator, dict):
-                    raise ConfigError(
-                        f"Operator profile {operator_path} must contain a YAML mapping"
-                    )
-                raw_config = _merge(raw_config, operator)
-
-            fail_closed = True
-            secrets = _read_secrets_file(secrets_path)
-            secrets_authoritative = os.path.exists(secrets_path)
-            # Environment substitution is a deployment configuration check:
-            # a missing or blank required credential (e.g. a deleted
-            # FRED_API_KEY) must fail closed even when a prior snapshot
-            # exists. A stale snapshot built from a different environment must
-            # never keep serving credentials the operator removed or left
-            # unset. Credential parsing/substitution remains fail-closed; only
-            # complete validated material may become active.
-            raw_config = _substitute_recursive(
-                raw_config, secrets, secrets_authoritative, missing_env_fallback
-            )
-            fail_closed = False
-            if demo_transform is not None:
-                demo_transform(cast(dict[str, Any], raw_config))
-
-            try:
-                config = AppConfig.model_validate(raw_config)
-            except ValidationError as exc:
-                raise ConfigError(
-                    f"Invalid configuration in {config_path}: "
-                    f"{_format_validation_error(exc)}"
-                ) from exc
-        except Exception as exc:
-            self._reload_failed = True
-            self._fail_closed_rejected = fail_closed
-            self._rejected = RejectedConfig(
-                attempted_at=datetime.now(UTC).isoformat(timespec="seconds"),
-                error=_safe_config_error(exc),
-                sources=current_sources,
-            )
-            if (
-                not fail_closed
-                and cached is not None
-                and cached.sources
-                and cached.sources[0].path == config_path
-            ):
-                # Retain the prior valid snapshot only for a rejected
-                # replacement of the same deployment configuration. A caller
-                # switching to a different root config has no compatible
-                # fallback and must receive the startup/load error.
-                return cached.config
-            if isinstance(exc, ConfigError):
-                raise
+    def _assert_snapshot_current(
+        self, paths: tuple[str, str, str]
+    ) -> tuple[tuple[str, int | None, str], ...]:
+        """Return source identities, rejecting committed credential drift."""
+        current = self._current_sources(paths)
+        snapshot = self._active_snapshot
+        if snapshot is None:
+            return current
+        expected = tuple((source.path, source.digest) for source in snapshot.sources)
+        observed = tuple((path, digest) for path, _, digest in current)
+        if observed == expected:
+            return current
+        expected_by_path = dict(expected)
+        current_by_path = {path: digest for path, _, digest in current}
+        if current_by_path.get(paths[2]) != expected_by_path.get(paths[2]):
             raise ConfigError(
-                f"Failed to load configuration from {config_path}: "
-                f"{_safe_config_error(exc)}"
-            ) from exc
-        self._reload_failed = False
-        self._rejected = None
-        self._fail_closed_rejected = False
-        if (
-            self._active_snapshot is not None
-            and self._active_snapshot.sources
-            and os.path.realpath(self._active_snapshot.sources[0].path)
-            != os.path.realpath(config_path)
-        ):
-            # A different configuration root is a new process-local baseline
-            # (used by isolated CLI invocations and test deployments).
-            self._active_snapshot = None
-            self._previous_snapshot = None
-            self._startup_snapshot = None
+                "Committed credentials changed after startup; restart required "
+                "before configuration or paid work can continue"
+            )
+        return current
 
-        self._previous_snapshot = self._active_snapshot
-        self._ordinal += 1
-        self._active_snapshot = build_snapshot(
-            config,
-            sources=[
-                ConfigSource(
-                    path=config_path, mtime_ns=config_mtime, digest=config_digest
-                ),
-                ConfigSource(
-                    path=operator_path, mtime_ns=operator_mtime, digest=operator_digest
-                ),
-                ConfigSource(
-                    path=secrets_path, mtime_ns=secrets_mtime, digest=secrets_digest
-                ),
-            ],
-            ordinal=self._ordinal,
-        )
-        if self._startup_snapshot is None:
-            self._startup_snapshot = self._active_snapshot
-        return config
+    def load(self, config_path: str | None = None) -> AppConfig:
+        """Load once, then return the immutable process snapshot."""
+        resolved_config, operator, secrets = resolve_runtime_paths(config_path)
+        requested_paths = (resolved_config, operator, secrets)
+        with self._lock:
+            if self._paths is not None and self._paths != requested_paths:
+                raise ConfigError(
+                    "RuntimeConfigLoader is already bound to a different "
+                    "configuration path"
+                )
+            with committed_config_paths(operator, secrets) as (
+                committed_operator,
+                committed_secrets,
+            ):
+                if self._active_snapshot is not None:
+                    self._assert_snapshot_current(requested_paths)
+                    return self._active_snapshot.config
 
-    @_store_locked
+                current_sources = self._current_sources(requested_paths)
+                if not os.path.exists(resolved_config):
+                    raise ConfigError(f"Config file not found: {resolved_config}")
+                try:
+                    raw_config = _parse_yaml(resolved_config)
+                    if not isinstance(raw_config, dict):
+                        raise ConfigError(
+                            f"Config file {resolved_config} must contain a YAML mapping"
+                        )
+                    if os.path.exists(committed_operator):
+                        operator_values = _parse_yaml(committed_operator)
+                        if operator_values is None:
+                            operator_values = {}
+                        if not isinstance(operator_values, dict):
+                            raise ConfigError(
+                                f"Operator profile {committed_operator} must contain "
+                                "a YAML mapping"
+                            )
+                        raw_config = _merge(raw_config, operator_values)
+                    secrets_authoritative = os.path.exists(committed_secrets)
+                    secret_values = _read_secrets_file(committed_secrets)
+                    raw_config = _substitute_recursive(
+                        raw_config, secret_values, secrets_authoritative
+                    )
+                    assert isinstance(raw_config, dict)
+                    apply_demo_transform(raw_config)
+                    try:
+                        config = AppConfig.model_validate(raw_config)
+                    except ValidationError as exc:
+                        raise ConfigError(
+                            f"Invalid configuration in {resolved_config}: "
+                            f"{_format_validation_error(exc)}"
+                        ) from exc
+                except ConfigError:
+                    raise
+                except Exception as exc:
+                    raise ConfigError(
+                        f"Failed to load configuration from {resolved_config}: "
+                        f"{_safe_config_error(exc)}"
+                    ) from exc
+
+                self._active_snapshot = build_snapshot(
+                    config,
+                    sources=[
+                        ConfigSource(path=path, mtime_ns=mtime, digest=digest)
+                        for path, mtime, digest in current_sources
+                    ],
+                    ordinal=1,
+                )
+                # A failed candidate must not bind ensure_current() to its path.
+                self._paths = requested_paths
+                return config
+
     def validate_candidate(
         self,
-        *,
-        config_path: str,
         operator_yaml: str,
         secrets_env: str,
-        parse: Callable[[str], object],
-        parse_text: Callable[[str], object],
-        demo_transform: Callable[[dict[str, Any]], None] | None = None,
-        missing_env_fallback: Callable[[str], str | None] | None = None,
+        config_path: str | None = None,
     ) -> None:
-        """Validate a staged operator/secrets candidate without touching state.
-
-        Runs the same merge, substitution (secrets authoritative), demo
-        transform, and :class:`AppConfig` validation as :meth:`load`, but
-        mutates nothing (no cache, snapshots, or reload state).  Raises
-        :class:`ConfigError` on rejection.
-        """
-        if not os.path.exists(config_path):
-            raise ConfigError(f"Config file not found: {config_path}")
-        raw_config = parse(config_path)
+        """Validate staged setup contents without changing process state."""
+        resolved_config, _, _ = resolve_runtime_paths(config_path)
+        # Candidate validation does not touch the active snapshot. In particular,
+        # never take the loader mutex while a setup writer owns the file lock:
+        # a concurrent reader may own that mutex while awaiting the same file lock.
+        if not os.path.exists(resolved_config):
+            raise ConfigError(f"Config file not found: {resolved_config}")
+        raw_config = _parse_yaml(resolved_config)
         if not isinstance(raw_config, dict):
-            raise ConfigError(f"Config file {config_path} must contain a YAML mapping")
-        operator = parse_text(operator_yaml)
+            raise ConfigError(
+                f"Config file {resolved_config} must contain a YAML mapping"
+            )
+        operator = yaml.safe_load(operator_yaml)
         if operator is None:
             operator = {}
         if not isinstance(operator, dict):
             raise ConfigError("Operator profile must contain a YAML mapping")
         raw_config = _merge(raw_config, operator)
         try:
-            secrets = parse_secrets_file(secrets_env)
+            secret_values = parse_secrets_file(secrets_env)
         except ConfigError as exc:
             raise ConfigError(f"Invalid secrets candidate: {exc}") from exc
-        raw_config = _substitute_recursive(
-            raw_config, secrets, True, missing_env_fallback
-        )
-        if demo_transform is not None:
-            demo_transform(cast(dict[str, Any], raw_config))
+        raw_config = _substitute_recursive(raw_config, secret_values, True)
+        assert isinstance(raw_config, dict)
+        apply_demo_transform(raw_config)
         try:
             AppConfig.model_validate(raw_config)
         except ValidationError as exc:
@@ -2517,98 +2398,123 @@ class ConfigStore:
                 f"Invalid candidate configuration: {_format_validation_error(exc)}"
             ) from exc
 
-    @_store_locked
-    def reload(
-        self,
-        *,
-        config_path: str,
-        operator_path: str,
-        secrets_path: str,
-        parse: Callable[[str], object],
-        demo_transform: Callable[[dict[str, Any]], None] | None = None,
-        missing_env_fallback: Callable[[str], str | None] | None = None,
-    ) -> AppConfig:
-        """Invalidate the cache and load a fresh validated configuration."""
-        self._force_reload = True
-        return self.load(
-            config_path=config_path,
-            operator_path=operator_path,
-            secrets_path=secrets_path,
-            parse=parse,
-            demo_transform=demo_transform,
-            missing_env_fallback=missing_env_fallback,
-        )
+    def ensure_current(self) -> None:
+        """Fail closed whenever committed inputs changed since startup."""
+        with self._lock:
+            paths = self._paths or resolve_runtime_paths()
+            with committed_config_paths(paths[1], paths[2]):
+                # Resolve committed links under the setup lock, while retaining
+                # the original identities recorded in the immutable snapshot.
+                current = self._assert_snapshot_current(paths)
+                if self._active_snapshot is not None:
+                    expected = tuple(
+                        (source.path, source.digest)
+                        for source in self._active_snapshot.sources
+                    )
+                    observed = tuple((path, digest) for path, _, digest in current)
+                    if observed != expected:
+                        raise ConfigError(
+                            "Committed configuration changed after startup; restart "
+                            "required before work can continue"
+                        )
 
-    @_store_locked
-    def version(self) -> str | None:
-        """Content-derived version of the active configuration snapshot."""
-        return (
-            self._active_snapshot.version if self._active_snapshot is not None else None
-        )
+    def config_version(self) -> str | None:
+        with self._lock:
+            snapshot = self._active_snapshot
+            return snapshot.version if snapshot is not None else None
 
-    @_store_locked
-    def snapshot(self) -> ConfigSnapshot | None:
-        """The active immutable configuration snapshot, if any."""
-        return self._active_snapshot
+    def config_snapshot(self) -> ConfigSnapshot | None:
+        with self._lock:
+            return self._active_snapshot
 
-    @_store_locked
-    def restart_changes(self) -> list[str]:
-        """Restart-sensitive sections changed since this process started.
+    def restart_sensitive_changes(self) -> list[str]:
+        with self._lock:
+            snapshot = self._active_snapshot
+            if snapshot is None:
+                return []
+            try:
+                expected = tuple(
+                    (source.path, source.digest) for source in snapshot.sources
+                )
+                source_paths = (
+                    snapshot.sources[0].path,
+                    snapshot.sources[1].path,
+                    snapshot.sources[2].path,
+                )
+                current = tuple(
+                    (path, digest)
+                    for path, _, digest in self._current_sources(source_paths)
+                )
+            except (IndexError, OSError):
+                return sorted(RESTART_SENSITIVE_SECTIONS)
+            return sorted(RESTART_SENSITIVE_SECTIONS) if current != expected else []
 
-        Repeated reloads never clear a pending restart: only constructing a
-        new process-local store establishes a new startup baseline.
-        """
-        if self._reload_failed:
-            return ["reload_failed"]
-        if self._active_snapshot is None or self._startup_snapshot is None:
-            return []
-        return restart_changes(
-            self._startup_snapshot.config,
-            self._active_snapshot.config,
-        )
-
-    @_store_locked
     def restart_required(self) -> bool:
-        """True when the latest reload changed a restart-sensitive section."""
-        return bool(self.restart_changes())
+        with self._lock:
+            return bool(self.restart_sensitive_changes())
 
-    @_store_locked
-    def status(self) -> dict[str, Any]:
-        """Observability snapshot: version, restart state, rejected candidate."""
-        snapshot = self._active_snapshot
-        rejected = self._rejected
-        return {
-            "version": snapshot.version if snapshot else None,
-            "applied_at": snapshot.applied_at if snapshot else None,
-            "ordinal": snapshot.ordinal if snapshot else None,
-            "restart_required": self.restart_required(),
-            "restart_sensitive_changes": self.restart_changes(),
-            "sources": (
-                [
-                    {
-                        "path": source.path,
-                        "mtime_ns": source.mtime_ns,
-                        "digest": source.digest,
-                    }
-                    for source in snapshot.sources
-                ]
-                if snapshot
-                else []
-            ),
-            "last_reload": (
-                {
-                    "failed": True,
-                    "error": rejected.error,
-                    "attempted_at": rejected.attempted_at,
-                    "sources": [
-                        {"path": path, "mtime_ns": mtime, "digest": digest}
-                        for path, mtime, digest in rejected.sources
-                    ],
-                }
-                if rejected is not None
-                else None
-            ),
-        }
+    def config_status(self) -> dict[str, Any]:
+        with self._lock:
+            snapshot = self._active_snapshot
+            changes = self.restart_sensitive_changes()
+            return {
+                "version": snapshot.version if snapshot else None,
+                "applied_at": snapshot.applied_at if snapshot else None,
+                "ordinal": snapshot.ordinal if snapshot else None,
+                "restart_required": bool(changes),
+                "restart_sensitive_changes": changes,
+                "sources": (
+                    [
+                        {
+                            "path": source.path,
+                            "mtime_ns": source.mtime_ns,
+                            "digest": source.digest,
+                        }
+                        for source in snapshot.sources
+                    ]
+                    if snapshot
+                    else []
+                ),
+            }
+
+
+_SHARED_RUNTIME_LOADER = RuntimeConfigLoader()
+
+
+def load_config(config_path: str | None = None) -> AppConfig:
+    return _SHARED_RUNTIME_LOADER.load(config_path)
+
+
+def validate_candidate(
+    operator_yaml: str,
+    secrets_env: str,
+    config_path: str | None = None,
+) -> None:
+    _SHARED_RUNTIME_LOADER.validate_candidate(operator_yaml, secrets_env, config_path)
+
+
+def ensure_current() -> None:
+    _SHARED_RUNTIME_LOADER.ensure_current()
+
+
+def config_version() -> str | None:
+    return _SHARED_RUNTIME_LOADER.config_version()
+
+
+def config_snapshot() -> ConfigSnapshot | None:
+    return _SHARED_RUNTIME_LOADER.config_snapshot()
+
+
+def config_status() -> dict[str, Any]:
+    return _SHARED_RUNTIME_LOADER.config_status()
+
+
+def restart_required() -> bool:
+    return _SHARED_RUNTIME_LOADER.restart_required()
+
+
+def restart_sensitive_changes() -> list[str]:
+    return _SHARED_RUNTIME_LOADER.restart_sensitive_changes()
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -2618,7 +2524,6 @@ def _substitute_env_vars(
     value: str,
     secrets: dict[str, str],
     secrets_authoritative: bool,
-    missing_env_fallback: Callable[[str], str | None] | None,
 ) -> str:
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
@@ -2653,10 +2558,9 @@ def _substitute_env_vars(
             )
         if default is not None:
             return default
-        if missing_env_fallback is not None:
-            fallback = missing_env_fallback(var_name)
-            if fallback is not None:
-                return fallback
+        fallback = demo_missing_env_fallback(var_name)
+        if fallback is not None:
+            return fallback
         raise ConfigError(
             f"Environment variable '{var_name}' referenced in config but not set"
         )
@@ -2668,25 +2572,17 @@ def _substitute_recursive(
     obj: object,
     secrets: dict[str, str],
     secrets_authoritative: bool,
-    missing_env_fallback: Callable[[str], str | None] | None,
 ) -> object:
     if isinstance(obj, str):
-        return _substitute_env_vars(
-            obj, secrets, secrets_authoritative, missing_env_fallback
-        )
+        return _substitute_env_vars(obj, secrets, secrets_authoritative)
     if isinstance(obj, dict):
         return {
-            str(k): _substitute_recursive(
-                v, secrets, secrets_authoritative, missing_env_fallback
-            )
+            str(k): _substitute_recursive(v, secrets, secrets_authoritative)
             for k, v in obj.items()
         }
     if isinstance(obj, list):
         return [
-            _substitute_recursive(
-                item, secrets, secrets_authoritative, missing_env_fallback
-            )
-            for item in obj
+            _substitute_recursive(item, secrets, secrets_authoritative) for item in obj
         ]
     return obj
 
@@ -2706,7 +2602,9 @@ __all__ = [
     "ConfigError",
     "ConfigSnapshot",
     "ConfigSource",
-    "ConfigStore",
+    "DEFAULT_CONFIG_PATH",
+    "DEFAULT_OPERATOR_PATH",
+    "DEFAULT_SECRETS_PATH",
     "DEFAULT_LIFECYCLE_THRESHOLDS",
     "DEFAULT_MARKETS",
     "DEFAULT_PROMPT_TEMPLATES",
@@ -2751,7 +2649,6 @@ __all__ = [
     "RESTART_SENSITIVE_SECTIONS",
     "ReactionWindowsConfig",
     "ReadinessConfig",
-    "RejectedConfig",
     "RESEARCH_REASONING_EFFORT_LEVELS",
     "ResearchDiscoveryConfig",
     "ResearchGraphConfig",
@@ -2760,8 +2657,9 @@ __all__ = [
     "ResearchLimitsConfig",
     "ResearchStageConfig",
     "ReutersConfig",
-    "SourceSeriesConfig",
+    "RuntimeConfigLoader",
     "SecForm4IssuerConfig",
+    "SourceSeriesConfig",
     "StaleThresholdsConfig",
     "StoryClusteringConfig",
     "StoryConfirmationConfig",
@@ -2770,11 +2668,18 @@ __all__ = [
     "VenueCalendarConfig",
     "WatchlistConfig",
     "WatchlistInstrumentConfig",
+    "apply_demo_transform",
     "build_snapshot",
-    "config_restart_required",
+    "config_snapshot",
+    "config_status",
+    "config_version",
+    "ensure_current",
     "is_placeholder_credential",
+    "load_config",
     "parse_secrets_file",
-    "restart_changes",
-    "restart_projection",
+    "restart_required",
+    "restart_sensitive_changes",
+    "resolve_runtime_paths",
     "shared_state_lock",
+    "validate_candidate",
 ]

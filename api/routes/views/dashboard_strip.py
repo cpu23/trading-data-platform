@@ -21,7 +21,7 @@ from api_db import query_one
 from api_logging import get_logger
 from fastapi import APIRouter, Request
 
-import config as app_config
+from contracts.runtime_config import load_config
 from routes.json.regime import get_regime_current
 
 router = APIRouter()
@@ -175,7 +175,7 @@ def load_compact_strip(config: dict) -> dict:
 
 @router.get("/partials/dashboard/top-strip")
 def partial_top_strip(request: Request):
-    config = app_config.load_config()
+    config = load_config()
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,

@@ -6,8 +6,12 @@ crash recovery, poison terminal state, idempotent completion, and duplicate
 scheduler suppression.
 """
 
+import json
+import os
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -20,15 +24,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jobs import (
     OperationJob,
     accept_and_enqueue_operation,
-    claim_operation_jobs,
+    claim_jobs,
     enqueue_operation,
     latest_cycle_status,
     operation_queue_summary,
-    reconcile_operation_jobs,
-    renew_operation_job_lease,
-    retry_operation_job,
-    start_operation_job,
-    succeed_operation_job,
+    reconcile_jobs,
+    renew_job_lease,
+    retry_job,
+    start_job,
+    succeed_job,
 )
 from operation_worker import OperationWorker
 from role_heartbeat import (
@@ -68,7 +72,8 @@ CREATE TABLE jobs (
     job_type TEXT,
     run_kind TEXT,
     requested_component TEXT,
-    correlation_id TEXT NOT NULL UNIQUE,
+    source_event_id TEXT,
+    correlation_id TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'queued',
     priority INTEGER NOT NULL DEFAULT 100,
     dedupe_key TEXT NOT NULL,
@@ -86,9 +91,17 @@ CREATE TABLE jobs (
     completed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ
 );
-CREATE UNIQUE INDEX idx_jobs_active_identity
+CREATE UNIQUE INDEX idx_jobs_active_analysis_identity
+    ON jobs (job_type, dedupe_key, input_fingerprint)
+    WHERE job_type IS NOT NULL
+      AND state IN ('queued','leased','running','failed_retryable');
+CREATE UNIQUE INDEX idx_jobs_active_operation_identity
     ON jobs (run_kind, dedupe_key, input_fingerprint)
-    WHERE state IN ('queued','leased','running','failed_retryable');
+    WHERE run_kind IS NOT NULL
+      AND state IN ('queued','leased','running','failed_retryable');
+CREATE UNIQUE INDEX idx_jobs_operation_correlation
+    ON jobs (correlation_id)
+    WHERE run_kind IS NOT NULL;
 CREATE TABLE role_heartbeats (
     role TEXT NOT NULL,
     instance_id TEXT NOT NULL,
@@ -140,7 +153,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         }
         defaults.update(kwargs)
         defaults["correlation_id"] = kwargs.get("correlation_id") or str(uuid4())
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             return accept_and_enqueue_operation(self.config, **defaults)
 
     def _run_row(self, correlation_id: str) -> dict:
@@ -183,7 +196,7 @@ class OperationJobSqliteTests(unittest.TestCase):
     def test_enqueue_failure_rolls_back_acceptance(self):
         # Invalid run_kind raises inside the same transaction; the cycle_runs
         # acceptance row must not survive.
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             with self.assertRaises(ValueError):
                 accept_and_enqueue_operation(
                     self.config,
@@ -283,25 +296,27 @@ class OperationJobSqliteTests(unittest.TestCase):
         _, enqueued = self._accept_and_enqueue(max_attempts=5)
         job_id = str(enqueued.job.id)
         with self.session() as session:
-            claimed = claim_operation_jobs(session, "worker-a", lease_seconds=120)
+            claimed = claim_jobs(
+                session, "worker-a", lease_seconds=120, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         self.assertEqual(claimed[0].state, "leased")
         self.assertEqual(claimed[0].claimed_by, "worker-a")
         self.assertEqual(claimed[0].attempt_count, 1)
         with self.session() as session:
-            second = claim_operation_jobs(session, "worker-b", lease_seconds=120)
+            second = claim_jobs(
+                session, "worker-b", lease_seconds=120, run_kinds=["collector"]
+            )
         self.assertEqual(second, [])
         with self.session() as session:
-            renewed = renew_operation_job_lease(
-                session, job_id, "worker-a", lease_seconds=120
-            )
+            renewed = renew_job_lease(session, job_id, "worker-a", lease_seconds=120)
         self.assertTrue(renewed)
 
     def test_expired_lease_is_reclaimable_and_start_guards_owner(self):
         _, enqueued = self._accept_and_enqueue(max_attempts=5)
         job_id = str(enqueued.job.id)
         with self.session() as session:
-            claim_operation_jobs(session, "worker-a", lease_seconds=1)
+            claim_jobs(session, "worker-a", lease_seconds=1, run_kinds=["collector"])
         with self.session() as session:
             # Simulate a crashed worker: expire the lease directly.
             session.execute(
@@ -309,40 +324,42 @@ class OperationJobSqliteTests(unittest.TestCase):
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
         with self.session() as session:
-            claimed = claim_operation_jobs(session, "worker-b", lease_seconds=120)
+            claimed = claim_jobs(
+                session, "worker-b", lease_seconds=120, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         self.assertEqual(claimed[0].claimed_by, "worker-b")
         self.assertEqual(claimed[0].attempt_count, 2)
         with self.session() as session:
             # Old owner can no longer start or succeed the job.
-            self.assertFalse(start_operation_job(session, job_id, "worker-a"))
-            self.assertTrue(start_operation_job(session, job_id, "worker-b"))
-            self.assertFalse(succeed_operation_job(session, job_id, "worker-a"))
-            self.assertTrue(succeed_operation_job(session, job_id, "worker-b"))
+            self.assertFalse(start_job(session, job_id, "worker-a"))
+            self.assertTrue(start_job(session, job_id, "worker-b"))
+            self.assertFalse(succeed_job(session, job_id, "worker-a"))
+            self.assertTrue(succeed_job(session, job_id, "worker-b"))
 
     def test_reconcile_marks_expired_leases_retryable_then_terminal(self):
         _, enqueued = self._accept_and_enqueue(max_attempts=2)
         job_id = str(enqueued.job.id)
         with self.session() as session:
-            claim_operation_jobs(session, "worker-a", lease_seconds=120)
+            claim_jobs(session, "worker-a", lease_seconds=120, run_kinds=["collector"])
         with self.session() as session:
             session.execute(
                 text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
-            repaired = reconcile_operation_jobs(session, limit=10)
+            repaired = reconcile_jobs(session, limit=10, run_kinds=["collector"])
         self.assertEqual(repaired, 1)
         row = self._job_row(job_id)
         self.assertEqual(row["state"], "failed_retryable")
         # Second expiry after another claim exhausts attempts -> poison.
         with self.session() as session:
-            claim_operation_jobs(session, "worker-b", lease_seconds=120)
+            claim_jobs(session, "worker-b", lease_seconds=120, run_kinds=["collector"])
         with self.session() as session:
             session.execute(
                 text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
                 {"id": job_id, "expired": datetime.now(UTC) - timedelta(seconds=1)},
             )
-            repaired = reconcile_operation_jobs(session, limit=10)
+            repaired = reconcile_jobs(session, limit=10, run_kinds=["collector"])
         self.assertEqual(repaired, 1)
         row = self._job_row(job_id)
         self.assertEqual(row["state"], "failed_terminal")
@@ -354,8 +371,8 @@ class OperationJobSqliteTests(unittest.TestCase):
         job_id = str(enqueued.job.id)
         correlation_id = str(enqueued.job.correlation_id)
         with self.session() as session:
-            claim_operation_jobs(session, "worker-a", lease_seconds=120)
-            self.assertTrue(start_operation_job(session, job_id, "worker-a"))
+            claim_jobs(session, "worker-a", lease_seconds=120, run_kinds=["collector"])
+            self.assertTrue(start_job(session, job_id, "worker-a"))
             session.execute(
                 text(
                     "UPDATE cycle_runs SET status = 'running', worker_id = 'worker-a:r1', "
@@ -364,7 +381,7 @@ class OperationJobSqliteTests(unittest.TestCase):
                 {"n": datetime.now(UTC), "c": correlation_id},
             )
         with self.session() as session:
-            retried = retry_operation_job(
+            retried = retry_job(
                 session,
                 job_id,
                 "worker-a",
@@ -383,12 +400,14 @@ class OperationJobSqliteTests(unittest.TestCase):
                 text("UPDATE jobs SET not_before = :n WHERE id = :id"),
                 {"n": datetime.now(UTC), "id": job_id},
             )
-            claimed = claim_operation_jobs(session, "worker-b", lease_seconds=120)
+            claimed = claim_jobs(
+                session, "worker-b", lease_seconds=120, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         self.assertEqual(claimed[0].claimed_by, "worker-b")
         with self.session() as session:
-            self.assertTrue(start_operation_job(session, job_id, "worker-b"))
-            self.assertTrue(succeed_operation_job(session, job_id, "worker-b"))
+            self.assertTrue(start_job(session, job_id, "worker-b"))
+            self.assertTrue(succeed_job(session, job_id, "worker-b"))
 
     def test_success_finalize_is_atomic_and_rolls_back_on_lease_lost(self):
         _, enqueued = self._accept_and_enqueue(max_attempts=3, run_kind="collector")
@@ -397,6 +416,11 @@ class OperationJobSqliteTests(unittest.TestCase):
         fixed = uuid4()
         run_worker_id = f"worker-x:{fixed}"
         with self.session() as session:
+            claimed_rows = claim_jobs(
+                session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+            )
+        self.assertEqual(len(claimed_rows), 1)
+        with self.session() as session:
             session.execute(
                 text(
                     "UPDATE cycle_runs SET status = 'running', worker_id = :w, "
@@ -404,12 +428,13 @@ class OperationJobSqliteTests(unittest.TestCase):
                 ),
                 {"w": run_worker_id, "n": datetime.now(UTC), "c": correlation_id},
             )
+        claimed = OperationJob.from_row(self._job_row(job_id))
         worker = OperationWorker(
             {"event_pipeline": {"jobs": {"enabled": True}}},
             worker_id="worker-x",
             session_factory=lambda cfg: self.session(),
         )
-        claimed = OperationJob.from_row(self._job_row(job_id))
+
         with (
             patch("operation_worker.uuid4", return_value=fixed),
             patch("operation_worker.start_run", return_value=True),
@@ -419,10 +444,10 @@ class OperationJobSqliteTests(unittest.TestCase):
                 "_dispatch",
                 return_value={"status": "success", "error": None},
             ),
-            patch("operation_worker.succeed_operation_job", return_value=False),
+            patch("operation_worker.succeed_job", return_value=False),
             # Simulate the reclaimed job's new owner already taking it over, so
             # the retry transition no-ops and the rollback stands alone.
-            patch("operation_worker.retry_operation_job", return_value=False),
+            patch("operation_worker.retry_job", return_value=False),
         ):
             heartbeat.return_value.__enter__ = Mock(return_value=None)
             heartbeat.return_value.__exit__ = Mock(return_value=False)
@@ -441,6 +466,11 @@ class OperationJobSqliteTests(unittest.TestCase):
         fixed = uuid4()
         run_worker_id = f"worker-x:{fixed}"
         with self.session() as session:
+            claimed_rows = claim_jobs(
+                session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+            )
+        self.assertEqual(len(claimed_rows), 1)
+        with self.session() as session:
             session.execute(
                 text(
                     "UPDATE cycle_runs SET status = 'running', worker_id = :w, "
@@ -448,12 +478,12 @@ class OperationJobSqliteTests(unittest.TestCase):
                 ),
                 {"w": run_worker_id, "n": datetime.now(UTC), "c": correlation_id},
             )
+        claimed = OperationJob.from_row(self._job_row(job_id))
         worker = OperationWorker(
             {"event_pipeline": {"jobs": {"enabled": True}}},
             worker_id="worker-x",
             session_factory=lambda cfg: self.session(),
         )
-        claimed = OperationJob.from_row(self._job_row(job_id))
         with (
             patch("operation_worker.uuid4", return_value=fixed),
             patch("operation_worker.start_run", return_value=True),
@@ -490,7 +520,9 @@ class OperationJobSqliteTests(unittest.TestCase):
                 },
             )
         with self.session() as session:
-            claimed = claim_operation_jobs(session, "worker-c", lease_seconds=120)
+            claimed = claim_jobs(
+                session, "worker-c", lease_seconds=120, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         run = self._run_row(correlation_id)
         self.assertEqual(run["status"], "accepted")
@@ -524,8 +556,8 @@ class OperationJobSqliteTests(unittest.TestCase):
                 input_fingerprint="f" * 64,
                 payload={"mode": "refresh"},
             )
-        with patch("recovery._get_session", side_effect=lambda cfg: self.session()):
-            result = recover_operation_runs(self.config)
+        with self.session() as session:
+            result = recover_operation_runs(session)
         self.assertEqual(result["reclaimed_ids"], ["active-run"])
         self.assertEqual(result["accepted_ids"], ["stale-accepted"])
         self.assertEqual(result["running_ids"], ["orphan-run"])
@@ -555,7 +587,11 @@ class OperationJobSqliteTests(unittest.TestCase):
 
         def claim_and_handle(expectation):
             with self.session() as session:
-                claim_operation_jobs(session, "worker-x", lease_seconds=120)
+                claimed_rows = claim_jobs(
+                    session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+                )
+            self.assertEqual(len(claimed_rows), 1)
+            with self.session() as session:
                 session.execute(
                     text(
                         "UPDATE cycle_runs SET status = 'running', worker_id = :w, "
@@ -572,12 +608,34 @@ class OperationJobSqliteTests(unittest.TestCase):
             ):
                 heartbeat.return_value.__enter__ = Mock(return_value=None)
                 heartbeat.return_value.__exit__ = Mock(return_value=False)
-                worker._handle(claimed, {"retry": {"max_attempts": 3}})
+                worker._handle(
+                    claimed,
+                    {
+                        "retry": {
+                            "max_attempts": 3,
+                            "base_seconds": 5,
+                            "jitter_seconds": 0,
+                        }
+                    },
+                )
 
         claim_and_handle(results[0])
         # Retryable failure: job went failed_retryable and released the run row.
         self.assertEqual(self._job_row(job_id)["state"], "failed_retryable")
         self.assertEqual(self._run_row(correlation_id)["status"], "accepted")
+        retry_row = self._job_row(job_id)
+        self.assertEqual(retry_row["last_error"], "source unavailable")
+        with self.session() as session:
+            due = session.execute(
+                text("SELECT not_before > CURRENT_TIMESTAMP FROM jobs WHERE id = :id"),
+                {"id": job_id},
+            ).scalar()
+            self.assertTrue(due)
+            # Advance the deterministic fixture clock past the retry backoff.
+            session.execute(
+                text("UPDATE jobs SET not_before = :n WHERE id = :id"),
+                {"n": datetime.now(UTC), "id": job_id},
+            )
 
         # Second claim: the run executes and finalizes normally.
         claim_and_handle(results[1])
@@ -609,7 +667,9 @@ class OperationJobSqliteTests(unittest.TestCase):
             heartbeat.return_value.__enter__ = Mock(return_value=None)
             heartbeat.return_value.__exit__ = Mock(return_value=False)
             with self.session() as session:
-                claim_operation_jobs(session, "worker-x", lease_seconds=120)
+                claim_jobs(
+                    session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+                )
                 session.execute(
                     text(
                         "UPDATE cycle_runs SET status = 'running', worker_id = :w, "
@@ -651,7 +711,9 @@ class OperationJobSqliteTests(unittest.TestCase):
             heartbeat.return_value.__enter__ = Mock(return_value=None)
             heartbeat.return_value.__exit__ = Mock(return_value=False)
             with self.session() as session:
-                claim_operation_jobs(session, "worker-x", lease_seconds=120)
+                claim_jobs(
+                    session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+                )
                 session.execute(
                     text(
                         "UPDATE cycle_runs SET status = 'running', worker_id = :w, "
@@ -669,7 +731,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         _, enqueued = self._accept_and_enqueue(max_attempts=5)
         job_id = str(enqueued.job.id)
         with self.session() as session:
-            claim_operation_jobs(session, "worker-a", lease_seconds=1)
+            claim_jobs(session, "worker-a", lease_seconds=1, run_kinds=["collector"])
         with self.session() as session:
             session.execute(
                 text("UPDATE jobs SET lease_expires_at = :expired WHERE id = :id"),
@@ -678,13 +740,15 @@ class OperationJobSqliteTests(unittest.TestCase):
         with self.session() as session:
             # Fail closed: a delayed worker must not start or renew a lease
             # that already expired, even before another worker reclaims it.
-            self.assertFalse(start_operation_job(session, job_id, "worker-a"))
-            self.assertFalse(renew_operation_job_lease(session, job_id, "worker-a", 60))
+            self.assertFalse(start_job(session, job_id, "worker-a"))
+            self.assertFalse(renew_job_lease(session, job_id, "worker-a", 60))
             # A fresh claim by the same worker restores ownership.
-            claimed = claim_operation_jobs(session, "worker-a", lease_seconds=60)
+            claimed = claim_jobs(
+                session, "worker-a", lease_seconds=60, run_kinds=["collector"]
+            )
         self.assertEqual(len(claimed), 1)
         with self.session() as session:
-            self.assertTrue(start_operation_job(session, job_id, "worker-a"))
+            self.assertTrue(start_job(session, job_id, "worker-a"))
 
     def test_terminal_prior_job_allows_same_identity_enqueue(self):
         _, enqueued = self._accept_and_enqueue(max_attempts=1)
@@ -749,7 +813,9 @@ class OperationJobSqliteTests(unittest.TestCase):
             heartbeat.return_value.__enter__ = Mock(return_value=None)
             heartbeat.return_value.__exit__ = Mock(return_value=False)
             with self.session() as session:
-                claim_operation_jobs(session, "worker-x", lease_seconds=120)
+                claim_jobs(
+                    session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+                )
             claimed = OperationJob.from_row(self._job_row(job_id))
             worker._handle(claimed, {"retry": {"max_attempts": 1}})
 
@@ -783,7 +849,12 @@ class OperationJobSqliteTests(unittest.TestCase):
                     patch("operation_worker.start_run", return_value=False),
                 ):
                     with self.session() as session:
-                        claim_operation_jobs(session, "worker-x", lease_seconds=120)
+                        claim_jobs(
+                            session,
+                            "worker-x",
+                            lease_seconds=120,
+                            run_kinds=["collector"],
+                        )
                     claimed = OperationJob.from_row(self._job_row(job_id))
                     worker._handle(claimed, {"retry": {"max_attempts": 3}})
                 self.assertEqual(self._job_row(job_id)["state"], "failed_terminal")
@@ -851,7 +922,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         )
         with (
             patch("operation_worker.recover_operation_runs", return_value={"total": 0}),
-            patch("operation_worker.claim_operation_jobs", return_value=[]) as claim,
+            patch("operation_worker.claim_jobs", return_value=[]) as claim,
         ):
             worker.poll_once()
         self.assertEqual(claim.call_args.kwargs["limit"], 1)
@@ -866,19 +937,19 @@ class OperationJobSqliteTests(unittest.TestCase):
                 return_value=[
                     # Newer stopped sibling (its last write is more recent).
                     {
-                        "role": "quotes",
+                        "role": "worker",
                         "instance_id": "b:1",
                         "status": "stopped",
                         "last_heartbeat_at": now,
-                        "detail": {},
+                        "detail": {"quotes": {"status": "stopped"}},
                     },
                     # Older but healthy running replica.
                     {
-                        "role": "quotes",
+                        "role": "worker",
                         "instance_id": "a:1",
-                        "status": "connected",
+                        "status": "running",
                         "last_heartbeat_at": now - timedelta(seconds=2),
-                        "detail": {"error": None},
+                        "detail": {"quotes": {"status": "connected", "error": None}},
                     },
                 ],
             ),
@@ -908,6 +979,11 @@ class OperationJobSqliteTests(unittest.TestCase):
         correlation_id = str(enqueued.job.correlation_id)
         fixed = uuid4()
         run_worker_id = f"worker-x:{fixed}"
+        with self.session() as session:
+            claimed_rows = claim_jobs(
+                session, "worker-x", lease_seconds=120, run_kinds=["processor"]
+            )
+        self.assertEqual(len(claimed_rows), 1)
         with self.session() as session:
             session.execute(
                 text(
@@ -952,6 +1028,11 @@ class OperationJobSqliteTests(unittest.TestCase):
                 ),
                 {"cid": correlation_id},
             )
+        with self.session() as session:
+            claimed_rows = claim_jobs(
+                session, "worker-x", lease_seconds=120, run_kinds=["collector"]
+            )
+        self.assertEqual(len(claimed_rows), 1)
         worker = OperationWorker(
             {"event_pipeline": {"jobs": {"enabled": True}}},
             worker_id="worker-x",
@@ -1017,13 +1098,13 @@ class OperationJobSqliteTests(unittest.TestCase):
     # ── durable status helpers ────────────────────────────────────────────
 
     def test_latest_cycle_status_reads_durable_rows(self):
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             self.assertEqual(
                 latest_cycle_status(self.config),
                 {"running": False, "correlation_id": None},
             )
         correlation_id = str(uuid4())
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             accept_and_enqueue_operation(
                 self.config,
                 correlation_id=correlation_id,
@@ -1034,7 +1115,7 @@ class OperationJobSqliteTests(unittest.TestCase):
                 input_fingerprint=correlation_id,
                 payload={"mode": "refresh"},
             )
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             status = latest_cycle_status(self.config)
         self.assertTrue(status["running"])
         self.assertEqual(status["correlation_id"], correlation_id)
@@ -1043,7 +1124,7 @@ class OperationJobSqliteTests(unittest.TestCase):
         self._accept_and_enqueue()
         with self.session() as session:
             session.execute(text("UPDATE jobs SET state = 'running' WHERE 1=1"))
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch("jobs.get_session", side_effect=lambda cfg: self.session()):
             summary = operation_queue_summary(self.config)
         self.assertEqual(summary["active"], 1)
         self.assertEqual(summary["counts"].get("running"), 1)
@@ -1051,7 +1132,9 @@ class OperationJobSqliteTests(unittest.TestCase):
     # ── role heartbeats ───────────────────────────────────────────────────
 
     def test_role_heartbeat_upsert_is_per_instance(self):
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch(
+            "role_heartbeat.get_session", side_effect=lambda cfg: self.session()
+        ):
             update_role_heartbeat(
                 self.config, "worker", "running", {"pid": 1}, instance_id="host:1"
             )
@@ -1075,7 +1158,9 @@ class OperationJobSqliteTests(unittest.TestCase):
         self.assertFalse(heartbeat_is_fresh(stale))
 
     def test_two_replica_heartbeats_healthy_with_stopped_sibling(self):
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch(
+            "role_heartbeat.get_session", side_effect=lambda cfg: self.session()
+        ):
             update_role_heartbeat(
                 self.config, "worker", "running", {}, instance_id="host-a:1"
             )
@@ -1087,7 +1172,9 @@ class OperationJobSqliteTests(unittest.TestCase):
             )
 
     def test_prune_stale_role_heartbeats_is_bounded(self):
-        with patch("orchestrator.get_session", side_effect=lambda cfg: self.session()):
+        with patch(
+            "role_heartbeat.get_session", side_effect=lambda cfg: self.session()
+        ):
             update_role_heartbeat(
                 self.config, "worker", "running", {}, instance_id="host:1"
             )
@@ -1149,7 +1236,9 @@ class RoleCheckCommandTests(unittest.TestCase):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
+            patch(
+                "contracts.runtime_config.load_config", return_value=self.WORKER_CONFIG
+            ),
             patch("db.check_connection", return_value=True),
             patch("roles.fresh_role_heartbeats", return_value=[]),
         ):
@@ -1159,7 +1248,9 @@ class RoleCheckCommandTests(unittest.TestCase):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
+            patch(
+                "contracts.runtime_config.load_config", return_value=self.WORKER_CONFIG
+            ),
             patch("db.check_connection", return_value=True),
             patch(
                 "roles.fresh_role_heartbeats",
@@ -1181,7 +1272,7 @@ class RoleCheckCommandTests(unittest.TestCase):
 
         config = {"event_pipeline": {"jobs": {"enabled": True}}}
         with (
-            patch("config_loader.load_config", return_value=config),
+            patch("contracts.runtime_config.load_config", return_value=config),
             patch("db.check_connection", return_value=True),
             patch(
                 "roles.fresh_role_heartbeats",
@@ -1268,7 +1359,9 @@ class RoleCheckCommandTests(unittest.TestCase):
         import roles
 
         with (
-            patch("config_loader.load_config", return_value=self.WORKER_CONFIG),
+            patch(
+                "contracts.runtime_config.load_config", return_value=self.WORKER_CONFIG
+            ),
             patch("db.check_connection", return_value=True),
             patch(
                 "roles.fresh_role_heartbeats",
@@ -1335,46 +1428,270 @@ class RoleCheckCommandTests(unittest.TestCase):
         statement = connection.execute.call_args.args[0]
         self.assertIn("pg_try_advisory_lock", str(statement))
 
-    def test_config_version_exit_hook_triggers_graceful_stop(self):
+    def test_config_version_exit_hook_requests_boundary_for_stale_config(self):
         import roles
 
-        calls = {"versions": []}
+        from contracts.runtime_config import ConfigError
 
-        def fake_load_config():
-            calls["versions"].append("reload")
-            return {}
-
-        with (
-            patch("config_loader.load_config", side_effect=fake_load_config),
-            patch("config_loader.config_version", return_value="v2"),
-        ):
-            hook = roles._config_version_exit_hook("v1")
-            self.assertTrue(hook())
-        self.assertEqual(calls["versions"], ["reload"])
-        # A rejected reload keeps the old snapshot serving.
-        with (
-            patch(
-                "config_loader.load_config", side_effect=RuntimeError("reload rejected")
-            ),
-            patch("config_loader.config_version", return_value="v2"),
-        ):
-            hook = roles._config_version_exit_hook("v1")
-            self.assertFalse(hook())
-        from config_loader import ConfigError
-
-        # Credential-boundary failures are raised by ConfigStore and require a
-        # safe-boundary restart instead of indefinite use of startup secrets.
+        # A stale committed configuration must stop the worker before the
+        # next job boundary; the hook delegates freshness to the loader.
         with patch(
-            "config_loader.load_config",
-            side_effect=ConfigError("managed secrets invalid"),
-        ):
-            hook = roles._config_version_exit_hook("v1")
+            "contracts.runtime_config.ensure_current",
+            side_effect=ConfigError("configuration changed"),
+        ) as ensure_current:
+            hook = roles._config_version_exit_hook("startup-version")
             self.assertTrue(hook())
+        ensure_current.assert_called_once_with()
+
+    def test_config_version_exit_hook_continues_for_current_config(self):
+        import roles
+
+        with patch("contracts.runtime_config.ensure_current") as ensure_current:
+            hook = roles._config_version_exit_hook("startup-version")
+            self.assertFalse(hook())
+        ensure_current.assert_called_once_with()
 
     def test_check_role_rejects_unknown_role(self):
         import roles
 
         self.assertEqual(roles.check_role("nope"), 2)
+
+
+class WorkerHealthProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.health_path = Path(self.temp_dir.name) / "worker_health.json"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_worker_health_missing_file_fails(self):
+        from worker_health import check_worker_health
+
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("missing", msg)
+
+    def test_worker_health_invalid_json_fails(self):
+        from worker_health import check_worker_health
+
+        self.health_path.write_text("not json", encoding="utf-8")
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("invalid", msg)
+
+    def test_worker_health_dead_pid_fails(self):
+        from worker_health import check_worker_health, write_worker_health
+
+        # PID 99999999 is not running
+        write_worker_health(
+            status="running",
+            pid=99999999,
+            path=self.health_path,
+        )
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("not alive", msg)
+
+    def test_worker_health_pid_reuse_fails(self):
+        from worker_health import _get_boot_id, check_worker_health
+
+        payload = {
+            "status": "running",
+            "pid": os.getpid(),
+            "start_time": 999999999,  # Mismatched start_time simulates reused PID
+            "boot_id": _get_boot_id(),
+            "timestamp": time.time(),
+        }
+        self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("start time mismatch", msg)
+
+    def test_worker_health_boot_id_mismatch_fails(self):
+        from worker_health import _get_process_start_time, check_worker_health
+
+        payload = {
+            "status": "running",
+            "pid": os.getpid(),
+            "start_time": _get_process_start_time(os.getpid()),
+            "boot_id": "different-system-boot-uuid",
+            "timestamp": time.time(),
+        }
+        self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("boot identity mismatch", msg)
+
+    def test_worker_health_missing_or_invalid_boot_id_fails(self):
+        from worker_health import _get_process_start_time, check_worker_health
+
+        for bad_boot in [None, "", "   ", True, False, 123, ["uuid"]]:
+            payload = {
+                "status": "running",
+                "pid": os.getpid(),
+                "start_time": _get_process_start_time(os.getpid()),
+                "boot_id": bad_boot,
+                "timestamp": time.time(),
+            }
+            self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+            code, msg = check_worker_health(path=self.health_path)
+            self.assertEqual(code, 1, f"Failed for bad_boot={bad_boot!r}")
+            self.assertIn("boot", msg)
+
+    def test_worker_health_missing_or_invalid_start_time_fails(self):
+        from worker_health import _get_boot_id, check_worker_health
+
+        for bad_st in [
+            None,
+            -1,
+            -100,
+            True,
+            False,
+            "12345",
+            float("nan"),
+            float("inf"),
+        ]:
+            payload = {
+                "status": "running",
+                "pid": os.getpid(),
+                "start_time": bad_st,
+                "boot_id": _get_boot_id(),
+                "timestamp": time.time(),
+            }
+            self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+            code, msg = check_worker_health(path=self.health_path)
+            self.assertEqual(code, 1, f"Failed for bad_st={bad_st!r}")
+            self.assertIn("start time", msg)
+
+    def test_worker_health_oversized_and_invalid_pid_fails(self):
+        from worker_health import _get_boot_id, _is_pid_alive, check_worker_health
+
+        oversized_pid = 10**30
+        self.assertFalse(_is_pid_alive(oversized_pid))
+        self.assertFalse(_is_pid_alive(-1))
+        self.assertFalse(_is_pid_alive(True))  # type: ignore[arg-type]
+
+        for bad_pid in [oversized_pid, -1, 0, True, False, "1234"]:
+            payload = {
+                "status": "running",
+                "pid": bad_pid,
+                "start_time": 100,
+                "boot_id": _get_boot_id(),
+                "timestamp": time.time(),
+            }
+            self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+            code, msg = check_worker_health(path=self.health_path)
+            self.assertEqual(code, 1, f"Failed for bad_pid={bad_pid!r}")
+
+    def test_worker_health_nonfinite_and_malformed_timestamp_fails(self):
+        from worker_health import (
+            _get_boot_id,
+            _get_process_start_time,
+            check_worker_health,
+        )
+
+        for bad_ts in [
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -1.0,
+            0,
+            None,
+            "2026-09-17",
+        ]:
+            payload = {
+                "status": "running",
+                "pid": os.getpid(),
+                "start_time": _get_process_start_time(os.getpid()),
+                "boot_id": _get_boot_id(),
+                "timestamp": bad_ts,
+            }
+            self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+            code, msg = check_worker_health(path=self.health_path)
+            self.assertEqual(code, 1, f"Failed for bad_ts={bad_ts!r}")
+            self.assertIn("invalid timestamp", msg)
+
+    def test_worker_health_invalid_timeout_fails(self):
+        from worker_health import check_worker_health, write_worker_health
+
+        write_worker_health(status="running", path=self.health_path)
+        for bad_to in [True, False, float("nan"), float("inf"), -1.0, 0]:
+            code, msg = check_worker_health(
+                path=self.health_path, timeout_seconds=bad_to
+            )
+            self.assertEqual(code, 1, f"Failed for bad_timeout={bad_to!r}")
+            self.assertIn("invalid timeout", msg)
+
+    def test_worker_health_fresh_running_succeeds(self):
+        from worker_health import check_worker_health, write_worker_health
+
+        write_worker_health(
+            status="running",
+            pid=os.getpid(),
+            path=self.health_path,
+        )
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 0)
+        self.assertIn("healthy", msg)
+
+    def test_worker_health_stale_timestamp_fails(self):
+        from worker_health import check_worker_health, write_worker_health
+
+        write_worker_health(
+            status="running",
+            pid=os.getpid(),
+            path=self.health_path,
+        )
+        time.sleep(0.02)
+        code, msg = check_worker_health(path=self.health_path, timeout_seconds=0.01)
+        self.assertEqual(code, 1)
+        self.assertIn("stale", msg)
+
+    def test_worker_health_future_timestamp_fails(self):
+        from worker_health import (
+            _get_boot_id,
+            _get_process_start_time,
+            check_worker_health,
+        )
+
+        payload = {
+            "status": "running",
+            "pid": os.getpid(),
+            "start_time": _get_process_start_time(os.getpid()),
+            "boot_id": _get_boot_id(),
+            "timestamp": time.time() + 3600,
+        }
+        self.health_path.write_text(json.dumps(payload), encoding="utf-8")
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("future", msg)
+
+    def test_worker_health_stopped_status_fails(self):
+        from worker_health import check_worker_health, write_worker_health
+
+        write_worker_health(
+            status="stopped",
+            pid=os.getpid(),
+            path=self.health_path,
+        )
+        code, msg = check_worker_health(path=self.health_path)
+        self.assertEqual(code, 1)
+        self.assertIn("status is 'stopped'", msg)
+
+    def test_worker_health_clear_removes_file(self):
+        from worker_health import clear_worker_health, write_worker_health
+
+        write_worker_health(
+            status="running",
+            pid=os.getpid(),
+            path=self.health_path,
+        )
+        self.assertTrue(self.health_path.exists())
+        clear_worker_health(path=self.health_path)
+        self.assertFalse(self.health_path.exists())
 
 
 if __name__ == "__main__":

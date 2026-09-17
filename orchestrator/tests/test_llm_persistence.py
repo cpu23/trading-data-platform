@@ -1,12 +1,10 @@
 import json
-import sys
 import unittest
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
+import processor_execution
+import publication
 from llm_client import LLMValidationError
 from processors.briefing import DailyBriefingProcessor
 from processors.event_impact import EventImpactProcessor
@@ -84,8 +82,6 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
     def _run_processor_with_writes(
         self, processor_result, *, opinion_write, extra_write=None
     ):
-        import orchestrator
-
         processor = Mock()
         opinion_write_effect = (
             {"side_effect": opinion_write}
@@ -94,21 +90,23 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         )
         processor.process.return_value = processor_result
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
+            patch.object(processor_execution, "get_processor", return_value=processor),
             patch.object(
-                orchestrator, "build_processor_fingerprint", return_value="f" * 64
+                processor_execution,
+                "build_processor_fingerprint",
+                return_value="f" * 64,
             ),
             patch.object(
-                orchestrator, "insert_records", **opinion_write_effect
+                processor_execution, "insert_records", **opinion_write_effect
             ) as insert,
             patch.object(
-                orchestrator,
+                processor_execution,
                 "upsert_records",
                 return_value=extra_write or WriteResult(0, 0, 0, ()),
             ),
-            patch.object(orchestrator, "_write_processing_log") as write_log,
+            patch.object(processor_execution, "_write_processing_log") as write_log,
         ):
-            result = orchestrator._run_processor_impl(
+            result = processor_execution._run_processor_impl(
                 "briefing", config={}, correlation_id="cid", manage_lifecycle=False
             )
         return result, write_log, insert
@@ -224,15 +222,13 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
         self.assertIsNone(logged["output_id"])
 
     def test_processing_log_insert_defensively_nulls_legacy_raw_columns(self):
-        import orchestrator
-
         session = Mock()
         session_context = Mock()
         session_context.__enter__ = Mock(return_value=session)
         session_context.__exit__ = Mock(return_value=False)
         now = datetime.now(UTC)
-        with patch.object(orchestrator, "get_session", return_value=session_context):
-            orchestrator._write_processing_log(
+        with patch.object(publication, "get_session", return_value=session_context):
+            processor_execution._write_processing_log(
                 processor_id="macro_regime",
                 started_at=now,
                 completed_at=now,
@@ -497,16 +493,14 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
     def test_event_impact_invalid_after_retry_is_typed_safe_and_persisted_with_usage(
         self,
     ):
-        import orchestrator
-
         processor = EventImpactProcessor()
         calls = [response(RAW_SENTINEL, 5, 2, 0.01), response(RAW_SENTINEL, 6, 3, 0.02)]
         with (
-            patch.object(orchestrator, "get_processor", return_value=processor),
+            patch.object(processor_execution, "get_processor", return_value=processor),
             patch.object(
-                orchestrator, "build_processor_fingerprint", return_value=None
+                processor_execution, "build_processor_fingerprint", return_value=None
             ),
-            patch.object(orchestrator, "_write_processing_log") as write_log,
+            patch.object(processor_execution, "_write_processing_log") as write_log,
             patch.object(
                 processor,
                 "_fetch_upcoming_events",
@@ -518,13 +512,12 @@ class ProcessorLLMPersistenceTests(unittest.TestCase):
             patch("llm_client.call_llm", side_effect=calls),
             patch("processors.event_impact.logger") as event_logger,
         ):
-            result = orchestrator._run_processor_impl(
+            result = processor_execution._run_processor_impl(
                 "event_impact",
-                llm_config("event_impact"),
-                "cid",
+                config=llm_config("event_impact"),
+                correlation_id="cid",
                 manage_lifecycle=False,
             )
-
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "LLM response validation failed after retry")
         logged = write_log.call_args.kwargs

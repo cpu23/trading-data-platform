@@ -1,19 +1,17 @@
 import asyncio
-import json
 import re
 from datetime import datetime
 
 from api_db import query_many
 from api_logging import get_logger
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-import config as app_config
+from contracts.runtime_config import load_config
 from routes.json.briefing import get_briefing_latest
 from routes.json.events import get_events_upcoming_data
 from routes.json.settings import timezone_context
-from routes.json.system import get_system_health
+from routes.json.system import load_compact_health
 from routes.views.cockpit_panels import load_briefing_delta
 from routes.views.dashboard_strip import load_compact_strip
 from routes.views.market_events import (
@@ -150,12 +148,12 @@ def _get_latest_prices(config: dict) -> dict:
     return price_map
 
 
-async def _get_dashboard_health(request: Request) -> dict:
+async def _get_dashboard_health(
+    request: Request | None = None,
+    config: dict | None = None,
+) -> dict:
     try:
-        result = await get_system_health(request)
-        if isinstance(result, JSONResponse):
-            return json.loads(bytes(result.body))
-        return result
+        return await run_in_threadpool(load_compact_health, config)
     except Exception as exc:
         logger.warning("dashboard_health_unavailable", error_type=type(exc).__name__)
         return {
@@ -192,7 +190,7 @@ router = APIRouter()
 
 @router.get("/")
 async def dashboard(request: Request):
-    config = await run_in_threadpool(app_config.load_config)
+    config = await run_in_threadpool(load_config)
     templates = _get_templates(request)
 
     (
@@ -204,7 +202,7 @@ async def dashboard(request: Request):
         run_in_threadpool(get_briefing_latest),
         run_in_threadpool(load_since_last_view, config),
         run_in_threadpool(load_compact_strip, config),
-        _get_dashboard_health(request),
+        _get_dashboard_health(request, config),
         return_exceptions=True,
     )
 
@@ -249,7 +247,7 @@ async def dashboard(request: Request):
 
 @router.get("/partials/header")
 async def partial_header(request: Request):
-    config = await run_in_threadpool(app_config.load_config)
+    config = await run_in_threadpool(load_config)
     templates = _get_templates(request)
     tz_context = timezone_context(request, config)
     now = datetime.now(tz_context["display_zone"])
@@ -260,7 +258,7 @@ async def partial_header(request: Request):
         {
             "request": request,
             "current_time": now,
-            "data_status": _data_status(await _get_dashboard_health(request)),
+            "data_status": _data_status(await _get_dashboard_health(request, config)),
             **tz_context,
         },
     )
@@ -294,7 +292,7 @@ def partial_cards_clear(request: Request):
 
 @router.get("/partials/cards/{symbol}")
 def partial_cards_symbol(request: Request, symbol: str):
-    config = app_config.load_config()
+    config = load_config()
     templates = _get_templates(request)
     briefing = None
     try:
@@ -348,7 +346,7 @@ def partial_cards_symbol(request: Request, symbol: str):
 @router.get("/partials/briefing")
 def partial_briefing(request: Request):
     templates = _get_templates(request)
-    config = app_config.load_config()
+    config = load_config()
     briefing = None
     try:
         briefing = get_briefing_latest()

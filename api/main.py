@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,7 +42,7 @@ from routes.views import router as views_router
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from config import config_version, load_config
+from contracts.runtime_config import config_version, load_config
 
 _JSON_BODY_LIMIT = 1024 * 1024
 _JSON_PATH_LIMITS = {
@@ -51,6 +52,10 @@ _JSON_PATH_LIMITS = {
 }
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _STREAMING_BODY_PATHS = frozenset({"/api/investment/documents"})
+
+_API_DIR = Path(__file__).resolve().parent
+_STATIC_DIR = _API_DIR / "static"
+_TEMPLATES_DIR = _API_DIR / "templates"
 
 
 class RequestBodyLimitMiddleware:
@@ -271,10 +276,10 @@ def create_app() -> FastAPI:
         # Registered last: reject an invalid Host before reading any body.
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-    app.state.templates = Jinja2Templates(directory="templates")
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    app.state.templates = Jinja2Templates(directory=_TEMPLATES_DIR)
     app.state.templates.env.globals["app_asset_version"] = os.stat(
-        "static/app.js"
+        _STATIC_DIR / "app.js"
     ).st_mtime_ns
     app.state.config = config
 

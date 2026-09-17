@@ -7,6 +7,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import collector_execution
+import cycle_planning
+import locks
+import processor_execution
+import run_lifecycle
 
 
 class CollectorWorkerLimitTests(unittest.TestCase):
@@ -19,7 +24,7 @@ class CollectorWorkerLimitTests(unittest.TestCase):
         self.assertEqual(config["orchestration"]["collector_workers"], 3)
 
     def test_worker_limit_is_normalized_and_bounded_by_enabled_collectors(self):
-        from orchestrator import collector_worker_limit
+        from cycle_planning import collector_worker_limit
 
         cases = [
             ({}, 5, 3),
@@ -40,7 +45,7 @@ class CollectorWorkerLimitTests(unittest.TestCase):
 
 class ConcurrentCollectorCycleTests(unittest.TestCase):
     def test_collectors_overlap_bounded_ordered_and_finish_before_processors(self):
-        import orchestrator
+        # Exercise the cycle implementation directly; its dependencies are local.
 
         collector_ids = ["alpha", "beta", "gamma"]
         config = {
@@ -100,26 +105,25 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
 
         with (
             patch.object(
-                orchestrator,
+                cycle_planning,
                 "get_all_collectors",
                 return_value={source_id: Mock() for source_id in collector_ids},
             ),
-            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(cycle_planning, "get_all_processors", return_value={}),
             patch.object(
-                orchestrator, "run_collector", side_effect=collect
+                cycle_planning, "run_collector", side_effect=collect
             ) as run_collector,
             patch.object(
-                orchestrator, "update_run_progress", side_effect=persist_progress
+                cycle_planning, "update_run_progress", side_effect=persist_progress
             ),
             patch.object(
-                orchestrator, "_resolve_and_run_processors", side_effect=processors
+                cycle_planning, "_resolve_and_run_processors", side_effect=processors
             ),
-            patch.object(orchestrator, "logger") as logger,
+            patch.object(cycle_planning, "logger") as logger,
         ):
-            result = orchestrator._run_full_cycle_impl(
+            result = cycle_planning._run_full_cycle_impl(
                 config,
                 "cycle-id",
-                manage_lifecycle=False,
                 worker_id="parent-worker",
             )
 
@@ -162,8 +166,6 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         self.assertGreaterEqual(layer_log.kwargs["duration_ms"], 0)
 
     def test_escaped_collector_exceptions_are_isolated_and_safely_aggregated(self):
-        import orchestrator
-
         collector_ids = ["alpha", "beta", "gamma"]
         config = {
             "orchestration": {"collector_workers": 2},
@@ -186,18 +188,16 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             with (
                 self.subTest(successful=successful),
                 patch.object(
-                    orchestrator,
+                    cycle_planning,
                     "get_all_collectors",
                     return_value={source_id: Mock() for source_id in collector_ids},
                 ),
-                patch.object(orchestrator, "get_all_processors", return_value={}),
-                patch.object(orchestrator, "run_collector", side_effect=collect),
-                patch.object(orchestrator, "update_run_progress"),
-                patch.object(orchestrator, "logger"),
+                patch.object(cycle_planning, "get_all_processors", return_value={}),
+                patch.object(cycle_planning, "run_collector", side_effect=collect),
+                patch.object(cycle_planning, "update_run_progress"),
+                patch.object(cycle_planning, "logger"),
             ):
-                result = orchestrator._run_full_cycle_impl(
-                    config, "cycle-id", manage_lifecycle=False
-                )
+                result = cycle_planning._run_full_cycle_impl(config, "cycle-id")
 
             self.assertEqual(set(attempted), set(collector_ids))
             self.assertEqual(result["status"], expected_status)
@@ -211,8 +211,6 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
                 self.assertNotIn("secret payload", str(failure))
 
     def test_one_worker_is_serial_and_empty_cycle_does_not_create_executor(self):
-        import orchestrator
-
         collector_ids = ["alpha", "beta", "gamma"]
         order = []
         active = 0
@@ -236,32 +234,29 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         }
         with (
             patch.object(
-                orchestrator,
+                cycle_planning,
                 "get_all_collectors",
                 return_value={source_id: Mock() for source_id in collector_ids},
             ),
-            patch.object(orchestrator, "get_all_processors", return_value={}),
-            patch.object(orchestrator, "run_collector", side_effect=collect),
-            patch.object(orchestrator, "update_run_progress"),
+            patch.object(cycle_planning, "get_all_processors", return_value={}),
+            patch.object(cycle_planning, "run_collector", side_effect=collect),
+            patch.object(cycle_planning, "update_run_progress"),
         ):
-            result = orchestrator._run_full_cycle_impl(
-                config, "cycle-id", manage_lifecycle=False
-            )
+            result = cycle_planning._run_full_cycle_impl(config, "cycle-id")
 
         self.assertEqual(max_active, 1)
         self.assertEqual(order, collector_ids)
         self.assertEqual(list(result["collectors"]), collector_ids)
 
         with (
-            patch.object(orchestrator, "get_all_collectors", return_value={}),
-            patch.object(orchestrator, "get_all_processors", return_value={}),
-            patch.object(orchestrator, "update_run_progress"),
-            patch.object(orchestrator, "ThreadPoolExecutor") as executor,
+            patch.object(cycle_planning, "get_all_collectors", return_value={}),
+            patch.object(cycle_planning, "get_all_processors", return_value={}),
+            patch.object(cycle_planning, "update_run_progress"),
+            patch.object(cycle_planning, "ThreadPoolExecutor") as executor,
         ):
-            empty_result = orchestrator._run_full_cycle_impl(
+            empty_result = cycle_planning._run_full_cycle_impl(
                 {"collectors": {}, "processors": {}},
                 "empty-cycle",
-                manage_lifecycle=False,
             )
 
         executor.assert_not_called()
@@ -315,23 +310,26 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             }
 
         with (
-            patch.object(orchestrator, "accept_run"),
-            patch.object(orchestrator, "start_run", return_value=True),
+            patch.object(run_lifecycle, "accept_run"),
+            patch.object(run_lifecycle, "start_run", return_value=True),
             patch.object(
-                orchestrator, "maintain_run_heartbeat", side_effect=heartbeat_guard
+                run_lifecycle, "maintain_run_heartbeat", side_effect=heartbeat_guard
             ) as heartbeat,
-            patch.object(orchestrator, "advisory_lock", side_effect=tracked_lock),
+            patch.object(locks, "advisory_lock", side_effect=tracked_lock),
             patch.object(
-                orchestrator,
+                collector_execution, "advisory_lock", side_effect=tracked_lock
+            ),
+            patch.object(run_lifecycle, "finalize_run_safely", return_value=True),
+            patch.object(
+                cycle_planning,
                 "get_all_collectors",
                 return_value={source_id: Mock() for source_id in collector_ids},
             ),
-            patch.object(orchestrator, "get_all_processors", return_value={}),
+            patch.object(cycle_planning, "get_all_processors", return_value={}),
             patch.object(
-                orchestrator, "_run_collector_impl", side_effect=collector_work
+                collector_execution, "_run_collector_impl", side_effect=collector_work
             ),
-            patch.object(orchestrator, "update_run_progress"),
-            patch.object(orchestrator, "finalize_run_safely", return_value=True),
+            patch.object(cycle_planning, "update_run_progress"),
         ):
             result = orchestrator.run_full_cycle(
                 config=config, correlation_id="cycle-id"
@@ -349,8 +347,6 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
 
     def test_processors_remain_dependency_ordered_and_sequential(self):
-        import orchestrator
-
         processors = {
             "briefing": Mock(get_depends_on=Mock(return_value=["macro_regime"])),
             "macro_regime": Mock(get_depends_on=Mock(return_value=["fred"])),
@@ -370,10 +366,12 @@ class ConcurrentCollectorCycleTests(unittest.TestCase):
             return {"processor": processor_id, "status": "success"}
 
         with (
-            patch.object(orchestrator, "get_all_processors", return_value=processors),
-            patch.object(orchestrator, "run_processor", side_effect=run),
+            patch.object(
+                processor_execution, "get_all_processors", return_value=processors
+            ),
+            patch.object(processor_execution, "run_processor", side_effect=run),
         ):
-            results = orchestrator._resolve_and_run_processors(
+            results = processor_execution._resolve_and_run_processors(
                 config={
                     "processors": {
                         processor_id: {"enabled": True} for processor_id in processors

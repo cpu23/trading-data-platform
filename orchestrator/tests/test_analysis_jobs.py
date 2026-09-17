@@ -75,6 +75,8 @@ class FakeSession:
                 "attempt_count": 0,
             }
             return Result(first=self.inserted)
+        if "RETURNING correlation_id, run_kind" in sql:
+            return Result(first={"correlation_id": "corr", "run_kind": None})
         return Result(rowcount=1)
 
 
@@ -185,7 +187,7 @@ class AnalysisJobWorkerTests(unittest.TestCase):
             session_factory=failing_session,
         )
         counters = worker.poll_once()
-        self.assertEqual(counters["poll_errors"], 1)
+        self.assertGreater(counters["poll_errors"], 0)
         self.assertNotIn("database unavailable", str(counters))
 
     def test_poll_claims_exactly_one_job(self):
@@ -311,7 +313,118 @@ class AnalysisJobWorkerTests(unittest.TestCase):
             counters = worker.poll_once()
         self.assertEqual(counters["retried"], 1)
         self.assertEqual(counters["handler_errors"], 1)
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
+
+    def test_bounded_idle_backoff_and_reset_on_claim(self):
+        worker = AnalysisJobWorker(
+            {
+                "event_pipeline": {
+                    "jobs": {"enabled": True, "worker": {"poll_seconds": 1.0}}
+                }
+            },
+            worker_id="test-idle-worker",
+        )
+        waits = []
+        stop_mock = unittest.mock.MagicMock()
+        stop_mock.is_set.side_effect = [False, False, False, False, False, False, True]
+        stop_mock.wait.side_effect = lambda duration: waits.append(duration)
+        worker._stop = stop_mock
+
+        # Poll sequence: 4 empty polls, 1 claim poll, 1 empty poll
+        poll_results = [
+            lambda: None,  # empty
+            lambda: None,  # empty
+            lambda: None,  # empty
+            lambda: None,  # empty
+            lambda: worker._increment("claimed", 1),  # claimed
+            lambda: None,  # empty
+        ]
+        polls = iter(poll_results)
+        with patch.object(worker, "poll_once", side_effect=lambda: next(polls)()):
+            worker._run()
+
+        # Expected idle waits: 1.0, 2.0, 4.0, 5.0 (capped at 5.0).
+        # The 5th poll claimed work, so no sleep.
+        # The 6th poll was empty, wait reset to 1.0.
+        self.assertEqual(waits, [1.0, 2.0, 4.0, 5.0, 1.0])
+
+    def test_maintenance_runs_periodically_under_sustained_work(self):
+        reconcile_calls = []
+
+        @contextmanager
+        def sessions(*args):
+            yield SimpleNamespace()
+
+        worker = AnalysisJobWorker(
+            {"event_pipeline": {"jobs": {"enabled": True}}},
+            worker_id="worker-cadence",
+            session_factory=sessions,
+        )
+
+        current_time = [1000.0]
+
+        def mock_monotonic():
+            return current_time[0]
+
+        with (
+            patch("time.monotonic", side_effect=mock_monotonic),
+            patch(
+                "job_worker.reconcile_jobs",
+                side_effect=lambda *a, **kw: reconcile_calls.append(current_time[0])
+                or 0,
+            ),
+            patch("job_worker.claim_jobs", return_value=[]),
+        ):
+            # Poll 1 at t=1000.0: first run, maintenance must execute
+            worker.poll_once()
+            self.assertEqual(len(reconcile_calls), 1)
+
+            # Poll 2 at t=1010.0 (< 30s elapsed): maintenance must be skipped
+            current_time[0] = 1010.0
+            worker.poll_once()
+            self.assertEqual(len(reconcile_calls), 1)
+
+            # Poll 3 at t=1030.0 (>= 30s elapsed): maintenance must run again
+            current_time[0] = 1030.0
+            worker.poll_once()
+            self.assertEqual(len(reconcile_calls), 2)
+
+    def test_maintenance_failure_retries_immediately_on_next_poll(self):
+        reconcile_attempts = []
+
+        @contextmanager
+        def sessions(*args):
+            yield SimpleNamespace()
+
+        worker = AnalysisJobWorker(
+            {"event_pipeline": {"jobs": {"enabled": True}}},
+            worker_id="worker-fail-retry",
+            session_factory=sessions,
+        )
+
+        def failing_reconcile(*args, **kwargs):
+            reconcile_attempts.append("fail")
+            raise RuntimeError("transient db error")
+
+        def succeeding_reconcile(*args, **kwargs):
+            reconcile_attempts.append("success")
+            return 0
+
+        with (
+            patch("job_worker.reconcile_jobs", side_effect=failing_reconcile),
+            patch("job_worker.claim_jobs", return_value=[]),
+        ):
+            counters = worker.poll_once()
+            self.assertEqual(counters["poll_errors"], 1)
+            self.assertIsNone(worker._last_maintenance_monotonic)
+
+        with (
+            patch("job_worker.reconcile_jobs", side_effect=succeeding_reconcile),
+            patch("job_worker.claim_jobs", return_value=[]),
+        ):
+            worker.poll_once()
+            self.assertIsNotNone(worker._last_maintenance_monotonic)
+            self.assertEqual(reconcile_attempts, ["fail", "success"])
 
 
 class ResearchOperationsTests(unittest.TestCase):

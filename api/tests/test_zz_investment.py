@@ -55,7 +55,7 @@ class _InvestmentDomProbe(HTMLParser):
 class InvestmentApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with patch("config.load_config", return_value=MOCK_CONFIG):
+        with patch("contracts.runtime_config.load_config", return_value=MOCK_CONFIG):
             from auth import mint_csrf_token
             from fastapi.testclient import TestClient
             from main import create_app

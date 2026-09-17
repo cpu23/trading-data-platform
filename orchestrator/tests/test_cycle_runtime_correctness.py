@@ -5,10 +5,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orchestrator import (
-    _aggregate_stage_status,
-    _resolve_and_run_processors,
-)
+from cycle_planning import _aggregate_stage_status
+from processor_execution import _resolve_and_run_processors
 
 
 class CycleRuntimeCorrectnessTests(unittest.TestCase):
@@ -42,7 +40,7 @@ class CycleRuntimeCorrectnessTests(unittest.TestCase):
             "success",
         )
 
-    @patch("orchestrator.get_all_processors")
+    @patch("processor_execution.get_all_processors")
     def test_unmet_dependencies_are_explicitly_recorded_as_skipped(
         self, get_all_processors
     ):

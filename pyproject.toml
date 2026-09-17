@@ -57,9 +57,7 @@ known-first-party = ["api", "orchestrator", "contracts"]
 [tool.mypy]
 python_version = "3.12"
 files = [
-    "api/config.py",
     "api/api_db.py",
-    "orchestrator/config_loader.py",
     "orchestrator/db.py",
     "contracts",
 ]

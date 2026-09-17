@@ -14,7 +14,7 @@ from uuid import UUID
 from api_db import get_session, query_many, query_one
 from fastapi import APIRouter, HTTPException, Request
 
-from config import load_config
+from contracts.runtime_config import load_config
 
 try:
     from research_intelligence import queries as _research_queries

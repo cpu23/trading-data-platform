@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from jobs import (
     AnalysisJob,
@@ -113,31 +113,39 @@ class AnalysisJobWorker(BasePollingWorker):
             heartbeat_stop.set()
             heartbeat.join(timeout=self._heartbeat_interval(lease_seconds) + 1.0)
 
+    def _run_maintenance(self, session: Any, settings: dict[str, Any]) -> None:
+        query_raw = settings.get("query")
+        query: Mapping[str, Any] = query_raw if isinstance(query_raw, Mapping) else {}
+        reconcile_limit = max(
+            1,
+            min(
+                int(
+                    settings.get("reconcile_limit")
+                    or query.get("max_reconcile_jobs")
+                    or 100
+                ),
+                1000,
+            ),
+        )
+        repaired = reconcile_jobs(
+            session,
+            reconcile_limit,
+            job_types=settings.get("job_types")
+            if isinstance(settings.get("job_types"), (list, tuple))
+            else [],
+        )
+        if repaired:
+            self._increment("reconciled", repaired)
+
     def poll_once(self) -> dict[str, int]:
         if not self.enabled():
             return self.state_counters()
         settings = self._cfg()
         worker = self._worker_settings(settings)
+        self._maintain_if_due()
+        jobs: list[AnalysisJob] = []
         try:
             with self._session() as session:
-                query_raw = settings.get("query")
-                query: Mapping[str, Any] = (
-                    query_raw if isinstance(query_raw, Mapping) else {}
-                )
-                reconcile_limit = max(
-                    1,
-                    min(
-                        int(
-                            settings.get("reconcile_limit")
-                            or query.get("max_reconcile_jobs")
-                            or 100
-                        ),
-                        1000,
-                    ),
-                )
-                repaired = reconcile_jobs(session, reconcile_limit)
-                if repaired:
-                    self._increment("reconciled", repaired)
                 lease = float(
                     settings.get("lease_seconds", worker.get("lease_seconds", 120))
                 )
@@ -151,7 +159,7 @@ class AnalysisJobWorker(BasePollingWorker):
                     lease_seconds=max(1.0, lease),
                     job_types=settings.get("job_types")
                     if isinstance(settings.get("job_types"), (list, tuple))
-                    else None,
+                    else [],
                 )
             self._increment("claimed", len(jobs))
         except Exception:
@@ -159,7 +167,7 @@ class AnalysisJobWorker(BasePollingWorker):
             return self.state_counters()
         for job in jobs:
             try:
-                self._handle(job, settings)
+                self._handle(cast(AnalysisJob, job), settings)
             except Exception:
                 self._increment("handler_errors")
         with self._lock:

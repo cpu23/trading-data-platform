@@ -11,33 +11,28 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
+from collector_execution import run_collector, run_news_source
 from cycle_planning import VALID_CYCLE_MODES, aggregate_stage_statuses
 from jobs import (
     OperationJob,
-    claim_operation_jobs,
-    reconcile_operation_jobs,
-    renew_operation_job_lease,
-    retry_operation_job,
-    start_operation_job,
-    succeed_operation_job,
-    terminal_fail_operation_job,
+    claim_jobs,
+    reconcile_jobs,
+    renew_job_lease,
+    retry_job,
+    start_job,
+    succeed_job,
+    terminal_fail_job,
 )
 from polling_worker import BasePollingWorker, filter_result_ref
+from processor_execution import _authorize_claimed_run_budget, run_processor
 from recovery import recover_operation_runs
-from run_lifecycle import finish_run_in_session
+from run_lifecycle import finish_run_in_session, maintain_run_heartbeat, start_run
 from sqlalchemy import text
 
-from orchestrator import (
-    maintain_run_heartbeat,
-    run_collector,
-    run_full_cycle,
-    run_news_source,
-    run_processor,
-    start_run,
-)
+from orchestrator import run_full_cycle
 
 
 class LeaseLostError(RuntimeError):
@@ -69,7 +64,7 @@ class OperationWorker(BasePollingWorker):
     def _heartbeat(
         self, job_id: Any, lease_seconds: float, stop: threading.Event
     ) -> None:
-        self._run_heartbeat(job_id, lease_seconds, stop, renew_operation_job_lease)
+        self._run_heartbeat(job_id, lease_seconds, stop, renew_job_lease)
 
     @classmethod
     def _result_ref(cls, value: Any) -> dict[str, Any] | None:
@@ -77,7 +72,6 @@ class OperationWorker(BasePollingWorker):
 
     def _dispatch(self, job: OperationJob, correlation_id: str) -> dict[str, Any]:
         """Execute one claimed operation job; the run owns no lifecycle."""
-        from orchestrator import _authorize_claimed_run_budget
 
         config = self.config
         run_kind = job.run_kind
@@ -213,7 +207,7 @@ class OperationWorker(BasePollingWorker):
         error_message = error if isinstance(error, str) else type(error).__name__
         try:
             with self._session() as session:
-                if terminal_fail_operation_job(session, job.id, self.worker_id, error):
+                if terminal_fail_job(session, job.id, self.worker_id, error):
                     if run_worker_id:
                         finalized = finish_run_in_session(
                             session,
@@ -243,7 +237,7 @@ class OperationWorker(BasePollingWorker):
     ) -> None:
         """Retry with backoff or poison at attempt exhaustion.
 
-        ``retry_operation_job`` releases the run row (back to ``accepted``)
+        ``retry_job`` releases the run row (back to ``accepted``)
         in the same transaction, so the next attempt claims it immediately.
         """
         attempts = max(1, int(job.attempt_count))
@@ -263,7 +257,7 @@ class OperationWorker(BasePollingWorker):
         delay = self._compute_retry_delay(attempts, retry_cfg)
         try:
             with self._session() as session:
-                if retry_operation_job(
+                if retry_job(
                     session,
                     job.id,
                     self.worker_id,
@@ -279,7 +273,7 @@ class OperationWorker(BasePollingWorker):
         correlation_id = str(job.correlation_id)
         run_worker_id = f"{self.worker_id}:{uuid4()}"
         with self._session() as session:
-            if not start_operation_job(session, job.id, self.worker_id):
+            if not start_job(session, job.id, self.worker_id):
                 return
         job_heartbeat_stop = threading.Event()
         job_heartbeat = threading.Thread(
@@ -303,7 +297,7 @@ class OperationWorker(BasePollingWorker):
                 row_status = self._cycle_run_status(correlation_id)
                 if row_status == "completed":
                     with self._session() as session:
-                        if succeed_operation_job(
+                        if succeed_job(
                             session,
                             job.id,
                             self.worker_id,
@@ -316,7 +310,7 @@ class OperationWorker(BasePollingWorker):
                     return
                 if row_status in ("failed", "abandoned"):
                     with self._session() as session:
-                        if terminal_fail_operation_job(
+                        if terminal_fail_job(
                             session,
                             job.id,
                             self.worker_id,
@@ -368,7 +362,7 @@ class OperationWorker(BasePollingWorker):
                 )
                 if not finalized:
                     raise LeaseLostError("run finalization lost ownership")
-                if not succeed_operation_job(
+                if not succeed_job(
                     session,
                     job.id,
                     self.worker_id,
@@ -383,39 +377,44 @@ class OperationWorker(BasePollingWorker):
             job_heartbeat_stop.set()
             job_heartbeat.join(timeout=self._heartbeat_interval(lease_seconds) + 1.0)
 
+    def _run_maintenance(self, session: Any, settings: dict[str, Any]) -> None:
+        recovery_result = recover_operation_runs(session)
+        recovered = recovery_result.get("total", 0)
+        if recovered:
+            self._increment("reconciled", recovered)
+        query = (
+            settings.get("query") if isinstance(settings.get("query"), Mapping) else {}
+        )
+        repaired = reconcile_jobs(
+            session,
+            max(
+                1,
+                min(
+                    int(
+                        settings.get(
+                            "reconcile_limit",
+                            query.get("max_reconcile_jobs", 100),
+                        )
+                    ),
+                    1000,
+                ),
+            ),
+            run_kinds=settings.get("run_kinds")
+            if isinstance(settings.get("run_kinds"), (list, tuple))
+            else [],
+        )
+        if repaired:
+            self._increment("reconciled", repaired)
+
     def poll_once(self) -> dict[str, int]:
         if not self.enabled():
             return self.state_counters()
         settings = self._cfg()
         worker = self._worker_settings(settings)
+        self._maintain_if_due()
+        jobs: list[OperationJob] = []
         try:
-            recovery_result = recover_operation_runs(self.config)
-            recovered = recovery_result.get("total", 0)
-            if recovered:
-                self._increment("reconciled", recovered)
             with self._session() as session:
-                query = (
-                    settings.get("query")
-                    if isinstance(settings.get("query"), Mapping)
-                    else {}
-                )
-                repaired = reconcile_operation_jobs(
-                    session,
-                    max(
-                        1,
-                        min(
-                            int(
-                                settings.get(
-                                    "reconcile_limit",
-                                    query.get("max_reconcile_jobs", 100),
-                                )
-                            ),
-                            1000,
-                        ),
-                    ),
-                )
-                if repaired:
-                    self._increment("reconciled", repaired)
                 lease = float(
                     settings.get("lease_seconds", worker.get("lease_seconds", 120))
                 )
@@ -423,14 +422,14 @@ class OperationWorker(BasePollingWorker):
                 # more would sit in memory without a heartbeat while the first
                 # job runs, letting its lease expire and another replica
                 # reclaim it -> duplicate execution.
-                jobs = claim_operation_jobs(
+                jobs = claim_jobs(
                     session,
                     self.worker_id,
                     limit=1,
                     lease_seconds=max(1.0, lease),
                     run_kinds=settings.get("run_kinds")
                     if isinstance(settings.get("run_kinds"), (list, tuple))
-                    else None,
+                    else [],
                 )
             self._increment("claimed", len(jobs))
         except Exception:
@@ -438,7 +437,7 @@ class OperationWorker(BasePollingWorker):
             return self.state_counters()
         for job in jobs:
             try:
-                self._handle(job, settings)
+                self._handle(cast(OperationJob, job), settings)
             except Exception:
                 self._increment("handler_errors")
         with self._lock:

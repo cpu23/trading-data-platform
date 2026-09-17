@@ -22,8 +22,8 @@ from jobs import accept_and_enqueue_operation
 from pydantic import BaseModel, ConfigDict, Field
 from run_lifecycle import RunAcceptanceConflict
 
-from config import load_config
 from contracts import InvestmentUrlIngestRequest
+from contracts.runtime_config import load_config
 
 router = APIRouter(prefix="/investment", tags=["investment"])
 logger = get_logger("api.investment")

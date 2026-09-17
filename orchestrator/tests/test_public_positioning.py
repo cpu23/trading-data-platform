@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -150,6 +150,12 @@ def _sec_request_side_effect(submissions, documents, failures=None):
 
 
 class SecForm4CollectorTests(unittest.TestCase):
+    def setUp(self):
+        clock_patch = patch("collectors.public_positioning.datetime")
+        clock = clock_patch.start()
+        clock.now.return_value = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+        self.addCleanup(clock_patch.stop)
+
     def test_form4_buy_sell_aggregated_per_transaction_date(self):
         submissions = _submissions_payload(
             [

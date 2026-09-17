@@ -18,10 +18,9 @@ from setup_state import (
     setup_lock,
 )
 
-from config import (
+from contracts.runtime_config import (
     config_status,
     load_config,
-    reload_config,
 )
 
 router = APIRouter()
@@ -146,9 +145,9 @@ def _commit_state(payload: dict[str, str]) -> int:
     from setup_state import CommitDurabilityError
 
     def _candidate_validator():
-        import config as config_module
+        from contracts.runtime_config import validate_candidate
 
-        return getattr(config_module, "validate_candidate", None)
+        return validate_candidate
 
     try:
         return commit_setup(
@@ -257,28 +256,15 @@ def update_operator_settings(body: dict):
     secrets_update = (
         body.get("secrets") if isinstance(body.get("secrets"), dict) else {}
     )
-    _save_operator_state(update, secrets_update)
-    restart_required = _reload_or_restart()
+    saved_version = _save_operator_state(update, secrets_update)
     return {
         "saved": True,
-        "applies_to_next_run": True,
+        "applies_to_next_run": False,
         "model": default_model,
-        "restart_required": restart_required,
+        "restart_required": True,
+        "version": saved_version,
+        "message": "Settings saved. Restart the service before they take effect.",
     }
-
-
-def _reload_or_restart() -> bool:
-    """Reload the configuration after a commit; truthfully report whether a
-    process restart is needed (reload failure means the running process may be
-    serving a stale configuration)."""
-    try:
-        reload_config()
-        return _restart_required()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("configuration reload failed")
-        return True
 
 
 def _save_operator_state(update: dict, secrets_update: dict) -> int:
@@ -313,21 +299,9 @@ def _save_operator_state(update: dict, secrets_update: dict) -> int:
         return _commit_state(payload)
 
 
-def _restart_required() -> bool:
-    import config as config_module
-
-    return bool(getattr(config_module, "restart_required", lambda: False)())
-
-
 @router.get("/settings/version")
 def get_config_version():
-    """Expose the active versioned configuration snapshot and reload state.
-
-    ``version`` is a content-derived digest of the validated configuration;
-    ``restart_required`` is truthful for the latest reload (True only when a
-    restart-sensitive section changed or a reload candidate was rejected);
-    ``last_reload`` describes any rejected candidate.
-    """
+    """Expose active config lineage and whether committed files need restart."""
     return config_status()
 
 

@@ -421,7 +421,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         market_rows = [market_row("EURUSD"), market_row("XAUUSD")]
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(
@@ -459,7 +459,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         app = build_app()
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value={"watchlist": {}},
             ),
             patch("routes.views.watchlist_grid.query_many") as query,
@@ -475,7 +475,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         app = build_app()
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch("routes.views.watchlist_grid.query_many") as query,
@@ -490,7 +490,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         app = build_app()
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(
@@ -509,7 +509,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         atom = atom_row("Hot CPI print supports the dollar.")
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(
@@ -556,7 +556,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         market_rows = [market_row("EURUSD")]
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(
@@ -584,7 +584,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         market_rows = [market_row("EURUSD"), market_row("XAUUSD")]
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(
@@ -622,7 +622,7 @@ class WatchlistGridRouteTests(unittest.TestCase):
         app = build_app()
         with (
             patch(
-                "routes.views.watchlist_grid.app_config.load_config",
+                "routes.views.watchlist_grid.load_config",
                 return_value=WATCHLIST_CONFIG,
             ),
             patch(

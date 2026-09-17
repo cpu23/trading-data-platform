@@ -84,7 +84,7 @@ jobs:
       - name: Run Ruff
         run: uv run ruff check api orchestrator contracts scripts tests
       - name: Run mypy
-        run: uv run mypy api/api_db.py api/config.py orchestrator/db.py orchestrator/config_loader.py contracts
+        run: uv run mypy api/api_db.py orchestrator/db.py contracts
       - name: Validate YAML and deterministic fixtures
         run: uv run python scripts/validate_fixtures.py
       - name: Validate infrastructure source
