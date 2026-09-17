@@ -1201,6 +1201,7 @@ class NewsTests(unittest.TestCase):
             [], "error", "Reuters sitemap index failed: TimeoutError"
         )
         with (
+            tempfile.TemporaryDirectory() as tmp,
             patch("cli.load_config", return_value=cfg),
             patch("sources.reuters.run_reuters", return_value=failure),
             patch(
@@ -1208,6 +1209,7 @@ class NewsTests(unittest.TestCase):
                 return_value={"count": 0, "sources": [], "items": []},
             ),
         ):
+            cfg["news_feed"]["output_path"] = tmp
             result = CliRunner().invoke(cli, ["news", "all"])
 
         self.assertNotEqual(result.exit_code, 0)
